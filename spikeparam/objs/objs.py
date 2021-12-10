@@ -8,13 +8,11 @@ from matplotlib.gridspec import GridSpec
 
 from neurodsp.plts.utils import savefig
 
-from bycycle import Bycycle
-
-from bycycle.spikes.features import compute_shape_features, compute_gaussian_features
-from bycycle.spikes.features.gaussians import sim_action_potential
-from bycycle.spikes.cyclepoints import compute_spike_cyclepoints
-from bycycle.spikes.plts import plot_spikes
-from bycycle.spikes.utils import split_signal, rename_df
+from spikeparam.models.features import compute_shape_features, compute_gaussian_features
+from spikeparam.models.features.gaussians import sim_action_potential
+from spikeparam.models.cyclepoints import compute_spike_cyclepoints
+from spikeparam.plts import plot_spikes
+from spikeparam.models.utils import split_signal, rename_df
 
 ###################################################################################################
 ###################################################################################################

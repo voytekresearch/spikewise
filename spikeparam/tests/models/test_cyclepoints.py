@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from bycycle.spikes.cyclepoints import compute_spike_cyclepoints
+from spikeparam.models.cyclepoints import compute_spike_cyclepoints
 
 from pytest import raises
 

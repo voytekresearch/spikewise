@@ -3,7 +3,7 @@
 import pytest
 import numpy as np
 
-from bycycle.spikes.features.shape import (
+from spikeparam.models.features.shape import (
     compute_shape_features, compute_symmetry, compute_durations, compute_voltages
 )
 

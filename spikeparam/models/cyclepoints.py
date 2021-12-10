@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from bycycle.cyclepoints import find_extrema, find_zerox
-from bycycle.spikes.utils import create_cyclepoints_df
+from bycycle.cyclepoints import find_extrema
+from spikeparam.models.utils import create_cyclepoints_df
 
 ###################################################################################################
 ###################################################################################################

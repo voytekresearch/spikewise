@@ -3,11 +3,11 @@
 import pytest
 import numpy as np
 
-from bycycle.spikes.features.gaussians import (
+from spikeparam.models.features.gaussians import (
     compute_gaussian_features, _compute_gaussian_features, estimate_params, _estimate_bounds,
     _fit_gaussians
 )
-from bycycle.spikes.cyclepoints import compute_spike_cyclepoints
+from spikeparam.models.cyclepoints import compute_spike_cyclepoints
 
 ###################################################################################################
 ###################################################################################################

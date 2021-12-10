@@ -6,7 +6,7 @@ import pytest
 import numpy as np
 
 from neurodsp.tests.tutils import plot_test
-from bycycle import Spikes
+from spikeparam import Spikes
 
 ###################################################################################################
 ###################################################################################################

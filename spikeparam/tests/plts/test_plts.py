@@ -4,7 +4,7 @@ import pytest
 
 from neurodsp.tests.tutils import plot_test
 
-from bycycle.spikes.plts import plot_spikes, _infer_labels
+from spikeparam.plts.plts import plot_spikes, _infer_labels
 
 ###################################################################################################
 ###################################################################################################

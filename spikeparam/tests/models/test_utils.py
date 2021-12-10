@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from bycycle.spikes.utils import create_cyclepoints_df, split_signal, rename_df
+from spikeparam.models.utils import create_cyclepoints_df, split_signal, rename_df
 
 ###################################################################################################
 ###################################################################################################
