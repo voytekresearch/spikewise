@@ -12,9 +12,63 @@ from spikeparam.patch.window import find_spike_times, window_spike
 from spikeparam.patch.features import compute_features
 from spikeparam.patch.plts import plot
 
-class Spike:
 
-    def __init__(self, window_length=(10, 10), thresh_mv=-10, thresh_ms=1.0,
+
+class Spike:
+    """Parametrize spike waveforms.
+
+    Attributes
+    ----------
+    window_length : tuple of (float, float), optional, default: (10., 10.)
+        Pre and post spike padding.
+    thresh_mv : float
+        Voltage threshold.
+    thresh_ms : float
+        Minimum time between peaks, in ms.
+    thresh_zscore : float, optional, default: 40.
+        Peak z-score threshold.
+    smooth_frac : float, optional, default: .008
+        Smoothing fraction.
+    exp_shift_right : float, optional, default: 2.
+        Start time, in ms, to exponential start from peak.
+    exp_duration : float, optional, default: 5.
+        End time, in ms, of the exponential from the (shifted) peak.
+    times : 1d array
+        Time definition.
+    spike_inds : 1d array
+        Indices of spikes in sig.
+    indices : 2d array
+        Indices of control points per spike.
+    poly_params : 2d array
+        Polynomial parameters per spike.
+    voltage_ramp : 1d array
+        First polynomial parameter (e.g. offset) per spike.
+    inflection_time : 1d array
+        Time, in ms, of the inflection point per spike.
+    inflection_mv : 1d array
+        Voltage, in mv, at time of inflection per spike.
+    peak_width : 1d array
+        Width of peak, in ms, per spike.
+    peak_sharpness : 1d array
+        Sharpness of peak per spike.
+    exp_amp : 1d array
+        Exponential amplitude per spike.
+    exp_lambda : 1d array
+        Exponential decay per spike.
+    exp_const : 1d array
+        Exponential constant per spike.
+    fit_ramp : 2d array
+        Ramp fitted values per spike.
+    fit_exp : 2d aray
+        Exponential decay fitted values per spike.
+    r_squared_ramp : 1d array
+        Ramp r-squared per spike.
+    r_squared_exp : 1d array
+        Exponential r-squared per spike.
+    fs : float
+        Sampling rate, in Hz.
+    """
+    def __init__(self, window_length=(10., 10.), thresh_mv=-10., thresh_ms=1.0,
                  thresh_zscore=40.0, smooth_frac=0.008, poly_order=1,
                  exp_shift_right=2.0, exp_duration=5.0):
 
@@ -27,9 +81,9 @@ class Spike:
         self.poly_order = poly_order
         self.exp_shift_right = exp_shift_right
         self.exp_duration = exp_duration
-        self.times = None
 
         # Results
+        self.times = None
         self.spike_inds = None
         self.indices = None
 
@@ -41,19 +95,34 @@ class Spike:
         self.peak_width = None
         self.peak_sharpness = None
 
-        self.exp_params = None
         self.exp_amp = None
         self.exp_lambda = None
         self.exp_const = None
 
         self.fit_ramp = None
         self.fit_exp = None
+
         self.r_squared_ramp = None
         self.r_squared_exp = None
 
 
     def fit(self, sig, fs, gen_fits=True, n_jobs=1, progress=None):
+        """Fit the 2d spike array.
 
+        Parameters
+        ----------
+        sig : 1d array
+            Voltage time series.
+        fs : float
+            Sampling rate, in Hz.
+        gen_fit : bool, optional, default: True
+            Generate fit arrays and r-squared values if True.
+        n_jobs : int, optional, 1
+            Number of jobs to run in parallel.
+            -1 default to cpu_count().
+        progress : {tqdm.tqdm, tqdm.notebook.tqdm}
+            Progress bar.
+        """
         self.fs = fs
 
         # Find spikes
@@ -69,7 +138,6 @@ class Spike:
         self.inflection_mv = np.zeros(len(idx_spikes))
         self.peak_width = np.zeros(len(idx_spikes))
         self.peak_sharpness = np.zeros(len(idx_spikes))
-        self.exp_params = np.zeros((len(idx_spikes), 4))
 
         self.exp_amp = np.zeros(len(idx_spikes))
         self.exp_lambda = np.zeros(len(idx_spikes))
@@ -96,7 +164,7 @@ class Spike:
 
                     # Compute features
                     indices, ramp_params, peak_params, exp_params = \
-                        compute_features(self.spikes[i], fs, None, self.thresh_ms,
+                        compute_features(self.spikes[i], fs, self.thresh_ms,
                                          self.thresh_zscore, self.smooth_frac, self.poly_order)
 
                     # Unpack results
@@ -113,7 +181,7 @@ class Spike:
         else:
 
             # Partial wrapper func
-            pfunc = partial(compute_features, fs=fs, times=None, thresh_ms=self.thresh_ms,
+            pfunc = partial(compute_features, fs=fs, thresh_ms=self.thresh_ms,
                             thresh_zscore=self.thresh_zscore, smooth_frac=self.smooth_frac,
                             poly_order=self.poly_order)
 
@@ -150,7 +218,15 @@ class Spike:
 
 
     def gen_fit(self, ramp=True, exp=True):
-        """Generate arrays for ramp and exponential fits."""
+        """Generate arrays for ramp and exponential fits.
+
+        Parameters
+        ----------
+        ramp : bool, optional, default: True
+            Generate ramp fits if True.
+        exp : bool, optional, default: True
+            Generate exponential fits if True.
+        """
 
         if self.times is None:
             self.times = np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)
@@ -211,7 +287,25 @@ class Spike:
 
 
     def plot(self, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
+        """Plot fits.
 
+        Parameters
+        ----------
+        inds : int or list of ind
+            Specific spikes to plot.
+        mode : {'full', 'ramp', 'exp'}
+            Plotting mode:
+
+              - 'full' : plot the full spike and both fits.
+              - 'ramp' : plot the ramping fit only.
+              - 'exp'  : plot the exponential fit only.
+
+        show_points : bool, optional, default: False
+            Plots control points if True.
+            Only used when mode is 'full'.
+        ax : matplotlib AxesSubplot
+            Axis to plot on.
+        """
         # Generate fits if needed
         ramp = False
         exp = False

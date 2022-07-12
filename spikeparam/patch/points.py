@@ -6,22 +6,20 @@ import statsmodels.api as sm
 from .window import find_spike_times
 
 
-def control_points(times, spike, fs, idx_peak=None, thresh_ms=1.,
-                   thresh_zscore=40., smooth_frac=.008, exp_shift_right=2.,
-                   exp_duration=5.):
+
+def control_points(spike, fs, thresh_ms=1., thresh_zscore=40.,
+                   smooth_frac=.008, exp_shift_right=2., exp_duration=5.):
     """Compute spike control points.
 
     Parameters
     ----------
-    times : 1d array
-        Spike times.
     spike : 1d array
         Spike waveform.
     fs : float
         Sampling rate, in Hz.
-    thresh_ms : int
+    thresh_ms : int, optional, default: 1.
         Minimum miliseconds between successive peaks.
-    thresh_zscore : float
+    thresh_zscore : float, optional, default: 40.
         Peak z-score threshold.
     smooth_frac : float, optional, default: .008
         Smoothing fraction.
@@ -45,10 +43,8 @@ def control_points(times, spike, fs, idx_peak=None, thresh_ms=1.,
 
     """
 
-    if times is None:
-        times = np.arange(0, len(spike)/fs, 1/fs)
-
     # Smoothed derivative
+    times = np.arange(0, len(spike)/fs, 1/fs)
     _, d_smoothed_spike = diff_spike(times, spike, smooth_frac)
 
     # Get peak index, assumes array is centered on peak
@@ -68,9 +64,16 @@ def control_points(times, spike, fs, idx_peak=None, thresh_ms=1.,
     idx_decay = idx_peak + np.where(_x <= _x/2)[0][0]
 
     # Exponential window points
-    idx_exp_start, idx_exp_end = window_exp(spike, fs, idx_peak, exp_shift_right,
-                                            exp_duration)
+    one_ms = int(fs / 1000)
 
+    decay_curve_shift = int(one_ms / exp_shift_right)
+
+    decay_curve_floor_time = int(one_ms * exp_duration)
+
+    idx_exp_start = idx_peak + decay_curve_shift
+    idx_exp_end = idx_exp_start + decay_curve_floor_time
+
+    # Collect indices
     indices = [
         idx_ramp_start, idx_inflection, idx_rise,
         idx_peak, idx_decay, idx_exp_start, idx_exp_end
@@ -129,24 +132,6 @@ def inflection(d_smoothed_spike, fs, thresh_ms=1., thresh_zscore=40.):
     idx_ramp_start = idx_inflection - int(0.5 * one_ms) # 0.5 ms before
 
     return idx_ramp_start, idx_inflection
-
-
-def window_exp(spike, fs, idx_peak, exp_shift_right=2, exp_duration=5):
-    """Create a window around the exponential decay."""
-
-    one_ms = int(fs / 1000)
-
-    # AP peak is curved, so shift to the right to get a cleaner decay
-    decay_curve_shift = int(one_ms / exp_shift_right)
-
-    # AP floor
-    decay_curve_floor_time = int(one_ms * exp_duration)
-
-    # Start/end of exp curve
-    idx_exp_start = idx_peak + decay_curve_shift
-    idx_exp_end = idx_exp_start + decay_curve_floor_time
-
-    return idx_exp_start, idx_exp_end
 
 
 def diff_spike(times, spike, smooth_frac=.008):

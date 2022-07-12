@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+
 def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
     """Plot model results.
 
@@ -20,7 +21,7 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
     show_points : bool, optional, default: False
         Show control points used to segment the spike.
     ax : axis
-        Axis to plot to.
+        Axis to plot on.
     """
     # Plot
     if ax is None:
@@ -92,9 +93,6 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
 
 
 def _plot_control_points(times, spike, indices, ax):
-
-    print(times.shape)
-    print(indices)
 
     labels = ['Start', 'Inflection', 'Rise', 'Peak', 'Decay']
     colors = ['C' + str(i) for i in range(2, 7)]

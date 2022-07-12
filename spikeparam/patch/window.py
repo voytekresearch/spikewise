@@ -4,6 +4,7 @@ import numpy as np
 from scipy.signal import find_peaks
 
 
+
 def find_spike_times(sig, thresh_mv, thresh_ms):
     """Find spikes as peaks.
 
