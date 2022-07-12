@@ -19,6 +19,6 @@ def gen_fit_exp(exp_times, exp, params):
     return exp_fit, exp_r2
 
 
-def exp_func(times, exp_amp, exp_lambda, exp_timeshift, exp_const):
+def exp_func(times, exp_amp, exp_lambda, exp_const):
     """Exponential function."""
-    return exp_amp * np.exp(-exp_lambda * (times - exp_timeshift)) + exp_const
+    return exp_amp * np.exp(-exp_lambda * times) + exp_const
