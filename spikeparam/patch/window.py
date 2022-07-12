@@ -30,22 +30,31 @@ def find_spike_times(sig, thresh_mv, thresh_ms):
     return idx_spikes, amp_spikes
 
 
-def window_spike(sig, times, fs, spike_ind, window_length=(10, 10), in_ms=True):
+def window_spike(sig, fs, spike_ind, times=None, window_length=(10, 10), in_ms=True):
     """Isolate a spike from a full signal.
 
     Parameters
     ----------
     sig : 1d array
         Full signal.
-    times : 1d array
-        Time definition.
     fs : float
         Sampling rate, in Hz.
     spike_ind : int
         Index of spike in sig.
         Returned from find_spike_times.
-    window_length : tuple of (float, float)
+    times : 1d array, optional, default: None
+        Time definition.
+    window_length : tuple of (float, float), optional, default: (10, 10)
         Pre and post spike padding.
+    in_ms : bool, optional, default: True
+        Units of window_length.
+
+    Returns
+    -------
+    spike : 1d array
+        Isolated spike.
+    spike_times : 1d array, optional
+        Times of spike. Only returned if times is not None.
     """
 
     n_samples = int(fs / 1000) if in_ms else int(fs)
@@ -59,11 +68,14 @@ def window_spike(sig, times, fs, spike_ind, window_length=(10, 10), in_ms=True):
     window_spike_pre  = (spike_ind-window_pre)
     window_spike_post = (spike_ind+window_post)
 
-    # Get window for times as well
-    spike_times = times[(spike_ind-window_pre):
-                        (spike_ind+window_post)]
-
     # Get data window
     spike = sig[window_spike_pre:window_spike_post]
 
-    return spike, spike_times
+    if times is not None:
+        # Get window for times as well
+        spike_times = times[(spike_ind-window_pre):
+                            (spike_ind+window_post)]
+
+        return spike, spike_times
+
+    return spike
