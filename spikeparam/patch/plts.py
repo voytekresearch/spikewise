@@ -52,12 +52,16 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
 
         for i in inds:
 
+            # Ramp
             start, end = model.indices[i][0], model.indices[i][1]
-            ax.plot(model.times[start:end] * wght, model.fit_ramp[i], color='C1', label=lab_fit, alpha=alpha)
+            ax.plot(model.times[start:end] * wght, model.fit_ramp[i], color='C1',
+                    label=lab_fit, alpha=alpha, ls='--')
             lab_fit = ''
 
+            # Exponential
             start, end = model.indices[i][-2], model.indices[i][-1]
-            ax.plot(model.times[start:end]* wght, model.fit_exp[i], color='C1', label=lab_fit, alpha=alpha)
+            ax.plot(model.times[start:end]* wght, model.fit_exp[i], color='C1',
+                    label=lab_fit, alpha=alpha, ls='--')
 
     # Only plot ramp fit
     elif mode == 'ramp':
@@ -70,7 +74,8 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
             lab_true = ''
 
         for i in inds:
-            ax.plot(_times, model.fit_ramp[i], color='C1', label=lab_fit, alpha=alpha)
+            ax.plot(_times, model.fit_ramp[i], color='C1',
+                    label=lab_fit, alpha=alpha, ls='--')
             lab_fit = ''
 
     # Only plot exp fit
@@ -84,7 +89,8 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
             lab_true = ''
 
         for i in inds:
-            ax.plot(_times, model.fit_exp[i], color='C1', label=lab_fit, alpha=alpha)
+            ax.plot(_times, model.fit_exp[i], color='C1',
+                    label=lab_fit, alpha=alpha, ls='--')
             lab_fit = ''
 
     ax.set_ylabel('Voltage')

@@ -321,3 +321,30 @@ class Spike:
 
         # Plot
         plot(self, inds, mode, in_ms, show_points, ax)
+
+    def plot_summary(self, axes=None):
+        """Plot fit summary.
+
+        Parameters
+        ----------
+        axes : list of ax
+            Three axes to plot full, ramp, and exponential fits on.
+        """
+        if axes is None:
+            fig = plt.figure(figsize=(12, 6), constrained_layout=True)
+
+            spec = fig.add_gridspec(2, 2)
+
+            ax0 = fig.add_subplot(spec[0, :])
+            ax1 = fig.add_subplot(spec[1, 0])
+            ax2 = fig.add_subplot(spec[1, 1])
+
+            axes = [ax0, ax1, ax2]
+
+        self.plot(ax=axes[0])
+        self.plot(mode='ramp', ax=axes[1])
+        self.plot(mode='exp', ax=axes[2])
+
+        axes[0].set_title('Full Fit', size=18)
+        axes[1].set_title('Ramp Fit', size=18)
+        axes[2].set_title('Exponential Fit', size=18)
