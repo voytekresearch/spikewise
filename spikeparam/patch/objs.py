@@ -1,15 +1,16 @@
 """Spike class."""
 
+from functools import partial
+from multiprocessing import Pool, cpu_count
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from spikeparam.patch.gen import gen_fit_ramp, gen_fit_exp
 from spikeparam.patch.window import find_spike_times, window_spike
-from spikeparam.patch.points import control_points
-from spikeparam.patch.utils import create_times
-from spikeparam.patch.features import (
-    compute_ramp_features, compute_decay_features, compute_peak_features
-)
-
+from spikeparam.patch.features import compute_features
+from spikeparam.patch.plts import plot
 
 class Spike:
 
@@ -17,6 +18,7 @@ class Spike:
                  thresh_zscore=40.0, smooth_frac=0.008, poly_order=1,
                  exp_shift_right=2.0, exp_duration=5.0):
 
+        # Settings
         self.window_length = window_length
         self.thresh_mv = thresh_mv
         self.thresh_ms = thresh_ms
@@ -25,69 +27,203 @@ class Spike:
         self.poly_order = poly_order
         self.exp_shift_right = exp_shift_right
         self.exp_duration = exp_duration
+        self.times = None
 
-    def fit(self, times, sig, fs, n_jobs=1):
+        # Results
+        self.spike_inds = None
+        self.indices = None
 
+        self.poly_params = None
+        self.voltage_ramp = None
+        self.inflection_time = None
+        self.inflection_mv = None
+
+        self.peak_width = None
+        self.peak_sharpness = None
+
+        self.exp_params = None
+        self.exp_amp = None
+        self.exp_lambda = None
+        self.exp_const = None
+
+        self.fit_ramp = None
+        self.fit_exp = None
+        self.r_squared_ramp = None
+        self.r_squared_exp = None
+
+
+    def fit(self, sig, fs, gen_fits=True, n_jobs=1, progress=None):
+
+        self.fs = fs
+
+        # Find spikes
         idx_spikes,  _= find_spike_times(sig, self.thresh_mv, self.thresh_ms)
+        self.spike_inds = idx_spikes
 
+        # Initalize arrays
+        self.indices = np.zeros((len(idx_spikes), 7), dtype=int)
+        self.poly_params = np.zeros((len(idx_spikes), self.poly_order + 1))
+
+        self.voltage_ramp = np.zeros(len(idx_spikes))
+        self.inflection_time = np.zeros(len(idx_spikes))
+        self.inflection_mv = np.zeros(len(idx_spikes))
+        self.peak_width = np.zeros(len(idx_spikes))
+        self.peak_sharpness = np.zeros(len(idx_spikes))
+        self.exp_params = np.zeros((len(idx_spikes), 4))
+
+        self.exp_amp = np.zeros(len(idx_spikes))
+        self.exp_lambda = np.zeros(len(idx_spikes))
+        self.exp_const = np.zeros(len(idx_spikes))
+
+        # Get 2d array of spikes
+        for i in range(len(idx_spikes)):
+
+            spike = window_spike(sig, fs, idx_spikes[i],
+                                 window_length=self.window_length)
+
+            if i == 0:
+                self.spikes = np.zeros((len(idx_spikes), len(spike)))
+
+            self.spikes[i] = spike
+
+        # Fit:
+        n_jobs = cpu_count() if n_jobs == -1 else n_jobs
+
+        #   In series
         if n_jobs == 1:
 
-            # Initalize arrays
-            self.indices = np.zeros((len(idx_spikes), 7), dtype=int)
-            self.poly_params = np.zeros((len(idx_spikes), self.poly_order + 1))
+                for i in range(len(idx_spikes)):
 
-            self.voltage_ramp = np.zeros(len(idx_spikes))
-            self.inflection_time = np.zeros(len(idx_spikes))
-            self.inflection_mv = np.zeros(len(idx_spikes))
-            self.peak_width = np.zeros(len(idx_spikes))
-            self.peak_sharpness = np.zeros(len(idx_spikes))
-            self.exp_params = np.zeros((len(idx_spikes), 4))
+                    # Compute features
+                    indices, ramp_params, peak_params, exp_params = \
+                        compute_features(self.spikes[i], fs, None, self.thresh_ms,
+                                         self.thresh_zscore, self.smooth_frac, self.poly_order)
 
-            self.exp_amp = np.zeros(len(idx_spikes))
-            self.exp_lambda = np.zeros(len(idx_spikes))
-            self.exp_timeshift = np.zeros(len(idx_spikes))
-            self.exp_const = np.zeros(len(idx_spikes))
+                    # Unpack results
+                    self.indices[i] = indices
 
+                    self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
+                        self.inflection_mv[i] = ramp_params
 
-            for i in range(len(idx_spikes)):
+                    self.peak_width[i], self.peak_sharpness[i] = peak_params
 
-                # Window
-                spike, spike_times = window_spike(sig, times, fs, idx_spikes[i],
-                                                  window_length=self.window_length)
-                # Control points
-                self.indices[i] = control_points(spike_times, spike, fs, thresh_ms=1,
-                                          thresh_zscore=40., smooth_frac=.008)
+                    self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
 
-                # Unpack indices
-                idx_ramp_start, idx_inflection, idx_rise, \
-                        idx_peak, idx_decay, idx_exp_start, idx_exp_end = self.indices[i]
+        #   In parallel
+        else:
 
-                # Ramp features
-                _ramp_params = compute_ramp_features(
-                        spike_times, spike, fs, idx_ramp_start, idx_inflection, idx_peak)
+            # Partial wrapper func
+            pfunc = partial(compute_features, fs=fs, times=None, thresh_ms=self.thresh_ms,
+                            thresh_zscore=self.thresh_zscore, smooth_frac=self.smooth_frac,
+                            poly_order=self.poly_order)
+
+            # Run mp pool
+            with Pool(processes=n_jobs) as pool:
+
+                mapping = pool.imap(pfunc, self.spikes)
+
+                if progress is None:
+                    results = list(mapping)
+                else:
+                    results = list(progress(mapping, total=len(self.spikes)))
+
+            # Unpack results
+            for i in range(len(results)):
+
+                indices, ramp_params, peak_params, exp_params = results[i]
+
+                self.indices[i] = indices
 
                 self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
-                    self.inflection_mv[i] = _ramp_params
+                    self.inflection_mv[i] = ramp_params
 
-                # Peak features
-                self.peak_width[i], self.peak_sharpness[i] = \
-                    compute_peak_features(spike, fs, idx_decay, idx_peak)
+                self.peak_width[i], self.peak_sharpness[i] = peak_params
 
-                # Exponential decay features
-                exp_params= compute_decay_features(spike_times, spike, idx_exp_start, idx_exp_end)
+                self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
 
-                self.exp_amp[i], self.exp_lambda[i], self.exp_timeshift[i], self.exp_const[i] = exp_params
+        # Generate fits
+        if gen_fits:
+            self.gen_fit()
 
-            # Generate the dataframe
-            self.gen_df()
+        # Generate the dataframe
+        self.gen_df()
+
+
+    def gen_fit(self, ramp=True, exp=True):
+        """Generate arrays for ramp and exponential fits."""
+
+        if self.times is None:
+            self.times = np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)
+
+        for ind in range(len(self.spikes)):
+
+            if ramp:
+                # Ramp
+                start, end = self.indices[ind][0], self.indices[ind][1]
+
+                _times = np.arange(end-start) * 1000 / self.fs
+
+                _fit_ramp, _r2_ramp = gen_fit_ramp(_times, self.spikes[ind][start:end],
+                                                   self.poly_params[ind])
+
+                # Initalize arrays
+                if self.fit_ramp is None:
+                    self.fit_ramp = np.zeros((len(self.spikes), len(_fit_ramp)))
+                    self.r_squared_ramp = np.zeros(len(self.spikes))
+
+                # Store in attr
+                self.fit_ramp[ind] = _fit_ramp
+                self.r_squared_ramp[ind] = _r2_ramp
+
+            if exp:
+                # Exponential decay
+                start, end = self.indices[ind][-2], self.indices[ind][-1]
+
+                _times = np.arange(end-start) * 1000 / self.fs
+
+                _fit_exp, _r2_exp = gen_fit_exp(_times, self.spikes[ind][start:end],
+                                                (self.exp_amp[ind], self.exp_lambda[ind], self.exp_const[ind]))
+
+                # Initalize arrays
+                if self.fit_exp is None:
+                    self.fit_exp = np.zeros((len(self.spikes), len(_fit_exp)))
+                    self.r_squared_exp = np.zeros(len(self.spikes))
+
+                # Store in attr
+                self.fit_exp[ind] = _fit_exp
+                self.r_squared_exp[ind] = _r2_exp
 
 
     def gen_df(self):
+        """Generate feature dataframe."""
 
-        columns = ['voltage_ramp', 'inflection_time', 'inflection_mv', 'peak_width', 'peak_sharpness',
-                   'exp_amp', 'exp_lambda', 'exp_timeshift', 'exp_const']
+        columns = ['voltage_ramp', 'inflection_time', 'inflection_mv', 'peak_width',
+                   'peak_sharpness', 'exp_amp', 'exp_lambda', 'exp_const']
 
-        self.df = pd.DataFrame()
+        self.df_features = pd.DataFrame()
 
         for c in columns:
-            self.df[c] = getattr(self, c)
+            self.df_features[c] = getattr(self, c)
+
+        for _param in ['r_squared_ramp', 'r_squared_exp']:
+            if hasattr(self, _param):
+                self.df_features[_param] = getattr(self, _param)
+
+
+    def plot(self, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
+
+        # Generate fits if needed
+        ramp = False
+        exp = False
+
+        if self.fit_ramp is None and mode in ['full', 'ramp']:
+            ramp = True
+
+        if self.fit_exp is None and mode in ['full', 'exp']:
+            exp = True
+
+        if ramp or exp:
+            self.gen_fit(ramp, exp)
+
+        # Plot
+        plot(self, inds, mode, in_ms, show_points, ax)
