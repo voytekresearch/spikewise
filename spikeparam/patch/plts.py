@@ -37,6 +37,7 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
     elif inds is None:
         inds = range(len(model.spikes))
 
+    # Dynamic alpha
     alpha = 1/(len(inds)**.33)
 
     # Plot full fit
@@ -51,6 +52,9 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
                 _plot_control_points(_times, model.spikes[i], model.indices[i], ax)
 
         for i in inds:
+
+            if i in model.inds_error:
+                continue
 
             # Ramp
             start, end = model.indices[i][0], model.indices[i][1]
@@ -74,6 +78,10 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
             lab_true = ''
 
         for i in inds:
+
+            if i in model.inds_error:
+                continue
+
             ax.plot(_times, model.fit_ramp[i], color='C1',
                     label=lab_fit, alpha=alpha, ls='--')
             lab_fit = ''
@@ -89,6 +97,10 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
             lab_true = ''
 
         for i in inds:
+
+            if i in model.inds_error:
+                continue
+
             ax.plot(_times, model.fit_exp[i], color='C1',
                     label=lab_fit, alpha=alpha, ls='--')
             lab_fit = ''

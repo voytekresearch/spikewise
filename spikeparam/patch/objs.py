@@ -1,5 +1,6 @@
 """Spike class."""
 
+import warnings
 from functools import partial
 from multiprocessing import Pool, cpu_count
 
@@ -21,18 +22,27 @@ class Spike:
     ----------
     window_length : tuple of (float, float), optional, default: (10., 10.)
         Pre and post spike padding.
-    thresh_mv : float
+    thresh_mv : float, optional, default: -10
         Voltage threshold.
-    thresh_ms : float
+        Used in spike detection.
+    thresh_ms : float, optional, default: 1.
         Minimum time between peaks, in ms.
-    thresh_zscore : float, optional, default: 40.
-        Peak z-score threshold.
+        Used in spike detection.
+    pre_peak_ms : tuple of (float, float), optional, default: (-4., -1.)
+        Initial ramp window, relative to the max of the smoothed deriviate.
+        Used to estimated the inflection point.
+    pre_inflection_ms : float, optional, default:1.
+        Time before the inflection point to define the ramp start.
     smooth_frac : float, optional, default: .008
-        Smoothing fraction.
+        Smoothing fraction for the signal's derivative.
+        Used to estimated the inflection point.
     exp_shift_right : float, optional, default: 2.
         Start time, in ms, to exponential start from peak.
     exp_duration : float, optional, default: 5.
         End time, in ms, of the exponential from the (shifted) peak.
+    corr_thresh : float, optional, default: None
+        Correlation coefficient threshold.
+        Removes spikes with low mean correlation to other spikes.
     times : 1d array
         Time definition.
     spike_inds : 1d array
@@ -67,20 +77,29 @@ class Spike:
         Exponential r-squared per spike.
     fs : float
         Sampling rate, in Hz.
+    inds_error : list of ind
+        Spike indices of failed fits.
+    df_features : pandas.DataFrame
+        Waveform features per spike.
     """
     def __init__(self, window_length=(10., 10.), thresh_mv=-10., thresh_ms=1.0,
-                 thresh_zscore=40.0, smooth_frac=0.008, poly_order=1,
-                 exp_shift_right=2.0, exp_duration=5.0):
+                 pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
+                 poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
 
         # Settings
         self.window_length = window_length
         self.thresh_mv = thresh_mv
         self.thresh_ms = thresh_ms
-        self.thresh_zscore = thresh_zscore
+
+        self.pre_peak_ms = pre_peak_ms
+        self.pre_inflection_ms = pre_inflection_ms
         self.smooth_frac = smooth_frac
         self.poly_order = poly_order
+
         self.exp_shift_right = exp_shift_right
         self.exp_duration = exp_duration
+
+        self.corr_thresh = corr_thresh
 
         # Results
         self.times = None
@@ -105,6 +124,10 @@ class Spike:
         self.r_squared_ramp = None
         self.r_squared_exp = None
 
+        self.inds_error = None
+
+        self.df_features = None
+
 
     def fit(self, sig, fs, gen_fits=True, n_jobs=1, progress=None):
         """Fit the 2d spike array.
@@ -126,8 +149,33 @@ class Spike:
         self.fs = fs
 
         # Find spikes
-        idx_spikes,  _= find_spike_times(sig, self.thresh_mv, self.thresh_ms)
+        idx_spikes,  _= find_spike_times(sig, self.thresh_mv, self.thresh_ms * int(fs / 1000))
         self.spike_inds = idx_spikes
+
+        # Get 2d array of spikes
+        for i in range(len(idx_spikes)):
+
+            spike = window_spike(sig, fs, idx_spikes[i],
+                                 window_length=self.window_length)
+
+            if i == 0:
+                self.spikes = np.zeros((len(idx_spikes), len(spike)))
+
+            self.spikes[i] = spike
+
+        del sig
+
+        # Remove outlier spikes
+        if self.corr_thresh is not None:
+
+            corrs = np.corrcoef(self.spikes)
+            corrs = (corrs.sum(axis=0)-1) / (len(corrs)-1)
+
+            inds = np.where(corrs > self.corr_thresh)[0]
+            if len(inds) == 0:
+                raise ValueError('No super-threshold spikes.')
+
+            self.spikes = self.spikes[inds]
 
         # Initalize arrays
         self.indices = np.zeros((len(idx_spikes), 7), dtype=int)
@@ -143,47 +191,50 @@ class Spike:
         self.exp_lambda = np.zeros(len(idx_spikes))
         self.exp_const = np.zeros(len(idx_spikes))
 
-        # Get 2d array of spikes
-        for i in range(len(idx_spikes)):
-
-            spike = window_spike(sig, fs, idx_spikes[i],
-                                 window_length=self.window_length)
-
-            if i == 0:
-                self.spikes = np.zeros((len(idx_spikes), len(spike)))
-
-            self.spikes[i] = spike
+        self.inds_error = []
 
         # Fit:
         n_jobs = cpu_count() if n_jobs == -1 else n_jobs
 
-        #   In series
+        # Collect kwargs
+        kwargs = {
+            'pre_peak_ms': self.pre_peak_ms,
+            'pre_inflection_ms': self.pre_inflection_ms,
+            'smooth_frac' : self.smooth_frac,
+            'poly_order': self.poly_order,
+            'exp_shift_right': self.exp_shift_right,
+            'exp_duration': self.exp_duration
+        }
+
+        # In series
         if n_jobs == 1:
 
-                for i in range(len(idx_spikes)):
+            for i in range(len(idx_spikes)):
 
-                    # Compute features
-                    indices, ramp_params, peak_params, exp_params = \
-                        compute_features(self.spikes[i], fs, self.thresh_ms,
-                                         self.thresh_zscore, self.smooth_frac, self.poly_order)
+                # Compute features
+                indices, ramp_params, peak_params, exp_params = \
+                    _compute_features(self.spikes[i], fs, **kwargs)
 
-                    # Unpack results
+                # Unpack results
+                if np.isnan(indices).any():
+                    warnings.warn(f'Fail fit for spike: {i}')
+                    self.indices[i] = [-999 for i in indices]
+                    self.inds_error.append(i)
+                else:
                     self.indices[i] = indices
 
-                    self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
-                        self.inflection_mv[i] = ramp_params
+                self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
+                    self.inflection_mv[i] = ramp_params
 
-                    self.peak_width[i], self.peak_sharpness[i] = peak_params
+                self.peak_width[i], self.peak_sharpness[i] = peak_params
 
-                    self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
+                self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
 
-        #   In parallel
+        # In parallel
         else:
 
             # Partial wrapper func
-            pfunc = partial(compute_features, fs=fs, thresh_ms=self.thresh_ms,
-                            thresh_zscore=self.thresh_zscore, smooth_frac=self.smooth_frac,
-                            poly_order=self.poly_order)
+            pfunc = partial(_compute_features, fs=fs, **kwargs)
 
             # Run mp pool
             with Pool(processes=n_jobs) as pool:
@@ -200,7 +251,13 @@ class Spike:
 
                 indices, ramp_params, peak_params, exp_params = results[i]
 
-                self.indices[i] = indices
+                # Unpack results
+                if np.isnan(indices).any():
+                    warnings.warn(f'Fail fit for spike: {i}')
+                    self.indices[i] = [-999 for i in indices]
+                    self.inds_error.append(i)
+                else:
+                    self.indices[i] = indices
 
                 self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
                     self.inflection_mv[i] = ramp_params
@@ -208,6 +265,8 @@ class Spike:
                 self.peak_width[i], self.peak_sharpness[i] = peak_params
 
                 self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
+
+
 
         # Generate fits
         if gen_fits:
@@ -229,11 +288,11 @@ class Spike:
         """
 
         if self.times is None:
-            self.times = np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)
+            self.times = np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)[:len(self.spikes[0])]
 
         for ind in range(len(self.spikes)):
 
-            if ramp:
+            if ramp and ind not in self.inds_error:
                 # Ramp
                 start, end = self.indices[ind][0], self.indices[ind][1]
 
@@ -251,7 +310,7 @@ class Spike:
                 self.fit_ramp[ind] = _fit_ramp
                 self.r_squared_ramp[ind] = _r2_ramp
 
-            if exp:
+            if exp and ind not in self.inds_error:
                 # Exponential decay
                 start, end = self.indices[ind][-2], self.indices[ind][-1]
 
@@ -268,6 +327,14 @@ class Spike:
                 # Store in attr
                 self.fit_exp[ind] = _fit_exp
                 self.r_squared_exp[ind] = _r2_exp
+
+        # Fill error fits with nans
+        for ind in self.inds_error:
+
+            self.fit_ramp[ind] = np.nan
+            self.r_squared_ramp[ind] = np.nan
+            self.fit_exp[ind] = np.nan
+            self.r_squared_exp[ind] = np.nan
 
 
     def gen_df(self):
@@ -348,3 +415,26 @@ class Spike:
         axes[0].set_title('Full Fit', size=18)
         axes[1].set_title('Ramp Fit', size=18)
         axes[2].set_title('Exponential Fit', size=18)
+
+
+def _compute_features(spike, fs, **kwargs):
+    """Wrapper function for compute_features."""
+    poly_order = kwargs.pop('poly_order', 1)
+
+    try:
+        indices, ramp_params, peak_params, exp_params = \
+            compute_features(spike, fs, poly_order=poly_order, **kwargs)
+    except:
+
+        indices = [np.nan] * 7
+
+        ramp_params = [
+            [np.nan] * (poly_order + 1),
+            np.nan, np.nan, np.nan
+        ]
+
+        peak_params = [np.nan, np.nan]
+
+        exp_params = [np.nan, np.nan, np.nan]
+
+    return indices, ramp_params, peak_params, exp_params
