@@ -3,11 +3,9 @@
 import numpy as np
 import statsmodels.api as sm
 
-from .window import find_spike_times
 
 
-
-def control_points(spike, fs, thresh_ms=1., thresh_zscore=40.,
+def control_points(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
                    smooth_frac=.008, exp_shift_right=2., exp_duration=5.):
     """Compute spike control points.
 
@@ -17,10 +15,8 @@ def control_points(spike, fs, thresh_ms=1., thresh_zscore=40.,
         Spike waveform.
     fs : float
         Sampling rate, in Hz.
-    thresh_ms : int, optional, default: 1.
-        Minimum miliseconds between successive peaks.
-    thresh_zscore : float, optional, default: 40.
-        Peak z-score threshold.
+    thresh_zscore : float, optional, default: 'auto'.
+        Peak z-score threshold. Auto defaults to half z-score max.
     smooth_frac : float, optional, default: .008
         Smoothing fraction.
     exp_shift_right : float, optional, default: 2.
@@ -44,15 +40,15 @@ def control_points(spike, fs, thresh_ms=1., thresh_zscore=40.,
     """
 
     # Smoothed derivative
-    times = np.arange(0, len(spike)/fs, 1/fs)
+    times = np.arange(0, len(spike)/fs, 1/fs)[:len(spike)]
     _, d_smoothed_spike = diff_spike(times, spike, smooth_frac)
+
+    # Get ramping start and inflection
+    idx_ramp_start, idx_inflection = inflection(d_smoothed_spike, fs,
+                                                pre_peak_ms, pre_inflection_ms)
 
     # Get peak index, assumes array is centered on peak
     idx_peak = len(spike) // 2
-
-    # Get ramping start and inflection
-    idx_ramp_start, idx_inflection = inflection(d_smoothed_spike, fs, thresh_ms,
-                                                thresh_zscore)
 
     # Get peak mid-points
     mid_amp = (spike[idx_inflection] + spike[idx_peak]) / 2
@@ -72,6 +68,7 @@ def control_points(spike, fs, thresh_ms=1., thresh_zscore=40.,
 
     idx_exp_start = idx_peak + decay_curve_shift
     idx_exp_end = idx_exp_start + decay_curve_floor_time
+    idx_exp_end = len(spike) if idx_exp_end > len(spike) else idx_exp_end
 
     # Collect indices
     indices = [
@@ -82,19 +79,19 @@ def control_points(spike, fs, thresh_ms=1., thresh_zscore=40.,
     return indices
 
 
-def inflection(d_smoothed_spike, fs, thresh_ms=1., thresh_zscore=40.):
+def inflection(d_smoothed_spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.):
     """Compute inflection points.
 
     Parameters
     ----------
-    d_smoothed_spike : 1d array
-        Smoothed spike deriviative.
+    spike : 1d array
+        Spike waveform.
     fs : float
         Sampling rate, in Hz.
-    thresh_ms : float, optional, default: 1.
-        Minimum miliseconds between successive peaks.
-    thresh_zscore : float, optional, default: 40.
-        Peak z-score threshold.
+    pre_peak_ms : tuple of (float, float)
+        Time before the peak to estimate linear ramp fit as.
+    pre_inflection_ms : float
+        Time before the inflection point to define the ramp start.
 
     Returns
     -------
@@ -108,28 +105,37 @@ def inflection(d_smoothed_spike, fs, thresh_ms=1., thresh_zscore=40.):
     Z-score threshold for inflection point
     is really high, since it's so low noise.
     """
-
     one_ms = int(fs / 1000)
-    thresh_ms *= one_ms
 
-    # Inflection time
-    #   Get mean and std of first ms of data
-    noise_window = d_smoothed_spike[0:one_ms]
-    noise_mean = np.mean(noise_window)
-    noise_std = np.std(noise_window)
+    # Segment spike
+    xs = np.arange(len(d_smoothed_spike))
 
-    # Z-score spike relative to window above
-    z_data = (d_smoothed_spike-noise_mean) / noise_std
+    # Get peak of derivative
+    mid = len(d_smoothed_spike) // 2
+    ind_peak = np.argmax(d_smoothed_spike[mid-2*one_ms:mid+2*one_ms])
+    ind_peak += mid-2*one_ms
 
-    # Find the peak of the zscored data
-    idx_z_peak, _ = find_spike_times(z_data, thresh_zscore, thresh_ms)
+    # Rising half-max of derivative
+    ind_rise = np.where(d_smoothed_spike[:ind_peak][::-1] <=
+                       (d_smoothed_spike[ind_peak] / 2))[0]
 
-    # Find inflection voltage and time relative to spike peak
-    inflection_time = np.abs(z_data[0:idx_z_peak[0]]-thresh_zscore)
-    idx_inflection = np.argmin(inflection_time)
+    ind_rise = 1 if len(ind_rise) == 0 else ind_rise[0] + 1
 
-    # Get the voltage ramp slope for the 0.5 ms before inflection point
-    idx_ramp_start = idx_inflection - int(0.5 * one_ms) # 0.5 ms before
+    ind_rise = ind_peak - ind_rise
+
+    # Ramp
+    start_ramp = int(ind_peak + (pre_peak_ms[0] * one_ms))
+    end_ramp   = int(ind_peak + (pre_peak_ms[1] * one_ms))
+
+    # Linear fit
+    p0 = np.polyfit(xs[start_ramp:end_ramp], d_smoothed_spike[start_ramp:end_ramp], 1)
+    p1 = np.polyfit(xs[ind_rise:ind_peak], d_smoothed_spike[ind_rise:ind_peak], 1)
+
+    # Take root of poly fits to find intersection
+    idx_inflection = int(np.roots(p0-p1)[0])
+
+    # Get the voltage ramp slope for the N ms before inflection point
+    idx_ramp_start = idx_inflection - int(pre_inflection_ms * one_ms)
 
     return idx_ramp_start, idx_inflection
 

@@ -9,8 +9,8 @@ from .gen import exp_func
 
 
 
-def compute_features(spike, fs, thresh_ms=1, thresh_zscore=40., smooth_frac=.008,
-                     poly_order=1, exp_shift_right=2.0, exp_duration=5.0):
+def compute_features(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
+                     smooth_frac=.008, poly_order=1, exp_shift_right=2.0, exp_duration=5.0):
     """Compute features.
 
     Parameters
@@ -19,10 +19,10 @@ def compute_features(spike, fs, thresh_ms=1, thresh_zscore=40., smooth_frac=.008
         Spike waveform.
     fs : float
         Sampling rate, in Hz.
-    thresh_ms : int, optional, default: 1.
-        Minimum miliseconds between successive peaks.
-    thresh_zscore : float, optional, default: 40.
-        Peak z-score threshold.
+    pre_peak_ms : tuple of (float, float)
+        Time before the peak to estimate linear ramp fit as.
+    pre_inflection_ms : float
+        Time before the inflection point to define the ramp start.
     smooth_frac : float, optional, default: .008
         Smoothing fraction.
     exp_shift_right : float, optional, default: 2.
@@ -43,8 +43,8 @@ def compute_features(spike, fs, thresh_ms=1, thresh_zscore=40., smooth_frac=.008
         Exponential decay parameters.
     """
     # Control points
-    indices = control_points(spike, fs, thresh_ms, thresh_zscore,
-                             smooth_frac, exp_shift_right, exp_duration)
+    indices = control_points(spike, fs, pre_peak_ms, pre_inflection_ms,
+                            smooth_frac, exp_shift_right, exp_duration)
 
     # Unpack indices
     idx_ramp_start, idx_inflection, idx_rise, \
