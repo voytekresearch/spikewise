@@ -170,7 +170,7 @@ def compute_decay_features(spike, fs, idx_exp_start, idx_exp_end):
     p0 = np.array([50, 1, -60], dtype=np.float64)
 
     # Reasonable bounds
-    bounds = ([0, 0, -100], [1000, 3, 50])
+    bounds = ([0, 0, -100], [1000, 10, 50])
 
     # Fit
     exp_amp, exp_lambda, exp_const = \
