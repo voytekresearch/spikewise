@@ -103,11 +103,14 @@ class Spike:
 
         self.corr_thresh = corr_thresh
 
-        # Results
+        # Arrays
+        self.spikes = None
         self.times = None
         self.spike_inds = None
         self.indices = None
+        self.alt_windows = None
 
+        # Parameters
         self.poly_params = None
         self.voltage_ramp = None
         self.inflection_time = None
@@ -120,14 +123,17 @@ class Spike:
         self.exp_lambda = None
         self.exp_const = None
 
+        # Fits
         self.fit_ramp = None
         self.fit_exp = None
 
         self.r_squared_ramp = None
         self.r_squared_exp = None
 
+        # Error
         self.inds_error = None
 
+        # Dataframes
         self.df_features = None
         self.df_indices = None
 
@@ -278,6 +284,76 @@ class Spike:
         # Generate sample indices
         if gen_indices:
             self.gen_df_indices()
+
+
+    def alt(self, sig, fs, func, func_args=None, func_kwargs=None,
+            param_keys=None, ref='peak', window_length=(10, 0), n_jobs=1, progress=None):
+
+        # Window the alternative signal
+        alt_windows = window_spike(sig, fs, self.df_indices[ref].values,
+                                   window_length=window_length)
+
+        # Handle args and kwargs
+        if func_args is None:
+            func_args = ()
+        elif not isinstance(func_args, (tuple, list)):
+            func_args = [func_args]
+
+        if func_kwargs is None:
+            func_kwargs = {}
+
+        n_jobs = cpu_count() if n_jobs == -1 else n_jobs
+
+        # In series
+        if n_jobs == 1:
+
+            for ind in range(len(alt_windows)):
+
+                _params =  _compute_alt_features(fs, func, alt_windows[ind],
+                                                 *func_args, **func_kwargs)
+
+                if ind == 0:
+                    params = np.zeros((len(alt_windows), len(_params)), dtype='object')
+
+                if ind == 0 and param_keys is None:
+                    param_keys = ['alt_' + str(i) for i in range(len(_params))]
+
+                params[ind] = _params
+
+            # Add to dataframe
+            for ind in range(len(param_keys)):
+                self.df_features[param_keys[ind]] = params[:, ind].astype(type(params[0, ind]))
+
+        # In parallel
+        else:
+
+            # Run mp pool
+            with Pool(processes=n_jobs) as pool:
+
+                pfunc = partial(_compute_alt_features, fs, func, *func_args, **func_kwargs)
+
+                mapping = pool.imap(pfunc, alt_windows)
+
+                if progress is None:
+                    results = list(mapping)
+                else:
+                    results = list(progress(mapping, total=len(alt_windows)))
+
+            # Transpose results list
+            params = [np.array(i) for i in zip(*results)]
+
+            # Add to dataframe
+            for ind in range(len(param_keys)):
+                self.df_features[param_keys[ind]] = params[ind]
+
+        del params
+
+        # Track windows as an attribute
+        if self.alt_windows is None:
+            self.alt_windows = alt_windows
+        elif isinstance(self.alt_windows, np.ndarray):
+            self.alt_windows = [self.alt_windows]
+            self.alt_windows.append(alt_windows)
 
 
     def gen_fit(self, ramp=True, exp=True):
@@ -457,3 +533,9 @@ def _compute_features(spike, fs, **kwargs):
         exp_params = [np.nan, np.nan, np.nan]
 
     return indices, ramp_params, peak_params, exp_params
+
+
+def _compute_alt_features(fs, func, sig, *args, **kwargs):
+    """Warpper function for computing alternative features."""
+
+    return func(sig, fs, *args, **kwargs)
