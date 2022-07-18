@@ -81,6 +81,8 @@ class Spike:
         Spike indices of failed fits.
     df_features : pandas.DataFrame
         Waveform features per spike.
+    df_indices : pandas.DataFrame
+        Indices of control points per spike.
     """
     def __init__(self, window_length=(10., 10.), thresh_mv=-10., thresh_ms=1.0,
                  pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
@@ -127,9 +129,10 @@ class Spike:
         self.inds_error = None
 
         self.df_features = None
+        self.df_indices = None
 
 
-    def fit(self, sig, fs, gen_fits=True, n_jobs=1, progress=None):
+    def fit(self, sig, fs, gen_fits=True, gen_indices=True, n_jobs=1, progress=None):
         """Fit the 2d spike array.
 
         Parameters
@@ -140,6 +143,8 @@ class Spike:
             Sampling rate, in Hz.
         gen_fit : bool, optional, default: True
             Generate fit arrays and r-squared values if True.
+        gen_indices : bool, optional, default: True
+            Generate sample indices of spike control points if True.
         n_jobs : int, optional, 1
             Number of jobs to run in parallel.
             -1 default to cpu_count().
@@ -153,15 +158,8 @@ class Spike:
         self.spike_inds = idx_spikes
 
         # Get 2d array of spikes
-        for i in range(len(idx_spikes)):
-
-            spike = window_spike(sig, fs, idx_spikes[i],
-                                 window_length=self.window_length)
-
-            if i == 0:
-                self.spikes = np.zeros((len(idx_spikes), len(spike)))
-
-            self.spikes[i] = spike
+        self.spikes = window_spike(sig, fs, idx_spikes,
+                                   window_length=self.window_length)
 
         del sig
 
@@ -275,7 +273,11 @@ class Spike:
             self.gen_fit()
 
         # Generate the dataframe
-        self.gen_df()
+        self.gen_df_features()
+
+        # Generate sample indices
+        if gen_indices:
+            self.gen_df_indices()
 
 
     def gen_fit(self, ramp=True, exp=True):
@@ -339,7 +341,7 @@ class Spike:
             self.r_squared_exp[ind] = np.nan
 
 
-    def gen_df(self):
+    def gen_df_features(self):
         """Generate feature dataframe."""
 
         columns = ['voltage_ramp', 'inflection_time', 'inflection_mv', 'peak_width',
@@ -353,6 +355,20 @@ class Spike:
         for _param in ['r_squared_ramp', 'r_squared_exp']:
             if hasattr(self, _param):
                 self.df_features[_param] = getattr(self, _param)
+
+
+    def gen_df_indices(self):
+        """Generate sample indices dataframe."""
+
+        columns  = ['ramp_start', 'inflection', 'rise',
+                    'peak', 'decay', 'exp_start', 'exp_end']
+
+        ref_inds = self.indices[:, 3]
+
+        self.df_indices = pd.DataFrame()
+
+        for col, inds in zip(columns, self.indices.T):
+            self.df_indices[col] = self.spike_inds + (inds - ref_inds)
 
 
     def plot(self, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
@@ -390,6 +406,7 @@ class Spike:
 
         # Plot
         plot(self, inds, mode, in_ms, show_points, ax)
+
 
     def plot_summary(self, axes=None):
         """Plot fit summary.

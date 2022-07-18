@@ -31,7 +31,7 @@ def find_spike_times(sig, thresh_mv, thresh_ms):
     return idx_spikes, amp_spikes
 
 
-def window_spike(sig, fs, spike_ind, times=None, window_length=(10., 10.), in_ms=True):
+def window_spike(sig, fs, spike_inds, times=None, window_length=(10., 10.), in_ms=True):
     """Isolate a spike from a full signal.
 
     Parameters
@@ -40,7 +40,7 @@ def window_spike(sig, fs, spike_ind, times=None, window_length=(10., 10.), in_ms
         Full signal.
     fs : float
         Sampling rate, in Hz.
-    spike_ind : int
+    spike_ind : int or 1d array of int
         Index of spike in sig.
         Returned from find_spike_times.
     times : 1d array, optional, default: None
@@ -52,31 +52,62 @@ def window_spike(sig, fs, spike_ind, times=None, window_length=(10., 10.), in_ms
 
     Returns
     -------
-    spike : 1d array
-        Isolated spike.
-    spike_times : 1d array, optional
-        Times of spike. Only returned if times is not None.
+    spikes : 1d or 2d array
+        Isolated spikes.
+    spike_times : 1d or 2d array, optional
+        Times of spikes. Only returned if times is not None.
+
+    Notes
+    -----
+    The dimensions of spikes and spike_times will match the spike_inds parameter.
     """
 
-    n_samples = int(fs / 1000) if in_ms else int(fs)
+    int_input = False
+    if isinstance(spike_inds, int):
+        spike_inds = [spike_inds]
+        int_input = True
 
-    # Get windows around spikes
-    #   create window indices
-    window_pre = int(n_samples * window_length[0])
-    window_post = int(n_samples * window_length[1])
+    for ind in range(len(spike_inds)):
 
-    # Get window
-    window_spike_pre  = (spike_ind-window_pre)
-    window_spike_post = (spike_ind+window_post)
+        n_samples = int(fs / 1000) if in_ms else int(fs)
 
-    # Get data window
-    spike = sig[window_spike_pre:window_spike_post]
+        # Get windows around spikes
+        #   create window indices
+        window_pre = int(n_samples * window_length[0])
+        window_post = int(n_samples * window_length[1])
+
+        # Get window
+        window_spike_pre  = (spike_inds[ind]-window_pre)
+        window_spike_post = (spike_inds[ind]+window_post)
+
+        # Get data window
+        _spike = sig[window_spike_pre:window_spike_post]
+
+        if times is not None:
+            # Get window for times as well
+            _spike_times = times[(spike_inds[ind]-window_pre):
+                                 (spike_inds[ind]+window_post)]
+
+        # Return early if spike_times is an int
+        if int_input and times is not None:
+            return _spike, _spike_times
+        elif int_input:
+            return _spike
+
+        # Initialize arrays
+        if ind == 0:
+            spikes = np.zeros((len(spike_inds), len(_spike)))
+
+        if ind == 0 and times is not None:
+            spike_times = np.zeros((len(spike_inds), len(_spike_times)))
+
+        # Set arrays
+        spikes[ind] = _spike
+
+        if times is not None:
+            spike_times[ind] = _spike_times
 
     if times is not None:
-        # Get window for times as well
-        spike_times = times[(spike_ind-window_pre):
-                            (spike_ind+window_post)]
+        return spikes, spike_times
 
-        return spike, spike_times
-
-    return spike
+    return spikes
