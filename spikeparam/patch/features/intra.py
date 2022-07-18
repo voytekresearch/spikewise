@@ -1,11 +1,10 @@
-"""Spike features."""
+"""Within spike features."""
 
 import numpy as np
 from scipy.optimize import curve_fit
 
-from .window import window_spike
-from .points import control_points
-from .gen import exp_func
+from ..points import control_points
+from ..gen import exp_func
 
 
 

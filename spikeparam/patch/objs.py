@@ -10,7 +10,7 @@ import pandas as pd
 
 from spikeparam.patch.gen import gen_fit_ramp, gen_fit_exp
 from spikeparam.patch.window import find_spike_times, window_spike
-from spikeparam.patch.features import compute_features
+from spikeparam.patch.features import compute_features, compute_isi
 from spikeparam.patch.plts import plot
 
 
@@ -267,6 +267,8 @@ class Spike:
                 self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
 
 
+        # Compute inter spike features
+        self.isi = compute_isi(self.spike_inds, self.fs)
 
         # Generate fits
         if gen_fits:
@@ -341,7 +343,7 @@ class Spike:
         """Generate feature dataframe."""
 
         columns = ['voltage_ramp', 'inflection_time', 'inflection_mv', 'peak_width',
-                   'peak_sharpness', 'exp_amp', 'exp_lambda', 'exp_const']
+                   'peak_sharpness', 'exp_amp', 'exp_lambda', 'exp_const', 'isi']
 
         self.df_features = pd.DataFrame()
 

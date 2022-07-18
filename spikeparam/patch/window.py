@@ -31,7 +31,7 @@ def find_spike_times(sig, thresh_mv, thresh_ms):
     return idx_spikes, amp_spikes
 
 
-def window_spike(sig, fs, spike_ind, times=None, window_length=(10, 10), in_ms=True):
+def window_spike(sig, fs, spike_ind, times=None, window_length=(10., 10.), in_ms=True):
     """Isolate a spike from a full signal.
 
     Parameters
