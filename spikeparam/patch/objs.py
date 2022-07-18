@@ -287,8 +287,30 @@ class Spike:
 
 
     def alt(self, sig, fs, func, func_args=None, func_kwargs=None,
-            param_keys=None, ref='peak', window_length=(10, 0), n_jobs=1, progress=None):
+            param_keys=None, ref='peak', window_length=(10., 0.), n_jobs=1, progress=None):
+        """Compute features for an alternative/associated signal.
 
+        Parameters
+        ----------
+        sig : 1d array
+            Alternaitve voltage time series.
+        fs : float
+            Alternaitve sampling rate, in Hz.
+        func : function
+            Computes features for each window. Each object returned should be {float, int, str}.
+        param_keys : list of str
+            Names of features returned from func.
+            These names become columns appended to df_features.
+        ref : {'ramp_start', 'inflection', 'rise', 'peak', 'decay', 'exp_start', 'exp_end'}
+            Reference used to create windows.
+        window_length : tuple of (float, float)
+            Number of milliseconds before and after the reference point to include.
+        n_jobs : int, optional, 1
+            Number of jobs to run in parallel.
+            -1 default to cpu_count().
+        progress : {tqdm.tqdm, tqdm.notebook.tqdm}
+            Progress bar.
+        """
         # Window the alternative signal
         alt_windows = window_spike(sig, fs, self.df_indices[ref].values,
                                    window_length=window_length)
