@@ -31,8 +31,8 @@ class SpikeGroup(Spike):
         self.corr_thresh = corr_thresh
 
 
-    def fit(self, sigs, fs, reader=None, gen_fits=True, gen_indices=True,
-            low_mem=False, n_jobs=1, progress=None):
+    def fit(self, sigs, fs, reader=None, peak_inds=None, gen_fits=True,
+            gen_indices=True, low_mem=False, n_jobs=1, progress=None):
         """Fit the 2d spike array.
 
         Parameters
@@ -41,6 +41,13 @@ class SpikeGroup(Spike):
             Voltage time series.
         fs : float
             Sampling rate, in Hz.
+        reader : function, optional, default: None
+            Accepts sigs as the sole positional arguement and returns
+            a 1d array.
+        peak_inds : int or 1d array, optional, default: None
+            Location of spike peaks, in samples. Bypasses spike detection.
+            Use an int if the peak of the spike is in the same location.
+            Use a 1d array for unique locations.
         gen_fit : bool, optional, default: True
             Generate fit arrays and r-squared values if True.
         gen_indices : bool, optional, default: True
@@ -62,20 +69,33 @@ class SpikeGroup(Spike):
 
         spikes = []
 
+        # Tile peak indices
+        if isinstance(peak_inds, int):
+            peak_inds = np.tile(peak_inds, n_sigs)
+
         for ind in range(n_sigs):
 
             # Read in signal
             if reader is not None:
                 sig = reader(sigs[ind])
-
-            # Find spikes
-            idx_spikes,  _= find_spike_times(sig, self.thresh_amp, self.thresh_ms * int(fs / 1000))
-
-            if len(idx_spikes) == 0:
-                warnings.warn('No spikes detected.')
-                self.spike_inds.append(None)
             else:
-                self.spike_inds.append(idx_spikes)
+                sig = sigs[ind]
+
+
+            if peak_inds is None:
+                # Find spikes
+                idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
+                                                 self.thresh_ms * int(fs / 1000))
+
+                if len(idx_spikes) == 0:
+                    warnings.warn('No spikes detected.')
+                    self.spike_inds.append(None)
+                else:
+                    self.spike_inds.append(idx_spikes)
+
+            else:
+                # Spike peaks are pre-computed
+                self.spike_inds.append(peak_inds[ind])
 
             # Non-low memory mode:
             #   Store arrays to list, and then vstack them
@@ -86,7 +106,10 @@ class SpikeGroup(Spike):
                 )
 
         # Infer number of spikes
-        self.n_spikes = sum([len(s) for s in self.spike_inds if s is not None])
+        if peak_inds is None:
+            self.n_spikes = sum([len(s) for s in self.spike_inds if s is not None])
+        else:
+            self.n_spikes = len(peak_inds)
 
         # Stack arrays
         if not low_mem:
@@ -118,24 +141,27 @@ class SpikeGroup(Spike):
         self.group = np.zeros(self.n_spikes, dtype=int)
 
         # Drop None spikes inds and track groups
-        spike_inds = np.zeros(self.n_spikes, dtype=int)
+        if peak_inds is None:
 
-        pos = 0
-        group = 0
+            spike_inds = np.zeros(self.n_spikes, dtype=int)
 
-        for inds in self.spike_inds:
+            pos = 0
+            group = 0
 
-            if inds is None:
-                continue
+            for inds in self.spike_inds:
 
-            spike_inds[pos:pos+len(inds)] = inds
+                if inds is None:
+                    continue
 
-            self.group[pos:pos+len(inds)] = group
+                spike_inds[pos:pos+len(inds)] = inds
+                self.group[pos:pos+len(inds)] = group
 
-            pos += len(inds)
-            group += 1
+                pos += len(inds)
+                group += 1
 
-        self.spike_inds = spike_inds
+            self.spike_inds = spike_inds
+        else:
+            self.spike_inds = np.array(self.spike_inds)
 
         # Call super's fit method
-        super().fit(None, fs, gen_fits, gen_indices, True, n_jobs=n_jobs, progress=progress)
+        super().fit(None, fs, None, gen_fits, gen_indices, True, n_jobs=n_jobs, progress=progress)

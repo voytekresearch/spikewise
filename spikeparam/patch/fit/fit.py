@@ -147,8 +147,8 @@ class Spike:
         self.queue = None
 
 
-    def fit(self, sig, fs, gen_fits=True, gen_indices=True, preload=False,
-            n_jobs=1, progress=None):
+    def fit(self, sig, fs, peak_inds=None, gen_fits=True,
+             gen_indices=True, preload=False, n_jobs=1, progress=None):
         """Fit the 2d spike array.
 
         Parameters
@@ -157,6 +157,8 @@ class Spike:
             Voltage time series.
         fs : float
             Sampling rate, in Hz.
+        peak_inds : int or 1d array, optional, default: None
+            Location of spike peaks, in samples. Bypasses spike detection.
         gen_fit : bool, optional, default: True
             Generate fit arrays and r-squared values if True.
         gen_indices : bool, optional, default: True
@@ -174,8 +176,11 @@ class Spike:
 
         if not preload:
             # Find spikes
-            idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
-                                             self.thresh_ms * int(fs / 1000))
+            if peak_inds is None:
+                idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
+                                                self.thresh_ms * int(fs / 1000))
+            elif isinstance(peak_inds, (int, np.int64)):
+                idx_spikes = np.array([peak_inds])
 
             if len(idx_spikes) == 0:
                 warnings.warn('No spikes detected.')
