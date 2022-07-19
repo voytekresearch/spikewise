@@ -25,7 +25,7 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
     """
     # Plot
     if ax is None:
-        fig, ax = plt.subplots(figsize=(14, 4))
+        _, ax = plt.subplots(figsize=(14, 4))
 
     wght = 1000 if in_ms else 1
 
@@ -41,10 +41,12 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
     alpha = 1/(len(inds)**.33)
 
     # Plot full fit
+    _times = model.times * wght
+
     if mode == 'full':
 
         for i in inds:
-            _times = model.times * wght
+
             ax.plot(_times, model.spikes[i], color='C0', label=lab_true, alpha=alpha)
             lab_true = ''
 
@@ -58,23 +60,21 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
 
             # Ramp
             start, end = model.indices[i][0], model.indices[i][1]
-            ax.plot(model.times[start:end] * wght, model.fit_ramp[i], color='C1',
+            ax.plot(_times[start:end], model.fit_ramp[i], color='C1',
                     label=lab_fit, alpha=alpha, ls='--')
             lab_fit = ''
 
             # Exponential
             start, end = model.indices[i][-2], model.indices[i][-1]
-            ax.plot(model.times[start:end]* wght, model.fit_exp[i], color='C1',
+            ax.plot(_times[start:end], model.fit_exp[i], color='C1',
                     label=lab_fit, alpha=alpha, ls='--')
 
     # Only plot ramp fit
     elif mode == 'ramp':
 
-        _times = np.arange(len(model.fit_ramp[0])) * wght / model.fs
-
         for i in inds:
             start, end = model.indices[i][0], model.indices[i][1]
-            ax.plot(_times, model.spikes[i][start:end], color='C0', label=lab_true, alpha=alpha)
+            ax.plot(_times[start:end], model.spikes[i][start:end], color='C0', label=lab_true, alpha=alpha)
             lab_true = ''
 
         for i in inds:
@@ -82,18 +82,16 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
             if i in model.inds_error:
                 continue
 
-            ax.plot(_times, model.fit_ramp[i], color='C1',
+            ax.plot(_times[start:end], model.fit_ramp[i], color='C1',
                     label=lab_fit, alpha=alpha, ls='--')
             lab_fit = ''
 
     # Only plot exp fit
     elif mode == 'exp':
 
-        _times = np.arange(len(model.fit_exp[0])) * wght / model.fs
-
         for i in inds:
             start, end = model.indices[i][-2], model.indices[i][-1]
-            ax.plot(_times, model.spikes[i][start:end], color='C0', label=lab_true, alpha=alpha)
+            ax.plot(_times[start:end], model.spikes[i][start:end], color='C0', label=lab_true, alpha=alpha)
             lab_true = ''
 
         for i in inds:
@@ -101,7 +99,7 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
             if i in model.inds_error:
                 continue
 
-            ax.plot(_times, model.fit_exp[i], color='C1',
+            ax.plot(_times[start:end], model.fit_exp[i], color='C1',
                     label=lab_fit, alpha=alpha, ls='--')
             lab_fit = ''
 

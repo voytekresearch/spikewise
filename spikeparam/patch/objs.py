@@ -398,6 +398,7 @@ class Spike:
 
         if self.times is None:
             self.times = np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)[:len(self.spikes[0])]
+            self.times -= self.times.mean()
 
         for ind in range(len(self.spikes)):
 
