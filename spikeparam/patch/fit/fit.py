@@ -83,6 +83,8 @@ class Spike:
         Waveform features per spike.
     df_indices : pandas.DataFrame
         Indices of control points per spike.
+    queue : list
+        Contains args/kwargs to pass to .alt after .fit.
     """
     def __init__(self, window_length=(10., 10.), thresh_amp=-10., thresh_ms=1.0,
                  pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
@@ -136,6 +138,9 @@ class Spike:
         # Dataframes
         self.df_features = None
         self.df_indices = None
+
+        # Alt
+        self.queue = None
 
 
     def fit(self, sig, fs, gen_fits=True, gen_indices=True, n_jobs=1, progress=None):
@@ -292,9 +297,18 @@ class Spike:
         if gen_indices:
             self.gen_df_indices()
 
+        # Run alts
+        if self.queue is not None:
 
-    def alt(self, sig, fs, func, func_args=None, func_kwargs=None,
-            param_keys=None, ref='peak', window_length=(10., 0.), n_jobs=1, progress=None):
+            for locs in self.queue:
+
+                args = [locs[k] for k in locs if k in ['sig', 'fs', 'func']]
+                kwargs =  {k:locs[k] for k in locs if k not in ['self', 'sig', 'fs', 'func']}
+                self.alt(*args, **kwargs)
+
+
+    def alt(self, sig, fs, func, func_args=None, func_kwargs=None, param_keys=None,
+            ref='peak', window_length=(10., 0.), n_jobs=1, progress=None, queue=False):
         """Compute features for an alternative/associated signal.
 
         Parameters
@@ -317,7 +331,21 @@ class Spike:
             -1 default to cpu_count().
         progress : {tqdm.tqdm, tqdm.notebook.tqdm}
             Progress bar.
+        queue : bool, optional, default: False
+            Queues method call to be executed when .fit is called.
         """
+
+        # Queue call to be executed on .fit
+        if queue:
+            self.queue = [] if self.queue is None else self.queue
+
+            _queue = {k: v for k, v in locals().items() if k != 'self'}
+            _queue['queue'] = False
+
+            self.queue.append(_queue)
+
+            return
+
         # Window the alternative signal
         alt_windows = window_spike(sig, fs, self.df_indices[ref].values,
                                    window_length=window_length)
