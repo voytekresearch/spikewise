@@ -22,7 +22,7 @@ class Spike:
     ----------
     window_length : tuple of (float, float), optional, default: (10., 10.)
         Pre and post spike padding.
-    thresh_mv : float, optional, default: -10
+    thresh_amp : float, optional, default: -10
         Voltage threshold.
         Used in spike detection.
     thresh_ms : float, optional, default: 1.
@@ -84,13 +84,13 @@ class Spike:
     df_indices : pandas.DataFrame
         Indices of control points per spike.
     """
-    def __init__(self, window_length=(10., 10.), thresh_mv=-10., thresh_ms=1.0,
+    def __init__(self, window_length=(10., 10.), thresh_amp=-10., thresh_ms=1.0,
                  pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
                  poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
 
         # Settings
         self.window_length = window_length
-        self.thresh_mv = thresh_mv
+        self.thresh_amp = thresh_amp
         self.thresh_ms = thresh_ms
 
         self.pre_peak_ms = pre_peak_ms
@@ -160,7 +160,7 @@ class Spike:
         self.fs = fs
 
         # Find spikes
-        idx_spikes,  _= find_spike_times(sig, self.thresh_mv, self.thresh_ms * int(fs / 1000))
+        idx_spikes,  _= find_spike_times(sig, self.thresh_amp, self.thresh_ms * int(fs / 1000))
 
         if len(idx_spikes) == 0:
             warnings.warn('No spikes detected.')

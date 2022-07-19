@@ -5,14 +5,14 @@ from scipy.signal import find_peaks
 
 
 
-def find_spike_times(sig, thresh_mv, thresh_ms):
+def find_spike_times(sig, thresh_amp, thresh_ms):
     """Find spikes as peaks.
 
     Parameters
     ----------
     sig : 1d array
         Full signal.
-    thresh_mv : float
+    thresh_amp : float
         Voltage threshold.
     thresh_ms : float
         Minimum time between peaks, in ms.
@@ -24,7 +24,7 @@ def find_spike_times(sig, thresh_mv, thresh_ms):
     amp_spikes : 1d array
         Amplitude of spikes.
     """
-    peaks = find_peaks(sig, height=thresh_mv, distance=thresh_ms)
+    peaks = find_peaks(sig, height=thresh_amp, distance=thresh_ms)
     idx_spikes = peaks[0] # spike indices
     amp_spikes = peaks[1]['peak_heights'] # spike amplitudes
 
