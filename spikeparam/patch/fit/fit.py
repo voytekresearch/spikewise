@@ -586,7 +586,7 @@ def _compute_features(spike, fs, **kwargs):
             np.nan, np.nan, np.nan
         ]
 
-        peak_params = [np.nan, np.nan]
+        peak_params = [np.nan, np.nan, np.nan]
 
         exp_params = [np.nan, np.nan, np.nan]
 
