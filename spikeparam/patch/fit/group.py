@@ -1,151 +1,141 @@
-"""Group fitting."""
-
 import warnings
-from copy import copy
-from functools import partial
 
-from multiprocessing import Pool, cpu_count
-
-import pandas as pd
 import numpy as np
 
-from spikeparam.patch.fit.fit import Spike
+from spikeparam.patch.window import find_spike_times, window_spike
+from spikeparam.patch.fit import Spike
 
 
-
-
-class SpikeGroup:
+class SpikeGroup(Spike):
 
     def __init__(self, window_length=(10., 10.), thresh_amp=-10., thresh_ms=1.0,
                  pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
                  poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
 
+        # Initalize super class
+        super().__init__(self)
+
         # Settings
         self.window_length = window_length
         self.thresh_amp = thresh_amp
         self.thresh_ms = thresh_ms
+
         self.pre_peak_ms = pre_peak_ms
         self.pre_inflection_ms = pre_inflection_ms
         self.smooth_frac = smooth_frac
         self.poly_order = poly_order
+
         self.exp_shift_right = exp_shift_right
         self.exp_duration = exp_duration
+
         self.corr_thresh = corr_thresh
 
-        # Results
-        self.spikes = None
-        self.times = None
-        self.indices = None
-        self.inds_error = None
-        self.fit_ramp = None
-        self.fit_exp = None
 
-    def fit(self, sigs, fs, reader=None, gen_fits=True, gen_indices=True, verbose=False,
-            n_jobs=1, progress=None):
-        """Fit 2d signals.
+    def fit(self, sigs, fs, reader=None, gen_fits=True, gen_indices=True,
+            low_mem=False, n_jobs=1, progress=None):
+        """Fit the 2d spike array.
+
+        Parameters
+        ----------
+        sigs : 2d array
+            Voltage time series.
+        fs : float
+            Sampling rate, in Hz.
+        gen_fit : bool, optional, default: True
+            Generate fit arrays and r-squared values if True.
+        gen_indices : bool, optional, default: True
+            Generate sample indices of spike control points if True.
+        low_mem : bool, optional, default: False
+            Lowers memory usage at cost of increased runtime from
+            repeat storage access.
+        n_jobs : int, optional, 1
+            Number of jobs to run in parallel.
+            -1 default to cpu_count().
+        progress : {tqdm.tqdm, tqdm.notebook.tqdm}
+            Progress bar.
         """
 
-        # Initalize
-        base_model = Spike(
-            self.window_length, self.thresh_amp, self.thresh_ms,
-            self.pre_peak_ms, self.pre_inflection_ms, self.smooth_frac,
-            self.poly_order, self.exp_shift_right, self.exp_duration, self.corr_thresh
-        )
+        # Infer required shape
+        n_sigs = len(sigs)
 
+        self.spike_inds = []
 
-        n_jobs = cpu_count() if n_jobs == -1 else n_jobs
+        spikes = []
 
-        if n_jobs == 1:
-            # To-Do
-            pass
-        else:
+        for ind in range(n_sigs):
 
-            with Pool(processes=n_jobs) as pool:
+            # Read in signal
+            if reader is not None:
+                sig = reader(sigs[ind])
 
-                mapping = pool.imap(
-                    partial(_fit, model=base_model, fs=fs, reader=reader,
-                            gen_fits=gen_fits, gen_indices=gen_indices, verbose=self.verbose),
-                    sigs
+            # Find spikes
+            idx_spikes,  _= find_spike_times(sig, self.thresh_amp, self.thresh_ms * int(fs / 1000))
+
+            if len(idx_spikes) == 0:
+                warnings.warn('No spikes detected.')
+                self.spike_inds.append(None)
+            else:
+                self.spike_inds.append(idx_spikes)
+
+            # Non-low memory mode:
+            #   Store arrays to list, and then vstack them
+            if not low_mem and self.spike_inds[-1] is not None:
+                spikes.append(
+                    window_spike(sig, fs, self.spike_inds[ind],
+                                 window_length=self.window_length)
                 )
 
-                if progress is not None:
-                    results = list(progress(mapping, total=len(sigs)))
-                else:
-                    results = list(mapping)
+        # Infer number of spikes
+        self.n_spikes = sum([len(s) for s in self.spike_inds if s is not None])
 
-            self.results = results
+        # Stack arrays
+        if not low_mem:
+            self.spikes = np.vstack(spikes)
 
-            self.df_features = pd.concat(
-                [r.df_features for r in results if r.df_features is not None]
-            )
+        # Low-memory routine
+        if low_mem:
 
-            # 2d array of spikes
-            for r in results:
-                if r.spikes is not None and self.spikes is None:
-                    self.spikes = r.spikes
-                elif r.spikes is not None:
-                    self.spikes = np.vstack((self.spikes, r.spikes))
+            pos = 0
+            for ind in range(n_sigs):
 
-            # Spike times
-            for r in results:
-                if r.df_features is not None and self.times is None:
-                    self.times = r.times
-                    break
+                if self.spike_inds[ind] is None:
+                    continue
 
+                if reader is not None:
+                    sig = reader(sigs[ind])
 
-            # Combine results
-            inds_error = []
-            i=0
+                spikes = window_spike(sig, fs, self.spike_inds[ind],
+                                      window_length=self.window_length)
 
-            for r in results:
-                if r.indices is not None:
+                if self.spikes is None:
+                    self.spikes = np.zeros((self.n_spikes, len(spikes[0])))
 
-                    # Sample indices
-                    if self.indices is None:
-                        self.indices = r.indices
-                    else:
-                        self.indices = np.vstack((self.indices, r.indices))
+                self.spikes[pos:pos+len(spikes)] = spikes
 
-                    # Error fits
-                    for inds in r.indices:
-                        if np.isnan(inds).any():
-                            inds_error.append(i)
-                        i+=1
+                pos += len(spikes)
 
-                    # Combine fits
-                    if r.fit_ramp is not None and self.fit_ramp is None:
-                        self.fit_ramp = r.fit_ramp
-                    elif r.fit_ramp is not None:
-                        self.fit_ramp = np.vstack((self.fit_ramp, r.fit_ramp))
+        # Track which spike belongs to which signal
+        self.group = np.zeros(self.n_spikes, dtype=int)
 
-                    if r.fit_exp is not None and self.fit_exp is None:
-                        self.fit_exp = r.fit_exp
-                    elif r.fit_exp is not None:
-                        self.fit_exp = np.vstack((self.fit_exp, r.fit_exp))
+        # Drop None spikes inds and track groups
+        spike_inds = np.zeros(self.n_spikes, dtype=int)
 
+        pos = 0
+        group = 0
 
-def _fit(ind, model=None, fs=None, reader=None, gen_fits=None, gen_indices=None, verbose=None):
+        for inds in self.spike_inds:
 
-    if reader is None:
-        # To-Do
-        pass
-    else:
-        arrays = reader(ind)
+            if inds is None:
+                continue
 
-    if not verbose:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            model.fit(arrays['fit'], fs, gen_fits, gen_indices)
+            spike_inds[pos:pos+len(inds)] = inds
 
-    else:
-        model.fit(arrays['fit'], fs, gen_fits, gen_indices)
+            self.group[pos:pos+len(inds)] = group
 
-    if model.df_features is not None:
-        model.df_features['index'] = ind
+            pos += len(inds)
+            group += 1
 
-        cols = list(model.df_features.columns)
-        cols = [cols[-1]] + cols[:-1]
+        self.spike_inds = spike_inds
 
-        model.df_features = model.df_features[cols]
-
-    return model
+        # Call super's fit method
+        super().fit(None, fs, gen_fits, gen_indices, True, n_jobs=n_jobs, progress=progress)

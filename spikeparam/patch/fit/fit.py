@@ -47,6 +47,8 @@ class Spike:
         Time definition.
     spike_inds : 1d array
         Indices of spikes in sig.
+    n_spikes : int
+        Number of spikes to fit.
     indices : 2d array
         Indices of control points per spike.
     poly_params : 2d array
@@ -107,10 +109,12 @@ class Spike:
 
         # Arrays
         self.spikes = None
+        self.n_spikes = None
         self.times = None
         self.spike_inds = None
         self.indices = None
         self.alt_windows = None
+        self.group = None
 
         # Parameters
         self.poly_params = None
@@ -143,7 +147,8 @@ class Spike:
         self.queue = None
 
 
-    def fit(self, sig, fs, gen_fits=True, gen_indices=True, n_jobs=1, progress=None):
+    def fit(self, sig, fs, gen_fits=True, gen_indices=True, preload=False,
+            n_jobs=1, progress=None):
         """Fit the 2d spike array.
 
         Parameters
@@ -156,6 +161,9 @@ class Spike:
             Generate fit arrays and r-squared values if True.
         gen_indices : bool, optional, default: True
             Generate sample indices of spike control points if True.
+        preload : bool, optional, default: False
+            If True, self.spikes and self.spike_inds have been set,
+            ignoring the sig argument. Used for group sub-class.
         n_jobs : int, optional, 1
             Number of jobs to run in parallel.
             -1 default to cpu_count().
@@ -164,20 +172,23 @@ class Spike:
         """
         self.fs = fs
 
-        # Find spikes
-        idx_spikes,  _= find_spike_times(sig, self.thresh_amp, self.thresh_ms * int(fs / 1000))
+        if not preload:
+            # Find spikes
+            idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
+                                             self.thresh_ms * int(fs / 1000))
 
-        if len(idx_spikes) == 0:
-            warnings.warn('No spikes detected.')
-            return
+            if len(idx_spikes) == 0:
+                warnings.warn('No spikes detected.')
+                return
 
-        self.spike_inds = idx_spikes
+            self.spike_inds = idx_spikes
+            self.n_spikes = len(idx_spikes)
 
-        # Get 2d array of spikes
-        self.spikes = window_spike(sig, fs, idx_spikes,
-                                   window_length=self.window_length)
+            # Get 2d array of spikes
+            self.spikes = window_spike(sig, fs, idx_spikes,
+                                       window_length=self.window_length)
 
-        del sig
+            del sig
 
         # Remove outlier spikes
         if self.corr_thresh is not None:
@@ -192,20 +203,20 @@ class Spike:
             self.spikes = self.spikes[inds]
 
         # Initalize arrays
-        self.indices = np.zeros((len(idx_spikes), 7), dtype=int)
-        self.poly_params = np.zeros((len(idx_spikes), self.poly_order + 1))
+        self.indices = np.zeros((self.n_spikes, 7), dtype=int)
+        self.poly_params = np.zeros((self.n_spikes, self.poly_order + 1))
 
-        self.voltage_ramp = np.zeros(len(idx_spikes))
-        self.inflection_time = np.zeros(len(idx_spikes))
-        self.inflection_amp = np.zeros(len(idx_spikes))
+        self.voltage_ramp = np.zeros(self.n_spikes)
+        self.inflection_time = np.zeros(self.n_spikes)
+        self.inflection_amp = np.zeros(self.n_spikes)
 
-        self.peak_amp = np.zeros(len(idx_spikes))
-        self.peak_width = np.zeros(len(idx_spikes))
-        self.peak_sharpness = np.zeros(len(idx_spikes))
+        self.peak_amp = np.zeros(self.n_spikes)
+        self.peak_width = np.zeros(self.n_spikes)
+        self.peak_sharpness = np.zeros(self.n_spikes)
 
-        self.exp_amp = np.zeros(len(idx_spikes))
-        self.exp_lambda = np.zeros(len(idx_spikes))
-        self.exp_const = np.zeros(len(idx_spikes))
+        self.exp_amp = np.zeros(self.n_spikes)
+        self.exp_lambda = np.zeros(self.n_spikes)
+        self.exp_const = np.zeros(self.n_spikes)
 
         self.inds_error = []
 
@@ -225,7 +236,7 @@ class Spike:
         # In series
         if n_jobs == 1:
 
-            for i in range(len(idx_spikes)):
+            for i in range(self.n_spikes):
 
                 # Compute features
                 indices, ramp_params, peak_params, exp_params = \
@@ -284,7 +295,7 @@ class Spike:
 
 
         # Compute inter spike features
-        self.isi = compute_isi(self.spike_inds, self.fs)
+        self.isi = compute_isi(self.spike_inds, self.fs, True, self.group)
 
         # Generate fits
         if gen_fits:
@@ -482,6 +493,9 @@ class Spike:
                    'peak_width', 'peak_sharpness', 'exp_lambda', 'exp_const', 'isi']
 
         self.df_features = pd.DataFrame()
+
+        if self.group is not None:
+            self.df_features['group'] = self.group
 
         for c in columns:
             self.df_features[c] = getattr(self, c)
