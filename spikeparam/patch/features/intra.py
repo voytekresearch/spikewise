@@ -128,14 +128,14 @@ def compute_peak_features(spike, fs, idx_rise, idx_peak, idx_decay):
     peak_sharpness : float
         Sharpness of peak.
     """
-    peak_mv = spike[idx_peak]
+    peak_amp = spike[idx_peak]
 
     peak_width = (idx_decay - idx_rise) / int(fs/1000)
 
     peak_sharpness = ((spike[idx_peak]-spike[idx_peak-5]) +
                       (spike[idx_peak]-spike[idx_peak+5])) / 2
 
-    return peak_mv, peak_width, peak_sharpness
+    return peak_amp, peak_width, peak_sharpness
 
 
 def compute_decay_features(spike, fs, idx_exp_start, idx_exp_end):
