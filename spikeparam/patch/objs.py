@@ -55,7 +55,7 @@ class Spike:
         First polynomial parameter (e.g. offset) per spike.
     inflection_time : 1d array
         Time, in ms, of the inflection point per spike.
-    inflection_mv : 1d array
+    inflection_amp : 1d array
         Voltage, in mv, at time of inflection per spike.
     peak_width : 1d array
         Width of peak, in ms, per spike.
@@ -114,7 +114,7 @@ class Spike:
         self.poly_params = None
         self.voltage_ramp = None
         self.inflection_time = None
-        self.inflection_mv = None
+        self.inflection_amp = None
 
         self.peak_width = None
         self.peak_sharpness = None
@@ -161,6 +161,11 @@ class Spike:
 
         # Find spikes
         idx_spikes,  _= find_spike_times(sig, self.thresh_mv, self.thresh_ms * int(fs / 1000))
+
+        if len(idx_spikes) == 0:
+            warnings.warn('No spikes detected.')
+            return
+
         self.spike_inds = idx_spikes
 
         # Get 2d array of spikes
@@ -187,7 +192,9 @@ class Spike:
 
         self.voltage_ramp = np.zeros(len(idx_spikes))
         self.inflection_time = np.zeros(len(idx_spikes))
-        self.inflection_mv = np.zeros(len(idx_spikes))
+        self.inflection_amp = np.zeros(len(idx_spikes))
+
+        self.peak_amp = np.zeros(len(idx_spikes))
         self.peak_width = np.zeros(len(idx_spikes))
         self.peak_sharpness = np.zeros(len(idx_spikes))
 
@@ -228,9 +235,9 @@ class Spike:
                     self.indices[i] = indices
 
                 self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
-                    self.inflection_mv[i] = ramp_params
+                    self.inflection_amp[i] = ramp_params
 
-                self.peak_width[i], self.peak_sharpness[i] = peak_params
+                self.peak_amp[i], self.peak_width[i], self.peak_sharpness[i] = peak_params
 
                 self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
 
@@ -264,9 +271,9 @@ class Spike:
                     self.indices[i] = indices
 
                 self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
-                    self.inflection_mv[i] = ramp_params
+                    self.inflection_amp[i] = ramp_params
 
-                self.peak_width[i], self.peak_sharpness[i] = peak_params
+                self.peak_amp[i], self.peak_width[i], self.peak_sharpness[i] = peak_params
 
                 self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
 
@@ -442,8 +449,8 @@ class Spike:
     def gen_df_features(self):
         """Generate feature dataframe."""
 
-        columns = ['voltage_ramp', 'inflection_time', 'inflection_mv', 'peak_width',
-                   'peak_sharpness', 'exp_amp', 'exp_lambda', 'exp_const', 'isi']
+        columns = ['voltage_ramp', 'inflection_time', 'inflection_amp', 'peak_amp',
+                   'peak_width', 'peak_sharpness', 'exp_lambda', 'exp_const', 'isi']
 
         self.df_features = pd.DataFrame()
 

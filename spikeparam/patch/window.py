@@ -63,6 +63,7 @@ def window_spike(sig, fs, spike_inds, times=None, window_length=(10., 10.), in_m
     """
 
     int_input = False
+
     if isinstance(spike_inds, int):
         spike_inds = [spike_inds]
         int_input = True
