@@ -87,6 +87,9 @@ class Spike:
         Indices of control points per spike.
     queue : list
         Contains args/kwargs to pass to .alt after .fit.
+    queue_group : list
+        Contains args/kwargs to pass to .alt after .fit.
+        Tracks at the group sub-class level.
     """
     def __init__(self, window_length=(10., 10.), thresh_amp=-10., thresh_ms=1.0,
                  pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
@@ -145,6 +148,7 @@ class Spike:
 
         # Alt
         self.queue = None
+        self.queue_group = None
 
 
     def fit(self, sig, fs, peak_inds=None, gen_fits=True,
@@ -324,7 +328,8 @@ class Spike:
 
 
     def alt(self, sig, fs, func, func_args=None, func_kwargs=None, param_keys=None,
-            ref='peak', window_length=(10., 0.), n_jobs=1, progress=None, queue=False):
+            ref='peak', window_length=(10., 10.), preload=False,
+            n_jobs=1, progress=None, queue=False):
         """Compute features for an alternative/associated signal.
 
         Parameters
@@ -335,6 +340,10 @@ class Spike:
             Alternaitve sampling rate, in Hz.
         func : function
             Computes features for each window. Each object returned should be {float, int, str}.
+        func_args : tuple, optional, default: None
+            Arguments to pass to func.
+        func_kwargs : dict, optional, default: None
+            Keyword arguments to pass to func.
         param_keys : list of str
             Names of features returned from func.
             These names become columns appended to df_features.
@@ -342,6 +351,9 @@ class Spike:
             Reference used to create windows.
         window_length : tuple of (float, float)
             Number of milliseconds before and after the reference point to include.
+        preload : bool, optional, default: False
+            If True, self.alt_windows have been set,
+            ignoring the sig argument. Used for group sub-class.
         n_jobs : int, optional, 1
             Number of jobs to run in parallel.
             -1 default to cpu_count().
@@ -363,8 +375,11 @@ class Spike:
             return
 
         # Window the alternative signal
-        alt_windows = window_spike(sig, fs, self.df_indices[ref].values,
-                                   window_length=window_length)
+        if not preload:
+            alt_windows = window_spike(sig, fs, self.df_indices[ref].values,
+                                       window_length=window_length)
+        else:
+            alt_windows = self.alt_windows
 
         # Handle args and kwargs
         if func_args is None:
@@ -422,9 +437,9 @@ class Spike:
         del params
 
         # Track windows as an attribute
-        if self.alt_windows is None:
+        if not preload and self.alt_windows is None:
             self.alt_windows = alt_windows
-        elif isinstance(self.alt_windows, np.ndarray):
+        elif not preload and isinstance(self.alt_windows, np.ndarray):
             self.alt_windows = [self.alt_windows]
             self.alt_windows.append(alt_windows)
 
