@@ -8,7 +8,6 @@ from neurodsp.plts.utils import check_ax
 from bycycle.utils.dataframes import get_extrema_df
 from bycycle.utils.timeseries import limit_signal
 
-from spikeparam.models.utils import split_signal
 
 ###################################################################################################
 ###################################################################################################

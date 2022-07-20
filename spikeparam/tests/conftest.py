@@ -4,9 +4,9 @@ import pytest
 
 import numpy as np
 
-from spikeparam import Spikes
-from spikeparam.models.features.gaussians import _sim_ap_cycle
-from spikeparam.models.cyclepoints import compute_spike_cyclepoints
+from spikeparam.gaussian import Spikes
+from spikeparam.gaussian.models.features.gaussians import _sim_ap_cycle
+from spikeparam.gaussian.models.cyclepoints import compute_spike_cyclepoints
 
 
 @pytest.fixture(scope='module')

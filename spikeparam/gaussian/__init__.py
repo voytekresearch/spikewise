@@ -1,3 +1,3 @@
 """Spike waveform parametrization."""
 
-from .objs import Spikes
+from .objs.objs import Spikes
