@@ -1,0 +1,268 @@
+import warnings
+
+import numpy as np
+
+from spikeparam.patch.window import find_spike_times, window_spike
+from spikeparam.patch.fit import Spike
+
+
+class SpikeGroup(Spike):
+
+    def __init__(self, window_length=(10., 10.), thresh_amp=-10., thresh_ms=1.0,
+                 pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
+                 poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
+
+        # Initalize super class
+        super().__init__(self)
+
+        # Settings
+        self.window_length = window_length
+        self.thresh_amp = thresh_amp
+        self.thresh_ms = thresh_ms
+
+        self.pre_peak_ms = pre_peak_ms
+        self.pre_inflection_ms = pre_inflection_ms
+        self.smooth_frac = smooth_frac
+        self.poly_order = poly_order
+
+        self.exp_shift_right = exp_shift_right
+        self.exp_duration = exp_duration
+
+        self.corr_thresh = corr_thresh
+
+
+    def fit(self, sigs, fs, reader=None, peak_inds=None, gen_fits=True,
+            gen_indices=True, low_mem=False, verbose=False, n_jobs=1, progress=None):
+        """Fit the 2d spike array.
+
+        Parameters
+        ----------
+        sigs : 1d or 2d array
+            Alternative voltage time series if 2d.
+            Indices to pass to reader if 1d.
+        fs : float
+            Sampling rate, in Hz.
+        reader : function, optional, default: None
+            Accepts sigs as the sole positional arguement and returns a 1d array.
+        peak_inds : int or 1d array, optional, default: None
+            Location of spike peaks, in samples. Bypasses spike detection.
+            Use an int if the peak of the spike is in the same location.
+            Use a 1d array for unique locations.
+        gen_fit : bool, optional, default: True
+            Generate fit arrays and r-squared values if True.
+        gen_indices : bool, optional, default: True
+            Generate sample indices of spike control points if True.
+        low_mem : bool, optional, default: False
+            Lowers memory usage at cost of increased runtime from
+            repeat storage access.
+        verbose : bool, optional, default: False
+            Prints warnings if True.
+        n_jobs : int, optional, 1
+            Number of jobs to run in parallel.
+            -1 default to cpu_count().
+        progress : {tqdm.tqdm, tqdm.notebook.tqdm}
+            Progress bar.
+        """
+
+        # Infer required shape
+        n_sigs = len(sigs)
+
+        self.spike_inds = []
+
+        spikes = []
+
+        # Tile peak indices
+        if isinstance(peak_inds, int):
+            peak_inds = np.tile(peak_inds, n_sigs)
+
+        for ind in range(n_sigs):
+
+            # Read in signal
+            if reader is not None:
+                sig = reader(sigs[ind])
+            else:
+                sig = sigs[ind]
+
+            if peak_inds is None:
+                # Find spikes
+                idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
+                                                 self.thresh_ms * int(fs / 1000))
+
+                if len(idx_spikes) == 0 and verbose:
+                    warnings.warn(f'No spikes detected for spike: {ind}.')
+
+                if len(idx_spikes) == 0:
+                    self.spike_inds.append(None)
+                else:
+                    self.spike_inds.append(idx_spikes)
+
+            else:
+                # Spike peaks are pre-computed
+                self.spike_inds.append(peak_inds[ind])
+
+            # Non-low memory mode:
+            #   Store arrays to list, and then vstack them
+            if not low_mem and self.spike_inds[-1] is not None:
+                spikes.append(
+                    window_spike(sig, fs, self.spike_inds[ind],
+                                 window_length=self.window_length)
+                )
+
+        # Infer number of spikes
+        if peak_inds is None:
+            self.n_spikes = sum([len(s) for s in self.spike_inds if s is not None])
+        else:
+            self.n_spikes = len(peak_inds)
+
+        # Stack arrays
+        if not low_mem:
+            self.spikes = np.vstack(spikes)
+
+        # Low-memory routine
+        if low_mem:
+
+            pos = 0
+            for ind in range(n_sigs):
+
+                if self.spike_inds[ind] is None:
+                    continue
+
+                if reader is not None:
+                    sig = reader(sigs[ind])
+
+                spikes = window_spike(sig, fs, self.spike_inds[ind],
+                                      window_length=self.window_length)
+
+                if self.spikes is None:
+                    self.spikes = np.zeros((self.n_spikes, len(spikes[0])))
+
+                self.spikes[pos:pos+len(spikes)] = spikes
+
+                pos += len(spikes)
+
+        # Track which spike belongs to which signal
+        self.group = np.zeros(self.n_spikes, dtype=int)
+
+        # Drop None spikes inds and track groups
+        if peak_inds is None:
+
+            spike_inds = np.zeros(self.n_spikes, dtype=int)
+
+            pos = 0
+            group = 0
+
+            for inds in self.spike_inds:
+
+                if inds is None:
+                    group += 1
+                    continue
+
+                spike_inds[pos:pos+len(inds)] = inds
+                self.group[pos:pos+len(inds)] = group
+
+                pos += len(inds)
+                group += 1
+
+            self.spike_inds = spike_inds
+        else:
+            self.spike_inds = np.array(self.spike_inds)
+
+        # Call super's fit method
+        super().fit(None, fs, None, gen_fits, gen_indices, True, n_jobs=n_jobs, progress=progress)
+
+        # Run alts
+        if self.queue_group is not None:
+
+            for locs in self.queue_group:
+
+                args = [locs[k] for k in locs if k in ['sigs', 'fs', 'func']]
+                kwargs =  {k:locs[k] for k in locs if k not in ['self', 'sigs', 'fs',
+                                                                'func', '__class__']}
+
+                self.alt(*args, **kwargs)
+
+
+    def alt(self, sigs, fs, func, func_args=None, func_kwargs=None, reader=None, param_keys=None,
+            ref='peak', window_length=(10., 10.), pre_windowed=False, n_jobs=1, progress=None,
+            queue=False):
+        """Compute features for an alternative/associated signal.
+
+        Parameters
+        ----------
+        sigs : 1d or 2d array
+            Alternative voltage time series if 2d.
+            Indices to pass to reader if 1d.
+        fs : float
+            Alternative sampling rate, in Hz.
+        func : function
+            Computes features for each window. Each object returned should be {float, int, str}.
+        func_args : tuple, optional, default: None
+            Arguments to pass to func.
+        func_kwargs : dict, optional, default: None
+            Keyword arguments to pass to func.
+        reader : function, optional, default: None
+            Accepts sigs as the sole positional arguement and returns a 1d array.
+        param_keys : list of str
+            Names of features returned from func.
+            These names become columns appended to df_features.
+        ref : {'ramp_start', 'inflection', 'rise', 'peak', 'decay', 'exp_start', 'exp_end'}
+            Reference used to create windows.
+        window_length : tuple of (float, float)
+            Number of milliseconds before and after the reference point to include.
+        pre_windowed : bool, optional, default: False
+            Sigs is assumed to already be windowed if True.
+        n_jobs : int, optional, 1
+            Number of jobs to run in parallel.
+            -1 default to cpu_count().
+        progress : {tqdm.tqdm, tqdm.notebook.tqdm}
+            Progress bar.
+        queue : bool, optional, default: False
+            Queues method call to be executed when .fit is called.
+        """
+        # Queue call to be executed on .fit
+        if queue:
+            self.queue_group = [] if self.queue is None else self.queue
+
+            _queue = {k: v for k, v in locals().items() if k != 'self'}
+            _queue['queue'] = False
+
+            self.queue_group.append(_queue)
+
+            return
+
+        self.alt_windows = None
+        pos = 0
+
+        if pre_windowed:
+            # Signal is already windowed
+            self.alt_windows = sigs
+        else:
+            # Stack alt signal into a 2d array
+            for ind in range(len(sigs)):
+
+                inds = np.where(self.df_features['group'].values == ind)[0]
+
+                if len(inds) == 0:
+                    continue
+
+                # Read in signal
+                if reader is not None:
+                    sig = reader(sigs[ind])
+                else:
+                    sig = sigs[ind]
+
+                alt_windows = window_spike(sig, fs, self.df_indices.iloc[inds][ref].values,
+                                        window_length=window_length)
+
+                if self.alt_windows is None:
+                    n_nans = np.count_nonzero(np.isnan(self.df_features['peak_amp'].values))
+
+                    self.alt_windows = np.zeros((len(self.df_features) - n_nans,
+                                                 len(alt_windows[0])))
+
+                self.alt_windows[pos:pos+len(alt_windows)] = alt_windows
+
+                pos += len(alt_windows)
+
+        super().alt(None, fs, func, func_args, func_kwargs, param_keys, ref, window_length,
+                    True, n_jobs, progress, queue)

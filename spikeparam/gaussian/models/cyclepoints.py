@@ -3,7 +3,7 @@
 import numpy as np
 
 from bycycle.cyclepoints import find_extrema
-from spikeparam.models.utils import create_cyclepoints_df
+from spikeparam.gaussian.models.utils import create_cyclepoints_df
 
 ###################################################################################################
 ###################################################################################################

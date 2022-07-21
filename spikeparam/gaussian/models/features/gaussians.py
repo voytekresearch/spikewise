@@ -11,8 +11,6 @@ import numpy as np
 
 from scipy.optimize import curve_fit
 
-###################################################################################################
-###################################################################################################
 
 
 def compute_gaussian_features(df_samples, sig, fs, n_gaussians=3, maxfev=2000,
