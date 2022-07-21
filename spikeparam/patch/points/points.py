@@ -6,7 +6,7 @@ import statsmodels.api as sm
 
 
 def control_points(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
-                   smooth_frac=.008, exp_shift_right=2., exp_duration=5.):
+                   smooth_frac=.008, exp_shift_right=2., exp_duration=5., peak_ind=None):
     """Compute spike control points.
 
     Parameters
@@ -23,6 +23,8 @@ def control_points(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
         Start time, in ms, to exponential start from peak.
     exp_duration : float, optional, default: 5.
         End time, in ms, of the exponential from the (shifted) peak.
+    peak_ind : int, optional, default: None
+        Peak index. None defaults to midpoint.
 
     Returns
     -------
@@ -44,11 +46,14 @@ def control_points(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
     _, d_smoothed_spike = diff_spike(times, spike, smooth_frac)
 
     # Get ramping start and inflection
-    idx_ramp_start, idx_inflection = inflection(d_smoothed_spike, fs,
+    idx_ramp_start, idx_inflection = inflection(d_smoothed_spike, fs, peak_ind,
                                                 pre_peak_ms, pre_inflection_ms)
 
     # Get peak index, assumes array is centered on peak
-    idx_peak = len(spike) // 2
+    if peak_ind is None:
+        idx_peak = len(spike) // 2
+    else:
+        idx_peak = peak_ind
 
     # Get peak mid-points
     mid_amp = (spike[idx_inflection] + spike[idx_peak]) / 2
@@ -79,7 +84,7 @@ def control_points(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
     return indices
 
 
-def inflection(d_smoothed_spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.):
+def inflection(d_smoothed_spike, fs, peak_ind=None, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.):
     """Compute inflection points.
 
     Parameters
@@ -88,6 +93,8 @@ def inflection(d_smoothed_spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1
         Spike waveform.
     fs : float
         Sampling rate, in Hz.
+    peak_ind : int, optional, default: None
+        Peak index. None defaults to midpoint.
     pre_peak_ms : tuple of (float, float)
         Time before the peak to estimate linear ramp fit as.
     pre_inflection_ms : float
@@ -111,7 +118,11 @@ def inflection(d_smoothed_spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1
     xs = np.arange(len(d_smoothed_spike))
 
     # Get peak of derivative
-    mid = len(d_smoothed_spike) // 2
+    if peak_ind is None:
+        mid = len(d_smoothed_spike) // 2
+    else:
+        mid = peak_ind
+
     ind_peak = np.argmax(d_smoothed_spike[mid-2*one_ms:mid+2*one_ms])
     ind_peak += mid-2*one_ms
 
@@ -126,6 +137,9 @@ def inflection(d_smoothed_spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1
     # Ramp
     start_ramp = int(ind_peak + (pre_peak_ms[0] * one_ms))
     end_ramp   = int(ind_peak + (pre_peak_ms[1] * one_ms))
+
+    start_ramp = 0 if start_ramp < 0 else start_ramp
+    end_ramp = ind_rise if end_ramp > ind_rise else end_ramp
 
     # Linear fit
     p0 = np.polyfit(xs[start_ramp:end_ramp], d_smoothed_spike[start_ramp:end_ramp], 1)

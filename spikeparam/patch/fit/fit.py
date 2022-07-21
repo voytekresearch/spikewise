@@ -151,8 +151,8 @@ class Spike:
         self.queue_group = None
 
 
-    def fit(self, sig, fs, peak_inds=None, gen_fits=True,
-             gen_indices=True, preload=False, n_jobs=1, progress=None):
+    def fit(self, sig, fs, peak_inds=None, gen_fits=True, gen_indices=True,
+            preload=False, verbose=False, n_jobs=1, progress=None):
         """Fit the 2d spike array.
 
         Parameters
@@ -170,6 +170,8 @@ class Spike:
         preload : bool, optional, default: False
             If True, self.spikes and self.spike_inds have been set,
             ignoring the sig argument. Used for group sub-class.
+        verbose : bool, optional, default: False
+            Prints warnings if True.
         n_jobs : int, optional, 1
             Number of jobs to run in parallel.
             -1 default to cpu_count().
@@ -182,11 +184,11 @@ class Spike:
             # Find spikes
             if peak_inds is None:
                 idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
-                                                self.thresh_ms * int(fs / 1000))
+                                                 self.thresh_ms * int(fs / 1000))
             elif isinstance(peak_inds, (int, np.int64)):
                 idx_spikes = np.array([peak_inds])
 
-            if len(idx_spikes) == 0:
+            if len(idx_spikes) == 0 and verbose:
                 warnings.warn('No spikes detected.')
                 return
 
@@ -239,7 +241,9 @@ class Spike:
             'smooth_frac' : self.smooth_frac,
             'poly_order': self.poly_order,
             'exp_shift_right': self.exp_shift_right,
-            'exp_duration': self.exp_duration
+            'exp_duration': self.exp_duration,
+            'peak_ind': int(self.window_length[0] * fs / 1000),
+            'verbose': verbose
         }
 
         # In series
@@ -252,10 +256,14 @@ class Spike:
                     _compute_features(self.spikes[i], fs, **kwargs)
 
                 # Unpack results
-                if np.isnan(indices).any():
-                    warnings.warn(f'Fail fit for spike: {i}')
+                if np.isnan(indices).any() or any([i < 0 for i in indices]):
+
+                    if verbose:
+                        warnings.warn(f'Fail fit for spike: {i}')
+
                     self.indices[i] = [-999 for i in indices]
                     self.inds_error.append(i)
+
                 else:
                     self.indices[i] = indices
 
@@ -288,10 +296,14 @@ class Spike:
                 indices, ramp_params, peak_params, exp_params = results[i]
 
                 # Unpack results
-                if np.isnan(indices).any():
-                    warnings.warn(f'Fail fit for spike: {i}')
+                if np.isnan(indices).any() or any([i < 0 for i in indices]):
+
+                    if verbose:
+                        warnings.warn(f'Fail fit for spike: {i}')
+
                     self.indices[i] = [-999 for i in indices]
                     self.inds_error.append(i)
+
                 else:
                     self.indices[i] = indices
 
@@ -302,6 +314,9 @@ class Spike:
 
                 self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
 
+        # Check if all fits failed
+        if (self.indices[:, 0] == -999).all():
+            raise ValueError('All fits failed.')
 
         # Compute inter spike features
         self.isi = compute_isi(self.spike_inds, self.fs, True, self.group)
@@ -376,8 +391,8 @@ class Spike:
 
         # Window the alternative signal
         if not preload:
-            alt_windows = window_spike(sig, fs, self.df_indices[ref].values,
-                                       window_length=window_length)
+            inds = ((self.df_indices[ref].values / self.fs) * fs).astype(int)
+            alt_windows = window_spike(sig, fs, inds, window_length=window_length)
         else:
             alt_windows = self.alt_windows
 
@@ -430,6 +445,9 @@ class Spike:
             # Transpose results list
             params = [np.array(i) for i in zip(*results)]
 
+            if param_keys is None:
+                param_keys = ['alt_' + str(i) for i in range(len(params))]
+
             # Add to dataframe
             for ind in range(len(param_keys)):
                 self.df_features[param_keys[ind]] = params[ind]
@@ -454,10 +472,20 @@ class Spike:
         exp : bool, optional, default: True
             Generate exponential fits if True.
         """
-
         if self.times is None:
             self.times = np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)[:len(self.spikes[0])]
-            self.times -= self.times.mean()
+
+        # Shift times
+        error = True
+        for ind in self.indices:
+
+            if ind[3] > 0:
+                self.times -= self.times[ind[3]]
+                error = False
+
+        # All fits were unsuccessful, nothing to generate
+        if error:
+            raise ValueError('All fits failed.')
 
         for ind in range(len(self.spikes)):
 
@@ -607,10 +635,18 @@ class Spike:
 def _compute_features(spike, fs, **kwargs):
     """Wrapper function for compute_features."""
     poly_order = kwargs.pop('poly_order', 1)
+    verbose = kwargs.pop('verbose')
 
     try:
-        indices, ramp_params, peak_params, exp_params = \
-            compute_features(spike, fs, poly_order=poly_order, **kwargs)
+
+        if verbose:
+            indices, ramp_params, peak_params, exp_params = \
+               compute_features(spike, fs, poly_order=poly_order, **kwargs)
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                indices, ramp_params, peak_params, exp_params = \
+                    compute_features(spike, fs, poly_order=poly_order, **kwargs)
     except:
 
         indices = [np.nan] * 7
@@ -630,4 +666,9 @@ def _compute_features(spike, fs, **kwargs):
 def _compute_alt_features(fs, func, sig, *args, **kwargs):
     """Warpper function for computing alternative features."""
 
-    return func(sig, fs, *args, **kwargs)
+    res = func(sig, fs, *args, **kwargs)
+
+    if not isinstance(res, (tuple, list, np.ndarray)):
+        res = [res]
+
+    return res

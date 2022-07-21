@@ -8,7 +8,7 @@ from ..gen import exp_func
 
 
 
-def compute_features(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
+def compute_features(spike, fs, peak_ind=None, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
                      smooth_frac=.008, poly_order=1, exp_shift_right=2.0, exp_duration=5.0):
     """Compute features.
 
@@ -18,6 +18,8 @@ def compute_features(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
         Spike waveform.
     fs : float
         Sampling rate, in Hz.
+    peak_ind : int, optional, default: None
+        Peak index. None defaults to midpoint.
     pre_peak_ms : tuple of (float, float)
         Time before the peak to estimate linear ramp fit as.
     pre_inflection_ms : float
@@ -43,7 +45,7 @@ def compute_features(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
     """
     # Control points
     indices = control_points(spike, fs, pre_peak_ms, pre_inflection_ms,
-                            smooth_frac, exp_shift_right, exp_duration)
+                             smooth_frac, exp_shift_right, exp_duration, peak_ind)
 
     # Unpack indices
     idx_ramp_start, idx_inflection, idx_rise, \
