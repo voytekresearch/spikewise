@@ -391,8 +391,8 @@ class Spike:
 
         # Window the alternative signal
         if not preload:
-            alt_windows = window_spike(sig, fs, self.df_indices[ref].values,
-                                       window_length=window_length)
+            inds = ((self.df_indices[ref].values / self.fs) * fs).astype(int)
+            alt_windows = window_spike(sig, fs, inds, window_length=window_length)
         else:
             alt_windows = self.alt_windows
 

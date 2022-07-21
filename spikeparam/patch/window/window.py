@@ -70,16 +70,16 @@ def window_spike(sig, fs, spike_inds, times=None, window_length=(10., 10.), in_m
 
     for ind in range(len(spike_inds)):
 
-        n_samples = int(fs / 1000) if in_ms else int(fs)
+        n_samples = fs / 1000 if in_ms else fs
 
         # Get windows around spikes
         #   create window indices
-        window_pre = int(n_samples * window_length[0])
-        window_post = int(n_samples * window_length[1])
+        window_pre =  n_samples * window_length[0]
+        window_post = n_samples * window_length[1]
 
         # Get window
-        window_spike_pre  = (spike_inds[ind]-window_pre)
-        window_spike_post = (spike_inds[ind]+window_post)
+        window_spike_pre  = int(spike_inds[ind]-window_pre)
+        window_spike_post = int(spike_inds[ind]+window_post)
 
         # Get data window
         _spike = sig[window_spike_pre:window_spike_post]
