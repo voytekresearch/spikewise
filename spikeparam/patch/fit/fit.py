@@ -182,7 +182,7 @@ class Spike:
             # Find spikes
             if peak_inds is None:
                 idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
-                                                self.thresh_ms * int(fs / 1000))
+                                                 self.thresh_ms * int(fs / 1000))
             elif isinstance(peak_inds, (int, np.int64)):
                 idx_spikes = np.array([peak_inds])
 
@@ -239,7 +239,8 @@ class Spike:
             'smooth_frac' : self.smooth_frac,
             'poly_order': self.poly_order,
             'exp_shift_right': self.exp_shift_right,
-            'exp_duration': self.exp_duration
+            'exp_duration': self.exp_duration,
+            'peak_ind': int(self.window_length[0] * fs / 1000)
         }
 
         # In series
@@ -252,7 +253,7 @@ class Spike:
                     _compute_features(self.spikes[i], fs, **kwargs)
 
                 # Unpack results
-                if np.isnan(indices).any():
+                if np.isnan(indices).any() or any([i < 0 for i in indices]):
                     warnings.warn(f'Fail fit for spike: {i}')
                     self.indices[i] = [-999 for i in indices]
                     self.inds_error.append(i)
@@ -288,7 +289,7 @@ class Spike:
                 indices, ramp_params, peak_params, exp_params = results[i]
 
                 # Unpack results
-                if np.isnan(indices).any():
+                if np.isnan(indices).any() or any([i < 0 for i in indices]):
                     warnings.warn(f'Fail fit for spike: {i}')
                     self.indices[i] = [-999 for i in indices]
                     self.inds_error.append(i)
@@ -302,6 +303,9 @@ class Spike:
 
                 self.exp_amp[i], self.exp_lambda[i], self.exp_const[i] = exp_params
 
+        # Check if all fits failed
+        if (self.indices[:, 0] == -999).all():
+            raise ValueError('All fits failed.')
 
         # Compute inter spike features
         self.isi = compute_isi(self.spike_inds, self.fs, True, self.group)
@@ -454,10 +458,20 @@ class Spike:
         exp : bool, optional, default: True
             Generate exponential fits if True.
         """
-
         if self.times is None:
             self.times = np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)[:len(self.spikes[0])]
-            self.times -= self.times.mean()
+
+        # Shift times
+        error = True
+        for ind in self.indices:
+
+            if ind[3] > 0:
+                self.times -= self.times[ind[3]]
+                error = False
+
+        # All fits were unsuccessful, nothing to generate
+        if error:
+            raise ValueError('All fits failed.')
 
         for ind in range(len(self.spikes)):
 
