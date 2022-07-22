@@ -376,6 +376,7 @@ class Spike:
 
                 args = [locs[k] for k in locs if k in ['sig', 'fs', 'func']]
                 kwargs =  {k:locs[k] for k in locs if k not in ['self', 'sig', 'fs', 'func']}
+
                 self.alt(*args, **kwargs)
 
 
@@ -418,6 +419,7 @@ class Spike:
 
         # Queue call to be executed on .fit
         if queue:
+
             self.queue = [] if self.queue is None else self.queue
 
             _queue = {k: v for k, v in locals().items() if k != 'self'}
