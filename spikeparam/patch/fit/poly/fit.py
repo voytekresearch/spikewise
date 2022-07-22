@@ -91,9 +91,8 @@ class PolySpike(Spike):
 
         Parameters
         ----------
-        sigs : 1d or 2d array
-            Alternative voltage time series if 2d.
-            Indices to pass to reader if 1d.
+        sig : 1d array
+            Voltage time series.
         fs : float
             Sampling rate, in Hz.
         reader : function, optional, default: None
@@ -102,7 +101,7 @@ class PolySpike(Spike):
             Location of spike peaks, in samples. Bypasses spike detection.
             Use an int if the peak of the spike is in the same location.
             Use a 1d array for unique locations.
-        gen_fit : bool, optional, default: True
+        gen_fits : bool, optional, default: True
             Generate fit arrays and r-squared values if True.
         gen_indices : bool, optional, default: True
             Generate sample indices of spike control points if True.
@@ -120,14 +119,15 @@ class PolySpike(Spike):
 
         n_jobs = cpu_count() if n_jobs == -1 else n_jobs
 
-        super().fit(sig, fs, peak_inds, gen_fits, gen_indices, preload=False,
-                    n_jobs=n_jobs, progress=progress)
+        if sig is not None:
+            super().fit(sig, fs, peak_inds, gen_fits, gen_indices, preload=False,
+                        n_jobs=n_jobs, progress=progress)
 
         with Pool(processes=n_jobs) as pool:
 
             mapping = pool.imap(
                 partial(_fit, orders=self.orders, points=self.points,
-                        fill=self.fill, gen_fit=self.gen_fit),
+                        fill=self.fill, gen_fit=gen_fits),
                 zip(self.spikes, self.indices)
             )
 
@@ -191,7 +191,7 @@ class PolySpike(Spike):
         plt.legend()
 
 
-def _poly_points(ys, spike_inds, points=None):
+def _poly_points(ys, spike_inds):
     """Get spline locations.
 
     Parameters

@@ -10,19 +10,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from spikeparam.patch.fit.poly.fit import _fit
+from spikeparam.patch.fit.poly import PolySpike
 
 
 
-class PolySpikeGroup(SpikeGroup):
+class PolySpikeGroup(PolySpike, SpikeGroup):
 
     def __init__(self,  orders, points=None, fill=None, window_length=(10., 10.), thresh_amp=-10.,
                  thresh_ms=1.0, pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
                  poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
         """Initialize object."""
 
-        # Initalize super class
-        super().__init__(self)
+        # Initalize super classes
+        super(SpikeGroup, self).__init__()
+        super(PolySpikeGroup, self).__init__(orders)
 
         # Poly settings
         self.orders = orders
@@ -59,7 +60,6 @@ class PolySpikeGroup(SpikeGroup):
         self.poly_rsq_full = None
 
 
-
     def fit(self, sigs, fs, reader=None, peak_inds=None, gen_fits=True,
             gen_indices=True, low_mem=False, verbose=False, n_jobs=1, progress=None):
         """Fit the PolySpike object.
@@ -92,75 +92,11 @@ class PolySpikeGroup(SpikeGroup):
         progress : {tqdm.tqdm, tqdm.notebook.tqdm}
             Progress bar.
         """
+        # Calls SpikeGroup's fit
+        super(PolySpike, self).fit(sigs, fs, reader, peak_inds, gen_fits,
+                                    gen_indices, low_mem, verbose, n_jobs, progress)
 
-        n_jobs = cpu_count() if n_jobs == -1 else n_jobs
+        # Calls PolySpike's fit
+        super(PolySpikeGroup, self).fit(None, fs, peak_inds, gen_fits,
+                                        gen_indices, n_jobs, progress)
 
-        super().fit(sigs, fs, reader, peak_inds, gen_fits,
-                    gen_indices, low_mem, verbose, n_jobs, progress)
-
-        with Pool(processes=n_jobs) as pool:
-
-            mapping = pool.imap(
-                partial(_fit, orders=self.orders, points=self.points,
-                        fill=self.fill, gen_fit=self.gen_fit),
-                zip(self.spikes, self.indices)
-            )
-
-            if progress is None:
-                results = list(mapping)
-            else:
-                results = progress(list(mapping), total=len(self.spikes))
-
-        self.poly_indices = np.array([i[0] for i in results])
-        params = [i[1] for i in results]
-
-        del results
-
-        if all([self.orders[0] == i for i in self.orders[1:]]):
-            self.poly_coeffs = np.array([i[0] for i in params])
-        else:
-            self.poly_coeffs = [i[0] for i in params]
-
-        self.poly_fit = np.array([i[1] for i in params])
-        self.poly_rsqs = np.array([i[2] for i in params])
-        self.poly_rsq_full = np.array([i[3] for i in params])
-
-        del params
-
-        # Create dataframe
-        self.df_poly = pd.DataFrame()
-
-        for i in range(len(self.points)-1):
-
-            _coeffs = np.array([arr[i] for arr in self.poly_coeffs])
-
-            for ind in range(len(_coeffs[0])):
-                self.df_poly[f'poly{str(i).zfill(2)}_c{ind}'] = _coeffs[:, ind]
-
-
-    def plot(self):
-        """Plot the polynomial fit."""
-
-        plt.figure(figsize=(10, 4))
-
-        # True spike
-        for i, s in enumerate(self.spikes):
-            label = 'True' if i == 0 else ''
-            plt.plot(self.times, s, color='C0', label=label)
-
-        # Spike fit
-        for i, p in enumerate(self.poly_fit):
-            label = 'Fit' if i == 0 else ''
-            plt.plot(self.times, p, color='C1', ls='--', label=label)
-
-        # Spline points
-        colors = ['C' + str(i) for i in range(2, len(self.poly_indices[0]) + 2)]
-
-        for ind in range(len(self.spikes)):
-
-            _spike = self.spikes[ind]
-
-            for cind, j in enumerate(self.poly_indices[ind]):
-                plt.scatter(self.times[j], _spike[j], color=colors[cind], zorder=3)
-
-        plt.legend()

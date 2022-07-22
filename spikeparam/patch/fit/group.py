@@ -37,9 +37,8 @@ class SpikeGroup(Spike):
 
         Parameters
         ----------
-        sigs : 1d or 2d array
+        sigs : 2d array
             Alternative voltage time series if 2d.
-            Indices to pass to reader if 1d.
         fs : float
             Sampling rate, in Hz.
         reader : function, optional, default: None
