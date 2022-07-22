@@ -218,8 +218,6 @@ def compute_poly_features(spike, inds, orders, fill=None, gen_fit=True):
     """Compute spline polynomial features.
 
     Parameters
-    ---------
-    Parameters
     ----------
     spike : 1d array
         Spike waveform.

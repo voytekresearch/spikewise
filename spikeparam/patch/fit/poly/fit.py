@@ -9,6 +9,7 @@ from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
 
 import numpy as np
+import pandas as pd
 
 from spikeparam.patch.features import compute_poly_features
 
@@ -20,19 +21,22 @@ class PolySpike(Spike):
     Attributes
     ----------
     orders : list of int
-        Polynomial order per segment. Should be same length as points.
+        Polynomial order per segment. Should have length == len(points) - 1.
     points : list of str, optional, default: None
         Points to compute polynomials between. Select from:
         {'ramp_start', 'inflection', 'rise', 'peak',
-            'decay', 'tau', 'end_mid', 'exp_end'}
+         'decay', 'tau', 'mtau', 'exp_end'}
         None defaults to all points.
     poly_coeffs : 2d array or list of 1d array
-        Polynomial coefficients.
-    fit : 2d array
+        Polynomial coefficients, in increasing order.
+        Warning: This is in reverse from what np.poly1d expects. This reverse order is used
+        for ease of comparison between parameters (i.e. the first coefficient will always be
+        the constant).
+    poly_fit : 2d array
         Polynomial fit.
-    rsqs : 2d array
+    poly_rsqs : 2d array
         R-squared for each spline.
-    rsq_full : 1d array
+    poly_rsq_full : 1d array
         R-squared for combined splines.
     **kwargs
         Additional settings passed to the Spike super class init.
@@ -45,9 +49,17 @@ class PolySpike(Spike):
         # Initalize super class
         super().__init__(self)
 
-         # Poly settings
+        # Poly settings
         self.orders = orders
         self.points = points
+
+        if self.points is None:
+            self.points = ['ramp_start', 'inflection', 'rise', 'peak',
+                           'decay', 'tau', 'mtau', 'exp_end']
+
+        if len(self.orders) != len(self.points) - 1:
+            raise ValueError("Orders must be one less then number of points.")
+
         self.fill = fill
 
         # Super settings
@@ -64,6 +76,13 @@ class PolySpike(Spike):
         self.exp_duration = exp_duration
 
         self.corr_thresh = corr_thresh
+
+        # Poly results
+        self.df_poly = None
+        self.poly_coeffs = None
+        self.poly_fit = None
+        self.poly_rsqs = None
+        self.poly_rsq_full = None
 
 
     def fit(self, sig, fs, peak_inds=None, gen_fits=True,
@@ -123,15 +142,25 @@ class PolySpike(Spike):
         del results
 
         if all([self.orders[0] == i for i in self.orders[1:]]):
-            self.poly_coeffs = np.array([i[0] for i in params])
+            self.poly_coeffs = np.array([i[0][::-1] for i in params])
         else:
-            self.poly_coeffs = [i[0] for i in params]
+            self.poly_coeffs = [i[0][::-1] for i in params]
 
         self.poly_fit = np.array([i[1] for i in params])
         self.poly_rsqs = np.array([i[2] for i in params])
         self.poly_rsq_full = np.array([i[3] for i in params])
 
         del params
+
+        # Create dataframe
+        self.df_poly = pd.DataFrame()
+
+        for i in range(len(self.points)-1):
+
+            _coeffs = np.array([arr[i] for arr in self.poly_coeffs])
+
+            for ind in range(len(_coeffs[0])):
+                self.df_poly[f'poly{str(i).zfill(2)}_c{ind}'] = _coeffs[:, ind]
 
 
     def plot(self):
@@ -162,7 +191,7 @@ class PolySpike(Spike):
         plt.legend()
 
 
-def _poly_points(ys, spike_inds):
+def _poly_points(ys, spike_inds, points=None):
     """Get spline locations.
 
     Parameters
@@ -207,19 +236,21 @@ def _fit(ys_inds, orders=None, points=None, fill=None, gen_fit=None):
 
     ys, inds = ys_inds[0], ys_inds[1]
 
+    # Get spline points
+    inds = _poly_points(ys, inds)
+
     if points is not None:
 
         _inds = []
 
         names = ['ramp_start', 'inflection', 'rise', 'peak',
-                 'decay', 'tau', 'end_mid', 'exp_end']
+                 'decay', 'tau', 'mtau', 'exp_end']
 
         for i, name in enumerate(names):
             if name in points:
                 _inds.append(i)
 
-    # Update spline points
-    inds = _poly_points(ys, inds)
+        inds = inds[_inds]
 
     # Compute features
     params = compute_poly_features(ys, inds, orders, fill, gen_fit)

@@ -8,8 +8,9 @@ from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
 
 import numpy as np
+import pandas as pd
 
-from spikeparam.patch.fit.poly.fit import _fit, _poly_points
+from spikeparam.patch.fit.poly.fit import _fit
 
 
 
@@ -28,6 +29,13 @@ class PolySpikeGroup(SpikeGroup):
         self.points = points
         self.fill = fill
 
+        if self.points is None:
+            self.points = ['ramp_start', 'inflection', 'rise', 'peak',
+                           'decay', 'tau', 'mtau', 'exp_end']
+
+        if len(self.orders) != len(self.points) - 1:
+            raise ValueError("Orders must be one less then number of points.")
+
         # Super settings
         self.window_length = window_length
         self.thresh_amp = thresh_amp
@@ -42,6 +50,13 @@ class PolySpikeGroup(SpikeGroup):
         self.exp_duration = exp_duration
 
         self.corr_thresh = corr_thresh
+
+        # Poly results
+        self.df_poly = None
+        self.poly_coeffs = None
+        self.poly_fit = None
+        self.poly_rsqs = None
+        self.poly_rsq_full = None
 
 
 
@@ -111,6 +126,16 @@ class PolySpikeGroup(SpikeGroup):
         self.poly_rsq_full = np.array([i[3] for i in params])
 
         del params
+
+        # Create dataframe
+        self.df_poly = pd.DataFrame()
+
+        for i in range(len(self.points)-1):
+
+            _coeffs = np.array([arr[i] for arr in self.poly_coeffs])
+
+            for ind in range(len(_coeffs[0])):
+                self.df_poly[f'poly{str(i).zfill(2)}_c{ind}'] = _coeffs[:, ind]
 
 
     def plot(self):
