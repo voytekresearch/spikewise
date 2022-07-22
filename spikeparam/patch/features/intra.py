@@ -212,3 +212,81 @@ def fit_exp_nonlinear(times, exp, p0, bounds):
     exp_amp, exp_lambda, exp_const = popt
 
     return exp_amp, exp_lambda, exp_const
+
+
+def compute_poly_features(spike, inds, orders, fill=None, gen_fit=True):
+    """Compute spline polynomial features.
+
+    Parameters
+    ---------
+    Parameters
+    ----------
+    spike : 1d array
+        Spike waveform.
+    inds : 1d array
+        Spline locations.
+    orders : 1d array or int
+        Orders to fit each spline.
+    fill : float, optional, default: None
+        Fill signal outside of defined spline points with this value.
+    gen_fit : bool, optional, default: True
+        Generate the polynomial fit and r-squared values.
+
+    Returns
+    -------
+    coeffs : 1d array
+        Polynomial coefficients.
+    fit : 1d array
+        Polynomial fit.
+    rsqs : 1d array
+        R-squared for each spline.
+    rsq_full : float
+        R-squared for combined splines.
+    """
+    xs = np.arange(len(spike))
+
+    # Repeat a single order
+    if isinstance(orders, int):
+        orders = np.tile(orders, len(inds))
+
+    # If all orders are the same, use an non-ragged array
+    ragged = True
+    if all([orders[0] == i for i in orders[1:]]):
+        ragged = False
+
+    # Get positions of splines
+    start = inds[:-1]
+    end = inds[1:] + 1
+
+    # Initalize arraspike/list
+    coeffs = []
+
+    fit = np.zeros_like(spike)
+    rsqs = np.zeros(len(start))
+
+    fit[:] = np.nan if fill is None else fill
+
+    # Fit each spline
+    for ind in range(len(orders)):
+
+        s, e, order = start[ind], end[ind], orders[ind]
+
+        _coeffs = np.polyfit(xs[s:e], spike[s:e], order)
+        coeffs.append(_coeffs)
+
+        if gen_fit:
+            _fit = np.poly1d(_coeffs)(xs[s:e])
+            fit[s:e] = _fit
+            rsqs[ind] = np.corrcoef(spike[s:e], _fit)[0][1] ** 2
+
+    if not ragged:
+        coeffs = np.array(coeffs)
+
+    if gen_fit:
+        rsq_full = np.corrcoef(spike[start[0]:end[-1]],
+                               fit[start[0]:end[-1]])[0][1] ** 2
+
+        return coeffs, fit, rsqs, rsq_full
+
+    return coeffs
+
