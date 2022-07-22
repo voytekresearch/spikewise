@@ -134,7 +134,7 @@ class PolySpike(Spike):
             if progress is None:
                 results = list(mapping)
             else:
-                results = progress(list(mapping), total=len(self.spikes))
+                results = progress(list(mapping), total=len(self.spikes), desc='PolySpike')
 
         self.poly_indices = np.array([i[0] for i in results])
         params = [i[1] for i in results]
