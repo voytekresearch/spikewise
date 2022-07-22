@@ -123,19 +123,40 @@ class PolySpike(Spike):
             super().fit(sig, fs, peak_inds, gen_fits, gen_indices, preload=False,
                         n_jobs=n_jobs, progress=progress)
 
-        with Pool(processes=n_jobs) as pool:
+        # In series
+        if n_jobs == 1:
 
-            mapping = pool.imap(
-                partial(_fit, orders=self.orders, points=self.points,
-                        fill=self.fill, gen_fit=gen_fits),
-                zip(self.spikes, self.indices)
-            )
+            iterable = range(len(self.spikes))
 
-            if progress is None:
-                results = list(mapping)
-            else:
-                results = progress(list(mapping), total=len(self.spikes), desc='PolySpike')
+            if progress is not None:
+                iterable = progress(iterable, total=len(self.spikes), desc='PolySpike')
 
+            results = []
+
+            for ind in iterable:
+
+                _inds, _params = _fit((self.spikes[ind], self.indices[ind]), orders=self.orders,
+                                      points=self.points, fill=self.fill, gen_fit=gen_fits)
+
+                results.append([_inds, _params])
+
+        # In parallel
+        else:
+
+            with Pool(processes=n_jobs) as pool:
+
+                mapping = pool.imap(
+                    partial(_fit, orders=self.orders, points=self.points,
+                            fill=self.fill, gen_fit=gen_fits),
+                    zip(self.spikes, self.indices)
+                )
+
+                if progress is None:
+                    results = list(mapping)
+                else:
+                    results = progress(list(mapping), total=len(self.spikes), desc='PolySpike')
+
+        # Sort results
         self.poly_indices = np.array([i[0] for i in results])
         params = [i[1] for i in results]
 
