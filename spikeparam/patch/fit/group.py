@@ -13,7 +13,7 @@ class SpikeGroup(Spike):
                  poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
 
         # Initalize super class
-        super().__init__(self)
+        super().__init__()
 
         # Settings
         self.window_length = window_length
@@ -168,7 +168,8 @@ class SpikeGroup(Spike):
             self.spike_inds = np.array(self.spike_inds)
 
         # Call super's fit method
-        super().fit(None, fs, None, gen_fits, gen_indices, True, n_jobs=n_jobs, progress=progress)
+        super().fit(None, fs, None, gen_fits, gen_indices, True,
+                    n_jobs=n_jobs, progress=progress)
 
         # Run alts
         if self.queue_group is not None:
