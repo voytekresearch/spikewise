@@ -79,7 +79,7 @@ def window_spike(sig, fs, spike_inds, times=None, window_length=(10., 10.), in_m
 
         # Get window
         window_spike_pre  = int(spike_inds[ind]-window_pre)
-        window_spike_post = int(spike_inds[ind]+window_post)
+        window_spike_post = int(spike_inds[ind]+window_post) + 1
 
         # Get data window
         _spike = sig[window_spike_pre:window_spike_post]
