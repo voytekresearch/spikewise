@@ -269,11 +269,11 @@ def compute_poly_features(spike, inds, orders, fill=None, gen_fit=True):
 
         s, e, order = start[ind], end[ind], orders[ind]
 
-        _coeffs = np.polyfit(xs[s:e], spike[s:e], order)
+        _coeffs = np.polyfit(np.arange(e-s), spike[s:e], order)
         coeffs.append(_coeffs)
 
         if gen_fit:
-            _fit = np.poly1d(_coeffs)(xs[s:e])
+            _fit = np.poly1d(_coeffs)(np.arange(e-s))
             fit[s:e] = _fit
             rsqs[ind] = np.corrcoef(spike[s:e], _fit)[0][1] ** 2
 

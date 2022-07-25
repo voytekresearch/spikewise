@@ -27,11 +27,13 @@ class PolySpike(Spike):
         {'ramp_start', 'inflection', 'rise', 'peak',
          'decay', 'tau', 'mtau', 'exp_end'}
         None defaults to all points.
-    poly_coeffs : 2d array or list of 1d array
-        Polynomial coefficients, in increasing order.
+    df_poly : pandas.DataFrame
+        Dataframe representation of poly_coeffs.
         Warning: This is in reverse from what np.poly1d expects. This reverse order is used
         for ease of comparison between parameters (i.e. the first coefficient will always be
         the constant).
+    poly_coeffs : 2d array or list of 1d array
+        Polynomial coefficients, in increasing order.
     poly_fit : 2d array
         Polynomial fit.
     poly_rsqs : 2d array
@@ -163,9 +165,9 @@ class PolySpike(Spike):
         del results
 
         if all([self.orders[0] == i for i in self.orders[1:]]):
-            self.poly_coeffs = np.array([i[0][::-1] for i in params])
+            self.poly_coeffs = np.array([i[0] for i in params])
         else:
-            self.poly_coeffs = [i[0][::-1] for i in params]
+            self.poly_coeffs = [i[0] for i in params]
 
         self.poly_fit = np.array([i[1] for i in params])
         self.poly_rsqs = np.array([i[2] for i in params])
@@ -178,7 +180,7 @@ class PolySpike(Spike):
 
         for i in range(len(self.points)-1):
 
-            _coeffs = np.array([arr[i] for arr in self.poly_coeffs])
+            _coeffs = np.array([arr[i][::-1] for arr in self.poly_coeffs])
 
             for ind in range(len(_coeffs[0])):
                 self.df_poly[f'poly{str(i).zfill(2)}_c{ind}'] = _coeffs[:, ind]
