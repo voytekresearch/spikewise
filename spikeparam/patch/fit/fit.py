@@ -1,6 +1,9 @@
 """Spike class."""
 
+import os
 import warnings
+import inspect
+import re
 from functools import partial
 from multiprocessing import Pool, cpu_count
 
@@ -477,6 +480,25 @@ class Spike:
             # Prevent all windows from being passed into pool
             self.alt_windows = None
 
+            # Move func to a .py file
+            if os.path.isfile('_tmp_funcs_mp.py'):
+                os.remove('_tmp_funcs_mp.py')
+
+            lines = inspect.getsource(func)
+
+            # Ensure consistent func name for importing
+            func_name = func.__name__
+
+            lines = re.sub(f'def {func_name}', 'def func', lines)
+
+            # Write function
+            with open('_tmp_funcs_mp.py', 'w') as f:
+                for line in lines:
+                    f.write(line)
+
+            # Import
+            from _tmp_funcs_mp import func
+
             # Run mp pool
             with Pool(processes=n_jobs) as pool:
 
@@ -502,6 +524,9 @@ class Spike:
             for ind in range(len(param_keys)):
                 self.df_features[param_keys[ind]] = params[ind]
 
+            # Remove temporary py file
+            os.remove('_tmp_funcs_mp.py')
+
         del params
 
         # Track windows as an attribute
@@ -510,6 +535,8 @@ class Spike:
         elif not preload and isinstance(self.alt_windows, np.ndarray):
             self.alt_windows = [self.alt_windows]
             self.alt_windows.append(alt_windows)
+
+
 
 
     def gen_fit(self, ramp=True, exp=True):
