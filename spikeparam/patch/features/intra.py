@@ -241,11 +241,9 @@ def compute_poly_features(spike, inds, orders, fill=None, gen_fit=True):
     rsq_full : float
         R-squared for combined splines.
     """
-    xs = np.arange(len(spike))
-
     # Repeat a single order
     if isinstance(orders, int):
-        orders = np.tile(orders, len(inds))
+        orders = np.tile(orders, len(inds)-1)
 
     # If all orders are the same, use an non-ragged array
     ragged = True
@@ -254,7 +252,7 @@ def compute_poly_features(spike, inds, orders, fill=None, gen_fit=True):
 
     # Get positions of splines
     start = inds[:-1]
-    end = inds[1:] + 1
+    end = inds[1:]
 
     # Initalize arraspike/list
     coeffs = []
