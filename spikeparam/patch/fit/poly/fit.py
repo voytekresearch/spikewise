@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from spikeparam.patch.features import compute_poly_features
-
+from spikeparam.patch.sim.poly import sim_ppoly_dist
 
 
 class PolySpike(Spike):
@@ -20,20 +20,28 @@ class PolySpike(Spike):
 
     Attributes
     ----------
-    orders : list of int
-        Polynomial order per segment. Should have length == len(points) - 1.
-    points : list of str, optional, default: None
+    degree : int or list of int
+        Polynomial order per segment. Should have length == len(knots) - 1 if list.
+    knots : list of str, optional, default: None
         Points to compute polynomials between. Select from:
         {'ramp_start', 'inflection', 'rise', 'peak',
          'decay', 'tau', 'mtau', 'exp_end'}
-        None defaults to all points.
+        None uses all default knots.
+    pad : int
+        Pad samples around knots for re-weighted (via sigma)
+        error in optimization.
+    sigma :float
+        Standard deviation of error. Adds perference for optimized
+        fit around knots, +/- pad.
     df_poly : pandas.DataFrame
         Dataframe representation of poly_coeffs.
         Warning: This is in reverse from what np.poly1d expects. This reverse order is used
         for ease of comparison between parameters (i.e. the first coefficient will always be
         the constant).
+    poly_knots : 2d array
+        Polynomial knot locations, in samples.
     poly_coeffs : 2d array or list of 1d array
-        Polynomial coefficients, in increasing order.
+        Polynomial coefficients.
     poly_fit : 2d array
         Polynomial fit.
     poly_rsqs : 2d array
@@ -43,24 +51,32 @@ class PolySpike(Spike):
     **kwargs
         Additional settings passed to the Spike super class init.
     """
-    def __init__(self,  orders, points=None, fill=None, window_length=(10., 10.), thresh_amp=-10.,
-                 thresh_ms=1.0, pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
-                 poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
+    def __init__(self, degree, knots=None, pad=None, sigma=None, fill=None,
+                 window_length=(10., 10.), thresh_amp=-10.,  thresh_ms=1.0,
+                 pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
+                 exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
         """Initialize object."""
 
         # Initalize super class
         super().__init__(self)
 
         # Poly settings
-        self.orders = orders
-        self.points = points
+        self.degree = degree
+        self.knots = knots
+        self.pad = pad
+        self.sigma = sigma
 
-        if self.points is None:
-            self.points = ['ramp_start', 'inflection', 'rise', 'peak',
-                           'decay', 'tau', 'mtau', 'exp_end']
+        # Default knots
+        if self.knots is None:
+            self.knots = ['ramp_start', 'inflection', 'rise', 'peak',
+                          'decay', 'tau', 'mtau', 'exp_end']
 
-        if len(self.orders) != len(self.points) - 1:
-            raise ValueError("Orders must be one less then number of points.")
+        if len(self.degree) != len(self.knots) - 1:
+            raise ValueError("Orders must be one less then number of knots.")
+
+        # Repeat a single order
+        if isinstance(self.degree, int):
+            self.degree = np.tile(self.degree, len(self.knots)-1)
 
         self.fill = fill
 
@@ -72,7 +88,6 @@ class PolySpike(Spike):
         self.pre_peak_ms = pre_peak_ms
         self.pre_inflection_ms = pre_inflection_ms
         self.smooth_frac = smooth_frac
-        self.poly_order = poly_order
 
         self.exp_shift_right = exp_shift_right
         self.exp_duration = exp_duration
@@ -106,7 +121,7 @@ class PolySpike(Spike):
         gen_fits : bool, optional, default: True
             Generate fit arrays and r-squared values if True.
         gen_indices : bool, optional, default: True
-            Generate sample indices of spike control points if True.
+            Generate sample indices of spike control knots if True.
         low_mem : bool, optional, default: False
             Lowers memory usage at cost of increased runtime from
             repeat storage access.
@@ -137,8 +152,9 @@ class PolySpike(Spike):
 
             for ind in iterable:
 
-                _inds, _params = _fit((self.spikes[ind], self.indices[ind]), orders=self.orders,
-                                      points=self.points, fill=self.fill, gen_fit=gen_fits)
+                _inds, _params = _fit((self.spikes[ind], self.indices[ind]), degree=self.degree,
+                                       points=self.knots, pad=self.pad, sigma=self.sigma,
+                                       fill=self.fill, gen_fit=gen_fits)
 
                 results.append([_inds, _params])
 
@@ -148,8 +164,8 @@ class PolySpike(Spike):
             with Pool(processes=n_jobs) as pool:
 
                 mapping = pool.imap(
-                    partial(_fit, orders=self.orders, points=self.points,
-                            fill=self.fill, gen_fit=gen_fits),
+                    partial(_fit, degree=self.degree, points=self.knots,
+                            pad=self.pad, sigma=self.sigma, fill=self.fill, gen_fit=gen_fits),
                     zip(self.spikes, self.indices)
                 )
 
@@ -159,31 +175,56 @@ class PolySpike(Spike):
                     results = progress(list(mapping), total=len(self.spikes), desc='PolySpike')
 
         # Sort results
-        self.poly_indices = np.array([i[0] for i in results])
+        self.poly_knots = np.array([i[0] for i in results])
         params = [i[1] for i in results]
 
         del results
 
-        if all([self.orders[0] == i for i in self.orders[1:]]):
+        if gen_fits:
             self.poly_coeffs = np.array([i[0] for i in params])
+            self.poly_fit = np.array([i[1] for i in params])
+            self.poly_r_squared = np.array([i[2] for i in params])
         else:
-            self.poly_coeffs = [i[0] for i in params]
+            self.poly_coeffs = params
 
-        self.poly_fit = np.array([i[1] for i in params])
-        self.poly_rsqs = np.array([i[2] for i in params])
-        self.poly_rsq_full = np.array([i[3] for i in params])
+        # Generate a dataframe
+        pos = 0
 
-        del params
-
-        # Create dataframe
         self.df_poly = pd.DataFrame()
 
-        for i in range(len(self.points)-1):
+        x = 0
+        for i in self.degree:
+            y = 0
+            _params = np.array([j[pos:pos+i+1] for j in self.poly_coeffs])
+            pos += i
+            for j in _params.T:
+                self.df_poly[f'poly{str(x).zfill(2)}_c{str(y).zfill(2)}'] = j
+                y += 1
+            x += 1
 
-            _coeffs = np.array([arr[i][::-1] for arr in self.poly_coeffs])
 
-            for ind in range(len(_coeffs[0])):
-                self.df_poly[f'poly{str(i).zfill(2)}_c{ind}'] = _coeffs[:, ind]
+    def simulate(self, n_sims, means=None, cov=None, cov_weight=1, seeds=None):
+
+        if means is None or cov is None:
+
+            indices = self.poly_knots.copy()
+            coeffs = self.poly_coeffs.copy()
+
+            # Get mean and cov
+            params = np.column_stack((coeffs, indices))
+
+            if means is None:
+                means = np.mean(params, axis=0)
+
+            if cov is None:
+                cov = np.cov(params, rowvar=0) * cov_weight
+
+        spikes, sim_coeffs, sim_indices = sim_ppoly_dist(means, cov, self.degree,
+                                                         n_sims, seeds=seeds)
+
+        self.sim_spikes = spikes
+        self.sim_coeffs = sim_coeffs
+        self.sim_indices = sim_indices
 
 
     def plot(self):
@@ -202,40 +243,40 @@ class PolySpike(Spike):
             plt.plot(self.times, p, color='C1', ls='--', label=label)
 
         # Spline points
-        colors = ['C' + str(i) for i in range(2, len(self.poly_indices[0]) + 2)]
+        colors = ['C' + str(i) for i in range(2, len(self.poly_knots[0]) + 2)]
 
         for ind in range(len(self.spikes)):
 
             _spike = self.spikes[ind]
 
-            for cind, j in enumerate(self.poly_indices[ind]):
+            for cind, j in enumerate(self.poly_knots[ind]):
                 plt.scatter(self.times[j], _spike[j], color=colors[cind], zorder=3)
 
         plt.legend()
 
 
-def _poly_points(ys, spike_inds):
+def _poly_points(ys, knots):
     """Get spline locations.
 
     Parameters
     ----------
     ys : 1d array
         Spike waveform.
-    spike_inds : 1d array
+    knots : 1d array
         Point indices found by the Spike class.
 
     Returns
     -------
-    inds : 1d array
-        Updated spike indices.
+    knots : 1d array
+        Updated spike knots.
     """
 
     select = [0, 1, 2, 3, 4, 6]
 
     inds = np.zeros(len(select) + 2, dtype=int)
 
-    inds[:5] = spike_inds[select[:5]]
-    inds[-1] = spike_inds[select[-1]]
+    inds[:5] = knots[select[:5]]
+    inds[-1] = knots[select[-1]]
 
     _ys = ys.copy()[inds[4]:]
     _ys -= _ys.min()
@@ -254,13 +295,14 @@ def _poly_points(ys, spike_inds):
     return inds
 
 
-def _fit(ys_inds, orders=None, points=None, fill=None, gen_fit=None):
+def _fit(ys_inds, degree=None, points=None, pad=None, sigma=None,
+         fill=None, gen_fit=None):
     """Proxy spike fit function."""
 
     ys, inds = ys_inds[0], ys_inds[1]
 
     # Get spline points
-    inds = _poly_points(ys, inds)
+    knots = _poly_points(ys, inds)
 
     if points is not None:
 
@@ -273,9 +315,9 @@ def _fit(ys_inds, orders=None, points=None, fill=None, gen_fit=None):
             if name in points:
                 _inds.append(i)
 
-        inds = inds[_inds]
+        knots = knots[_inds]
 
     # Compute features
-    params = compute_poly_features(ys, inds, orders, fill, gen_fit)
+    params = compute_poly_features(ys, knots, degree, pad, sigma, fill, gen_fit)
 
-    return inds, params
+    return knots, params

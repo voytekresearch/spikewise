@@ -1,11 +1,13 @@
 """Within spike features."""
 
+from functools import partial
+
 import numpy as np
 from scipy.optimize import curve_fit
 
 from ..points import control_points
 from ..gen import exp_func
-
+from ..sim.poly import sim_ppoly_partial
 
 
 def compute_features(spike, fs, peak_ind=None, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
@@ -214,17 +216,24 @@ def fit_exp_nonlinear(times, exp, p0, bounds):
     return exp_amp, exp_lambda, exp_const
 
 
-def compute_poly_features(spike, inds, orders, fill=None, gen_fit=True):
+def compute_poly_features(spike, knots, degree, pad=None, sigma=None,
+                          fill=None, gen_fit=True):
     """Compute spline polynomial features.
 
     Parameters
     ----------
     spike : 1d array
         Spike waveform.
-    inds : 1d array
+    knots : 1d array
         Spline locations.
-    orders : 1d array or int
+    degree : 1d array or int
         Orders to fit each spline.
+    pad : int
+        Pad samples around knots for re-weighted (via sigma)
+        error in optimization.
+    sigma :float
+        Standard deviation of error. Adds perference for optimized
+        fit around knots, +/- pad.
     fill : float, optional, default: None
         Fill signal outside of defined spline points with this value.
     gen_fit : bool, optional, default: True
@@ -234,55 +243,63 @@ def compute_poly_features(spike, inds, orders, fill=None, gen_fit=True):
     -------
     coeffs : 1d array
         Polynomial coefficients.
-    fit : 1d array
+    ys_fit : 1d array, optional
         Polynomial fit.
-    rsqs : 1d array
-        R-squared for each spline.
-    rsq_full : float
-        R-squared for combined splines.
+    r_squared : float, optional
+        R-squared for fit.
     """
     # Repeat a single order
-    if isinstance(orders, int):
-        orders = np.tile(orders, len(inds)-1)
-
-    # If all orders are the same, use an non-ragged array
-    ragged = True
-    if all([orders[0] == i for i in orders[1:]]):
-        ragged = False
+    if isinstance(degree, int):
+        degree = np.tile(degree, len(knots)-1)
 
     # Get positions of splines
-    start = inds[:-1]
-    end = inds[1:]
+    start = knots[:-1].copy()
+    end = knots[1:].copy() + 1
 
-    # Initalize arraspike/list
-    coeffs = []
+    # Initalize result arrays
+    ys = spike[start[0]:end[-1]]
+    xs = np.arange(len(ys))
 
-    fit = np.zeros_like(spike)
-    rsqs = np.zeros(len(start))
+    knots -= knots[0]
 
-    fit[:] = np.nan if fill is None else fill
+    # Update sigma (reduce error for knots +/- pad)
+    _sigma = np.ones(len(ys))
 
-    # Fit each spline
-    for ind in range(len(orders)):
+    if sigma is not None:
 
-        s, e, order = start[ind], end[ind], orders[ind]
+        pad = 0 if pad is None else pad
 
-        _coeffs = np.polyfit(np.arange(e-s), spike[s:e], order)
-        coeffs.append(_coeffs)
+        for ind in knots:
 
-        if gen_fit:
-            _fit = np.poly1d(_coeffs)(np.arange(e-s))
-            fit[s:e] = _fit
-            rsqs[ind] = np.corrcoef(spike[s:e], _fit)[0][1] ** 2
+            pad_inds = np.arange(ind-pad, ind+pad+1)
 
-    if not ragged:
-        coeffs = np.array(coeffs)
+            pad_inds = pad_inds[np.where(
+                (pad_inds >= 0) &
+                (pad_inds <= len(ys)-1)
+            )[0]]
+
+            _sigma[pad_inds] = sigma
+
+    # Fit
+    n_params = sum([i + 1 for i in degree])
+
+    pfunc = partial(sim_ppoly_partial, knots=knots, degree=degree)
+
+    coeffs, _ = curve_fit(pfunc, xs, ys, p0=[0] * n_params, sigma=_sigma)
 
     if gen_fit:
-        rsq_full = np.corrcoef(spike[start[0]:end[-1]],
-                               fit[start[0]:end[-1]])[0][1] ** 2
 
-        return coeffs, fit, rsqs, rsq_full
+        # Extend array
+        ys_fit = np.zeros_like(spike)
+        ys_fit[:] = np.nan if fill is None else fill
+        ys_fit[start[0]:end[-1]] = pfunc(xs, *coeffs, knots=knots, degree=degree)
+
+        # Compute r-squared
+        r_squared = np.corrcoef(spike[start[0]:end[-1]],
+                                ys_fit[start[0]:end[-1]])[0][1] ** 2
+
+        return coeffs, ys_fit, r_squared
 
     return coeffs
+
 

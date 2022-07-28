@@ -16,26 +16,34 @@ from spikeparam.patch.fit.poly import PolySpike
 
 class PolySpikeGroup(PolySpike, SpikeGroup):
 
-    def __init__(self,  orders, points=None, fill=None, window_length=(10., 10.), thresh_amp=-10.,
-                 thresh_ms=1.0, pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
-                 poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
+    def __init__(self, degree, knots=None, pad=None, sigma=None, fill=None,
+                 window_length=(10., 10.), thresh_amp=-10., thresh_ms=1.0, pre_peak_ms=(-4., -1.),
+                 pre_inflection_ms=1., smooth_frac=0.008, exp_shift_right=2.0, exp_duration=5.0,
+                 corr_thresh=None):
         """Initialize object."""
 
         # Initalize super classes
         super(SpikeGroup, self).__init__()
-        super(PolySpikeGroup, self).__init__(orders)
+        super(PolySpikeGroup, self).__init__(degree)
 
         # Poly settings
-        self.orders = orders
-        self.points = points
-        self.fill = fill
+        self.degree = degree
+        self.knots = knots
+        self.pad = pad
+        self.sigma = sigma
 
-        if self.points is None:
-            self.points = ['ramp_start', 'inflection', 'rise', 'peak',
+        if self.knots is None:
+            self.knots = ['ramp_start', 'inflection', 'rise', 'peak',
                            'decay', 'tau', 'mtau', 'exp_end']
 
-        if len(self.orders) != len(self.points) - 1:
-            raise ValueError("Orders must be one less then number of points.")
+        if len(self.degree) != len(self.knots) - 1:
+            raise ValueError("Orders must be one less then number of knots.")
+
+        # Repeat a single order
+        if isinstance(self.degree, int):
+            self.degree = np.tile(self.degree, len(self.knots)-1)
+
+        self.fill = fill
 
         # Super settings
         self.window_length = window_length
@@ -45,7 +53,6 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
         self.pre_peak_ms = pre_peak_ms
         self.pre_inflection_ms = pre_inflection_ms
         self.smooth_frac = smooth_frac
-        self.poly_order = poly_order
 
         self.exp_shift_right = exp_shift_right
         self.exp_duration = exp_duration
@@ -80,7 +87,7 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
         gen_fit : bool, optional, default: True
             Generate fit arrays and r-squared values if True.
         gen_indices : bool, optional, default: True
-            Generate sample indices of spike control points if True.
+            Generate sample indices of spike control knots if True.
         low_mem : bool, optional, default: False
             Lowers memory usage at cost of increased runtime from
             repeat storage access.
