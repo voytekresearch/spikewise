@@ -249,7 +249,12 @@ class Spike:
         # In series
         if n_jobs == 1:
 
-            for i in range(self.n_spikes):
+            iterable = range(self.n_spikes)
+
+            if progress is not None:
+                iterable = progress(iterable, total=self.n_spikes, desc='Spike')
+
+            for i in iterable:
 
                 # Compute features
                 indices, ramp_params, peak_params, exp_params = \
@@ -288,7 +293,7 @@ class Spike:
                 if progress is None:
                     results = list(mapping)
                 else:
-                    results = list(progress(mapping, total=len(self.spikes)))
+                    results = list(progress(mapping, total=len(self.spikes), desc='Spike'))
 
             # Unpack results
             for i in range(len(results)):
@@ -410,7 +415,12 @@ class Spike:
         # In series
         if n_jobs == 1:
 
-            for ind in range(len(alt_windows)):
+            iterable = range(len(alt_windows))
+
+            if progress is not None:
+                iterable = progress(iterable, total=len(alt_windows), desc='Alt')
+
+            for ind in iterable:
 
                 _params =  _compute_alt_features(fs, func, alt_windows[ind],
                                                  *func_args, **func_kwargs)
@@ -440,7 +450,7 @@ class Spike:
                 if progress is None:
                     results = list(mapping)
                 else:
-                    results = list(progress(mapping, total=len(alt_windows)))
+                    results = list(progress(mapping, total=len(alt_windows), desc='Alt'))
 
             # Transpose results list
             params = [np.array(i) for i in zip(*results)]

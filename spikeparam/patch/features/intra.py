@@ -1,11 +1,13 @@
 """Within spike features."""
 
+from functools import partial
+
 import numpy as np
 from scipy.optimize import curve_fit
 
 from ..points import control_points
 from ..gen import exp_func
-
+from ..sim.poly import sim_ppoly_partial
 
 
 def compute_features(spike, fs, peak_ind=None, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
@@ -212,3 +214,92 @@ def fit_exp_nonlinear(times, exp, p0, bounds):
     exp_amp, exp_lambda, exp_const = popt
 
     return exp_amp, exp_lambda, exp_const
+
+
+def compute_poly_features(spike, knots, degree, pad=None, sigma=None,
+                          fill=None, gen_fit=True):
+    """Compute spline polynomial features.
+
+    Parameters
+    ----------
+    spike : 1d array
+        Spike waveform.
+    knots : 1d array
+        Spline locations.
+    degree : 1d array or int
+        Orders to fit each spline.
+    pad : int
+        Pad samples around knots for re-weighted (via sigma)
+        error in optimization.
+    sigma :float
+        Standard deviation of error. Adds perference for optimized
+        fit around knots, +/- pad.
+    fill : float, optional, default: None
+        Fill signal outside of defined spline points with this value.
+    gen_fit : bool, optional, default: True
+        Generate the polynomial fit and r-squared values.
+
+    Returns
+    -------
+    coeffs : 1d array
+        Polynomial coefficients.
+    ys_fit : 1d array, optional
+        Polynomial fit.
+    r_squared : float, optional
+        R-squared for fit.
+    """
+    # Repeat a single order
+    if isinstance(degree, int):
+        degree = np.tile(degree, len(knots)-1)
+
+    # Get positions of splines
+    start = knots[:-1].copy()
+    end = knots[1:].copy() + 1
+
+    # Initalize result arrays
+    ys = spike[start[0]:end[-1]]
+    xs = np.arange(len(ys))
+
+    knots -= knots[0]
+
+    # Update sigma (reduce error for knots +/- pad)
+    _sigma = np.ones(len(ys))
+
+    if sigma is not None:
+
+        pad = 0 if pad is None else pad
+
+        for ind in knots:
+
+            pad_inds = np.arange(ind-pad, ind+pad+1)
+
+            pad_inds = pad_inds[np.where(
+                (pad_inds >= 0) &
+                (pad_inds <= len(ys)-1)
+            )[0]]
+
+            _sigma[pad_inds] = sigma
+
+    # Fit
+    n_params = sum([i + 1 for i in degree])
+
+    pfunc = partial(sim_ppoly_partial, knots=knots, degree=degree)
+
+    coeffs, _ = curve_fit(pfunc, xs, ys, p0=[0] * n_params, sigma=_sigma)
+
+    if gen_fit:
+
+        # Extend array
+        ys_fit = np.zeros_like(spike)
+        ys_fit[:] = np.nan if fill is None else fill
+        ys_fit[start[0]:end[-1]] = pfunc(xs, *coeffs, knots=knots, degree=degree)
+
+        # Compute r-squared
+        r_squared = np.corrcoef(spike[start[0]:end[-1]],
+                                ys_fit[start[0]:end[-1]])[0][1] ** 2
+
+        return coeffs, ys_fit, r_squared
+
+    return coeffs
+
+

@@ -73,7 +73,7 @@ def control_points(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
 
     idx_exp_start = idx_peak + decay_curve_shift
     idx_exp_end = idx_exp_start + decay_curve_floor_time
-    idx_exp_end = len(spike) if idx_exp_end > len(spike) else idx_exp_end
+    idx_exp_end = len(spike)-1 if idx_exp_end > len(spike) else idx_exp_end
 
     # Collect indices
     indices = [
