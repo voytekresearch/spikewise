@@ -203,7 +203,19 @@ class PolySpike(Spike):
 
 
     def simulate(self, n_sims, means=None, cov=None, cov_weight=1, seeds=None):
+        """Simulate spikes.
 
+        Parameters
+        ----------
+        n_sims : int
+            Number of simulations.
+        means : 1d array
+            Means of parameters (column stacked coefficients and indices).
+        cov : 2d array
+            Parameter covariance.
+        seeds : 1d array or int
+            Simulation seeds.
+        """
         if means is None or cov is None:
 
             indices = self.poly_knots.copy()
