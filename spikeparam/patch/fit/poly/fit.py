@@ -15,6 +15,8 @@ from spikeparam.patch.features import compute_poly_features
 from spikeparam.patch.sim.poly import sim_ppoly_dist
 
 
+
+
 class PolySpike(Spike):
     """Polynomial Spike sub-class.
 
@@ -48,6 +50,16 @@ class PolySpike(Spike):
         R-squared for each spline.
     poly_rsq_full : 1d array
         R-squared for combined splines.
+    sim_spikes : 2d array
+        Simulated spikes.
+    sim_coeffs : 2d array
+        Simulated polynomial coefficients.
+    sim_knots : 2d array
+        Simualted knot locations, in samples.
+    sim_means : 1d array
+        Parameter means.
+    sim_cov : 2d array
+        Parameter covariance.
     **kwargs
         Additional settings passed to the Spike super class init.
     """
@@ -99,6 +111,13 @@ class PolySpike(Spike):
         self.poly_coeffs = None
         self.poly_fit = None
         self.poly_r_squared = None
+
+        # Simulation
+        self.sim_spikes = None
+        self.sim_coeffs = None
+        self.sim_knots = None
+        self.sim_means = None
+        self.sim_cov = None
 
 
     def fit(self, sig, fs, peak_inds=None, gen_fits=True,
@@ -226,16 +245,18 @@ class PolySpike(Spike):
 
             if means is None:
                 means = np.mean(params, axis=0)
+                self.sim_means = means
 
             if cov is None:
                 cov = np.cov(params, rowvar=0) * cov_weight
+                self.sim_cov = cov
 
         spikes, sim_coeffs, sim_indices = sim_ppoly_dist(means, cov, self.degree,
                                                          n_sims, seeds=seeds)
 
         self.sim_spikes = spikes
         self.sim_coeffs = sim_coeffs
-        self.sim_indices = sim_indices
+        self.sim_knots = sim_indices
 
 
     def plot(self):

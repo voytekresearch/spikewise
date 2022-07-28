@@ -57,14 +57,18 @@ def sim_ppoly_dist(means, cov, degree, n_sims, seeds=None):
     Parameters
     ----------
     means : 1d array
-        Means of parameters (column stacked coefficients and indices).
+        Means of parameters.
+        Expects coefficients and then indices, respectively.
     cov : 2d array
         Parameter covariance.
+        Expects coefficients and then indices, respectively.
     degree : 1d array
         Polynomial degrees.
     n_sims : int
         Number of simulations.
-    seeds : 1d array or int
+    n_samples : int, optional, default: None
+        Number of samples to
+    seeds : 1d array or int, optional, default: None
         Simulation seeds.
 
     Returns
@@ -73,7 +77,7 @@ def sim_ppoly_dist(means, cov, degree, n_sims, seeds=None):
         Simulated spikes.
     sim_coeffs : 2d array
         Polynomial coefficients per simulation.
-    sim_indices : 2d array
+    sim_knots : 2d array
         Knot indices per simulation.
     """
 
@@ -91,36 +95,36 @@ def sim_ppoly_dist(means, cov, degree, n_sims, seeds=None):
 
     # Initalize
     n_coeffs = sum([i+1 for i in degree])
-    sim_indices = sim_params[:, n_coeffs:].astype(int)
+    sim_knots = sim_params[:, n_coeffs:].astype(int)
     sim_coeffs = sim_params[:, :n_coeffs]
 
-    max_len = np.max(sim_indices[:, -1])
+    max_len = np.max(sim_knots[:, -1])
     spikes = np.zeros((n_sims, max_len))
     spikes[:] = np.nan
 
     # Run simulations
     for n in range(n_sims):
 
-        xs = np.arange(sim_indices[n][-1])
+        xs = np.arange(sim_knots[n][-1])
 
         # Get the target array
-        target = sim_ppoly_partial(xs, *sim_coeffs[n], knots=sim_indices[n], degree=degree)
+        target = sim_ppoly_partial(xs, *sim_coeffs[n], knots=sim_knots[n], degree=degree)
 
-        starts = sim_indices[n][:-1]
+        starts = sim_knots[n][:-1]
         diff = np.diff(target)
 
         for i in range(1, len(starts)):
             target[starts[i]:] += (target[starts[i]-1] + diff[starts[i]-2]) - target[starts[i]]
 
         # Solve and update constant coefficients
-        sim_coeffs[n] = solve_constants(target, sim_coeffs[n], knots=sim_indices[n], degree=degree)
+        sim_coeffs[n] = solve_constants(target, sim_coeffs[n], knots=sim_knots[n], degree=degree)
 
         # Regenerate new fit
-        spike = sim_ppoly_partial(xs, *sim_coeffs[n], knots=sim_indices[n], degree=degree)
+        spike = sim_ppoly_partial(xs, *sim_coeffs[n], knots=sim_knots[n], degree=degree)
 
-        spikes[n, max_len-sim_indices[n][-1]:] = spike
+        spikes[n, max_len-sim_knots[n][-1]:] = spike
 
-    return spikes, sim_coeffs, sim_indices
+    return spikes, sim_coeffs, sim_knots
 
 
 def solve_constants(ys, coeffs, knots=None, degree=None):
