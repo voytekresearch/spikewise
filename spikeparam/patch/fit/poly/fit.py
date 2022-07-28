@@ -98,8 +98,7 @@ class PolySpike(Spike):
         self.df_poly = None
         self.poly_coeffs = None
         self.poly_fit = None
-        self.poly_rsqs = None
-        self.poly_rsq_full = None
+        self.poly_r_squared = None
 
 
     def fit(self, sig, fs, peak_inds=None, gen_fits=True,

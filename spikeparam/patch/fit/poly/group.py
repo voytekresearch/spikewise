@@ -63,8 +63,7 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
         self.df_poly = None
         self.poly_coeffs = None
         self.poly_fit = None
-        self.poly_rsqs = None
-        self.poly_rsq_full = None
+        self.poly_r_squared = None
 
 
     def fit(self, sigs, fs, reader=None, peak_inds=None, gen_fits=True,
