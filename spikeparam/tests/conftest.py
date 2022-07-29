@@ -8,6 +8,35 @@ from spikeparam.gaussian import Spikes
 from spikeparam.gaussian.models.features.gaussians import _sim_ap_cycle
 from spikeparam.gaussian.models.cyclepoints import compute_spike_cyclepoints
 
+from spikeparam.patch.sim import sim_ppoly_dist, sim_patch
+
+
+
+@pytest.fixture(scope='module')
+def sim_patch_spikes():
+
+    # Load param distribution
+    fs = 200000
+
+    poly_means = np.load('params/pvc-6_param_means.npy')
+
+    poly_cov = np.load('params/pvc-6_param_cov.npy')
+
+    # Simulate
+    degree = [2, 2, 2, 2, 2, 2, 2]
+
+    spikes, coeffs, knots = sim_ppoly_dist(poly_means, poly_cov, degree,
+                                        100, seeds=np.arange(100))
+
+    # Define isi
+    isi = np.random.exponential(scale=(fs / 1000) * 10, size=len(spikes)-1).astype(int)
+
+    isi += 50 # min refactory period
+
+    sig = sim_patch(spikes, isi, 100)
+
+    yield {'sig': sig, 'spikes': spikes, 'coeffs': coeffs, 'knots': knots, 'fs': 200000}
+
 
 @pytest.fixture(scope='module')
 def sim_spikes():
