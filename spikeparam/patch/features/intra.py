@@ -89,11 +89,11 @@ def compute_ramp_features(spike, fs, idx_ramp_start,
     -------
     poly_params : 1d array
         Polynomial parameters.
-    voltage_ramp : float
+    ramp_amp : float
         First polynomial parameter (e.g. offset).
     inflection_time : float
         Time, in ms, of the inflection point.
-    inflection_mv : float
+    inflection_amp : float
         Voltage, in mv, at time of inflection.
     """
 
@@ -101,12 +101,12 @@ def compute_ramp_features(spike, fs, idx_ramp_start,
     times = np.arange(len(ramp)) * 1000 / fs
 
     poly_params = np.polyfit(times, ramp, poly_order)
-    voltage_ramp = poly_params[0]
+    ramp_amp = poly_params[0]
 
     inflection_time = (idx_peak - idx_inflection) / int(fs / 1000)
-    inflection_mv = ramp[-1]
+    inflection_amp = ramp[-1]
 
-    return poly_params, voltage_ramp, inflection_time, inflection_mv
+    return poly_params, ramp_amp, inflection_time, inflection_amp
 
 
 def compute_peak_features(spike, fs, idx_rise, idx_peak, idx_decay):
@@ -136,8 +136,11 @@ def compute_peak_features(spike, fs, idx_rise, idx_peak, idx_decay):
 
     peak_width = (idx_decay - idx_rise) / int(fs/1000)
 
-    peak_sharpness = ((spike[idx_peak]-spike[idx_peak-5]) +
-                      (spike[idx_peak]-spike[idx_peak+5])) / 2
+    # sharpness is 1/10 of a ms aroudn the peak
+    pad = int(fs / 1000 / 10)
+
+    peak_sharpness = ((spike[idx_peak]-spike[idx_peak-pad]) +
+                      (spike[idx_peak]-spike[idx_peak+pad])) / 2
 
     return peak_amp, peak_width, peak_sharpness
 
