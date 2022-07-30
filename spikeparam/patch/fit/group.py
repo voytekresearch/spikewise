@@ -84,11 +84,20 @@ class SpikeGroup(Spike):
 
             if peak_inds is None:
                 # Find spikes
-                idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
-                                                 self.thresh_ms * int(fs / 1000))
+                pad = int(self.thresh_ms * fs / 1000)
+                idx_spikes,  _= find_spike_times(sig, self.thresh_amp, pad)
 
                 if len(idx_spikes) == 0 and verbose:
                     warnings.warn(f'No spikes detected for spike: {ind}.')
+                else:
+
+                    # Ensure absolute max
+                    starts = idx_spikes - pad//2
+                    ends = idx_spikes + pad//2
+
+                    for _ind in range(len(idx_spikes)):
+                        idx_spikes[_ind] = int(starts[_ind] +
+                                               np.argmax(sig[starts[_ind]:ends[_ind]]))
 
                 if len(idx_spikes) == 0:
                     self.spike_inds.append(None)

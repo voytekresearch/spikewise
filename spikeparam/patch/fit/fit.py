@@ -51,9 +51,9 @@ class Spike:
         Number of spikes to fit.
     indices : 2d array
         Indices of control points per spike.
-    poly_params : 2d array
+    ramp_poly_params : 2d array
         Polynomial parameters per spike.
-    voltage_ramp : 1d array
+    ramp_amp : 1d array
         First polynomial parameter (e.g. offset) per spike.
     inflection_time : 1d array
         Time, in ms, of the inflection point per spike.
@@ -120,8 +120,8 @@ class Spike:
         self.group = None
 
         # Parameters
-        self.poly_params = None
-        self.voltage_ramp = None
+        self.ramp_poly_params = None
+        self.ramp_amp = None
         self.inflection_time = None
         self.inflection_amp = None
 
@@ -183,8 +183,18 @@ class Spike:
         if not preload:
             # Find spikes
             if peak_inds is None:
-                idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
-                                                 self.thresh_ms * int(fs / 1000))
+
+                pad = int(self.thresh_ms * fs / 1000)
+
+                idx_spikes,  _= find_spike_times(sig, self.thresh_amp, pad)
+
+                # Ensure true max
+                starts = idx_spikes - pad//2
+                ends = idx_spikes + pad//2
+
+                for ind in range(len(idx_spikes)):
+                   idx_spikes[ind] = starts[ind] + np.argmax(sig[starts[ind]:ends[ind]])
+
             elif isinstance(peak_inds, (int, np.int64)):
                 idx_spikes = np.array([peak_inds])
 
@@ -215,9 +225,9 @@ class Spike:
 
         # Initalize arrays
         self.indices = np.zeros((self.n_spikes, 7), dtype=int)
-        self.poly_params = np.zeros((self.n_spikes, self.poly_order + 1))
+        self.ramp_poly_params = np.zeros((self.n_spikes, self.poly_order + 1))
 
-        self.voltage_ramp = np.zeros(self.n_spikes)
+        self.ramp_amp = np.zeros(self.n_spikes)
         self.inflection_time = np.zeros(self.n_spikes)
         self.inflection_amp = np.zeros(self.n_spikes)
 
@@ -272,7 +282,7 @@ class Spike:
                 else:
                     self.indices[i] = indices
 
-                self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
+                self.ramp_poly_params[i], self.ramp_amp[i], self.inflection_time[i], \
                     self.inflection_amp[i] = ramp_params
 
                 self.peak_amp[i], self.peak_width[i], self.peak_sharpness[i] = peak_params
@@ -312,7 +322,7 @@ class Spike:
                 else:
                     self.indices[i] = indices
 
-                self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
+                self.ramp_poly_params[i], self.ramp_amp[i], self.inflection_time[i], \
                     self.inflection_amp[i] = ramp_params
 
                 self.peak_amp[i], self.peak_width[i], self.peak_sharpness[i] = peak_params
@@ -506,7 +516,7 @@ class Spike:
                 _times = np.arange(end-start) * 1000 / self.fs
 
                 _fit_ramp, _r2_ramp = gen_fit_ramp(_times, self.spikes[ind][start:end],
-                                                   self.poly_params[ind])
+                                                   self.ramp_poly_params[ind])
 
                 # Initalize arrays
                 if self.fit_ramp is None:
@@ -524,7 +534,8 @@ class Spike:
                 _times = np.arange(end-start) * 1000 / self.fs
 
                 _fit_exp, _r2_exp = gen_fit_exp(_times, self.spikes[ind][start:end],
-                                                (self.exp_amp[ind], self.exp_lambda[ind], self.exp_const[ind]))
+                                                (self.exp_amp[ind], self.exp_lambda[ind],
+                                                self.exp_const[ind]))
 
                 # Initalize arrays
                 if self.fit_exp is None:
@@ -547,7 +558,7 @@ class Spike:
     def gen_df_features(self):
         """Generate feature dataframe."""
 
-        columns = ['voltage_ramp', 'inflection_time', 'inflection_amp', 'peak_amp',
+        columns = ['ramp_amp', 'inflection_time', 'inflection_amp', 'peak_amp',
                    'peak_width', 'peak_sharpness', 'exp_lambda', 'exp_const', 'isi']
 
         self.df_features = pd.DataFrame()
