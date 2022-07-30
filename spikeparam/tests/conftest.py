@@ -17,16 +17,13 @@ def sim_patch_spikes():
 
     # Load param distribution
     fs = 200000
-
     poly_means = np.load('params/pvc-6_param_means.npy')
-
     poly_cov = np.load('params/pvc-6_param_cov.npy')
+    degree = np.load('params/pvc-6_degree.npy')
 
     # Simulate
-    degree = [2, 2, 2, 2, 2, 2, 2]
-
     spikes, coeffs, knots = sim_ppoly_dist(poly_means, poly_cov, degree,
-                                        100, seeds=np.arange(100))
+                                           100, seeds=np.arange(100))
 
     # Define isi
     isi = np.random.exponential(scale=(fs / 1000) * 10, size=len(spikes)-1).astype(int)
@@ -141,3 +138,33 @@ def sim_spikes_fit(sim_spikes):
     spikes.fit(sig, fs, f_range, n_gaussians=3, tol=1e-3)
 
     return {'spikes': spikes}
+
+
+@pytest.fixture
+def check_param():
+
+    def check(param, ptype, prange=None, plen=None):
+
+        assert param is not None
+        assert isinstance(param, ptype)
+
+        is_iterable = isinstance(param, (list, tuple, dict, np.ndarray))
+
+        if prange is not None:
+
+            if prange[0] is not None and not is_iterable:
+                assert (param >= prange[0])
+            else:
+                for p in param:
+                    assert (p >= prange[0])
+
+            if prange[1] is not None and not is_iterable:
+                assert (param <= prange[1])
+            else:
+                for p in param:
+                    assert (p >= prange[0])
+
+        if plen is not None:
+            assert len(param) == plen
+
+    return check
