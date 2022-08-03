@@ -195,10 +195,10 @@ class Spike:
                 for ind in range(len(idx_spikes)):
                    idx_spikes[ind] = starts[ind] + np.argmax(sig[starts[ind]:ends[ind]])
 
-            elif isinstance(peak_inds, (int, np.int64)):
-                idx_spikes = np.array([peak_inds])
+            elif isinstance(peak_inds, (np.ndarray, list, int, np.int64)):
+                idx_spikes = peak_inds
 
-            if len(idx_spikes) == 0 and verbose:
+            if len(idx_spikes) == 0:
                 warnings.warn('No spikes detected.')
                 return
 

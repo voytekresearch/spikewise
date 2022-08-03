@@ -29,11 +29,12 @@ def sim_patch_spikes():
                  'decay', 'tau', 'mtau', 'exp_end']
 
     # Define isi
-    isi = np.random.exponential(scale=(fs / 1000) * 10, size=len(spikes)-1).astype(int)
+    # Define isi
+    isi = np.random.exponential(scale=(fs / 1000) * 50, size=len(spikes)-1).astype(int)
 
-    isi += 50 # min refactory period
+    isi += 1000 # min refactory period
 
-    sig = sim_patch(spikes, isi, 100)
+    sig = sim_patch(spikes, isi, 2500, pad=fs//20)
 
     yield {'sig': sig, 'spikes': spikes, 'degree': degree, 'coeffs': coeffs,
            'knots': knots, 'knot_keys': knot_keys, 'fs': fs}
