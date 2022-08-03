@@ -23,7 +23,10 @@ def sim_patch_spikes():
 
     # Simulate
     spikes, coeffs, knots = sim_ppoly_dist(poly_means, poly_cov, degree,
-                                           100, seeds=np.arange(100))
+                                           20, seeds=np.arange(20))
+
+    knot_keys = ['ramp_start', 'inflection', 'rise', 'peak',
+                 'decay', 'tau', 'mtau', 'exp_end']
 
     # Define isi
     isi = np.random.exponential(scale=(fs / 1000) * 10, size=len(spikes)-1).astype(int)
@@ -32,7 +35,8 @@ def sim_patch_spikes():
 
     sig = sim_patch(spikes, isi, 100)
 
-    yield {'sig': sig, 'spikes': spikes, 'coeffs': coeffs, 'knots': knots, 'fs': 200000}
+    yield {'sig': sig, 'spikes': spikes, 'degree': degree, 'coeffs': coeffs,
+           'knots': knots, 'knot_keys': knot_keys, 'fs': fs}
 
 
 @pytest.fixture(scope='module')

@@ -252,8 +252,7 @@ def compute_poly_features(spike, knots, degree, pad=None, sigma=None,
         R-squared for fit.
     """
     # Repeat a single order
-    if isinstance(degree, int):
-        degree = np.tile(degree, len(knots)-1)
+    degree = np.tile(degree, len(knots)-1) if isinstance(degree, int) else degree
 
     # Get positions of splines
     start = knots[:-1].copy()
@@ -304,5 +303,3 @@ def compute_poly_features(spike, knots, degree, pad=None, sigma=None,
         return coeffs, ys_fit, r_squared
 
     return coeffs
-
-
