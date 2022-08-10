@@ -59,6 +59,8 @@ class Spike:
         Time, in ms, of the inflection point per spike.
     inflection_amp : 1d array
         Voltage, in mv, at time of inflection per spike.
+    peak_amp : float
+        Amplitdue at spike peak.
     peak_width : 1d array
         Width of peak, in ms, per spike.
     peak_sharpness : 1d array
@@ -149,7 +151,6 @@ class Spike:
         # Alt
         self.queue = None
         self.queue_group = None
-
 
     def fit(self, sig, fs, peak_inds=None, gen_fits=True, gen_indices=True,
             preload=False, verbose=False, n_jobs=1, progress=None):
@@ -370,6 +371,7 @@ class Spike:
             Alternaitve sampling rate, in Hz.
         func : function
             Computes features for each window. Each object returned should be {float, int, str}.
+            The signature must be: func(sig, fs, *arg, **kwargs).
         func_args : tuple, optional, default: None
             Arguments to pass to func.
         func_kwargs : dict, optional, default: None
@@ -433,7 +435,7 @@ class Spike:
             for ind in iterable:
 
                 _params =  _compute_alt_features(fs, func, alt_windows[ind],
-                                                 *func_args, **func_kwargs)
+                                                 args=func_args, kwargs=func_kwargs)
 
                 if ind == 0:
                     params = np.zeros((len(alt_windows), len(_params)), dtype='object')
@@ -453,7 +455,7 @@ class Spike:
             # Run mp pool
             with Pool(processes=n_jobs) as pool:
 
-                pfunc = partial(_compute_alt_features, fs, func, *func_args, **func_kwargs)
+                pfunc = partial(_compute_alt_features, fs, func, args=func_args, kwargs=func_kwargs)
 
                 mapping = pool.imap(pfunc, alt_windows)
 
@@ -684,9 +686,8 @@ def _compute_features(spike, fs, **kwargs):
     return indices, ramp_params, peak_params, exp_params
 
 
-def _compute_alt_features(fs, func, sig, *args, **kwargs):
+def _compute_alt_features(fs, func, sig, args=None, kwargs=None):
     """Warpper function for computing alternative features."""
-
     res = func(sig, fs, *args, **kwargs)
 
     if not isinstance(res, (tuple, list, np.ndarray)):
