@@ -152,6 +152,27 @@ class Spike:
         self.queue = None
         self.queue_group = None
 
+
+    def __getattr__(self, key):
+        """Access df_features columns as class attributes.
+
+        Parameters
+        ----------
+        key : str
+            Column name.
+
+        Returns
+        -------
+        1d-array
+            Column values.
+        """
+
+        if key in {'__getstate__', '__setstate__'}:
+            return object.__getattr__(self, key)
+        elif (self.df_features is not None and key in self.df_features.keys()):
+            return self.df_features[key].values
+
+
     def fit(self, sig, fs, peak_inds=None, gen_fits=True, gen_indices=True,
             preload=False, verbose=False, n_jobs=1, progress=None):
         """Fit the 2d spike array.
