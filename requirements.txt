@@ -3,3 +3,5 @@ neurodsp @ git+https://github.com/neurodsp-tools/neurodsp.git@main
 matplotlib >= 3.5.0
 numpy >= 1.21.4
 scipy >= 1.7.3
+pandas >= 1.4.3
+statsmodels >= 0.13.2

@@ -11,7 +11,7 @@ _lint.txt
 */tests/test_files/*
 
 # Ignore coverage file
-.coverage
+.coverage*
 
 # Ignore documentation build files
 doc/_build

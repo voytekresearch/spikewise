@@ -3,7 +3,7 @@
 import numpy as np
 
 
-def sim_patch(spikes, isi, tau):
+def sim_patch(spikes, isi, tau, pad=None):
     """Simulate a patch recording.
 
     Parameters
@@ -14,6 +14,8 @@ def sim_patch(spikes, isi, tau):
         Interspike intervals, in samples.
     tau : float
         Hyperpolarization rate.
+    pad : int
+        Signal padding. The first and last values of the signal are set as constants.
 
     Returns
     -------
@@ -67,5 +69,8 @@ def sim_patch(spikes, isi, tau):
         sig[pos+len(_spike):pos+len(_spike)+interval+1] = hyper
 
         pos += len(_spike) + interval
+
+    if pad is not None:
+        sig = np.pad(sig, pad, constant_values=(sig[0], sig[-1]))
 
     return sig

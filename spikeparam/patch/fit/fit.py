@@ -47,18 +47,20 @@ class Spike:
         Time definition.
     spike_inds : 1d array
         Indices of spikes in sig.
-    n_spikes : int
-        Number of spikes to fit.
+    n_spikes : int or 1d array
+        Number of spikes to fit (per signal in the group sub-class).
     indices : 2d array
         Indices of control points per spike.
-    poly_params : 2d array
+    ramp_poly_params : 2d array
         Polynomial parameters per spike.
-    voltage_ramp : 1d array
+    ramp_amp : 1d array
         First polynomial parameter (e.g. offset) per spike.
     inflection_time : 1d array
         Time, in ms, of the inflection point per spike.
     inflection_amp : 1d array
         Voltage, in mv, at time of inflection per spike.
+    peak_amp : float
+        Amplitdue at spike peak.
     peak_width : 1d array
         Width of peak, in ms, per spike.
     peak_sharpness : 1d array
@@ -120,8 +122,8 @@ class Spike:
         self.group = None
 
         # Parameters
-        self.poly_params = None
-        self.voltage_ramp = None
+        self.ramp_poly_params = None
+        self.ramp_amp = None
         self.inflection_time = None
         self.inflection_amp = None
 
@@ -151,7 +153,27 @@ class Spike:
         self.queue_group = None
 
 
-    def fit(self, sig, fs, peak_inds=None, gen_fits=True, gen_indices=True,
+    def __getattr__(self, key):
+        """Access df_features columns as class attributes.
+
+        Parameters
+        ----------
+        key : str
+            Column name.
+
+        Returns
+        -------
+        1d-array
+            Column values.
+        """
+
+        if key in {'__getstate__', '__setstate__'}:
+            return object.__getattr__(self, key)
+        elif (self.df_features is not None and key in self.df_features.keys()):
+            return self.df_features[key].values
+
+
+    def fit(self, sig, fs, spike_inds=None, gen_fits=True, gen_indices=True,
             preload=False, verbose=False, n_jobs=1, progress=None):
         """Fit the 2d spike array.
 
@@ -161,7 +183,7 @@ class Spike:
             Voltage time series.
         fs : float
             Sampling rate, in Hz.
-        peak_inds : int or 1d array, optional, default: None
+        spike_inds : int or 1d array, optional, default: None
             Location of spike peaks, in samples. Bypasses spike detection.
         gen_fit : bool, optional, default: True
             Generate fit arrays and r-squared values if True.
@@ -182,21 +204,30 @@ class Spike:
 
         if not preload:
             # Find spikes
-            if peak_inds is None:
-                idx_spikes,  _= find_spike_times(sig, self.thresh_amp,
-                                                 self.thresh_ms * int(fs / 1000))
-            elif isinstance(peak_inds, (int, np.int64)):
-                idx_spikes = np.array([peak_inds])
+            if spike_inds is None:
 
-            if len(idx_spikes) == 0 and verbose:
+                pad = int(self.thresh_ms * fs / 1000)
+
+                self.spike_inds,  _= find_spike_times(sig, self.thresh_amp, pad)
+
+                # Ensure true max
+                starts = self.spike_inds - pad//2
+                ends = self.spike_inds + pad//2
+
+                for ind in range(len(self.spike_inds)):
+                   self.spike_inds[ind] = starts[ind] + np.argmax(sig[starts[ind]:ends[ind]])
+
+            elif isinstance(spike_inds, (np.ndarray, list, int, np.int64)):
+                self.spike_inds = spike_inds
+
+            if len(self.spike_inds) == 0:
                 warnings.warn('No spikes detected.')
                 return
 
-            self.spike_inds = idx_spikes
-            self.n_spikes = len(idx_spikes)
+            self.n_spikes = len(self.spike_inds)
 
             # Get 2d array of spikes
-            self.spikes = window_spike(sig, fs, idx_spikes,
+            self.spikes = window_spike(sig, fs, self.spike_inds,
                                        window_length=self.window_length)
 
             del sig
@@ -215,9 +246,9 @@ class Spike:
 
         # Initalize arrays
         self.indices = np.zeros((self.n_spikes, 7), dtype=int)
-        self.poly_params = np.zeros((self.n_spikes, self.poly_order + 1))
+        self.ramp_poly_params = np.zeros((self.n_spikes, self.poly_order + 1))
 
-        self.voltage_ramp = np.zeros(self.n_spikes)
+        self.ramp_amp = np.zeros(self.n_spikes)
         self.inflection_time = np.zeros(self.n_spikes)
         self.inflection_amp = np.zeros(self.n_spikes)
 
@@ -272,7 +303,7 @@ class Spike:
                 else:
                     self.indices[i] = indices
 
-                self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
+                self.ramp_poly_params[i], self.ramp_amp[i], self.inflection_time[i], \
                     self.inflection_amp[i] = ramp_params
 
                 self.peak_amp[i], self.peak_width[i], self.peak_sharpness[i] = peak_params
@@ -312,7 +343,7 @@ class Spike:
                 else:
                     self.indices[i] = indices
 
-                self.poly_params[i], self.voltage_ramp[i], self.inflection_time[i], \
+                self.ramp_poly_params[i], self.ramp_amp[i], self.inflection_time[i], \
                     self.inflection_amp[i] = ramp_params
 
                 self.peak_amp[i], self.peak_width[i], self.peak_sharpness[i] = peak_params
@@ -324,7 +355,7 @@ class Spike:
             raise ValueError('All fits failed.')
 
         # Compute inter spike features
-        self.isi = compute_isi(self.spike_inds, self.fs, True, self.group)
+        self.isi = compute_isi(self.spike_inds, self.fs, True)
 
         # Generate fits
         if gen_fits:
@@ -360,6 +391,7 @@ class Spike:
             Alternaitve sampling rate, in Hz.
         func : function
             Computes features for each window. Each object returned should be {float, int, str}.
+            The signature must be: func(sig, fs, *arg, **kwargs).
         func_args : tuple, optional, default: None
             Arguments to pass to func.
         func_kwargs : dict, optional, default: None
@@ -423,7 +455,7 @@ class Spike:
             for ind in iterable:
 
                 _params =  _compute_alt_features(fs, func, alt_windows[ind],
-                                                 *func_args, **func_kwargs)
+                                                 args=func_args, kwargs=func_kwargs)
 
                 if ind == 0:
                     params = np.zeros((len(alt_windows), len(_params)), dtype='object')
@@ -439,11 +471,13 @@ class Spike:
 
         # In parallel
         else:
+            # Prevent all windows from being passed into pool
+            self.alt_windows = None
 
             # Run mp pool
             with Pool(processes=n_jobs) as pool:
 
-                pfunc = partial(_compute_alt_features, fs, func, *func_args, **func_kwargs)
+                pfunc = partial(_compute_alt_features, fs, func, args=func_args, kwargs=func_kwargs)
 
                 mapping = pool.imap(pfunc, alt_windows)
 
@@ -451,6 +485,9 @@ class Spike:
                     results = list(mapping)
                 else:
                     results = list(progress(mapping, total=len(alt_windows), desc='Alt'))
+
+            # Reset
+            self.alt_windows = alt_windows
 
             # Transpose results list
             params = [np.array(i) for i in zip(*results)]
@@ -482,20 +519,17 @@ class Spike:
         exp : bool, optional, default: True
             Generate exponential fits if True.
         """
+
         if self.times is None:
+
             self.times = np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)[:len(self.spikes[0])]
 
-        # Shift times
-        error = True
-        for ind in self.indices:
+            # Center times around peak
+            for ind in self.indices:
 
-            if ind[3] > 0:
-                self.times -= self.times[ind[3]]
-                error = False
-
-        # All fits were unsuccessful, nothing to generate
-        if error:
-            raise ValueError('All fits failed.')
+                if ind[3] > 0:
+                    self.times -= self.times[ind[3]]
+                    break
 
         for ind in range(len(self.spikes)):
 
@@ -506,7 +540,7 @@ class Spike:
                 _times = np.arange(end-start) * 1000 / self.fs
 
                 _fit_ramp, _r2_ramp = gen_fit_ramp(_times, self.spikes[ind][start:end],
-                                                   self.poly_params[ind])
+                                                   self.ramp_poly_params[ind])
 
                 # Initalize arrays
                 if self.fit_ramp is None:
@@ -524,7 +558,8 @@ class Spike:
                 _times = np.arange(end-start) * 1000 / self.fs
 
                 _fit_exp, _r2_exp = gen_fit_exp(_times, self.spikes[ind][start:end],
-                                                (self.exp_amp[ind], self.exp_lambda[ind], self.exp_const[ind]))
+                                                (self.exp_amp[ind], self.exp_lambda[ind],
+                                                self.exp_const[ind]))
 
                 # Initalize arrays
                 if self.fit_exp is None:
@@ -547,7 +582,7 @@ class Spike:
     def gen_df_features(self):
         """Generate feature dataframe."""
 
-        columns = ['voltage_ramp', 'inflection_time', 'inflection_amp', 'peak_amp',
+        columns = ['ramp_amp', 'inflection_time', 'inflection_amp', 'peak_amp',
                    'peak_width', 'peak_sharpness', 'exp_lambda', 'exp_const', 'isi']
 
         self.df_features = pd.DataFrame()
@@ -573,8 +608,15 @@ class Spike:
 
         self.df_indices = pd.DataFrame()
 
+
+        if isinstance(self.spike_inds, list) and self.spike_inds[0].ndim == 1:
+             # If called from SpikeGroup
+            _spike_inds = [j for i in self.spike_inds for j in i]
+        else:
+            _spike_inds = self.spike_inds
+
         for col, inds in zip(columns, self.indices.T):
-            self.df_indices[col] = self.spike_inds + (inds - ref_inds)
+            self.df_indices[col] = _spike_inds + (inds - ref_inds)
 
 
     def plot(self, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
@@ -673,9 +715,8 @@ def _compute_features(spike, fs, **kwargs):
     return indices, ramp_params, peak_params, exp_params
 
 
-def _compute_alt_features(fs, func, sig, *args, **kwargs):
+def _compute_alt_features(fs, func, sig, args=None, kwargs=None):
     """Warpper function for computing alternative features."""
-
     res = func(sig, fs, *args, **kwargs)
 
     if not isinstance(res, (tuple, list, np.ndarray)):

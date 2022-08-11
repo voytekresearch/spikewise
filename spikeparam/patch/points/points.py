@@ -68,7 +68,6 @@ def control_points(spike, fs, pre_peak_ms=(-4., -1.), pre_inflection_ms=1.,
     one_ms = int(fs / 1000)
 
     decay_curve_shift = int(one_ms / exp_shift_right)
-
     decay_curve_floor_time = int(one_ms * exp_duration)
 
     idx_exp_start = idx_peak + decay_curve_shift
@@ -123,12 +122,12 @@ def inflection(d_smoothed_spike, fs, peak_ind=None, pre_peak_ms=(-4., -1.), pre_
     else:
         mid = peak_ind
 
-    ind_peak = np.argmax(d_smoothed_spike[mid-2*one_ms:mid+2*one_ms])
-    ind_peak += mid-2*one_ms
+    ind_peak = np.argmax(d_smoothed_spike[mid-one_ms:mid+one_ms])
+    ind_peak += mid-one_ms
 
     # Rising half-max of derivative
     ind_rise = np.where(d_smoothed_spike[:ind_peak][::-1] <=
-                       (d_smoothed_spike[ind_peak] / 2))[0]
+                       (d_smoothed_spike[:ind_peak].std()))[0]
 
     ind_rise = 1 if len(ind_rise) == 0 else ind_rise[0] + 1
 
@@ -150,6 +149,9 @@ def inflection(d_smoothed_spike, fs, peak_ind=None, pre_peak_ms=(-4., -1.), pre_
 
     # Get the voltage ramp slope for the N ms before inflection point
     idx_ramp_start = idx_inflection - int(pre_inflection_ms * one_ms)
+
+    if idx_ramp_start < 0:
+        idx_ramp_start = 0
 
     return idx_ramp_start, idx_inflection
 

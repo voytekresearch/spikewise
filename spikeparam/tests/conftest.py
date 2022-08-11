@@ -8,6 +8,37 @@ from spikeparam.gaussian import Spikes
 from spikeparam.gaussian.models.features.gaussians import _sim_ap_cycle
 from spikeparam.gaussian.models.cyclepoints import compute_spike_cyclepoints
 
+from spikeparam.patch.sim import sim_ppoly_dist, sim_patch
+
+
+
+@pytest.fixture(scope='module')
+def sim_patch_spikes():
+
+    # Load param distribution
+    fs = 200000
+    poly_means = np.load('params/pvc-6_param_means.npy')
+    poly_cov = np.load('params/pvc-6_param_cov.npy')
+    degree = np.load('params/pvc-6_degree.npy')
+
+    # Simulate
+    spikes, coeffs, knots = sim_ppoly_dist(poly_means, poly_cov, degree,
+                                           20, seeds=np.arange(20))
+
+    knot_keys = ['ramp_start', 'inflection', 'rise', 'peak',
+                 'decay', 'tau', 'mtau', 'exp_end']
+
+    # Define isi
+    # Define isi
+    isi = np.random.exponential(scale=(fs / 1000) * 50, size=len(spikes)-1).astype(int)
+
+    isi += 1000 # min refactory period
+
+    sig = sim_patch(spikes, isi, 2500, pad=fs//20)
+
+    yield {'sig': sig, 'spikes': spikes, 'degree': degree, 'coeffs': coeffs,
+           'knots': knots, 'knot_keys': knot_keys, 'fs': fs}
+
 
 @pytest.fixture(scope='module')
 def sim_spikes():
@@ -112,3 +143,33 @@ def sim_spikes_fit(sim_spikes):
     spikes.fit(sig, fs, f_range, n_gaussians=3, tol=1e-3)
 
     return {'spikes': spikes}
+
+
+@pytest.fixture
+def check_param():
+
+    def check(param, ptype, prange=None, plen=None):
+
+        assert param is not None
+        assert isinstance(param, ptype)
+
+        is_iterable = isinstance(param, (list, tuple, dict, np.ndarray))
+
+        if prange is not None:
+
+            if prange[0] is not None and not is_iterable:
+                assert (param >= prange[0])
+            else:
+                for p in param:
+                    assert (p >= prange[0])
+
+            if prange[1] is not None and not is_iterable:
+                assert (param <= prange[1])
+            else:
+                for p in param:
+                    assert (p >= prange[0])
+
+        if plen is not None:
+            assert len(param) == plen
+
+    return check
