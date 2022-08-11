@@ -515,20 +515,17 @@ class Spike:
         exp : bool, optional, default: True
             Generate exponential fits if True.
         """
+
         if self.times is None:
+
             self.times = np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)[:len(self.spikes[0])]
 
-        # Shift times
-        error = True
-        for ind in self.indices:
+            # Center times around peak
+            for ind in self.indices:
 
-            if ind[3] > 0:
-                self.times -= self.times[ind[3]]
-                error = False
-
-        # All fits were unsuccessful, nothing to generate
-        if error:
-            raise ValueError('All fits failed.')
+                if ind[3] > 0:
+                    self.times -= self.times[ind[3]]
+                    break
 
         for ind in range(len(self.spikes)):
 
