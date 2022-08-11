@@ -1,3 +1,5 @@
+"""SpikeGroup class."""
+
 import warnings
 
 import numpy as np
@@ -31,29 +33,26 @@ class SpikeGroup(Spike):
         self.corr_thresh = corr_thresh
 
 
-    def fit(self, sigs, fs, reader=None, peak_inds=None, gen_fits=True,
-            gen_indices=True, low_mem=False, verbose=False, n_jobs=1, progress=None):
+    def fit(self, sigs, fs, reader=None, spike_inds=None, gen_fits=True,
+            gen_indices=True, max_gb=4, verbose=False, n_jobs=1, progress=None):
         """Fit the 2d spike array.
 
         Parameters
         ----------
         sigs : 2d array
-            Alternative voltage time series if 2d.
+            Voltage time series.
         fs : float
             Sampling rate, in Hz.
         reader : function, optional, default: None
             Accepts sigs as the sole positional arguement and returns a 1d array.
-        peak_inds : int or 1d array, optional, default: None
+        spike_inds : 2d list or ragged array, optional, default: None
             Location of spike peaks, in samples. Bypasses spike detection.
-            Use an int if the peak of the spike is in the same location.
-            Use a 1d array for unique locations.
         gen_fit : bool, optional, default: True
             Generate fit arrays and r-squared values if True.
         gen_indices : bool, optional, default: True
             Generate sample indices of spike control points if True.
-        low_mem : bool, optional, default: False
-            Lowers memory usage at cost of increased runtime from
-            repeat storage access.
+        max_gb : float, optional, default: 4
+            Maximum size of spike array, in gb.
         verbose : bool, optional, default: False
             Prints warnings if True.
         n_jobs : int, optional, 1
@@ -66,13 +65,23 @@ class SpikeGroup(Spike):
         # Infer required shape
         n_sigs = len(sigs)
 
+        n_spikes = np.array([0] * n_sigs)
+
         self.spike_inds = []
 
-        spikes = []
+        # Pad around detected peak to find absolute peak
+        pad = int(self.thresh_ms * fs / 1000)
 
-        # Tile peak indices
-        if isinstance(peak_inds, int):
-            peak_inds = np.tile(peak_inds, n_sigs)
+        # Initalize spike array
+        n_samples = int(
+            (fs / 1000 * self.window_length[0]) + (fs / 1000 * self.window_length[1]) + 1
+        )
+
+        max_n_spikes = int(np.floor((max_gb * 1e9) / (8*n_samples)))
+
+        self.spikes = np.zeros((max_n_spikes, n_samples))
+
+        i = 0
 
         for ind in range(n_sigs):
 
@@ -82,102 +91,74 @@ class SpikeGroup(Spike):
             else:
                 sig = sigs[ind]
 
-            if peak_inds is None:
+            # Peak detection
+            if spike_inds is None:
+
                 # Find spikes
-                pad = int(self.thresh_ms * fs / 1000)
-                idx_spikes,  _= find_spike_times(sig, self.thresh_amp, pad)
+                _spike_inds,  _= find_spike_times(sig, self.thresh_amp, pad)
 
-                if len(idx_spikes) == 0 and verbose:
-                    warnings.warn(f'No spikes detected for spike: {ind}.')
-                else:
+                if len(_spike_inds) == 0 :
+                    if verbose:
+                        warnings.warn(f'No spikes detected for spike: {ind}.')
+                    continue
 
-                    # Ensure absolute max
-                    starts = idx_spikes - pad//2
-                    ends = idx_spikes + pad//2
+                # Ensure spike peak is the abs max
+                starts = _spike_inds - pad//2
+                ends = _spike_inds + pad//2
 
-                    for _ind in range(len(idx_spikes)):
-                        idx_spikes[_ind] = int(starts[_ind] +
-                                               np.argmax(sig[starts[_ind]:ends[_ind]]))
-
-                if len(idx_spikes) == 0:
-                    self.spike_inds.append(None)
-                else:
-                    self.spike_inds.append(idx_spikes)
+                for _ind in range(len(_spike_inds)):
+                    _spike_inds[_ind] = int(starts[_ind] +
+                                            np.argmax(sig[starts[_ind]:ends[_ind]]))
 
             else:
-                # Spike peaks are pre-computed
-                self.spike_inds.append(peak_inds[ind])
+                _spike_inds = spike_inds[ind]
 
-            # Non-low memory mode:
-            #   Store arrays to list, and then vstack them
-            if not low_mem and self.spike_inds[-1] is not None:
-                spikes.append(
-                    window_spike(sig, fs, self.spike_inds[ind],
-                                 window_length=self.window_length)
-                )
+            # Ensure full windows can be created around spikes
+            inds = np.where((_spike_inds >= 0) & (_spike_inds < len(sig)))[0]
 
-        # Infer number of spikes
-        if peak_inds is None:
-            self.n_spikes = sum([len(s) for s in self.spike_inds if s is not None])
-        else:
-            self.n_spikes = len(peak_inds)
+            # At least 1 spike is found
+            _n_spikes = len(inds)
 
-        # Stack arrays
-        if not low_mem:
-            self.spikes = np.vstack(spikes)
+            if  _n_spikes > 0:
 
-        # Low-memory routine
-        if low_mem:
+                n_spikes[ind] =  _n_spikes
 
-            pos = 0
-            for ind in range(n_sigs):
+                self.spike_inds.append(_spike_inds)
 
-                if self.spike_inds[ind] is None:
-                    continue
+                # Break if size of spikes exceeds max_gb
+                try:
+                    self.spikes[i:i+_n_spikes] =  window_spike(
+                        sig, fs, _spike_inds[inds], window_length=self.window_length)
+                except ValueError:
+                    warnings.warn('Number of spikes exceeds allocated array size. Increase max_gb.')
+                    break
 
-                if reader is not None:
-                    sig = reader(sigs[ind])
+                i += _n_spikes
 
-                spikes = window_spike(sig, fs, self.spike_inds[ind],
-                                      window_length=self.window_length)
+        if i == 0:
+            raise ValueError(
+                'No spikes detected. Check thresh_amp and thresh_ms initalization settings.'
+            )
 
-                if self.spikes is None:
-                    self.spikes = np.zeros((self.n_spikes, len(spikes[0])))
-
-                self.spikes[pos:pos+len(spikes)] = spikes
-
-                pos += len(spikes)
+        # Remove excess of the initalize array
+        self.spikes = self.spikes[:i]
 
         # Track which spike belongs to which signal
-        self.group = np.zeros(self.n_spikes, dtype=int)
+        self.group = np.zeros(i, dtype=int)
 
-        # Drop None spikes inds and track groups
-        if peak_inds is None:
-
-            spike_inds = np.zeros(self.n_spikes, dtype=int)
-
-            pos = 0
-            group = 0
-
-            for inds in self.spike_inds:
-
-                if inds is None:
-                    group += 1
-                    continue
-
-                spike_inds[pos:pos+len(inds)] = inds
-                self.group[pos:pos+len(inds)] = group
-
-                pos += len(inds)
-                group += 1
-
-            self.spike_inds = spike_inds
-        else:
-            self.spike_inds = np.array(self.spike_inds)
+        j = 0
+        for i, n in enumerate(n_spikes):
+            self.group[j:j+n] = i
+            j += n
 
         # Call super's fit method
+        self.n_spikes = sum(n_spikes)
+
         super().fit(None, fs, None, gen_fits, gen_indices, True,
                     n_jobs=n_jobs, progress=progress)
+
+        # Update n_spikes attr
+        self.n_spikes = n_spikes
 
         # Run alts
         if self.queue_group is not None:
@@ -261,7 +242,7 @@ class SpikeGroup(Spike):
                     sig = sigs[ind]
 
                 alt_windows = window_spike(sig, fs, self.df_indices.iloc[inds][ref].values,
-                                        window_length=window_length)
+                                           window_length=window_length)
 
                 if self.alt_windows is None:
                     n_nans = np.count_nonzero(np.isnan(self.df_features['peak_amp'].values))

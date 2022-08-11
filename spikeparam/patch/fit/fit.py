@@ -47,8 +47,8 @@ class Spike:
         Time definition.
     spike_inds : 1d array
         Indices of spikes in sig.
-    n_spikes : int
-        Number of spikes to fit.
+    n_spikes : int or 1d array
+        Number of spikes to fit (per signal in the group sub-class).
     indices : 2d array
         Indices of control points per spike.
     ramp_poly_params : 2d array
@@ -173,7 +173,7 @@ class Spike:
             return self.df_features[key].values
 
 
-    def fit(self, sig, fs, peak_inds=None, gen_fits=True, gen_indices=True,
+    def fit(self, sig, fs, spike_inds=None, gen_fits=True, gen_indices=True,
             preload=False, verbose=False, n_jobs=1, progress=None):
         """Fit the 2d spike array.
 
@@ -183,7 +183,7 @@ class Spike:
             Voltage time series.
         fs : float
             Sampling rate, in Hz.
-        peak_inds : int or 1d array, optional, default: None
+        spike_inds : int or 1d array, optional, default: None
             Location of spike peaks, in samples. Bypasses spike detection.
         gen_fit : bool, optional, default: True
             Generate fit arrays and r-squared values if True.
@@ -204,31 +204,30 @@ class Spike:
 
         if not preload:
             # Find spikes
-            if peak_inds is None:
+            if spike_inds is None:
 
                 pad = int(self.thresh_ms * fs / 1000)
 
-                idx_spikes,  _= find_spike_times(sig, self.thresh_amp, pad)
+                self.spike_inds,  _= find_spike_times(sig, self.thresh_amp, pad)
 
                 # Ensure true max
-                starts = idx_spikes - pad//2
-                ends = idx_spikes + pad//2
+                starts = self.spike_inds - pad//2
+                ends = self.spike_inds + pad//2
 
-                for ind in range(len(idx_spikes)):
-                   idx_spikes[ind] = starts[ind] + np.argmax(sig[starts[ind]:ends[ind]])
+                for ind in range(len(self.spike_inds)):
+                   self.spike_inds[ind] = starts[ind] + np.argmax(sig[starts[ind]:ends[ind]])
 
-            elif isinstance(peak_inds, (np.ndarray, list, int, np.int64)):
-                idx_spikes = peak_inds
+            elif isinstance(spike_inds, (np.ndarray, list, int, np.int64)):
+                self.spike_inds = spike_inds
 
-            if len(idx_spikes) == 0:
+            if len(self.spike_inds) == 0:
                 warnings.warn('No spikes detected.')
                 return
 
-            self.spike_inds = idx_spikes
-            self.n_spikes = len(idx_spikes)
+            self.n_spikes = len(self.spike_inds)
 
             # Get 2d array of spikes
-            self.spikes = window_spike(sig, fs, idx_spikes,
+            self.spikes = window_spike(sig, fs, self.spike_inds,
                                        window_length=self.window_length)
 
             del sig
@@ -356,7 +355,7 @@ class Spike:
             raise ValueError('All fits failed.')
 
         # Compute inter spike features
-        self.isi = compute_isi(self.spike_inds, self.fs, True, self.group)
+        self.isi = compute_isi(self.spike_inds, self.fs, True)
 
         # Generate fits
         if gen_fits:
@@ -472,6 +471,8 @@ class Spike:
 
         # In parallel
         else:
+            # Prevent all windows from being passed into pool
+            self.alt_windows = None
 
             # Run mp pool
             with Pool(processes=n_jobs) as pool:
@@ -484,6 +485,9 @@ class Spike:
                     results = list(mapping)
                 else:
                     results = list(progress(mapping, total=len(alt_windows), desc='Alt'))
+
+            # Reset
+            self.alt_windows = alt_windows
 
             # Transpose results list
             params = [np.array(i) for i in zip(*results)]
@@ -604,8 +608,15 @@ class Spike:
 
         self.df_indices = pd.DataFrame()
 
+
+        if isinstance(self.spike_inds, list) and self.spike_inds[0].ndim == 1:
+             # If called from SpikeGroup
+            _spike_inds = [j for i in self.spike_inds for j in i]
+        else:
+            _spike_inds = self.spike_inds
+
         for col, inds in zip(columns, self.indices.T):
-            self.df_indices[col] = self.spike_inds + (inds - ref_inds)
+            self.df_indices[col] = _spike_inds + (inds - ref_inds)
 
 
     def plot(self, inds=None, mode='full', in_ms=True, show_points=False, ax=None):

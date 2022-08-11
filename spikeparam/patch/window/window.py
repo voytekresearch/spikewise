@@ -68,6 +68,9 @@ def window_spike(sig, fs, spike_inds, times=None, window_length=(10., 10.), in_m
         spike_inds = [spike_inds]
         int_input = True
 
+    initalized = False
+    keep = np.array([True] * len(spike_inds))
+
     for ind in range(len(spike_inds)):
 
         n_samples = fs / 1000 if in_ms else fs
@@ -80,6 +83,11 @@ def window_spike(sig, fs, spike_inds, times=None, window_length=(10., 10.), in_m
         # Get window
         window_spike_pre  = int(spike_inds[ind]-window_pre)
         window_spike_post = int(spike_inds[ind]+window_post) + 1
+
+        # Skip spike if full window can't be sliced
+        if window_spike_pre < 0 or window_spike_post > len(sig):
+            keep[ind] = False
+            continue
 
         # Get data window
         _spike = sig[window_spike_pre:window_spike_post]
@@ -96,11 +104,12 @@ def window_spike(sig, fs, spike_inds, times=None, window_length=(10., 10.), in_m
             return _spike
 
         # Initialize arrays
-        if ind == 0:
-            spikes = np.zeros((len(spike_inds), len(_spike)))
-
-        if ind == 0 and times is not None:
+        if not initalized and times is not None:
             spike_times = np.zeros((len(spike_inds), len(_spike_times)))
+
+        if not initalized:
+            spikes = np.zeros((len(spike_inds), len(_spike)))
+            initalized = True
 
         # Set arrays
         spikes[ind] = _spike
@@ -109,6 +118,6 @@ def window_spike(sig, fs, spike_inds, times=None, window_length=(10., 10.), in_m
             spike_times[ind] = _spike_times
 
     if times is not None:
-        return spikes, spike_times
+        return spikes[keep], spike_times[keep]
 
-    return spikes
+    return spikes[keep]
