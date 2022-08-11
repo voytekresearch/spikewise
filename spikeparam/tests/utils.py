@@ -36,3 +36,8 @@ def alt_func(sig, fs, weight0=1, weight1=1):
 def pbar(func, *args, **kwargs):
     # Test dummy progress bar
     return func
+
+
+def reader(array):
+    # Group array reader passthrough
+    return array

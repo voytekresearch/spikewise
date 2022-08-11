@@ -1,6 +1,5 @@
 """Test base Spike class."""
 
-from tabnanny import verbose
 import pytest
 import numpy as np
 
@@ -20,36 +19,36 @@ def test_spike_fit(sim_patch_spikes, n_jobs):
     # Test fit
     sp = Spike()
     sp.fit(sig, fs, n_jobs=n_jobs)
-    peak_inds = sp.df_indices['peak'].values.copy()
+    spike_inds = sp.df_indices['peak'].values.copy()
 
     # Corr thresh
     _sp = Spike(corr_thresh=0)
-    _sp.fit(sig, fs, peak_inds=peak_inds, n_jobs=n_jobs)
+    _sp.fit(sig, fs, spike_inds=spike_inds, n_jobs=n_jobs)
 
     # No super corr thresh
     with pytest.raises(ValueError):
         _sp = Spike(corr_thresh=1.1)
-        _sp.fit(sig, fs, peak_inds=peak_inds, n_jobs=n_jobs)
+        _sp.fit(sig, fs, spike_inds=spike_inds, n_jobs=n_jobs)
 
     # Raise no peaks warning
     _sp = Spike()
-    _sp.fit(sig, fs, peak_inds=[], n_jobs=n_jobs)
+    _sp.fit(sig, fs, spike_inds=[], n_jobs=n_jobs)
 
     # Fail all fits
     with pytest.raises(ValueError):
         _sp = Spike()
-        _sp.fit(np.zeros(len(sig)), fs, peak_inds=peak_inds, n_jobs=n_jobs, verbose=True)
+        _sp.fit(np.zeros(len(sig)), fs, spike_inds=spike_inds, n_jobs=n_jobs, verbose=True)
 
     # Fail some fits
-    _peak = peak_inds[0]
+    _peak = spike_inds[0]
     _sig = sig.copy()
     _sig[_peak-1000:_peak+1000] = 0
 
     _sp = Spike()
-    _sp.fit(sig, fs, peak_inds=peak_inds, n_jobs=n_jobs, verbose=True)
+    _sp.fit(sig, fs, spike_inds=spike_inds, n_jobs=n_jobs, verbose=True)
 
     _sp = Spike()
-    _sp.fit(sig, fs, peak_inds=peak_inds, n_jobs=n_jobs, progress=pbar)
+    _sp.fit(sig, fs, spike_inds=spike_inds, n_jobs=n_jobs, progress=pbar)
 
 
 @pytest.mark.parametrize('n_jobs', [1, 2])
