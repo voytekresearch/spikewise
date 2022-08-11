@@ -20,10 +20,10 @@ def test_compute_isi():
     assert (isi[:-1] == fs).all()
     assert np.isnan(isi[-1])
 
-    groups = np.concatenate((np.zeros(len(spike_inds)), np.ones(len(spike_inds))))
-    spike_inds = np.concatenate((spike_inds,  spike_inds))
 
-    isi = compute_isi(spike_inds, fs, group=groups)
+    spike_inds = [spike_inds,  spike_inds]
+
+    isi = compute_isi(spike_inds, fs)
 
     assert (isi[:len(isi)//2-1] == isi[len(isi)//2:-1]).all()
 
