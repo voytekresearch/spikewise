@@ -67,7 +67,7 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
 
 
     def fit(self, sigs, fs, reader=None, peak_inds=None, gen_fits=True,
-            gen_indices=True, low_mem=False, verbose=False, n_jobs=1, progress=None):
+            gen_indices=True, max_gb=4, verbose=False, n_jobs=1, progress=None):
         """Fit the PolySpike object.
 
         Parameters
@@ -87,9 +87,8 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
             Generate fit arrays and r-squared values if True.
         gen_indices : bool, optional, default: True
             Generate sample indices of spike control knots if True.
-        low_mem : bool, optional, default: False
-            Lowers memory usage at cost of increased runtime from
-            repeat storage access.
+        max_gb : float, optional, default: 4
+            Maximum size of spike array, in gb.
         verbose : bool, optional, default: False
             Prints warnings if True.
         n_jobs : int, optional, 1
@@ -100,7 +99,7 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
         """
         # Calls SpikeGroup's fit
         super(PolySpike, self).fit(sigs, fs, reader, peak_inds, gen_fits,
-                                    gen_indices, low_mem, verbose, n_jobs, progress)
+                                   gen_indices, max_gb, verbose, n_jobs, progress)
 
         # Calls PolySpike's fit
         super(PolySpikeGroup, self).fit(None, fs, peak_inds, gen_fits,
