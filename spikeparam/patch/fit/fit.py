@@ -224,13 +224,13 @@ class Spike:
                 warnings.warn('No spikes detected.')
                 return
 
-            self.n_spikes = len(self.spike_inds)
-
             # Get 2d array of spikes
             self.spikes = window_spike(sig, fs, self.spike_inds,
                                        window_length=self.window_length)
 
             del sig
+
+        self.n_spikes = len(self.spikes)
 
         # Remove outlier spikes
         if self.corr_thresh is not None:

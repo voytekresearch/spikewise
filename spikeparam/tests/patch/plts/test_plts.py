@@ -14,16 +14,7 @@ from spikeparam.patch.fit import Spike
 @pytest.mark.parametrize('inds', [None, 0, [0, 1], [0, 'null']])
 def test_plot_model(sim_patch_spikes, mode, inds):
 
-    sig = sim_patch_spikes['sig']
-    fs = sim_patch_spikes['fs']
-
-    # Get two spikes
-    sig = sig[10000:20000].copy()
-    sig = np.pad(sig, 5000, constant_values=(sig[0], sig[-1]))
-
-    # Test fit
-    sp = Spike()
-    sp.fit(sig, fs, n_jobs=-1)
+    sp = sim_patch_spikes['sp']
 
     if isinstance(inds, list) and inds[1] == 'null':
         inds = [0, 1]

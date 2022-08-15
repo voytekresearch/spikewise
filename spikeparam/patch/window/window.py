@@ -70,10 +70,9 @@ def window_spike(sig, fs, spike_inds, times=None, window_length=(10., 10.), in_m
 
     initalized = False
     keep = np.array([True] * len(spike_inds))
+    n_samples = fs / 1000 if in_ms else fs
 
     for ind in range(len(spike_inds)):
-
-        n_samples = fs / 1000 if in_ms else fs
 
         # Get windows around spikes
         #   create window indices
