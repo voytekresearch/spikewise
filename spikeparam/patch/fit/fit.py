@@ -11,7 +11,7 @@ import pandas as pd
 from spikeparam.patch.gen import gen_fit_ramp, gen_fit_exp
 from spikeparam.patch.window import find_spike_times, window_spike
 from spikeparam.patch.features import compute_features, compute_isi
-from spikeparam.patch.plts import plot
+from spikeparam.patch.plts import plot_model
 
 
 
@@ -653,7 +653,7 @@ class Spike:
             self.gen_fit(ramp, exp)
 
         # Plot
-        plot(self, inds, mode, in_ms, show_points, ax)
+        plot_model(self, inds, mode, in_ms, show_points, ax)
 
 
     def plot_summary(self, axes=None):

@@ -1,11 +1,10 @@
 """Plotting functions."""
 
 import matplotlib.pyplot as plt
-import numpy as np
 
 
 
-def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
+def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
     """Plot model results.
 
     Parameters
@@ -47,6 +46,9 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
 
         for i in inds:
 
+            if i in model.inds_error:
+                continue
+
             ax.plot(_times, model.spikes[i], color='C0', label=lab_true, alpha=alpha)
             lab_true = ''
 
@@ -73,8 +75,12 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
     elif mode == 'ramp':
 
         for i in inds:
+            if i in model.inds_error:
+                continue
+
             start, end = model.indices[i][0], model.indices[i][1]
-            ax.plot(_times[start:end], model.spikes[i][start:end], color='C0', label=lab_true, alpha=alpha)
+            ax.plot(_times[start:end], model.spikes[i][start:end], color='C0',
+                    label=lab_true, alpha=alpha)
             lab_true = ''
 
         for i in inds:
@@ -90,8 +96,12 @@ def plot(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
     elif mode == 'exp':
 
         for i in inds:
+            if i in model.inds_error:
+                continue
+
             start, end = model.indices[i][-2], model.indices[i][-1]
-            ax.plot(_times[start:end], model.spikes[i][start:end], color='C0', label=lab_true, alpha=alpha)
+            ax.plot(_times[start:end], model.spikes[i][start:end], color='C0',
+                    label=lab_true, alpha=alpha)
             lab_true = ''
 
         for i in inds:
