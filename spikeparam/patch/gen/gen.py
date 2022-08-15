@@ -29,6 +29,7 @@ def gen_fit_ramp(ramp_times, ramp, params):
 
     return ramp_fit, ramp_r2
 
+
 def gen_fit_exp(exp_times, exp, params):
     """Generate the exponential fit.
 
