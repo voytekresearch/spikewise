@@ -160,10 +160,6 @@ class SpikeGroup(Spike):
         # Update n_spikes attr
         self.n_spikes = n_spikes
 
-        # Call super's fit method
-        super().fit(None, fs, None, gen_fits, gen_indices, True,
-                    n_jobs=n_jobs, progress=progress)
-
         # Run alts
         if self.queue_group is not None:
 
