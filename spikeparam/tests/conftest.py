@@ -8,6 +8,7 @@ from spikeparam.gaussian import Spikes
 from spikeparam.gaussian.models.features.gaussians import _sim_ap_cycle
 from spikeparam.gaussian.models.cyclepoints import compute_spike_cyclepoints
 
+from spikeparam.patch.fit import Spike
 from spikeparam.patch.sim import sim_ppoly_dist, sim_patch
 
 
@@ -29,15 +30,22 @@ def sim_patch_spikes():
                  'decay', 'tau', 'mtau', 'exp_end']
 
     # Define isi
-    # Define isi
     isi = np.random.exponential(scale=(fs / 1000) * 50, size=len(spikes)-1).astype(int)
 
     isi += 1000 # min refactory period
 
     sig = sim_patch(spikes, isi, 2500, pad=fs//20)
 
-    yield {'sig': sig, 'spikes': spikes, 'degree': degree, 'coeffs': coeffs,
-           'knots': knots, 'knot_keys': knot_keys, 'fs': fs}
+    # Get two spikes
+    sig_short = sig[10000:20000].copy()
+    sig_short = np.pad(sig_short, 5000, constant_values=(sig_short[0], sig_short[-1]))
+
+    # Fit
+    sp = Spike()
+    sp.fit(sig_short, fs, n_jobs=-1)
+
+    yield {'sig': sig, 'sig_short': sig_short, 'sp': sp, 'spikes': spikes, 'degree': degree,
+           'coeffs': coeffs, 'knots': knots, 'knot_keys': knot_keys, 'fs': fs}
 
 
 @pytest.fixture(scope='module')

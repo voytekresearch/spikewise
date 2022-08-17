@@ -1,3 +1,3 @@
 """Initalize plotting functions."""
 
-from .plts import plot
+from .plts import plot_model

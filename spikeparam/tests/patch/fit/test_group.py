@@ -11,12 +11,8 @@ from spikeparam.tests.utils import reader, alt_func, reader
 @pytest.mark.parametrize('use_reader', [True, False])
 def test_spikegroup_fit(sim_patch_spikes, use_reader):
 
-    sig = sim_patch_spikes['sig']
+    sig = sim_patch_spikes['sig_short']
     fs = sim_patch_spikes['fs']
-
-    # Get two spikes
-    sig = sig[10000:20000].copy()
-    sig = np.pad(sig, 5000, constant_values=(sig[0], sig[-1]))
 
     # Create 2d copy
     sigs = np.array([sig, sig])
@@ -44,14 +40,10 @@ def test_spikegroup_fit(sim_patch_spikes, use_reader):
         sg.fit(sigs, fs, n_jobs=-1, max_gb=1e-9)
 
 
-def test_spikegroup_alt(sim_patch_spikes):
+def test_spike_group_alt(sim_patch_spikes):
 
-    sig = sim_patch_spikes['sig']
+    sig = sim_patch_spikes['sig_short']
     fs = sim_patch_spikes['fs']
-
-    # Get two spikes
-    sig = sig[10000:20000].copy()
-    sig = np.pad(sig, 5000, constant_values=(sig[0], sig[-1]))
 
     # Create 2d copy
     sigs = np.array([sig, sig])

@@ -9,16 +9,16 @@ from spikeparam.tests.utils import plot_test, alt_func, pbar
 @pytest.mark.parametrize('n_jobs', [1, 2])
 def test_spike_fit(sim_patch_spikes, n_jobs):
 
-    sig = sim_patch_spikes['sig']
+    sig = sim_patch_spikes['sig_short']
     fs = sim_patch_spikes['fs']
 
-    # Get two spikes
-    sig = sig[10000:20000].copy()
-    sig = np.pad(sig, 5000, constant_values=(sig[0], sig[-1]))
-
     # Test fit
-    sp = Spike()
-    sp.fit(sig, fs, n_jobs=n_jobs)
+    if n_jobs == 2:
+        sp = Spike()
+        sp.fit(sig, fs, n_jobs=n_jobs, progress=pbar)
+    else:
+        sp = sim_patch_spikes['sp']
+
     spike_inds = sp.df_indices['peak'].values.copy()
 
     # Corr thresh
@@ -47,23 +47,13 @@ def test_spike_fit(sim_patch_spikes, n_jobs):
     _sp = Spike()
     _sp.fit(sig, fs, spike_inds=spike_inds, n_jobs=n_jobs, verbose=True)
 
-    _sp = Spike()
-    _sp.fit(sig, fs, spike_inds=spike_inds, n_jobs=n_jobs, progress=pbar)
-
 
 @pytest.mark.parametrize('n_jobs', [1, 2])
 def test_spike_alt(sim_patch_spikes, n_jobs):
 
-    sig = sim_patch_spikes['sig']
+    sig = sim_patch_spikes['sig_short']
     fs = sim_patch_spikes['fs']
-
-    # Get two spikes
-    sig = sig[10000:20000].copy()
-    sig = np.pad(sig, 5000, constant_values=(sig[0], sig[-1]))
-
-    # Fit
-    sp = Spike()
-    sp.fit(sig, fs, n_jobs=n_jobs)
+    sp = sim_patch_spikes['sp']
 
     param_keys = ['alt_peak_amp']
 
@@ -81,24 +71,15 @@ def test_spike_alt(sim_patch_spikes, n_jobs):
     assert (sp.peak_amp == sp.alt_peak_amp).all()
 
     # Type check various args
+    sp = sim_patch_spikes['sp']
+
     for func_args in [None, (1,), 1]:
-        sp = Spike()
-        sp.fit(sig, fs, n_jobs=n_jobs)
         sp.alt(sig, fs, alt_func, func_args=func_args, n_jobs=n_jobs)
 
 
 def test_spike_gen_fit(sim_patch_spikes):
 
-    sig = sim_patch_spikes['sig']
-    fs = sim_patch_spikes['fs']
-
-    # Get two spikes
-    sig = sig[10000:20000].copy()
-    sig = np.pad(sig, 5000, constant_values=(sig[0], sig[-1]))
-
-    # Test fit
-    sp = Spike()
-    sp.fit(sig, fs, n_jobs=-1)
+    sp = sim_patch_spikes['sp']
 
     # Insert erroneous fit
     sp.inds_error = [0]
@@ -115,16 +96,7 @@ def test_spike_gen_fit(sim_patch_spikes):
 @pytest.mark.parametrize('summary', [True, False])
 def test_spike_plot(sim_patch_spikes, summary):
 
-    sig = sim_patch_spikes['sig']
-    fs = sim_patch_spikes['fs']
-
-    # Get two spikes
-    sig = sig[10000:20000].copy()
-    sig = np.pad(sig, 5000, constant_values=(sig[0], sig[-1]))
-
-    # Test fit
-    sp = Spike()
-    sp.fit(sig, fs, n_jobs=-1)
+    sp = sim_patch_spikes['sp']
 
     sp.fit_ramp = None
     sp.fit_exp = None

@@ -14,9 +14,9 @@ def sim_ppoly(xs, knots, coeffs, degree=2):
     xs : 1d array
         Time definition.
     knots : 1d array
-        Spike segmentation locations, in samples.
+        Spike segmentation locations, in samples. Include endpoints.
     coeffs : 1d array
-        Series of polynomials coefficents.Is reshaped based on degree
+        Series of polynomials coefficents. Is reshaped based on degree
         and must be ordered as expected by np.poly1d.
     degree : int of list of int, optional, default: 2
         Polynomial order for all segments (int) or a unique order for
@@ -27,6 +27,10 @@ def sim_ppoly(xs, knots, coeffs, degree=2):
     ys : 1d array
         Voltage time series.
     """
+
+    if (np.diff(knots) <= 0).any():
+        raise ValueError('Knots must be unique and in ascending order.')
+
     # Initalize array
     ys = np.zeros(len(xs))
 
@@ -59,16 +63,18 @@ def sim_ppoly_dist(means, cov, degree, n_sims, seeds=None):
     means : 1d array
         Means of parameters.
         Expects coefficients and then indices, respectively.
+        See notes.
     cov : 2d array
         Parameter covariance.
         Expects coefficients and then indices, respectively.
+        See notes.
     degree : 1d array
         Polynomial degrees.
     n_sims : int
         Number of simulations.
     n_samples : int, optional, default: None
         Number of samples to
-    seeds : 1d array or int, optional, default: None
+    seeds : 1d array, optional, default: None
         Simulation seeds.
 
     Returns
@@ -79,6 +85,21 @@ def sim_ppoly_dist(means, cov, degree, n_sims, seeds=None):
         Polynomial coefficients per simulation.
     sim_knots : 2d array
         Knot indices per simulation.
+
+    Notes
+    -----
+    The means and cov parameters include both the poly coefficients and knot indices.
+    Below is an example for two 1st order polynomials.
+
+    params = np.array([[poly0...], [poly1...], [poly2...], [poly3...],
+                       [knot0...], [knot1...], [knot2...]])
+
+    means = params.mean(axis=1) # pass this into means arg
+
+    cov = np.cov(params, rowvar=1) # pass this inot cov arg
+
+    In this example, poly0 (slope) and poly1 (intercept) correspond to a line between knot0 and
+    knot1, while poly2 and poly3 correspond to a second line between knot1 and knot 2.
     """
 
     # Sample parameters from multivar norm
@@ -86,10 +107,8 @@ def sim_ppoly_dist(means, cov, degree, n_sims, seeds=None):
 
     for n in range(n_sims):
 
-        if seeds is not None and not isinstance(seeds, int):
+        if seeds is not None:
             np.random.seed(seeds[n])
-        elif seeds is not None:
-            np.random.seed(seeds)
 
         sim_params[n] = np.random.multivariate_normal(means, cov)
 
@@ -137,7 +156,6 @@ def solve_constants(ys, coeffs, knots=None, degree=None):
     coeffs, _ = curve_fit(pfunc, xs, ys, p0=coeffs)
 
     return coeffs
-
 
 
 def sim_ppoly_partial(xs, *coeffs, knots=None, degree=None):

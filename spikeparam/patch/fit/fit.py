@@ -11,7 +11,7 @@ import pandas as pd
 from spikeparam.patch.gen import gen_fit_ramp, gen_fit_exp
 from spikeparam.patch.window import find_spike_times, window_spike
 from spikeparam.patch.features import compute_features, compute_isi
-from spikeparam.patch.plts import plot
+from spikeparam.patch.plts import plot_model
 
 
 
@@ -206,11 +206,12 @@ class Spike:
             # Find spikes
             if spike_inds is None:
 
-                pad = int(self.thresh_ms * fs / 1000)
+                self.spike_inds,  _= find_spike_times(sig, self.thresh_amp, self.thresh_ms)
 
-                self.spike_inds,  _= find_spike_times(sig, self.thresh_amp, pad)
+                # Ensure true max (take abs max around 20% of spike around peak)
+                pad = int(sum(self.window_length) * fs / 1000) + 1
+                pad = pad // 5
 
-                # Ensure true max
                 starts = self.spike_inds - pad//2
                 ends = self.spike_inds + pad//2
 
@@ -224,13 +225,13 @@ class Spike:
                 warnings.warn('No spikes detected.')
                 return
 
-            self.n_spikes = len(self.spike_inds)
-
             # Get 2d array of spikes
             self.spikes = window_spike(sig, fs, self.spike_inds,
                                        window_length=self.window_length)
 
             del sig
+
+        self.n_spikes = len(self.spikes)
 
         # Remove outlier spikes
         if self.corr_thresh is not None:
@@ -653,7 +654,7 @@ class Spike:
             self.gen_fit(ramp, exp)
 
         # Plot
-        plot(self, inds, mode, in_ms, show_points, ax)
+        plot_model(self, inds, mode, in_ms, show_points, ax)
 
 
     def plot_summary(self, axes=None):
