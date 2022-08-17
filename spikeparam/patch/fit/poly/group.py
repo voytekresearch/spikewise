@@ -36,12 +36,12 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
             self.knots = ['ramp_start', 'inflection', 'rise', 'peak',
                            'decay', 'tau', 'mtau', 'exp_end']
 
-        if len(self.degree) != len(self.knots) - 1:
-            raise ValueError("Orders must be one less then number of knots.")
-
         # Repeat a single order
         if isinstance(self.degree, int):
             self.degree = np.tile(self.degree, len(self.knots)-1)
+
+        if len(self.degree) != len(self.knots) - 1:
+            raise ValueError("Orders must be one less then number of knots.")
 
         self.fill = fill
 

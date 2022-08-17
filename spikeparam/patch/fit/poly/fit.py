@@ -46,10 +46,8 @@ class PolySpike(Spike):
         Polynomial coefficients.
     poly_fit : 2d array
         Polynomial fit.
-    poly_rsqs : 2d array
-        R-squared for each spline.
-    poly_rsq_full : 1d array
-        R-squared for combined splines.
+    poly_r_squared : 2d array
+        R-squared of fit.
     sim_spikes : 2d array
         Simulated spikes.
     sim_coeffs : 2d array
@@ -83,12 +81,12 @@ class PolySpike(Spike):
             self.knots = ['ramp_start', 'inflection', 'rise', 'peak',
                           'decay', 'tau', 'mtau', 'exp_end']
 
-        if len(self.degree) != len(self.knots) - 1:
-            raise ValueError("Orders must be one less then number of knots.")
-
         # Repeat a single order
         if isinstance(self.degree, int):
             self.degree = np.tile(self.degree, len(self.knots)-1)
+
+        if len(self.degree) != len(self.knots) - 1:
+            raise ValueError("Orders must be one less then number of knots.")
 
         self.fill = fill
 
@@ -130,8 +128,6 @@ class PolySpike(Spike):
             Voltage time series.
         fs : float
             Sampling rate, in Hz.
-        reader : function, optional, default: None
-            Accepts sigs as the sole positional arguement and returns a 1d array.
         peak_inds : int or 1d array, optional, default: None
             Location of spike peaks, in samples. Bypasses spike detection.
             Use an int if the peak of the spike is in the same location.
@@ -140,11 +136,6 @@ class PolySpike(Spike):
             Generate fit arrays and r-squared values if True.
         gen_indices : bool, optional, default: True
             Generate sample indices of spike control knots if True.
-        low_mem : bool, optional, default: False
-            Lowers memory usage at cost of increased runtime from
-            repeat storage access.
-        verbose : bool, optional, default: False
-            Prints warnings if True.
         n_jobs : int, optional, 1
             Number of jobs to run in parallel.
             -1 default to cpu_count().
@@ -156,7 +147,7 @@ class PolySpike(Spike):
 
         if sig is not None:
             super().fit(sig, fs, peak_inds, gen_fits, gen_indices, preload=False,
-                        n_jobs=n_jobs, progress=progress)
+                        verbose=False, n_jobs=n_jobs, progress=progress)
 
         # In series
         if n_jobs == 1:
@@ -282,7 +273,8 @@ class PolySpike(Spike):
             _spike = self.spikes[ind]
 
             for cind, j in enumerate(self.poly_knots[ind]):
-                plt.scatter(self.times[j], _spike[j], color=colors[cind], zorder=3)
+                plt.scatter(self.times[j+self.indices[ind][0]], _spike[j+self.indices[ind][0]],
+                            color=colors[cind], zorder=3)
 
         plt.legend()
 
