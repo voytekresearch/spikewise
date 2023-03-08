@@ -204,6 +204,8 @@ class Spike:
             Progress bar.
         """
         self.fs = fs
+        
+        
 
         if not preload:
             # Find spikes
@@ -290,6 +292,7 @@ class Spike:
                 iterable = progress(iterable, total=self.n_spikes, desc='Spike')
 
             for i in iterable:
+                print(i)
 
                 # Compute features
                 indices, ramp_params, peak_params, exp_params = \
@@ -561,6 +564,9 @@ class Spike:
                     self.times -= self.times[ind[3]]
                     break
 
+        
+        
+        
         for ind in range(len(self.spikes)):
 
             if ramp and ind not in self.inds_error:
@@ -576,10 +582,20 @@ class Spike:
                 if self.fit_ramp is None:
                     self.fit_ramp = np.zeros((len(self.spikes), len(_fit_ramp)))
                     self.r_squared_ramp = np.zeros(len(self.spikes))
-
+                   
+                    
+               
                 # Store in attr
-                self.fit_ramp[ind] = _fit_ramp
-                self.r_squared_ramp[ind] = _r2_ramp
+                if len(_fit_ramp) != len(self.fit_ramp[ind]):
+                    self.fit_ramp[ind] = np.nan
+                    self.r_squared_ramp[ind] = np.nan
+                    
+               
+                                          
+                else:
+                    self.fit_ramp[ind] = _fit_ramp
+                    self.r_squared_ramp[ind] = _r2_ramp
+          
 
             if exp and ind not in self.inds_error:
                 # Exponential decay
@@ -597,9 +613,16 @@ class Spike:
                     self.r_squared_exp = np.zeros(len(self.spikes))
 
                 # Store in attr
-                self.fit_exp[ind] = _fit_exp
-                self.r_squared_exp[ind] = _r2_exp
-
+                if len(_fit_exp) != len(self.fit_exp[ind]):
+                    self.fit_exp[ind] = np.nan
+                    self.r_squared_exp[ind] = np.nan
+               
+                    
+                else:
+                    self.fit_exp[ind] = _fit_exp
+                    self.r_squared_exp[ind] = _r2_exp
+                
+       
         # Fill error fits with nans
         for ind in self.inds_error:
 

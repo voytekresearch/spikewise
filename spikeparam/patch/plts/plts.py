@@ -61,7 +61,11 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                 continue
 
             # Ramp
+            
             start, end = model.indices[i][0], model.indices[i][1]
+            if len(_times[start:end]) != len(model.fit_ramp[i]):
+                continue
+                
             ax.plot(_times[start:end], model.fit_ramp[i], color='C1',
                     label=lab_fit, alpha=alpha, ls='--')
             lab_fit = ''
