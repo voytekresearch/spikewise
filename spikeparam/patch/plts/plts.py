@@ -1,10 +1,11 @@
 """Plotting functions."""
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 
-def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
+def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None, groups=False, ind_groups=None,  group_names=None,  plot_average=False, plot_average_std=False):
     """Plot model results.
 
     Parameters
@@ -42,84 +43,219 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
     # Plot full fit
     _times = model.times * wght
 
-    if mode == 'full':
 
-        for i in inds:
+    if plot_average:
 
-            if i in model.inds_error:
-                continue
+        # Create custom legend handles and labels
+        custom_legend_handles = []
 
-            ax.plot(_times, model.spikes[i], color='C0', label=lab_true, alpha=alpha)
-            lab_true = ''
+        if groups:
+            if ind_groups is None:
+                raise ValueError("ind_groups cannot be None when groups is True. Please provide group indeces for the overlay group plots.")
 
-            if show_points:
-                _plot_control_points(_times, model.spikes[i], model.indices[i], ax)
+            if group_names is None:
+                group_names = [f'Group {i}' for i in range(len(ind_groups))]
 
-        for i in inds:
+            if plot_average:
+                for idx, group in enumerate(ind_groups):
+                    color = plt.cm.viridis(float(idx) / len(ind_groups))
+                    avg_actual = np.mean([model.spikes[i] for i in group], axis=0)
 
-            if i in model.inds_error:
-                continue
+                    ax.plot(_times, avg_actual, color=color, alpha=0.7, label=f'Avg Actual {group_names[idx]}', linewidth=5)
 
-            # Ramp
-            
-            start, end = model.indices[i][0], model.indices[i][1]
-            if len(_times[start:end]) != len(model.fit_ramp[i]):
-                continue
+                    custom_legend_handles.extend([plt.Line2D([0], [0], color=color, marker='.', markersize=8, label=f'Average Actual {group_names[idx]}')])
+
+                    if plot_average_std:
+                        #plot std of the waveform across time for groups 
+                        std_dev = np.std([model.spikes[i] for i in group], axis=0)
+                        # Visualize standard deviation as a shaded band
+                        ax.fill_between(_times, avg_actual - std_dev, avg_actual + std_dev, color=color, alpha=0.3)
+                        # Add shaded standard deviation band to the legend
+                        custom_legend_handles.append(plt.fill_between([], [], [], color=color, alpha=0.3, label=f'Std Dev Band {group_names[idx]}'))
+
+
+
+
+        else:
+
+            #plot average for all data - no groups 
+            avg_actual = np.mean(model.spikes, axis=0)
+            ax.plot(_times, avg_actual, color='C0', label=f'Avg Actual', linewidth=5)
+            if plot_average_std:
+                #plot std of the waveform across time for groups 
+                std_dev = np.std(model.spikes, axis=0)
+                # Visualize standard deviation as a shaded band
+                ax.fill_between(_times, avg_actual - std_dev, avg_actual + std_dev, olor='C0', alpha=0.3)
+    
+            custom_legend_handles.extend([plt.Line2D([0], [0], color='C0', marker='.', markersize=8, label='Average Actual')])
+            # Add shaded standard deviation band to the legend
+            custom_legend_handles.append(plt.fill_between([], [], [], color='C0', alpha=0.3, label='Std Dev Band'))
+
+
+    else:
+
+        if mode == 'full':
+
+            for i in inds:
+
+                if i in model.inds_error:
+                    continue
+
+                ax.plot(_times, model.spikes[i], color='C0', label=lab_true, alpha=alpha)
+                lab_true = ''
+
+                if show_points:
+                    _plot_control_points(_times, model.spikes[i], model.indices[i], ax)
+
+            for i in inds:
+
+                if i in model.inds_error:
+                    continue
+
+                # Ramp
                 
-            ax.plot(_times[start:end], model.fit_ramp[i], color='C1',
-                    label=lab_fit, alpha=alpha, ls='--')
-            lab_fit = ''
+                start, end = model.indices[i][0], model.indices[i][1]
+                if len(_times[start:end]) != len(model.fit_ramp[i]):
+                    continue
+                    
+                ax.plot(_times[start:end], model.fit_ramp[i], color='C1',
+                        label=lab_fit, alpha=alpha, ls='--')
+                lab_fit = ''
 
-            # Exponential
-            start, end = model.indices[i][-2], model.indices[i][-1]
-            ax.plot(_times[start:end], model.fit_exp[i], color='C1',
-                    label=lab_fit, alpha=alpha, ls='--')
+                # Exponential
+                start, end = model.indices[i][-2], model.indices[i][-1]
+                ax.plot(_times[start:end], model.fit_exp[i], color='C1',
+                        label=lab_fit, alpha=alpha, ls='--')
 
-    # Only plot ramp fit
-    elif mode == 'ramp':
+        # Only plot ramp fit
+        elif mode == 'ramp':
 
-        for i in inds:
-            if i in model.inds_error:
-                continue
+            for i in inds:
+                if i in model.inds_error:
+                    continue
 
-            start, end = model.indices[i][0], model.indices[i][1]
-            ax.plot(_times[start:end], model.spikes[i][start:end], color='C0',
-                    label=lab_true, alpha=alpha)
-            lab_true = ''
+                start, end = model.indices[i][0], model.indices[i][1]
+                ax.plot(_times[start:end], model.spikes[i][start:end], color='C0',
+                        label=lab_true, alpha=alpha)
+                lab_true = ''
 
-        for i in inds:
+            for i in inds:
 
-            if i in model.inds_error:
-                continue
+                if i in model.inds_error:
+                    continue
 
-            ax.plot(_times[start:end], model.fit_ramp[i], color='C1',
-                    label=lab_fit, alpha=alpha, ls='--')
-            lab_fit = ''
+                ax.plot(_times[start:end], model.fit_ramp[i], color='C1',
+                        label=lab_fit, alpha=alpha, ls='--')
+                lab_fit = ''
 
-    # Only plot exp fit
-    elif mode == 'exp':
+        # Only plot exp fit
+        elif mode == 'exp':
 
-        for i in inds:
-            if i in model.inds_error:
-                continue
+            for i in inds:
+                if i in model.inds_error:
+                    continue
 
-            start, end = model.indices[i][-2], model.indices[i][-1]
-            ax.plot(_times[start:end], model.spikes[i][start:end], color='C0',
-                    label=lab_true, alpha=alpha)
-            lab_true = ''
+                start, end = model.indices[i][-2], model.indices[i][-1]
+                ax.plot(_times[start:end], model.spikes[i][start:end], color='C0',
+                        label=lab_true, alpha=alpha)
+                lab_true = ''
 
-        for i in inds:
+            for i in inds:
 
-            if i in model.inds_error:
-                continue
+                if i in model.inds_error:
+                    continue
 
-            ax.plot(_times[start:end], model.fit_exp[i], color='C1',
-                    label=lab_fit, alpha=alpha, ls='--')
-            lab_fit = ''
+                ax.plot(_times[start:end], model.fit_exp[i], color='C1',
+                        label=lab_fit, alpha=alpha, ls='--')
+                lab_fit = ''
 
-    ax.set_ylabel('Voltage')
-    ax.set_xlabel('Time (ms)')
-    ax.legend()
+        ax.set_ylabel('Voltage')
+        ax.set_xlabel('Time (ms)')
+
+        # Create custom legend handles and labels
+        custom_legend_handles = []
+
+       
+        
+        custom_legend_handles.extend([plt.Line2D([0], [0], color='C0', marker='.', markersize=8, label='Actual'),
+                                           plt.Line2D([0], [0], color='C1', linestyle='--', label='Fit')])
+
+        if show_points:
+            custom_legend_handles.extend([plt.Line2D([0], [0], marker='o', markersize=8, label='Start', color='C2'),
+                                     plt.Line2D([0], [0], marker='o', markersize=8, label='Inflection', color='C3'),
+                                     plt.Line2D([0], [0], marker='o', markersize=8, label='Rise', color='C4'),
+                                     plt.Line2D([0], [0], marker='o', markersize=8, label='Peak', color='C5'),
+                                     plt.Line2D([0], [0], marker='o', markersize=8, label='Decay', color='C6')])
+
+        
+
+
+        if groups:
+            if ind_groups is None:
+                raise ValueError("ind_groups cannot be None when groups is True. Please provide group indeces for the overlay group plots.")
+
+            if group_names is None:
+                group_names = [f'Group {i}' for i in range(len(ind_groups))]
+
+            # If plot_average is False, plot individual spikes for each group
+            for idx, group in enumerate(ind_groups):
+                color = plt.cm.viridis(float(idx) / len(ind_groups))
+                for i in group:
+                    if i in model.inds_error:
+                        continue
+
+                    if mode == 'full':
+                        ax.plot(_times, model.spikes[i], color=color, alpha=alpha, label=f'Actual {group_names[idx]}')
+                        if show_points:
+                            _plot_control_points(_times, model.spikes[i], model.indices[i], ax)
+                        start, end = model.indices[i][0], model.indices[i][1]
+                        if len(_times[start:end]) == len(model.fit_ramp[i]):
+                            ax.plot(_times[start:end], model.fit_ramp[i], color=color, linestyle='--', label=f'Fit {group_names[idx]}')
+                        start, end = model.indices[i][-2], model.indices[i][-1]
+                        ax.plot(_times[start:end], model.fit_exp[i], color=color, linestyle='--')
+                    elif mode == 'ramp':
+                        start, end = model.indices[i][0], model.indices[i][1]
+                        ax.plot(_times[start:end], model.spikes[i][start:end], color=color, alpha=alpha, label=f'Actual {group_names[idx]}')
+                        ax.plot(_times[start:end], model.fit_ramp[i], color=color, linestyle='--', label=f'Fit {group_names[idx]}')
+                    elif mode == 'exp':
+                        start, end = model.indices[i][-2], model.indices[i][-1]
+                        ax.plot(_times[start:end], model.spikes[i][start:end], color=color, alpha=alpha, label=f'Actual {group_names[idx]}')
+                        ax.plot(_times[start:end], model.fit_exp[i], color=color, linestyle='--', label=f'Fit {group_names[idx]}')
+
+            # Create custom legend handles and labels
+            custom_legend_handles = []
+
+            # Add handles and labels for actual data
+            for idx, group in enumerate(ind_groups):
+                color = plt.cm.viridis(float(idx) / len(ind_groups))
+                custom_legend_handles.append(plt.Line2D([0], [0], color=color, label=f'Actual {group_names[idx]}'))
+
+            # Add handles and labels for fit data
+            for idx, group in enumerate(ind_groups):
+                color = plt.cm.viridis(float(idx) / len(ind_groups))
+                custom_legend_handles.append(plt.Line2D([0], [0], color=color, linestyle='--', label=f'Fit {group_names[idx]}'))
+
+            # Add control points if show_points is True
+            if show_points:
+                for idx, group in enumerate(ind_groups):
+                    color = plt.cm.viridis(float(idx) / len(ind_groups))
+                    custom_legend_handles.extend([
+                        plt.Line2D([0], [0], marker='o', markersize=8, label=f'Start {group_names[idx]}', color=color),
+                        plt.Line2D([0], [0], marker='o', markersize=8, label=f'Inflection {group_names[idx]}', color=color),
+                        plt.Line2D([0], [0], marker='o', markersize=8, label=f'Rise {group_names[idx]}', color=color),
+                        plt.Line2D([0], [0], marker='o', markersize=8, label=f'Peak {group_names[idx]}', color=color),
+                        plt.Line2D([0], [0], marker='o', markersize=8, label=f'Decay {group_names[idx]}', color=color)
+                    ])
+
+           
+
+
+
+
+    
+
+    ax.legend(handles=custom_legend_handles)
+   
 
 
 def _plot_control_points(times, spike, indices, ax):

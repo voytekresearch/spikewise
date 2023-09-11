@@ -100,7 +100,10 @@ class Spike:
                  pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
                  poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
 
+       
+
         # Settings
+
         self.window_length = window_length
         self.thresh_amp = thresh_amp
         self.thresh_ms = thresh_ms
@@ -250,6 +253,8 @@ class Spike:
 
             self.spikes = self.spikes[inds]
 
+        
+
         # Initalize arrays
         self.indices = np.zeros((self.n_spikes, 7), dtype=int)
         self.ramp_poly_params = np.zeros((self.n_spikes, self.poly_order + 1))
@@ -384,6 +389,8 @@ class Spike:
                 kwargs =  {k:locs[k] for k in locs if k not in ['self', 'sig', 'fs', 'func']}
 
                 self.alt(*args, **kwargs)
+
+               
 
 
     def alt(self, sig, fs, func, func_args=None, func_kwargs=None, param_keys=None,
@@ -672,7 +679,7 @@ class Spike:
             self.df_indices[col] = _spike_inds + (inds - ref_inds)
 
 
-    def plot(self, inds=None, mode='full', in_ms=True, show_points=False, ax=None):
+    def plot(self, inds=None, mode='full', in_ms=True, show_points=False, ax=None, groups=False, ind_groups=None, group_names=None, plot_average=False, plot_average_std=False):
         """Plot fits.
 
         Parameters
@@ -693,6 +700,7 @@ class Spike:
             Axis to plot on.
         """
         # Generate fits if needed
+        
         ramp = False
         exp = False
 
@@ -706,7 +714,7 @@ class Spike:
             self.gen_fit(ramp, exp)
 
         # Plot
-        plot_model(self, inds, mode, in_ms, show_points, ax)
+        plot_model(self, inds, mode, in_ms, show_points, ax, groups, ind_groups, group_names, plot_average, plot_average_std)
 
 
     def plot_summary(self, axes=None):
