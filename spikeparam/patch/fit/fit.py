@@ -215,7 +215,7 @@ class Spike:
             if spike_inds is None:
 
                 self.spike_inds,  _= find_spike_times(sig, self.thresh_amp, self.thresh_ms)
-
+                
                 # Ensure true max (take abs max around 20% of spike around peak)
                 pad = int(sum(self.window_length) * fs / 1000) + 1
                 pad = pad // 5
@@ -226,12 +226,24 @@ class Spike:
                 for ind in range(len(self.spike_inds)):
                    self.spike_inds[ind] = starts[ind] + np.argmax(sig[starts[ind]:ends[ind]])
 
+                #remove spike duplicates 
+                duplicate_spike_times = pd.Series(self.spike_inds).duplicated(keep='first')
+                # Remove duplicate spike times from the spike time array
+                unique_spike_timestamps = [time for i, time in enumerate(self.spike_inds) if not duplicate_spike_times[i]]
+                self.spike_inds = np.asarray(unique_spike_timestamps)
+              
+                   
+
+
             elif isinstance(spike_inds, (np.ndarray, list, int, np.int64)):
                 self.spike_inds = spike_inds
 
             if len(self.spike_inds) == 0:
                 warnings.warn('No spikes detected.')
                 return
+
+            
+
 
             # Get 2d array of spikes
             self.spikes = window_spike(sig, fs, self.spike_inds,
@@ -252,6 +264,8 @@ class Spike:
                 raise ValueError('No super-threshold spikes.')
 
             self.spikes = self.spikes[inds]
+
+
 
         
 
@@ -367,6 +381,7 @@ class Spike:
             raise ValueError('All fits failed.')
 
         # Compute inter spike features
+
         self.isi = compute_isi(self.spike_inds, self.fs, True)
 
         # Generate fits
