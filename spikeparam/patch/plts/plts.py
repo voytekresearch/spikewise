@@ -43,7 +43,7 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
     # Plot full fit
     _times = model.times * wght
 
-
+    colors = ['firebrick', 'royalblue']
     if plot_average:
 
         # Create custom legend handles and labels
@@ -58,7 +58,10 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
 
             if plot_average:
                 for idx, group in enumerate(ind_groups):
-                    color = plt.cm.viridis(float(idx) / len(ind_groups))
+                    if idx > len(colors) - 1:
+                        color = plt.cm.viridis(float(idx) / len(ind_groups))
+                    else:
+                        color = colors[idx]
                     avg_actual = np.mean([model.spikes[i] for i in group], axis=0)
 
                     ax.plot(_times, avg_actual, color=color, alpha=0.7, label=f'Avg Actual {group_names[idx]}', linewidth=5)
