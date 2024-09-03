@@ -214,7 +214,7 @@ class Spike:
             # Find spikes
             if spike_inds is None:
 
-                self.spike_inds,  _= find_spike_times(sig, self.thresh_amp, self.thresh_ms)
+                self.spike_inds,  _= find_spike_times(sig, self.thresh_amp,  self.thresh_ms*1000)
                 
                 # Ensure true max (take abs max around 20% of spike around peak)
                 pad = int(sum(self.window_length) * fs / 1000) + 1
