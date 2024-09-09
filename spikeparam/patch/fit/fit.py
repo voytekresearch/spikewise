@@ -694,7 +694,7 @@ class Spike:
             self.df_indices[col] = _spike_inds + (inds - ref_inds)
 
 
-    def plot(self, inds=None, mode='full', in_ms=True, show_points=False, ax=None, groups=False, ind_groups=None, group_names=None, plot_average=False, plot_average_std=False):
+    def plot(self, inds=None, mode='full', in_ms=True, show_points=False, ax=None, groups=False, ind_groups=None, group_names=None, plot_average=False, plot_average_std=False, color='C0'):
         """Plot fits.
 
         Parameters
@@ -729,7 +729,7 @@ class Spike:
             self.gen_fit(ramp, exp)
 
         # Plot
-        plot_model(self, inds, mode, in_ms, show_points, ax, groups, ind_groups, group_names, plot_average, plot_average_std)
+        plot_model(self, inds, mode, in_ms, show_points, ax, groups, ind_groups, group_names, plot_average, plot_average_std, color)
 
 
     def plot_summary(self, axes=None):
