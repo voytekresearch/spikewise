@@ -5,7 +5,7 @@ import numpy as np
 
 
 
-def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None, groups=False, ind_groups=None,  group_names=None,  plot_average=False, plot_average_std=False):
+def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None, groups=False, ind_groups=None,  group_names=None,  plot_average=False, plot_average_std=False, color_spks='C0'):
     """Plot model results.
 
     Parameters
@@ -83,16 +83,16 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
 
             #plot average for all data - no groups 
             avg_actual = np.mean(model.spikes, axis=0)
-            ax.plot(_times, avg_actual, color='C0', label=f'Avg Actual', linewidth=5)
+            ax.plot(_times, avg_actual, color=color_spks, label=f'Avg Actual', linewidth=5)
             if plot_average_std:
                 #plot std of the waveform across time for groups 
                 std_dev = np.std(model.spikes, axis=0)
                 # Visualize standard deviation as a shaded band
-                ax.fill_between(_times, avg_actual - std_dev, avg_actual + std_dev, olor='C0', alpha=0.3)
+                ax.fill_between(_times, avg_actual - std_dev, avg_actual + std_dev, color=color_spks, alpha=0.3)
     
-            custom_legend_handles.extend([plt.Line2D([0], [0], color='C0', marker='.', markersize=8, label='Average Actual')])
+            custom_legend_handles.extend([plt.Line2D([0], [0], color=color_spks, marker='.', markersize=8, label='Average Actual')])
             # Add shaded standard deviation band to the legend
-            custom_legend_handles.append(plt.fill_between([], [], [], color='C0', alpha=0.3, label='Std Dev Band'))
+            custom_legend_handles.append(plt.fill_between([], [], [], color=color_spks, alpha=0.3, label='Std Dev Band'))
 
 
     else:
@@ -104,7 +104,7 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                 if i in model.inds_error:
                     continue
 
-                ax.plot(_times, model.spikes[i], color='C0', label=lab_true, alpha=alpha)
+                ax.plot(_times, model.spikes[i], color=color_spks, label=lab_true, alpha=alpha)
                 lab_true = ''
 
                 if show_points:
@@ -138,7 +138,7 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                     continue
 
                 start, end = model.indices[i][0], model.indices[i][1]
-                ax.plot(_times[start:end], model.spikes[i][start:end], color='C0',
+                ax.plot(_times[start:end], model.spikes[i][start:end], color=color_spks,
                         label=lab_true, alpha=alpha)
                 lab_true = ''
 
@@ -159,7 +159,7 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                     continue
 
                 start, end = model.indices[i][-2], model.indices[i][-1]
-                ax.plot(_times[start:end], model.spikes[i][start:end], color='C0',
+                ax.plot(_times[start:end], model.spikes[i][start:end], color=color_spks,
                         label=lab_true, alpha=alpha)
                 lab_true = ''
 
@@ -180,7 +180,7 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
 
        
         
-        custom_legend_handles.extend([plt.Line2D([0], [0], color='C0', marker='.', markersize=8, label='Actual'),
+        custom_legend_handles.extend([plt.Line2D([0], [0], color=color_spks, marker='.', markersize=8, label='Actual'),
                                            plt.Line2D([0], [0], color='C1', linestyle='--', label='Fit')])
 
         if show_points:
