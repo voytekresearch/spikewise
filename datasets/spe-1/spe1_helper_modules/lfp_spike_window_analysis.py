@@ -88,7 +88,7 @@ def compute_lfp_windows(
             - foof_results: List of FOOOF objects with fitted features.
     """
     # Convert window and step size to samples
-    window_length = int(window_length_sec * fs)
+    window_length = int(window_length_sec * fs) 
     step_size = int(step_size_sec * fs)
 
     # Initialize results storage
@@ -96,10 +96,15 @@ def compute_lfp_windows(
     foof_results = []
 
     # Define window start and end times
+  
+    # Define window times in samples
     window_times = [
-        (start, start + window_length)
-        for start in range(0, len(lfp_signal) - window_length, step_size)
-    ]
+    (start, min(start + window_length, len(lfp_signal)))
+    for start in range(0, len(lfp_signal), step_size)
+]
+
+
+
 
     # Loop through sliding windows
     for start, end in window_times:
@@ -165,7 +170,8 @@ def map_spikes_to_windows(
         (start/fs*1000, end/fs*1000) 
         for (start, end) in window_times
     ]
-    
+
+
     return _map_spikes_to_window_helper(
         spk_times_ms, 
         spk_ids, 
@@ -189,6 +195,7 @@ def _map_spikes_to_window_helper(
     valid_spike_ids = set(df_spike_ids) if isinstance(df_spike_ids, pd.Series) else set(df_spike_ids)
     spike_to_window_map = {}
 
+
     for spk_id, spike_ms in zip(spk_ids, spk_times_ms):
         if spk_id not in valid_spike_ids:
             warnings.warn(f"Spike ID {spk_id} not in DataFrame - skipping", UserWarning)
@@ -196,7 +203,7 @@ def _map_spikes_to_window_helper(
             
         spike_to_window_map[spk_id] = []
         for window_idx, (start, end) in enumerate(window_times_ms):
-            if start <= spike_ms < end:
+            if start <= spike_ms <= end + 1:
                 spike_to_window_map[spk_id].append(window_idx)
 
     return spike_to_window_map
