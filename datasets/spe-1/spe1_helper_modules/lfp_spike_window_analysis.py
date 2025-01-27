@@ -7,6 +7,7 @@ import pandas as pd
 import warnings
 import matplotlib.pyplot as plt
 from typing import List, Tuple, Dict, Union
+from neurodsp import spectral
 from fooof import FOOOF
 
 # Custom Exceptions -----------------------------------------------------------
@@ -35,145 +36,108 @@ class WindowIndexError(LFPSpikeWindowAnalysisError):
     pass
 
 # LFP Analysis Core Functions --------------------------------------------------
-def create_lfp_windows(
+from fooof import FOOOF
+import numpy as np
+from typing import List, Tuple, Dict, Union
+import matplotlib.pyplot as plt
+import warnings
+from scipy.signal import welch
+
+class LFPAnalysisError(Exception):
+    """Base class for LFP analysis errors"""
+    pass
+
+class InvalidParameterError(LFPAnalysisError):
+    """Raised for invalid input parameters"""
+    pass
+
+class SpectralComputationError(LFPAnalysisError):
+    """Raised for errors in spectral computation"""
+    pass
+
+class FOOOFFitError(LFPAnalysisError):
+    """Raised when FOOOF model fitting fails"""
+    pass
+
+
+
+def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
-    window_length: float = 25.0,
-    step_size: float = 15.0,
-    spectral_params: dict = None,
-    fooof_params: dict = None,
+    window_length_sec: int = 25,
+    step_size_sec: int = 15,
+    freq_range: Tuple[float, float] = (5, 90),
+    fooof_params: Dict = None,
     plot: bool = False
-) -> Tuple[List[Tuple[int, int]], List[tuple], List[FOOOF]]:
+) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF]]:
     """
-    Create sliding windows and perform spectral analysis on LFP data.
+    Compute sliding windows of LFP data and extract spectral features using FOOOF.
 
     Args:
-        lfp_signal: Raw LFP signal (1D array)
-        fs: Sampling frequency (Hz)
-        window_length: Window length in seconds
-        step_size: Step size between windows in seconds
-        spectral_params: Parameters for spectral computation
-        fooof_params: Parameters for FOOOF model
-        plot: Whether to plot power spectra
+        lfp_signal (np.ndarray): Filtered LFP signal.
+        fs (float): Sampling frequency in Hz.
+        window_length_sec (int): Length of each sliding window in seconds.
+        step_size_sec (int): Step size between windows in seconds.
+        freq_range (Tuple[float, float]): Frequency range for FOOOF fitting.
+        fooof_params (Dict): Parameters for the FOOOF model.
+        plot (bool): Whether to plot power spectra for each window.
 
     Returns:
-        Tuple containing:
-        - window_times: List of (start, end) sample indices
-        - spectra: List of (freqs, powers) tuples
-        - foof_results: List of FOOOF objects
-
-    Raises:
-        InvalidParameterError: For invalid input parameters
-        SpectralComputationError: If spectral computation fails
-        FOOOFFitError: If FOOOF fitting fails
+        Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF]]:
+            - spectra: List of tuples containing frequency and power spectra.
+            - foof_results: List of FOOOF objects with fitted features.
     """
-    # Input validation
-    if len(lfp_signal) == 0:
-        raise InvalidParameterError("LFP signal cannot be empty")
-    
-    if fs <= 0:
-        raise InvalidParameterError(f"Invalid sampling frequency: {fs} Hz")
+    # Convert window and step size to samples
+    window_length = int(window_length_sec * fs)
+    step_size = int(step_size_sec * fs)
 
-    if window_length <= 0 or step_size <= 0:
-        raise InvalidParameterError("Window length and step size must be > 0")
-
-    # Convert time parameters to samples
-    window_samples = int(fs * window_length)
-    step_samples = int(fs * step_size)
-
-    if window_samples > len(lfp_signal):
-        raise InvalidParameterError(
-            f"Window length ({window_length}s) exceeds signal duration "
-            f"({len(lfp_signal)/fs:.2f}s)"
-        )
-
-    # Set default parameters
-    default_spectral_params = {
-        'method': 'welch',
-        'window': 'hann',
-        'nperseg': int(fs * 4)  # 4-second segments
-    }
-    spectral_params = {**default_spectral_params, **(spectral_params or {})}
-
-    default_fooof_params = {
-        'max_n_peaks': 4,
-        'freq_range': [5, 90],
-        'verbose': False
-    }
-    fooof_params = {**default_fooof_params, **(fooof_params or {})}
-
-    # Create windows
-    window_times = []
+    # Initialize results storage
     spectra = []
     foof_results = []
-    
-    try:
-        for start in range(0, len(lfp_signal) - window_samples, step_samples):
-            end = start + window_samples
-            window_times.append((start, end))
 
-            # Compute power spectrum
-            lfp_segment = lfp_signal[start:end]
-            fxx, pxx = _compute_spectrum(
-                lfp_segment, fs, 
-                method=spectral_params['method'],
-                window=spectral_params['window'],
-                nperseg=spectral_params['nperseg']
+    # Define window start and end times
+    window_times = [
+        (start, start + window_length)
+        for start in range(0, len(lfp_signal) - window_length, step_size)
+    ]
+
+    # Loop through sliding windows
+    for start, end in window_times:
+        # Extract the LFP segment
+        lfp_segment = lfp_signal[start:end]
+        
+        # Compute the power spectrum using Welch's method
+        try:
+            fxx, pxx = spectral.compute_spectrum(
+                lfp_segment, fs, method='welch', window='hann', nperseg=fs * 4
             )
-
-            # Fit FOOOF model
-            fm = FOOOF(**fooof_params)
-            if not fm.fit(fxx, pxx, fooof_params['freq_range']):
-                raise FOOOFFitError(f"FOOOF fit failed for window {start}-{end}")
-                
-            spectra.append((fxx, pxx))
-            foof_results.append(fm)
-
-            if plot:
-                plt.loglog(fxx, pxx)
-                plt.xlabel('Frequency (Hz)')
-                plt.ylabel('Power (V^2/Hz)')
-                plt.title(f"LFP PSD {start/fs:.2f}s-{end/fs:.2f}s")
-                plt.show()
-
-    except Exception as e:
-        error_msg = f"Error processing window {start}-{end}: {str(e)}"
-        if isinstance(e, FOOOFFitError):
-            raise FOOOFFitError(error_msg) from e
-        raise SpectralComputationError(error_msg) from e
-
-    return window_times, spectra, foof_results
-
-def _compute_spectrum(
-    signal: np.ndarray,
-    fs: float,
-    method: str = 'welch',
-    **kwargs
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Internal function for power spectrum computation
-    
-    Args:
-        signal: Input signal
-        fs: Sampling frequency
-        method: Spectral method ('welch', 'multitaper', etc.)
-        kwargs: Method-specific parameters
+        except ValueError as e:
+            raise SpectralComputationError(f"Error computing power spectrum: {str(e)}") from e
         
-    Returns:
-        (frequencies, power) tuple
-        
-    Raises:
-        SpectralComputationError: If computation fails
-    """
-    try:
-        from scipy.signal import welch
-        fxx, pxx = welch(signal, fs=fs, **kwargs)
-        return fxx, pxx
-        
-    except Exception as e:
-        raise SpectralComputationError(
-            f"Spectral computation failed ({method}): {str(e)}"
-        ) from e
+        # Fit the FOOOF model
+        fm = FOOOF(**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
+        try:
+            fm.fit(fxx, pxx, freq_range=freq_range)
+        except Exception as e:
+            raise FOOOFFitError(f"FOOOF fitting failed for window {start}-{end}: {str(e)}") from e
+
+        # Store results
+        spectra.append((fxx, pxx))
+        foof_results.append(fm)
+
+        # Optional: plot the power spectrum
+        if plot:
+            plt.figure(figsize=(8, 6))
+            plt.loglog(fxx, pxx, label="Power Spectrum")
+            plt.xlabel("Frequency (Hz)")
+            plt.ylabel("Power (V^2/Hz)")
+            plt.title(f"LFP PSD: {start / fs:.2f}s - {end / fs:.2f}s")
+            plt.legend()
+            plt.show()
+
+    return spectra, foof_results
+
+
 
 # Spike-LFP Integration Functions ----------------------------------------------
 def map_spikes_to_windows(
