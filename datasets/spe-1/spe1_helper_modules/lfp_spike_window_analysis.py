@@ -94,14 +94,18 @@ def compute_lfp_windows(
     # Initialize results storage
     spectra = []
     foof_results = []
-
-    # Define window start and end times
   
-    # Define window times in samples
+    # Define window start and end times
     window_times = [
-    (start, min(start + window_length, len(lfp_signal)))
-    for start in range(0, len(lfp_signal), step_size)
-]
+        (start, start + window_length)
+        for start in range(0, len(lfp_signal) - window_length, step_size)
+    ]
+
+    # Add this check to ensure only full-length windows are included
+    window_times = [
+        (start, end) for start, end in window_times if end - start >= window_length
+    ]
+
 
 
 
@@ -140,7 +144,7 @@ def compute_lfp_windows(
             plt.legend()
             plt.show()
 
-    return spectra, foof_results
+    return spectra, foof_results, window_times
 
 
 
