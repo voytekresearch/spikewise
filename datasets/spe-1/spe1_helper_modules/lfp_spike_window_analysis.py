@@ -69,7 +69,7 @@ def compute_lfp_windows(
     freq_range: Tuple[float, float] = (5, 90),
     fooof_params: Dict = None,
     plot: bool = False
-) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF]]:
+) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF], List[Tuple[int, int]]]:
     """
     Compute sliding windows of LFP data and extract spectral features using FOOOF.
 
@@ -83,12 +83,13 @@ def compute_lfp_windows(
         plot (bool): Whether to plot power spectra for each window.
 
     Returns:
-        Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF]]:
+        Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF], List[Tuple[int, int]]]:
             - spectra: List of tuples containing frequency and power spectra.
             - foof_results: List of FOOOF objects with fitted features.
+            - window_times: List of (start, end) sample indices for each window.
     """
     # Convert window and step size to samples
-    window_length = int(window_length_sec * fs) 
+    window_length = int(window_length_sec * fs)
     step_size = int(step_size_sec * fs)
 
     # Initialize results storage
@@ -98,17 +99,13 @@ def compute_lfp_windows(
     # Define window start and end times
     window_times = [
         (start, start + window_length)
-        for start in range(0, len(lfp_signal) - window_length, step_size)
-    ]
-
-    # Add this check to ensure only full-length windows are included
-    window_times = [
-        (start, end) for start, end in window_times if end - start >= window_length
+        for start in range(0, len(lfp_signal) - window_length + 1, step_size)
     ]
 
 
-
-
+    # Ensure the last window is added if there’s remaining data
+    if window_times[-1][1] < len(lfp_signal):
+        window_times.append((len(lfp_signal) - window_length, len(lfp_signal)))
 
     # Loop through sliding windows
     for start, end in window_times:
@@ -147,7 +144,6 @@ def compute_lfp_windows(
     return spectra, foof_results, window_times
 
 
-
 # Spike-LFP Integration Functions ----------------------------------------------
 def map_spikes_to_windows(
     spk_times_ms: List[float],
@@ -171,15 +167,15 @@ def map_spikes_to_windows(
     """
     # Convert window times to milliseconds
     window_times_ms = [
-        (start/fs*1000, end/fs*1000) 
+        (start / fs * 1000, end / fs * 1000) 
         for (start, end) in window_times
     ]
 
-
+    # Call the helper function for mapping
     return _map_spikes_to_window_helper(
-        spk_times_ms, 
-        spk_ids, 
-        window_times_ms, 
+        spk_times_ms,
+        spk_ids,
+        window_times_ms,
         df_spike_ids
     )
 
@@ -192,25 +188,40 @@ def _map_spikes_to_window_helper(
     """Core mapping logic with milliseconds-based windows"""
     # Input validation
     if len(spk_times_ms) != len(spk_ids):
-        raise DataMismatchError(
+        raise ValueError(
             f"spk_times_ms ({len(spk_times_ms)}) and spk_ids ({len(spk_ids)}) must match"
         )
 
+    # Ensure the list of valid spike IDs is a set for fast lookup
     valid_spike_ids = set(df_spike_ids) if isinstance(df_spike_ids, pd.Series) else set(df_spike_ids)
     spike_to_window_map = {}
+
 
 
     for spk_id, spike_ms in zip(spk_ids, spk_times_ms):
         if spk_id not in valid_spike_ids:
             warnings.warn(f"Spike ID {spk_id} not in DataFrame - skipping", UserWarning)
             continue
-            
+
         spike_to_window_map[spk_id] = []
+
+        # Map spike to all overlapping windows
         for window_idx, (start, end) in enumerate(window_times_ms):
-            if start <= spike_ms <= end + 1:
+            # Spike falls completely within this window
+            if start <= spike_ms < end:
                 spike_to_window_map[spk_id].append(window_idx)
+            # Spike is exactly on the boundary of two windows
+            elif window_idx < len(window_times_ms) - 1 and spike_ms == end:
+                spike_to_window_map[spk_id].append(window_idx + 1)
+
+        # Handle unmapped spikes near the signal's end
+        if not spike_to_window_map[spk_id] and spike_ms >= window_times_ms[-1][0]:
+            spike_to_window_map[spk_id].append(len(window_times_ms) - 1)
 
     return spike_to_window_map
+
+
+
 
 def combine_spike_lfp_features(
     spike_data: pd.DataFrame,
@@ -219,22 +230,25 @@ def combine_spike_lfp_features(
     lfp_prefix: str = "lfp_"
 ) -> pd.DataFrame:
     """
-    Merge FOOOF features into spike DataFrame
+    Merge FOOOF features into spike DataFrame.
     
     Args:
-        spike_data: DataFrame with spike parameters
-        foof_results: List of FOOOF objects from create_lfp_windows
-        spike_to_window_map: Mapping from map_spikes_to_windows
-        lfp_prefix: Prefix for LFP feature columns
+        spike_data: DataFrame with spike parameters.
+        foof_results: List of FOOOF objects from create_lfp_windows.
+        spike_to_window_map: Mapping from map_spikes_to_windows.
+        lfp_prefix: Prefix for LFP feature columns.
         
     Returns:
-        Updated DataFrame with LFP features
+        Updated DataFrame with LFP features.
     """
     # Input validation
     if 'spk_id' not in spike_data.columns:
         raise MissingColumnError("DataFrame must contain 'spk_id' column")
 
+    # Create a copy of the DataFrame to avoid modifying the original
     df = spike_data.copy()
+    
+    # Define feature columns
     lfp_features = [
         'offset_current', 'exponent_current', 'r_squared_current',
         'error_current', 'n_peaks_current',
@@ -242,29 +256,35 @@ def combine_spike_lfp_features(
         'r_squared_previous', 'error_previous', 'n_peaks_previous'
     ]
     
+    # Initialize all LFP feature columns as NaN
     for feat in lfp_features:
         df[f"{lfp_prefix}{feat}"] = np.nan
 
+    # Iterate over spike IDs and map features
     for spk_id, window_indices in spike_to_window_map.items():
         row = df[df['spk_id'] == spk_id]
         if row.empty:
-            continue
+            continue  # Skip if spike ID is not in the DataFrame
             
         row_idx = row.index[0]
         
-        # Current window processing
-        if window_indices:
+        
+        # Handle current window features
+        if window_indices:  # Ensure there are window indices
             current_idx = window_indices[0]
             if 0 <= current_idx < len(foof_results):
                 _add_fooof_features(df, row_idx, foof_results[current_idx], f"{lfp_prefix}current")
         
-        # Previous window processing
+        # Handle previous window features
         if window_indices and window_indices[0] > 0:
             prev_idx = window_indices[0] - 1
             if 0 <= prev_idx < len(foof_results):
                 _add_fooof_features(df, row_idx, foof_results[prev_idx], f"{lfp_prefix}previous")
+        elif not window_indices:  # Handle unmapped spikes explicitly
+            print(f"Spike ID {spk_id} is unmapped to any window.")
 
     return df
+
 
 def _add_fooof_features(
     df: pd.DataFrame,
