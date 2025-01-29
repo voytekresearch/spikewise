@@ -71,34 +71,25 @@ class Spike:
         self.group = None
         self.queue = None
         self.queue_group = None
+        self._filtered = False  
 
     def filter_features(self, inplace=True, **kwargs):
-        """Filter spikes while handling missing R² columns gracefully."""
+        """Filter spikes with single-use protection."""
+        if self._filtered:
+            print("Filtering already applied. Create new instance with inplace=False to re-filter.")
+            return None if inplace else self
+        
+        # --- Original filtering logic ---
         params = {**self.default_filter_params, **kwargs}
         
-        # Initialize mask with all True
-        valid_mask = pd.Series(True, index=self.df_features.index)
-        
-        # 1. Always apply inflection time filter
-        valid_mask &= (
+        valid_mask = (
             (self.df_features['inflection_time'] > params['min_inflection']) &
-            (self.df_features['inflection_time'] < params['max_inflection'])
+            (self.df_features['inflection_time'] < params['max_inflection']) &
+            (self.df_features['r_squared_exp'] >= params['min_r2_exp']) &
+            (self.df_features['r_squared_ramp'] >= params['min_r2_ramp'])
         )
-        
-        # 2. Conditionally apply R² filters if columns exist
-        if 'r_squared_exp' in self.df_features:
-            valid_mask &= (self.df_features['r_squared_exp'] >= params['min_r2_exp'])
-        else:
-            warnings.warn("Skipping r_squared_exp filter - column not found")
-            
-        if 'r_squared_ramp' in self.df_features:
-            valid_mask &= (self.df_features['r_squared_ramp'] >= params['min_r2_ramp'])
-        else:
-            warnings.warn("Skipping r_squared_ramp filter - column not found")
-
         valid_indices = self.df_features.index[valid_mask]
 
-        # Handle empty case
         if len(valid_indices) == 0:
             warnings.warn("No spikes remaining after filtering")
             if inplace:
@@ -106,37 +97,52 @@ class Spike:
                 return None
             return self._create_empty_instance()
 
-        # Create filtered data
         df_filtered = self._process_dataframe(valid_indices, params)
         filtered_attributes = self._get_filtered_attributes(valid_indices)
-        
+        # --- End original logic ---
+
         if inplace:
             self._update_instance(df_filtered, filtered_attributes, valid_indices)
+            self._filtered = True  # Mark as filtered
             return None
         else:
-            return self._create_filtered_instance(df_filtered, filtered_attributes)
+            new_sp = self._create_filtered_instance(df_filtered, filtered_attributes)
+            new_sp._filtered = True  # New instance also marked
+            return new_sp
 
     def _process_dataframe(self, valid_indices, params):
-        """Apply transformations to dataframe."""
+        """Apply transformations with column safety checks."""
         df = self.df_features.loc[valid_indices].copy()
         
+        # 1. Handle ISI logging only if 'isi' exists and not already logged
         if params['log_isi']:
-            df['log_isi'] = np.log10(df['isi'])
-            df.drop('isi', axis=1, inplace=True)
-            
+            if 'isi' in df.columns:
+                df['log_isi'] = np.log10(df['isi'])
+                df.drop('isi', axis=1, inplace=True)
+            elif 'log_isi' not in df.columns:
+                warnings.warn("Cannot log ISI - 'isi' column missing")
+        
+        # 2. Drop R² columns only if they exist
         if params['drop_r_squared']:
-            df.drop(['r_squared_exp', 'r_squared_ramp'], axis=1, inplace=True)
-            
+            cols_to_drop = []
+            if 'r_squared_exp' in df.columns:
+                cols_to_drop.append('r_squared_exp')
+            if 'r_squared_ramp' in df.columns:
+                cols_to_drop.append('r_squared_ramp')
+            if cols_to_drop:
+                df.drop(cols_to_drop, axis=1, inplace=True)
+        
+        # 3. Replace infs if requested
         if params['replace_inf']:
             df = df.replace([np.inf, -np.inf], np.nan)
-            
+        
         return df
 
     def _get_filtered_attributes(self, valid_indices):
         """Slice all spike-related arrays."""
         return {
         # Add indices to filtered attributes
-        'indices': self.indices[valid_indices],  # <-- THIS WAS MISSING
+        'indices': self.indices[valid_indices],  
         'spikes': self.spikes[valid_indices],
         'spike_inds': self.spike_inds[valid_indices],
             'spikes': self.spikes[valid_indices],
