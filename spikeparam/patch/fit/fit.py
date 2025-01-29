@@ -6,177 +6,284 @@ import inspect
 import re
 from functools import partial
 from multiprocessing import Pool, cpu_count
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
 from spikeparam.patch.gen import gen_fit_ramp, gen_fit_exp
 from spikeparam.patch.window import find_spike_times, window_spike
 from spikeparam.patch.features import compute_features, compute_isi
 from spikeparam.patch.plts import plot_model
 
-
-
 class Spike:
-    """Parametrize spike waveforms.
-
-    Attributes
-    ----------
-    window_length : tuple of (float, float), optional, default: (10., 10.)
-        Pre and post spike padding.
-    thresh_amp : float, optional, default: -10
-        Voltage threshold.
-        Used in spike detection.
-    thresh_ms : float, optional, default: 1.
-        Minimum time between peaks, in ms.
-        Used in spike detection.
-    pre_peak_ms : tuple of (float, float), optional, default: (-4., -1.)
-        Initial ramp window, relative to the max of the smoothed deriviate.
-        Used to estimated the inflection point.
-    pre_inflection_ms : float, optional, default:1.
-        Time before the inflection point to define the ramp start.
-    smooth_frac : float, optional, default: .008
-        Smoothing fraction for the signal's derivative.
-        Used to estimated the inflection point.
-    exp_shift_right : float, optional, default: 2.
-        Start time, in ms, to exponential start from peak.
-    exp_duration : float, optional, default: 5.
-        End time, in ms, of the exponential from the (shifted) peak.
-    corr_thresh : float, optional, default: None
-        Correlation coefficient threshold.
-        Removes spikes with low mean correlation to other spikes.
-    times : 1d array
-        Time definition.
-    spike_inds : 1d array
-        Indices of spikes in sig.
-    n_spikes : int or 1d array
-        Number of spikes to fit (per signal in the group sub-class).
-    indices : 2d array
-        Indices of control points per spike.
-    ramp_poly_params : 2d array
-        Polynomial parameters per spike.
-    ramp_amp : 1d array
-        First polynomial parameter (e.g. offset) per spike.
-    inflection_time : 1d array
-        Time, in ms, of the inflection point per spike.
-    inflection_amp : 1d array
-        Voltage, in mv, at time of inflection per spike.
-    peak_amp : float
-        Amplitdue at spike peak.
-    peak_width : 1d array
-        Width of peak, in ms, per spike.
-    peak_sharpness : 1d array
-        Sharpness of peak per spike.
-    exp_amp : 1d array
-        Exponential amplitude per spike.
-    exp_lambda : 1d array
-        Exponential decay per spike.
-    exp_const : 1d array
-        Exponential constant per spike.
-    fit_ramp : 2d array
-        Ramp fitted values per spike.
-    fit_exp : 2d aray
-        Exponential decay fitted values per spike.
-    r_squared_ramp : 1d array
-        Ramp r-squared per spike.
-    r_squared_exp : 1d array
-        Exponential r-squared per spike.
-    fs : float
-        Sampling rate, in Hz.
-    inds_error : list of ind
-        Spike indices of failed fits.
-    df_features : pandas.DataFrame
-        Waveform features per spike.
-    df_indices : pandas.DataFrame
-        Indices of control points per spike.
-    queue : list
-        Contains args/kwargs to pass to .alt after .fit.
-    queue_group : list
-        Contains args/kwargs to pass to .alt after .fit.
-        Tracks at the group sub-class level.
-    """
+    """Parametrize spike waveforms."""
+    
     def __init__(self, window_length=(10., 10.), thresh_amp=-10., thresh_ms=1.0,
                  pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
                  poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
-
-
+        
         # Settings
-
         self.window_length = window_length
         self.thresh_amp = thresh_amp
         self.thresh_ms = thresh_ms
-
         self.pre_peak_ms = pre_peak_ms
         self.pre_inflection_ms = pre_inflection_ms
         self.smooth_frac = smooth_frac
         self.poly_order = poly_order
-
         self.exp_shift_right = exp_shift_right
         self.exp_duration = exp_duration
-
         self.corr_thresh = corr_thresh
 
-        # Arrays
+        # Filtering defaults
+        self.default_filter_params = {
+            'min_inflection': 0,
+            'max_inflection': 2,
+            'min_r2_exp': 0.5,
+            'min_r2_ramp': 0.1,
+            'log_isi': True,
+            'drop_r_squared': True,
+            'replace_inf': True
+        }
+
+        # Data storage
         self.spikes = None
         self.n_spikes = None
         self.times = None
         self.spike_inds = None
         self.indices = None
-        self.alt_windows = None
-        self.group = None
-
-        # Parameters
         self.ramp_poly_params = None
         self.ramp_amp = None
         self.inflection_time = None
         self.inflection_amp = None
-
+        self.peak_amp = None
         self.peak_width = None
         self.peak_sharpness = None
-
         self.exp_amp = None
         self.exp_lambda = None
         self.exp_const = None
-
-        # Fits
         self.fit_ramp = None
         self.fit_exp = None
-
         self.r_squared_ramp = None
         self.r_squared_exp = None
-
-        # Error
-        self.inds_error = None
-
-        # Dataframes
+        self.isi = None
+        self.inds_error = []
         self.df_features = None
         self.df_indices = None
-
-        # Alt
+        self.fs = None
+        self.group = None
         self.queue = None
         self.queue_group = None
 
+    def filter_features(self, inplace=True, **kwargs):
+        """Filter spikes while handling missing R² columns gracefully."""
+        params = {**self.default_filter_params, **kwargs}
+        
+        # Initialize mask with all True
+        valid_mask = pd.Series(True, index=self.df_features.index)
+        
+        # 1. Always apply inflection time filter
+        valid_mask &= (
+            (self.df_features['inflection_time'] > params['min_inflection']) &
+            (self.df_features['inflection_time'] < params['max_inflection'])
+        )
+        
+        # 2. Conditionally apply R² filters if columns exist
+        if 'r_squared_exp' in self.df_features:
+            valid_mask &= (self.df_features['r_squared_exp'] >= params['min_r2_exp'])
+        else:
+            warnings.warn("Skipping r_squared_exp filter - column not found")
+            
+        if 'r_squared_ramp' in self.df_features:
+            valid_mask &= (self.df_features['r_squared_ramp'] >= params['min_r2_ramp'])
+        else:
+            warnings.warn("Skipping r_squared_ramp filter - column not found")
 
-    def __getattr__(self, key):
-        """Access df_features columns as class attributes.
+        valid_indices = self.df_features.index[valid_mask]
 
-        Parameters
-        ----------
-        key : str
-            Column name.
+        # Handle empty case
+        if len(valid_indices) == 0:
+            warnings.warn("No spikes remaining after filtering")
+            if inplace:
+                self._reset_attributes()
+                return None
+            return self._create_empty_instance()
 
-        Returns
-        -------
-        1d-array
-            Column values.
-        """
+        # Create filtered data
+        df_filtered = self._process_dataframe(valid_indices, params)
+        filtered_attributes = self._get_filtered_attributes(valid_indices)
+        
+        if inplace:
+            self._update_instance(df_filtered, filtered_attributes, valid_indices)
+            return None
+        else:
+            return self._create_filtered_instance(df_filtered, filtered_attributes)
 
-        if key in {'__getstate__', '__setstate__'}:
-            return object.__getattr__(self, key)
-        elif (self.df_features is not None and key in self.df_features.keys()):
-            return self.df_features[key].values
+    def _process_dataframe(self, valid_indices, params):
+        """Apply transformations to dataframe."""
+        df = self.df_features.loc[valid_indices].copy()
+        
+        if params['log_isi']:
+            df['log_isi'] = np.log10(df['isi'])
+            df.drop('isi', axis=1, inplace=True)
+            
+        if params['drop_r_squared']:
+            df.drop(['r_squared_exp', 'r_squared_ramp'], axis=1, inplace=True)
+            
+        if params['replace_inf']:
+            df = df.replace([np.inf, -np.inf], np.nan)
+            
+        return df
 
+    def _get_filtered_attributes(self, valid_indices):
+        """Slice all spike-related arrays."""
+        return {
+        # Add indices to filtered attributes
+        'indices': self.indices[valid_indices],  # <-- THIS WAS MISSING
+        'spikes': self.spikes[valid_indices],
+        'spike_inds': self.spike_inds[valid_indices],
+            'spikes': self.spikes[valid_indices],
+            'spike_inds': self.spike_inds[valid_indices],
+            'ramp_poly_params': self.ramp_poly_params[valid_indices],
+            'ramp_amp': self.ramp_amp[valid_indices],
+            'inflection_time': self.inflection_time[valid_indices],
+            'inflection_amp': self.inflection_amp[valid_indices],
+            'peak_amp': self.peak_amp[valid_indices],
+            'peak_width': self.peak_width[valid_indices],
+            'peak_sharpness': self.peak_sharpness[valid_indices],
+            'exp_amp': self.exp_amp[valid_indices],
+            'exp_lambda': self.exp_lambda[valid_indices],
+            'exp_const': self.exp_const[valid_indices],
+            'isi': self.isi[valid_indices],
+            'fit_ramp': self.fit_ramp[valid_indices] if self.fit_ramp is not None else None,
+            'fit_exp': self.fit_exp[valid_indices] if self.fit_exp is not None else None,
+            'r_squared_ramp': self.r_squared_ramp[valid_indices] if self.r_squared_ramp is not None else None,
+            'r_squared_exp': self.r_squared_exp[valid_indices] if self.r_squared_exp is not None else None,
+            'inds_error': self._map_error_indices(valid_indices)
+        }
+
+    def _map_error_indices(self, valid_indices):
+        """Convert original error indices to new positions."""
+        index_map = {orig: new for new, orig in enumerate(valid_indices)}
+        return [index_map[i] for i in self.inds_error if i in index_map]
+
+    def _update_instance(self, df_filtered, filtered_attributes, valid_indices):
+        """Update current instance with filtered data."""
+        # Update core attributes
+        for attr, value in filtered_attributes.items():
+            setattr(self, attr, value)
+            
+        self.n_spikes = len(self.spikes)
+        self.df_features = df_filtered
+        self.gen_df_indices()
+        
+        # Reset derived data
+        self.times = self._generate_times()
+
+    def _create_filtered_instance(self, df_filtered, filtered_attributes):
+        """Create new Spike instance with filtered data."""
+        # Create new instance with same parameters
+        new_sp = Spike(
+            window_length=self.window_length,
+            thresh_amp=self.thresh_amp,
+            thresh_ms=self.thresh_ms,
+            pre_peak_ms=self.pre_peak_ms,
+            pre_inflection_ms=self.pre_inflection_ms,
+            smooth_frac=self.smooth_frac,
+            poly_order=self.poly_order,
+            exp_shift_right=self.exp_shift_right,
+            exp_duration=self.exp_duration,
+            corr_thresh=self.corr_thresh
+        )
+        
+        # Set filtered attributes
+        new_sp.fs = self.fs
+        new_sp.times = self.times.copy() if self.times is not None else None
+        new_sp.group = self.group
+        new_sp.queue = self.queue.copy() if self.queue is not None else None
+        new_sp.queue_group = self.queue_group.copy() if self.queue_group is not None else None
+        
+        for attr, value in filtered_attributes.items():
+            setattr(new_sp, attr, value)
+            
+        new_sp.n_spikes = len(new_sp.spikes)
+        new_sp.df_features = df_filtered
+        new_sp.gen_df_indices()
+        
+        return new_sp
+
+    def _reset_attributes(self):
+        """Reset all data attributes to initial state."""
+        self.spikes = None
+        self.n_spikes = 0
+        self.spike_inds = np.array([])
+        self.indices = None
+        self.ramp_poly_params = None
+        self.ramp_amp = None
+        self.inflection_time = None
+        self.inflection_amp = None
+        self.peak_amp = None
+        self.peak_width = None
+        self.peak_sharpness = None
+        self.exp_amp = None
+        self.exp_lambda = None
+        self.exp_const = None
+        self.fit_ramp = None
+        self.fit_exp = None
+        self.r_squared_ramp = None
+        self.r_squared_exp = None
+        self.isi = None
+        self.inds_error = []
+        self.df_features = None
+        self.df_indices = None
+
+    def _create_empty_instance(self):
+        """Create empty instance with matching parameters."""
+        new_sp = Spike(
+            window_length=self.window_length,
+            thresh_amp=self.thresh_amp,
+            thresh_ms=self.thresh_ms,
+            pre_peak_ms=self.pre_peak_ms,
+            pre_inflection_ms=self.pre_inflection_ms,
+            smooth_frac=self.smooth_frac,
+            poly_order=self.poly_order,
+            exp_shift_right=self.exp_shift_right,
+            exp_duration=self.exp_duration,
+            corr_thresh=self.corr_thresh
+        )
+        new_sp.fs = self.fs
+        return new_sp
+
+    def _generate_times(self):
+        """Regenerate time vector after filtering."""
+        if self.spikes is None or len(self.spikes) == 0:
+            return None
+            
+        return np.arange(0, len(self.spikes[0])/self.fs, 1/self.fs)[:len(self.spikes[0])]
+
+    # Keep existing methods (fit, gen_fit, gen_df_features, etc.) unchanged below
+    # [Previous fit(), gen_fit(), gen_df_features(), plot(), etc. methods here]
+
+    def gen_df_indices(self):
+        """Generate sample indices dataframe."""
+        columns = ['ramp_start', 'inflection', 'rise', 
+                   'peak', 'decay', 'exp_start', 'exp_end']
+        
+        if self.indices is None or len(self.indices) == 0:
+            self.df_indices = pd.DataFrame(columns=columns)
+            return
+        
+        # Use filtered indices
+        ref_inds = self.indices[:, 3]  # Peak indices
+        
+        # Handle group vs single signal
+        if isinstance(self.spike_inds, list) and self.spike_inds[0].ndim == 1:
+            _spike_inds = np.concatenate(self.spike_inds)
+        else:
+            _spike_inds = self.spike_inds
+        
+        self.df_indices = pd.DataFrame()
+        
+        # Calculate absolute sample indices
+        for col, inds in zip(columns, self.indices.T):
+            self.df_indices[col] = _spike_inds + (inds - ref_inds)
 
     def fit(self, sig, fs, spike_inds=None, gen_fits=True, gen_indices=True,
             preload=False, verbose=False, n_jobs=1, progress=None, flip_signal=None):
@@ -816,4 +923,5 @@ def _compute_alt_features(fs, func, sig, args=None, kwargs=None):
         res = [res]
 
     return res
+
 
