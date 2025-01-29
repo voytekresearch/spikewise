@@ -100,7 +100,6 @@ class Spike:
                  pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
                  poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
 
-       
 
         # Settings
 
@@ -206,25 +205,30 @@ class Spike:
         progress : {tqdm.tqdm, tqdm.notebook.tqdm}
             Progress bar.
 
-        flip_signal : {None, True, False}, optional, default: None
-            Auto-detect signal polarity if None. True/False force flipping   
+        flip_signal : {None, True, False}, optional
+            Signal polarity handling:
+            - None: Auto-detect (flips if negative peaks dominate)
+            - True: Force signal inversion
+            - False: Use original polarity
         """
         self.fs = fs
         
         
 
         if not preload:
-            # Auto-detect signal polarity if needed
+
+            # ================== SIGNAL FLIPPING ================== 
+            # Auto-detect or force polarity
             if flip_signal is None:
                 max_val = np.max(sig)
                 min_val = np.min(sig)
-                # Check if negative extremum dominates
                 flip_signal = (abs(min_val) > abs(max_val))
 
-            if flip_signal:  # Now True/False after auto-detection
-                sig = -sig  # Flip signal if negative spikes detected
-
-            # Find spikes
+            if flip_signal:
+                sig = -sig  # Invert signal if needed
+            # =====================================================
+            
+                # Find spikes
             if spike_inds is None:
 
                 self.spike_inds,  _= find_spike_times(sig, self.thresh_amp,  self.thresh_ms*1000)
