@@ -180,7 +180,7 @@ class Spike:
 
 
     def fit(self, sig, fs, spike_inds=None, gen_fits=True, gen_indices=True,
-            preload=False, verbose=False, n_jobs=1, progress=None, flip_signal=False):
+            preload=False, verbose=False, n_jobs=1, progress=None, flip_signal=None):
         """Fit the 2d spike array.
 
         Parameters
@@ -206,20 +206,24 @@ class Spike:
         progress : {tqdm.tqdm, tqdm.notebook.tqdm}
             Progress bar.
 
-        flip_signal : bool, optional, default: False
-            If True, flips the signal polarity (multiplies by -1).
-            Useful when spikes appear negative relative to baseline.   
+        flip_signal : {None, True, False}, optional, default: None
+            Auto-detect signal polarity if None. True/False force flipping   
         """
         self.fs = fs
         
         
 
         if not preload:
+            # Auto-detect signal polarity if needed
+            if flip_signal is None:
+                max_val = np.max(sig)
+                min_val = np.min(sig)
+                # Check if negative extremum dominates
+                flip_signal = (abs(min_val) > abs(max_val))
 
-            if not preload:
-                if flip_signal:  
-                    sig = -sig  # Invert signal polarity
-                    
+            if flip_signal:  # Now True/False after auto-detection
+                sig = -sig  # Flip signal if negative spikes detected
+
             # Find spikes
             if spike_inds is None:
 
@@ -808,3 +812,4 @@ def _compute_alt_features(fs, func, sig, args=None, kwargs=None):
         res = [res]
 
     return res
+
