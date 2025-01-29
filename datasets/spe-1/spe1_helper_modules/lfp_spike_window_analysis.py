@@ -236,74 +236,91 @@ def combine_spike_lfp_features(
     lfp_prefix: str = "lfp_"
 ) -> pd.DataFrame:
     """
-    Merge FOOOF features into spike DataFrame.
+    Merge FOOOF features into spike DataFrame with paired current/previous window lists.
     
     Args:
-        spike_data: DataFrame with spike parameters.
-        foof_results: List of FOOOF objects from create_lfp_windows.
-        spike_to_window_map: Mapping from map_spikes_to_windows.
-        lfp_prefix: Prefix for LFP feature columns.
+        spike_data: DataFrame with spike parameters
+        foof_results: List of FOOOF objects from compute_lfp_windows
+        spike_to_window_map: Mapping from map_spikes_to_windows
+        lfp_prefix: Prefix for LFP feature columns
         
     Returns:
-        Updated DataFrame with LFP features.
+        DataFrame with list-based features where:
+        - current_* lists contain features from all windows containing the spike
+        - previous_* lists contain features from preceding windows
+        - List indices correspond to window pairs
     """
     # Input validation
     if 'spk_id' not in spike_data.columns:
         raise MissingColumnError("DataFrame must contain 'spk_id' column")
 
-    # Create a copy of the DataFrame to avoid modifying the original
     df = spike_data.copy()
     
-    # Define feature columns
-    lfp_features = [
-        'offset_current', 'exponent_current', 'r_squared_current',
-        'error_current', 'n_peaks_current',
-        'offset_previous', 'exponent_previous',
-        'r_squared_previous', 'error_previous', 'n_peaks_previous'
-    ]
+    # Initialize list-based columns
+    feature_pairs = {
+        'current': ['offset', 'exponent', 'r_squared', 'error', 'n_peaks'],
+        'previous': ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
+    }
     
-    # Initialize all LFP feature columns as NaN
-    for feat in lfp_features:
-        df[f"{lfp_prefix}{feat}"] = np.nan
+    for timing in feature_pairs:
+        for feat in feature_pairs[timing]:
+            col_name = f"{lfp_prefix}{timing}_{feat}"
+            df[col_name] = [[] for _ in range(len(df))]
 
-    # Iterate over spike IDs and map features
+    # Iterate through spikes and their associated windows
     for spk_id, window_indices in spike_to_window_map.items():
-        row = df[df['spk_id'] == spk_id]
-        if row.empty:
-            continue  # Skip if spike ID is not in the DataFrame
+        row_idx = df.index[df['spk_id'] == spk_id]
+        if row_idx.empty:
+            warnings.warn(f"Spike ID {spk_id} not found in DataFrame", UserWarning)
+            continue
             
-        row_idx = row.index[0]
-        
-        
-        # Handle current window features
-        if window_indices:  # Ensure there are window indices
-            current_idx = window_indices[0]
-            if 0 <= current_idx < len(foof_results):
-                _add_fooof_features(df, row_idx, foof_results[current_idx], f"{lfp_prefix}current")
-        
-        # Handle previous window features
-        if window_indices and window_indices[0] > 0:
-            prev_idx = window_indices[0] - 1
-            if 0 <= prev_idx < len(foof_results):
-                _add_fooof_features(df, row_idx, foof_results[prev_idx], f"{lfp_prefix}previous")
-        elif not window_indices:  # Handle unmapped spikes explicitly
-            print(f"Spike ID {spk_id} is unmapped to any window.")
+        row_idx = row_idx[0]
+        sorted_windows = sorted(window_indices)
+
+        # Process each window and its temporal predecessor
+        for win_idx in sorted_windows:
+            # Add current window features
+            if 0 <= win_idx < len(foof_results):
+                current_fm = foof_results[win_idx]
+                _append_features(df, row_idx, current_fm, f"{lfp_prefix}current")
+                
+                # Add previous window features if available
+                if win_idx > 0 and (win_idx - 1) < len(foof_results):
+                    prev_fm = foof_results[win_idx - 1]
+                    _append_features(df, row_idx, prev_fm, f"{lfp_prefix}previous")
+                else:
+                    # Handle edge cases (first window)
+                    _append_null_features(df, row_idx, f"{lfp_prefix}previous")
+            else:
+                warnings.warn(f"Invalid window index {win_idx} for spike {spk_id}", UserWarning)
 
     return df
 
-
-def _add_fooof_features(
+def _append_features(
     df: pd.DataFrame,
     row_idx: int,
     foof_obj: FOOOF,
     prefix: str
 ) -> None:
-    """Helper to add FOOOF features to DataFrame row"""
+    """Append FOOOF features to list columns"""
     try:
-        df.at[row_idx, f"{prefix}_offset"] = foof_obj.aperiodic_params_[0]
-        df.at[row_idx, f"{prefix}_exponent"] = foof_obj.aperiodic_params_[-1]
-        df.at[row_idx, f"{prefix}_r_squared"] = foof_obj.r_squared_
-        df.at[row_idx, f"{prefix}_error"] = foof_obj.error_
-        df.at[row_idx, f"{prefix}_n_peaks"] = foof_obj.n_peaks_
+        df.at[row_idx, f"{prefix}_offset"].append(foof_obj.aperiodic_params_[0])
+        df.at[row_idx, f"{prefix}_exponent"].append(foof_obj.aperiodic_params_[-1])
+        df.at[row_idx, f"{prefix}_r_squared"].append(foof_obj.r_squared_)
+        df.at[row_idx, f"{prefix}_error"].append(foof_obj.error_)
+        df.at[row_idx, f"{prefix}_n_peaks"].append(foof_obj.n_peaks_)
     except AttributeError as e:
-        raise FOOOFFitError(f"Missing FOOOF feature: {str(e)}") from e
+        warnings.warn(f"Missing FOOOF feature: {str(e)}", UserWarning)
+        _append_null_features(df, row_idx, prefix)
+
+def _append_null_features(
+    df: pd.DataFrame,
+    row_idx: int,
+    prefix: str
+) -> None:
+    """Append None values to maintain list alignment"""
+    df.at[row_idx, f"{prefix}_offset"].append(None)
+    df.at[row_idx, f"{prefix}_exponent"].append(None)
+    df.at[row_idx, f"{prefix}_r_squared"].append(None)
+    df.at[row_idx, f"{prefix}_error"].append(None)
+    df.at[row_idx, f"{prefix}_n_peaks"].append(None)
