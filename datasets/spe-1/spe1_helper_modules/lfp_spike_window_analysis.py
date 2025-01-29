@@ -61,36 +61,48 @@ class FOOOFFitError(LFPAnalysisError):
 
 
 
+import warnings
+
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
     window_length_sec: int = 25,
     step_size_sec: int = 15,
-    freq_range: Tuple[float, float] = (5, 90),
+    freq_range: Tuple[float, float] = (1, 90),
     fooof_params: Dict = None,
-    plot: bool = False
+    plot: bool = False,
+    min_overlap_percent: float = 50.0  # New parameter
 ) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF], List[Tuple[int, int]]]:
     """
-    Compute sliding windows of LFP data and extract spectral features using FOOOF.
-
-    Args:
-        lfp_signal (np.ndarray): Filtered LFP signal.
-        fs (float): Sampling frequency in Hz.
-        window_length_sec (int): Length of each sliding window in seconds.
-        step_size_sec (int): Step size between windows in seconds.
-        freq_range (Tuple[float, float]): Frequency range for FOOOF fitting.
-        fooof_params (Dict): Parameters for the FOOOF model.
-        plot (bool): Whether to plot power spectra for each window.
-
-    Returns:
-        Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF], List[Tuple[int, int]]]:
-            - spectra: List of tuples containing frequency and power spectra.
-            - foof_results: List of FOOOF objects with fitted features.
-            - window_times: List of (start, end) sample indices for each window.
+    Compute sliding windows of LFP data with overlap validation.
+    
+    New Args:
+        min_overlap_percent: Minimum required overlap percentage (0-100) to trigger warning
     """
+    # Calculate actual overlap percentage
+    actual_overlap = window_length_sec - step_size_sec
+    overlap_percent = (actual_overlap / window_length_sec) * 100
+    
+    # Check for insufficient overlap
+    if overlap_percent < min_overlap_percent:
+        warnings.warn(
+            f"\n\n⚠️ Insufficient window overlap: {overlap_percent:.1f}% "
+            f"(minimum recommended: {min_overlap_percent}%)\n"
+            "This may result in:\n"
+            "1. Spikes mapping to only one window\n"
+            "2. Gaps in temporal coverage\n"
+            "3. Reduced statistical power\n\n"
+            "Recommended fix:\n"
+            f"Set step_size_sec <= {window_length_sec * (1 - min_overlap_percent/100):.1f} "
+            f"for {min_overlap_percent}% overlap\n",
+            UserWarning
+        )
+    
     # Convert window and step size to samples
     window_length = int(window_length_sec * fs)
     step_size = int(step_size_sec * fs)
+
+   
 
     # Initialize results storage
     spectra = []
@@ -102,10 +114,6 @@ def compute_lfp_windows(
         for start in range(0, len(lfp_signal) - window_length + 1, step_size)
     ]
 
-
-    # Ensure the last window is added if there’s remaining data
-    if window_times[-1][1] < len(lfp_signal):
-        window_times.append((len(lfp_signal) - window_length, len(lfp_signal)))
 
     # Loop through sliding windows
     for start, end in window_times:
@@ -214,9 +222,7 @@ def _map_spikes_to_window_helper(
             elif window_idx < len(window_times_ms) - 1 and spike_ms == end:
                 spike_to_window_map[spk_id].append(window_idx + 1)
 
-        # Handle unmapped spikes near the signal's end
-        if not spike_to_window_map[spk_id] and spike_ms >= window_times_ms[-1][0]:
-            spike_to_window_map[spk_id].append(len(window_times_ms) - 1)
+        
 
     return spike_to_window_map
 
