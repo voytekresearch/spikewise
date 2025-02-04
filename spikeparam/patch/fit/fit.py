@@ -292,7 +292,7 @@ class Spike:
             self.df_indices[col] = _spike_inds + (inds - ref_inds)
 
     def fit(self, sig, fs, spike_inds=None, gen_fits=True, gen_indices=True,
-            preload=False, verbose=False, n_jobs=1, progress=None, flip_signal=None):
+            preload=False, verbose=False, n_jobs=1, progress=None, flip_signal=False):
         """Fit the 2d spike array.
 
         Parameters
