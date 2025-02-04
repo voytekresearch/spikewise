@@ -320,7 +320,6 @@ class Spike:
 
         flip_signal : {None, True, False}, optional
             Signal polarity handling:
-            - None: Auto-detect (flips if negative peaks dominate)
             - True: Force signal inversion
             - False: Use original polarity
         """
@@ -331,12 +330,6 @@ class Spike:
         if not preload:
 
             # ================== SIGNAL FLIPPING ================== 
-            # Auto-detect or force polarity
-            if flip_signal is None:
-                max_val = np.max(sig)
-                min_val = np.min(sig)
-                flip_signal = (abs(min_val) > abs(max_val))
-
             if flip_signal:
                 sig = -sig  # Invert signal if needed
             # =====================================================
@@ -929,5 +922,3 @@ def _compute_alt_features(fs, func, sig, args=None, kwargs=None):
         res = [res]
 
     return res
-
-
