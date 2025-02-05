@@ -318,7 +318,7 @@ class Spike:
         progress : {tqdm.tqdm, tqdm.notebook.tqdm}
             Progress bar.
 
-        flip_signal : {None, True, False}, optional
+        flip_signal : {True, False}, optional, default: False
             Signal polarity handling:
             - True: Force signal inversion
             - False: Use original polarity

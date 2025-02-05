@@ -132,22 +132,18 @@ def compute_lfp_windows(
         fm = FOOOF(**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
         try:
             fm.fit(fxx, pxx, freq_range=freq_range)
+            # Optional: plot the power spectrum
+            if plot:
+                fm.plot(plot_peaks='shade', peak_kwargs={'color' : 'green'})
+        
+
         except Exception as e:
             raise FOOOFFitError(f"FOOOF fitting failed for window {start}-{end}: {str(e)}") from e
 
         # Store results
         spectra.append((fxx, pxx))
         foof_results.append(fm)
-
-        # Optional: plot the power spectrum
-        if plot:
-            plt.figure(figsize=(8, 6))
-            plt.loglog(fxx, pxx, label="Power Spectrum")
-            plt.xlabel("Frequency (Hz)")
-            plt.ylabel("Power (V^2/Hz)")
-            plt.title(f"LFP PSD: {start / fs:.2f}s - {end / fs:.2f}s")
-            plt.legend()
-            plt.show()
+      
 
     return spectra, foof_results, window_times
 
