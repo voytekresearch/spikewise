@@ -313,4 +313,51 @@ def process_sweeps(num_sweeps,f, one_ms, fs, pink_types, load_sweep, find_spike_
             df_stim_std.append(stim_std)
             df_pinktype.append(pink_types[i_sweeps])
 
-    return df_sweep, df_stim_type, df_spike_number, df_voltage_ramp, df_inflection_time, df_inflection_mv, df_peak_amplitude, df_peak_sharpness, df_decay_lambda, df_decay_const, df_stim_exp, df_stim_mean, df_stim_std, df_pinktype, all_data, all_times
+    return df_sweep, df_stim_type, df_spike_number, df_voltage_ramp, df_inflection_time, df_inflection_mv, df_peak_amplitude, df_peak_sharpness, df_decay_lambda, df_decay_const, df_stim_exp, df_stim_mean, df_stim_std, df_pinktype, all_data, all_times, all_contant_spks, all_ramp_spks, all_pink_spks
+
+
+def plot_spike_and_derivative(i_sweeps, f, fs, one_ms):
+    dset, times = load_sweep(i_sweeps, f, fs)
+
+    stim = dset[:, 0] # current injection
+    data = dset[:, 1] # ephys data
+    
+    #########################
+    # find spikes
+    thresh_mv = -10
+    thresh_ms = one_ms * 1 # 1 ms
+    
+    idx_spikes, amp_spikes = find_spike_times(data, thresh_mv, thresh_ms)
+    
+    #########################
+    i_spikes = 0
+        
+    # get windows around spikes
+    # create window indices
+    window_length = (10, 10) # in ms
+    window_pre = int(one_ms * window_length[0])
+    window_post = int(one_ms * window_length[1])
+    
+    # get window
+    window_spike_pre = (idx_spikes[i_spikes]-window_pre)
+    window_spike_post = (idx_spikes[i_spikes]+window_post)
+    
+    # get window for times as well
+    windowed_times = times[(idx_spikes[i_spikes]-window_pre):
+                        (idx_spikes[i_spikes]+window_post)]
+    
+    # get data window
+    windowed_data = data[window_spike_pre:window_spike_post]
+    
+    # difference of data, and smooth it
+    d_windowed_data = np.diff(windowed_data)
+    smoothed_data = sm.nonparametric.lowess(d_windowed_data, windowed_times[1:], frac=0.008)
+    
+    # smoothed data
+    d_smoothed_times = smoothed_data[:, 0]
+    d_smoothed_data = smoothed_data[:, 1]
+    
+    plt.plot(windowed_times, windowed_data, 'b', alpha = 0.8, linewidth = 3., label='intra')
+    plt.plot(d_smoothed_times, (d_smoothed_data*80)-50, 'k', linewidth = 3., label='differenced')
+    plt.legend()
+    plt.show()
