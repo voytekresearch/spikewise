@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.metrics import ConfusionMatrixDisplay
+import warnings
+warnings.filterwarnings('ignore')
 
 def plot_pink_spikes(sp, indices_to_plot):
     sp.plot(indices_to_plot, color='hotpink', mode = 'full', show_points=True)
@@ -176,4 +178,63 @@ def plot_confusion_matrix(best_model, X_test, y_test):
     plt.xticks(fontsize=16)  # Increase the font size for x-axis ticks
     plt.yticks(fontsize=16)  # Increase the font size for y-axis ticks
     
+    plt.show()
+
+
+def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
+    """
+    Plots Actual vs Predicted values and Feature Importance for Ridge Regression.
+
+    Args:
+        y (pd.Series): Actual values.
+        ridge_results (dict): Dictionary containing model results from `run_ridge_regression_kfold()`.
+        title (str): Title for the scatter plot.
+    """
+
+    y_pred_cv = ridge_results["y_pred_cv"]
+    coefficients = ridge_results["coefficients"]
+    feature_names = ridge_results["feature_names"]
+
+    # 1. PLOT ACTUAL vs PREDICTED
+    plt.figure(figsize=(10, 6))
+    sns.scatterplot(x=y, y=y_pred_cv, s=55)
+    plt.xlabel("Actual Values", fontsize=20)
+    plt.ylabel("Predicted Values", fontsize=20)
+    plt.title(title, fontsize=20)
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=16)
+    
+    # Regression Line
+    m, b = np.polyfit(y, y_pred_cv, 1)
+    plt.plot(y, m * y + b, color='red', linewidth=2)  
+    plt.show()
+
+    # 2. PLOT FEATURE IMPORTANCE
+    feature_importance_df = pd.DataFrame({'Feature': feature_names, 'Coefficient': coefficients})
+    feature_importance_df = feature_importance_df.sort_values(by='Coefficient', ascending=False)
+
+    # Define Colors for Specific Features
+    color_mapping = {
+        'peak_amp': 'C5', 
+        'exp_const': 'C6',
+        'exp_lambda': 'C6',
+        'inflection_amp': 'C3',
+        'ramp_amp': 'C4',
+        'inflection_time': 'C3',
+        'peak_sharpness': 'C5',
+        'peak_width': 'C5',
+        'log_isi': 'C7'
+    }
+    
+    # Apply Colors
+    feature_importance_df['Color'] = feature_importance_df['Feature'].map(color_mapping)
+
+    # Bar Plot for Feature Importance
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x='Coefficient', y='Feature', data=feature_importance_df, palette=feature_importance_df['Color'])
+    plt.title('Feature Importance (Ridge Regression)', fontsize=20)
+    plt.xlabel('Coefficient', fontsize=20)
+    plt.ylabel('Feature', fontsize=20)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
     plt.show()

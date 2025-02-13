@@ -1,6 +1,9 @@
+
+
+
 from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import OneHotEncoder, StandardScaler, LabelEncoder, PolynomialFeatures
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score, KFold
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score, KFold, cross_val_predict
 from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge, RidgeCV, Lasso
 from sklearn.metrics import mean_squared_error, r2_score, accuracy_score, confusion_matrix, ConfusionMatrixDisplay, RocCurveDisplay, PrecisionRecallDisplay
 from sklearn.compose import ColumnTransformer
@@ -12,27 +15,13 @@ from sklearn.ensemble import RandomForestClassifier
 import numpy as np
 
 
-# Function to train the model with progress tracking
-def train_model_with_progress(X_train, y_train, max_iter=100, regression_type = 'Ridge'):
-    if regression_type == 'Ridge':
-        model = Ridge(solver='saga', max_iter=max_iter, random_state=42)
-        progress_bar = tqdm(range(max_iter), desc="Training Ridge Regression")
-        for _ in progress_bar:
-            model.max_iter += 1
-            model.fit(X_train, y_train)
-    elif regression_type == 'lasso':
+from pvc6_plotting import *
 
-        # Initialize Lasso Model
- 
-        model = Lasso(alpha=0.1, max_iter=max_iter, warm_start=True, random_state=42)  # warm_start=True allows continuation of training
-        
-        # Progress bar for training
-        progress_bar = tqdm(range(max_iter), desc="Training Lasso Regression")
-        for _ in progress_bar:
-            model.max_iter += 1  # Incrementally increase the number of iterations
-            model.fit(X_train, y_train)  # Fit model         
+import warnings
+warnings.filterwarnings('ignore')
 
-    return model
+
+#CATEGORICAL STIM PREDICTION
 
 
 #Logistic regression to predict stimulation type
@@ -194,4 +183,72 @@ def random_forest_stim(X, y, X_train, X_test, y_train, y_test, multiple_random_s
 
         return best_model, accuracies
                     
+
+#PINK STIM PREDICTIONS
+
+# Function to train the model with progress tracking
+def train_model_with_progress(X_train, y_train, max_iter=100, regression_type = 'Ridge'):
+    if regression_type == 'Ridge':
+        model = Ridge(solver='saga', max_iter=max_iter, random_state=42)
+        progress_bar = tqdm(range(max_iter), desc="Training Ridge Regression")
+        for _ in progress_bar:
+            model.max_iter += 1
+            model.fit(X_train, y_train)
+    elif regression_type == 'lasso':
+
+        # Initialize Lasso Model
+ 
+        model = Lasso(alpha=0.1, max_iter=max_iter, warm_start=True, random_state=42)  # warm_start=True allows continuation of training
+        
+        # Progress bar for training
+        progress_bar = tqdm(range(max_iter), desc="Training Lasso Regression")
+        for _ in progress_bar:
+            model.max_iter += 1  # Incrementally increase the number of iterations
+            model.fit(X_train, y_train)  # Fit model         
+
+    return model
+
+
+
+#Function to run ridge regression
+def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42):
+    """
+    Perform K-Fold Ridge Regression and return predictions, coefficients, and scores.
+    
+    Args:
+        X (pd.DataFrame): Feature matrix.
+        y (pd.Series): Target variable.
+        n_splits (int): Number of cross-validation folds.
+        random_state (int): Random seed for reproducibility.
+
+    Returns:
+        dict: Contains predictions, coefficients, and cross-validated R² scores.
+    """
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    # Ridge Regression Model
+    model = Ridge()
+    y_pred_cv = cross_val_predict(model, X, y, cv=kf)  # Cross-validated predictions
+    model.fit(X, y)  # Fit model on full dataset for feature importances
+
+    # Get Feature Importances (Coefficients)
+    coefficients = model.coef_
+    feature_names = X.columns
+
+    # Compute Cross-Validated R² Scores
+    scores = cross_val_score(model, X, y, cv=kf, scoring='r2')
+
+    print(f"Cross-validated R-squared scores: {scores}")
+    print(f"Average R-squared: {scores.mean():.3f} ± {scores.std():.3f}")
+
+    return {
+        "y_pred_cv": y_pred_cv,
+        "coefficients": coefficients,
+        "feature_names": feature_names,
+        "r2_scores": scores
+    }
+
+
+#Function to predict log isi from 
+#def():
 
