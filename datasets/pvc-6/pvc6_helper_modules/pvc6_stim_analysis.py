@@ -210,19 +210,29 @@ def train_model_with_progress(X_train, y_train, max_iter=100, regression_type = 
 
 
 
-#Function to run ridge regression
-def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42):
+#import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import KFold, cross_val_predict, cross_val_score
+from sklearn.utils import resample
+
+# Function to run ridge regression with optional bootstrapping
+def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstrap=True, n_bootstrap=1000):
     """
-    Perform K-Fold Ridge Regression and return predictions, coefficients, and scores.
+    Perform K-Fold Ridge Regression and optionally compute bootstrapped confidence intervals.
     
     Args:
         X (pd.DataFrame): Feature matrix.
         y (pd.Series): Target variable.
         n_splits (int): Number of cross-validation folds.
         random_state (int): Random seed for reproducibility.
+        bootstrap (bool): Whether to perform bootstrapping for coefficient confidence intervals.
+        n_bootstrap (int): Number of bootstrap samples.
 
     Returns:
-        dict: Contains predictions, coefficients, and cross-validated R² scores.
+        dict: Contains predictions, coefficients, scores, and optionally bootstrapped statistics.
     """
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
@@ -241,11 +251,38 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42):
     print(f"Cross-validated R-squared scores: {scores}")
     print(f"Average R-squared: {scores.mean():.3f} ± {scores.std():.3f}")
 
+    # Bootstrap confidence intervals
+    if bootstrap:
+        boot_coef_samples = np.zeros((n_bootstrap, len(feature_names)))
+
+        for i in range(n_bootstrap):
+            X_resampled, y_resampled = resample(X, y, random_state=random_state + i)
+            model.fit(X_resampled, y_resampled)
+            boot_coef_samples[i, :] = model.coef_
+
+        coef_means = np.mean(boot_coef_samples, axis=0)
+        coef_std = np.std(boot_coef_samples, axis=0)
+        coef_ci_lower = np.percentile(boot_coef_samples, 2.5, axis=0)
+        coef_ci_upper = np.percentile(boot_coef_samples, 97.5, axis=0)
+
+        bootstrap_results = pd.DataFrame({
+            "Feature": feature_names,
+            "Mean Coefficient": coef_means,
+            "95% CI Lower": coef_ci_lower,
+            "95% CI Upper": coef_ci_upper,
+            "Std Dev": coef_std
+        })
+
+        print("\nBootstrapped Coefficient Estimates:")
+        print(bootstrap_results)
+
     return {
         "y_pred_cv": y_pred_cv,
         "coefficients": coefficients,
         "feature_names": feature_names,
-        "r2_scores": scores
+        "r2_scores": scores,
+        "bootstrap_results": bootstrap_results if bootstrap else None,
+        "boot_coef_samples": boot_coef_samples if bootstrap else None
     }
 
 

@@ -181,9 +181,11 @@ def plot_confusion_matrix(best_model, X_test, y_test):
     plt.show()
 
 
+# Function to plot Ridge regression results and bootstrapping if applicable
 def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     """
     Plots Actual vs Predicted values and Feature Importance for Ridge Regression.
+    If bootstrapping was performed, also plots bootstrapped coefficient distributions.
 
     Args:
         y (pd.Series): Actual values.
@@ -194,6 +196,8 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     y_pred_cv = ridge_results["y_pred_cv"]
     coefficients = ridge_results["coefficients"]
     feature_names = ridge_results["feature_names"]
+    bootstrap_results = ridge_results["bootstrap_results"]
+    boot_coef_samples = ridge_results["boot_coef_samples"]
 
     # 1. PLOT ACTUAL vs PREDICTED
     plt.figure(figsize=(10, 6))
@@ -238,3 +242,16 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.xticks(fontsize=20)
     plt.yticks(fontsize=20)
     plt.show()
+
+    # 3. PLOT BOOTSTRAPPED COEFFICIENT DISTRIBUTIONS (if available)
+    if bootstrap_results is not None:
+        plt.figure(figsize=(12, 6))
+        boot_df = pd.DataFrame(boot_coef_samples, columns=feature_names)
+        boot_df_melted = boot_df.melt(var_name="Feature", value_name="Coefficient")
+
+        sns.violinplot(x="Feature", y="Coefficient", data=boot_df_melted, inner="quartile", cut=0)
+        plt.xticks(rotation=90)
+        plt.title("Bootstrapped Coefficient Distributions", fontsize=18)
+        plt.xlabel("Feature", fontsize=16)
+        plt.ylabel("Coefficient Value", fontsize=16)
+        plt.show()
