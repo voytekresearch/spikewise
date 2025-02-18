@@ -184,8 +184,7 @@ def plot_confusion_matrix(best_model, X_test, y_test):
 # Function to plot Ridge regression results and bootstrapping if applicable
 def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     """
-    Plots Actual vs Predicted values and Feature Importance for Ridge Regression.
-    If bootstrapping was performed, also plots bootstrapped coefficient distributions.
+    Plots Actual vs Predicted values, Feature Importance, and Bootstrapped Coefficients with CIs.
 
     Args:
         y (pd.Series): Actual values.
@@ -196,8 +195,20 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     y_pred_cv = ridge_results["y_pred_cv"]
     coefficients = ridge_results["coefficients"]
     feature_names = ridge_results["feature_names"]
-    bootstrap_results = ridge_results["bootstrap_results"]
-    boot_coef_samples = ridge_results["boot_coef_samples"]
+    ci_lower = ridge_results["ci_lower"]
+    ci_upper = ridge_results["ci_upper"]
+    p_values = ridge_results["p_values"]
+
+    # Create DataFrame for plotting
+    feature_importance_df = pd.DataFrame({
+        'Feature': feature_names, 
+        'Coefficient': coefficients,
+        'CI Lower': ci_lower,
+        'CI Upper': ci_upper,
+        'p-value': p_values
+    })
+    
+    feature_importance_df = feature_importance_df.sort_values(by='Coefficient', ascending=False)
 
     # 1. PLOT ACTUAL vs PREDICTED
     plt.figure(figsize=(10, 6))
@@ -207,35 +218,19 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.title(title, fontsize=20)
     plt.xticks(fontsize=16)
     plt.yticks(fontsize=16)
-    
+
     # Regression Line
     m, b = np.polyfit(y, y_pred_cv, 1)
     plt.plot(y, m * y + b, color='red', linewidth=2)  
     plt.show()
 
-    # 2. PLOT FEATURE IMPORTANCE
-    feature_importance_df = pd.DataFrame({'Feature': feature_names, 'Coefficient': coefficients})
-    feature_importance_df = feature_importance_df.sort_values(by='Coefficient', ascending=False)
-
-    # Define Colors for Specific Features
-    color_mapping = {
-        'peak_amp': 'C5', 
-        'exp_const': 'C6',
-        'exp_lambda': 'C6',
-        'inflection_amp': 'C3',
-        'ramp_amp': 'C4',
-        'inflection_time': 'C3',
-        'peak_sharpness': 'C5',
-        'peak_width': 'C5',
-        'log_isi': 'C7'
-    }
-    
-    # Apply Colors
-    feature_importance_df['Color'] = feature_importance_df['Feature'].map(color_mapping)
-
-    # Bar Plot for Feature Importance
+    # 2. PLOT FEATURE IMPORTANCE with CIs
     plt.figure(figsize=(10, 6))
-    sns.barplot(x='Coefficient', y='Feature', data=feature_importance_df, palette=feature_importance_df['Color'])
+    sns.barplot(
+        x='Coefficient', y='Feature', data=feature_importance_df, 
+        xerr=(feature_importance_df["CI Upper"] - feature_importance_df["CI Lower"]) / 2  # Correct error bars
+    )
+
     plt.title('Feature Importance (Ridge Regression)', fontsize=20)
     plt.xlabel('Coefficient', fontsize=20)
     plt.ylabel('Feature', fontsize=20)
@@ -243,15 +238,21 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.yticks(fontsize=20)
     plt.show()
 
-    # 3. PLOT BOOTSTRAPPED COEFFICIENT DISTRIBUTIONS (if available)
-    if bootstrap_results is not None:
-        plt.figure(figsize=(12, 6))
-        boot_df = pd.DataFrame(boot_coef_samples, columns=feature_names)
-        boot_df_melted = boot_df.melt(var_name="Feature", value_name="Coefficient")
+    # 3. PRINT SIGNIFICANT FEATURES
+    significant_features = feature_importance_df[feature_importance_df["p-value"] < 0.05]
+    
+    if not significant_features.empty:
+        print("\nSignificant Features (p < 0.05):")
+        print(significant_features[["Feature", "Coefficient", "CI Lower", "CI Upper", "p-value"]])
+    else:
+        print("\nNo features were statistically significant (p < 0.05).")
 
-        sns.violinplot(x="Feature", y="Coefficient", data=boot_df_melted, inner="quartile", cut=0)
-        plt.xticks(rotation=90)
-        plt.title("Bootstrapped Coefficient Distributions", fontsize=18)
-        plt.xlabel("Feature", fontsize=16)
-        plt.ylabel("Coefficient Value", fontsize=16)
-        plt.show()
+    # 4. PLOT BOOTSTRAPPED DISTRIBUTIONS
+    bootstrapped_coefs = ridge_results["bootstrapped_coefs"]
+
+    plt.figure(figsize=(12, 6))
+    sns.violinplot(data=bootstrapped_coefs, inner="point", scale="width")
+    plt.xticks(ticks=np.arange(len(feature_names)), labels=feature_names, rotation=45)
+    plt.title("Bootstrapped Coefficient Distributions", fontsize=20)
+    plt.ylabel("Coefficient Value", fontsize=16)
+    plt.show()

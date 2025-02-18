@@ -10,9 +10,12 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.feature_selection import SelectFromModel
+from sklearn.utils import resample 
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
+from scipy.stats import ttest_1samp
 import numpy as np
+
 
 
 from pvc6_plotting import *
@@ -209,39 +212,30 @@ def train_model_with_progress(X_train, y_train, max_iter=100, regression_type = 
     return model
 
 
+#Function for ridge regression
 
-#import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.linear_model import Ridge
-from sklearn.model_selection import KFold, cross_val_predict, cross_val_score
-from sklearn.utils import resample
 
-# Function to run ridge regression with optional bootstrapping
-def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstrap=True, n_bootstrap=1000):
+def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=1000):
     """
-    Perform K-Fold Ridge Regression and optionally compute bootstrapped confidence intervals.
-    
+    Perform K-Fold Ridge Regression with bootstrapping and return model statistics.
+
     Args:
         X (pd.DataFrame): Feature matrix.
         y (pd.Series): Target variable.
         n_splits (int): Number of cross-validation folds.
         random_state (int): Random seed for reproducibility.
-        bootstrap (bool): Whether to perform bootstrapping for coefficient confidence intervals.
-        n_bootstrap (int): Number of bootstrap samples.
+        bootstraps (int): Number of bootstrap resamples.
 
     Returns:
-        dict: Contains predictions, coefficients, scores, and optionally bootstrapped statistics.
+        dict: Contains predictions, coefficients, R² scores, bootstrapped CIs, standard errors, and p-values.
     """
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-
-    # Ridge Regression Model
+    
     model = Ridge()
-    y_pred_cv = cross_val_predict(model, X, y, cv=kf)  # Cross-validated predictions
-    model.fit(X, y)  # Fit model on full dataset for feature importances
+    y_pred_cv = cross_val_predict(model, X, y, cv=kf)  
+    model.fit(X, y)  
 
-    # Get Feature Importances (Coefficients)
+    # Get Feature Coefficients
     coefficients = model.coef_
     feature_names = X.columns
 
@@ -251,41 +245,32 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstrap=True
     print(f"Cross-validated R-squared scores: {scores}")
     print(f"Average R-squared: {scores.mean():.3f} ± {scores.std():.3f}")
 
-    # Bootstrap confidence intervals
-    if bootstrap:
-        boot_coef_samples = np.zeros((n_bootstrap, len(feature_names)))
+    # ------------------ BOOTSTRAPPING ------------------
+    bootstrapped_coefs = []
+    
+    for _ in range(bootstraps):
+        X_resampled, y_resampled = resample(X, y, random_state=None)  # Ensure different resampling
+        model.fit(X_resampled, y_resampled)
+        bootstrapped_coefs.append(model.coef_)
+    
+    bootstrapped_coefs = np.array(bootstrapped_coefs)
 
-        for i in range(n_bootstrap):
-            X_resampled, y_resampled = resample(X, y, random_state=random_state + i)
-            model.fit(X_resampled, y_resampled)
-            boot_coef_samples[i, :] = model.coef_
+    # Compute statistics
+    lower_bound = np.percentile(bootstrapped_coefs, 2.5, axis=0)
+    upper_bound = np.percentile(bootstrapped_coefs, 97.5, axis=0)
+    standard_errors = np.std(bootstrapped_coefs, axis=0)
 
-        coef_means = np.mean(boot_coef_samples, axis=0)
-        coef_std = np.std(boot_coef_samples, axis=0)
-        coef_ci_lower = np.percentile(boot_coef_samples, 2.5, axis=0)
-        coef_ci_upper = np.percentile(boot_coef_samples, 97.5, axis=0)
-
-        bootstrap_results = pd.DataFrame({
-            "Feature": feature_names,
-            "Mean Coefficient": coef_means,
-            "95% CI Lower": coef_ci_lower,
-            "95% CI Upper": coef_ci_upper,
-            "Std Dev": coef_std
-        })
-
-        print("\nBootstrapped Coefficient Estimates:")
-        print(bootstrap_results)
+    # Compute p-values using a t-test
+    p_values = np.array([ttest_1samp(bootstrapped_coefs[:, i], 0)[1] for i in range(bootstrapped_coefs.shape[1])])
 
     return {
         "y_pred_cv": y_pred_cv,
         "coefficients": coefficients,
         "feature_names": feature_names,
         "r2_scores": scores,
-        "bootstrap_results": bootstrap_results if bootstrap else None,
-        "boot_coef_samples": boot_coef_samples if bootstrap else None
+        "bootstrapped_coefs": bootstrapped_coefs,
+        "ci_lower": lower_bound,
+        "ci_upper": upper_bound,
+        "standard_errors": standard_errors,
+        "p_values": p_values
     }
-
-
-#Function to predict log isi from 
-#def():
-
