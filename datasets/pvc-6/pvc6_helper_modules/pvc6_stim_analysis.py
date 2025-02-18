@@ -213,8 +213,6 @@ def train_model_with_progress(X_train, y_train, max_iter=100, regression_type = 
 
 
 #Function for ridge regression
-
-
 def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=1000):
     """
     Perform K-Fold Ridge Regression with bootstrapping and return model statistics.
@@ -227,7 +225,8 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
         bootstraps (int): Number of bootstrap resamples.
 
     Returns:
-        dict: Contains predictions, coefficients, R² scores, bootstrapped CIs, standard errors, and p-values.
+        dict: Contains predictions, coefficients, R² scores, adjusted R² scores,
+              bootstrapped CIs, standard errors, and p-values.
     """
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     
@@ -242,21 +241,36 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
     # Compute Cross-Validated R² Scores
     scores = cross_val_score(model, X, y, cv=kf, scoring='r2')
 
+    # Compute Adjusted R-squared for K-Fold
+    n_samples = X.shape[0]
+    n_features = X.shape[1]
+    adjusted_r2_scores = 1 - ((1 - scores) * (n_samples - 1) / (n_samples - n_features - 1))
+
     print(f"Cross-validated R-squared scores: {scores}")
     print(f"Average R-squared: {scores.mean():.3f} ± {scores.std():.3f}")
+    print(f"Adjusted R-squared scores: {adjusted_r2_scores}")
+    print(f"Average Adjusted R-squared: {adjusted_r2_scores.mean():.3f} ± {adjusted_r2_scores.std():.3f}")
 
     # ------------------ BOOTSTRAPPING ------------------
     bootstrapped_coefs = []
     bootstrapped_r2 = []
+    bootstrapped_adjusted_r2 = []
     
     for _ in range(bootstraps):
         X_resampled, y_resampled = resample(X, y, random_state=None)  # Ensure different resampling
         model.fit(X_resampled, y_resampled)
         bootstrapped_coefs.append(model.coef_)
-        bootstrapped_r2.append(model.score(X_resampled, y_resampled))
+        
+        # Calculate R² and Adjusted R² for bootstrap sample
+        r2 = model.score(X_resampled, y_resampled)
+        adjusted_r2 = 1 - ((1 - r2) * (n_samples - 1) / (n_samples - n_features - 1))
+        
+        bootstrapped_r2.append(r2)
+        bootstrapped_adjusted_r2.append(adjusted_r2)
     
     bootstrapped_coefs = np.array(bootstrapped_coefs)
     bootstrapped_r2 = np.array(bootstrapped_r2)
+    bootstrapped_adjusted_r2 = np.array(bootstrapped_adjusted_r2)
 
     # Compute statistics for coefficients
     lower_bound = np.percentile(bootstrapped_coefs, 2.5, axis=0)
@@ -266,21 +280,27 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
     # Compute p-values using a t-test
     p_values = np.array([ttest_1samp(bootstrapped_coefs[:, i], 0)[1] for i in range(bootstrapped_coefs.shape[1])])
 
-    # Compute statistics for R²
+    # Compute statistics for R² and Adjusted R²
     r2_mean = np.mean(bootstrapped_r2)
     r2_ci = np.percentile(bootstrapped_r2, [2.5, 97.5])
+    adjusted_r2_mean = np.mean(bootstrapped_adjusted_r2)
+    adjusted_r2_ci = np.percentile(bootstrapped_adjusted_r2, [2.5, 97.5])
 
     return {
         "y_pred_cv": y_pred_cv,
         "coefficients": coefficients,
         "feature_names": feature_names,
         "r2_scores": scores,
+        "adjusted_r2_scores": adjusted_r2_scores,
         "bootstrapped_coefs": bootstrapped_coefs,
         "bootstrapped_r2": bootstrapped_r2,
+        "bootstrapped_adjusted_r2": bootstrapped_adjusted_r2,
         "ci_lower": lower_bound,
         "ci_upper": upper_bound,
         "standard_errors": standard_errors,
         "p_values": p_values,
         "r2_mean": r2_mean,
-        "r2_ci": r2_ci
+        "r2_ci": r2_ci,
+        "adjusted_r2_mean": adjusted_r2_mean,
+        "adjusted_r2_ci": adjusted_r2_ci
     }

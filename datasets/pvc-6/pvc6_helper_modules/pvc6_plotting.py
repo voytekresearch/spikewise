@@ -187,14 +187,13 @@ def plot_confusion_matrix(best_model, X_test, y_test):
 def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     """
     Plots Actual vs Predicted values, Feature Importance, Bootstrapped Coefficients with CIs,
-    and Bootstrapped R² distribution.
+    and Bootstrapped R² and Adjusted R² distributions.
 
     Args:
         y (pd.Series): Actual values.
         ridge_results (dict): Dictionary containing model results from `run_ridge_regression_kfold()`.
         title (str): Title for the scatter plot.
     """
-
     y_pred_cv = ridge_results["y_pred_cv"]
     coefficients = ridge_results["coefficients"]
     feature_names = ridge_results["feature_names"]
@@ -202,9 +201,13 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     ci_upper = ridge_results["ci_upper"]
     p_values = ridge_results["p_values"]
     r2_scores = ridge_results["r2_scores"]
+    adjusted_r2_scores = ridge_results["adjusted_r2_scores"]
     bootstrapped_r2 = ridge_results["bootstrapped_r2"]
+    bootstrapped_adjusted_r2 = ridge_results["bootstrapped_adjusted_r2"]
     r2_mean = ridge_results["r2_mean"]
     r2_ci = ridge_results["r2_ci"]
+    adjusted_r2_mean = ridge_results["adjusted_r2_mean"]
+    adjusted_r2_ci = ridge_results["adjusted_r2_ci"]
 
     # Create DataFrame for plotting
     feature_importance_df = pd.DataFrame({
@@ -263,14 +266,16 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.ylabel("Coefficient Value", fontsize=16)
     plt.show()
 
-    # 5. PLOT K-FOLD AND BOOTSTRAPPED R²
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
+    # 5. PLOT K-FOLD AND BOOTSTRAPPED R² AND ADJUSTED R²
+    plt.figure(figsize=(18, 6))
+
+    # K-Fold R² and Adjusted R²
+    plt.subplot(1, 3, 1)
     sns.boxplot(x=r2_scores)
     plt.title("K-Fold R² Scores", fontsize=16)
     plt.xlabel("R²", fontsize=14)
 
-    plt.subplot(1, 2, 2)
+    plt.subplot(1, 3, 2)
     sns.histplot(bootstrapped_r2, kde=True, bins=30)
     plt.axvline(r2_mean, color='red', linestyle='--', label=f"Mean R²: {r2_mean:.3f}")
     plt.axvline(r2_ci[0], color='gray', linestyle=':', label=f"95% CI: [{r2_ci[0]:.3f}, {r2_ci[1]:.3f}]")
@@ -278,6 +283,17 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.xlabel("R²", fontsize=14)
     plt.legend()
 
+    plt.subplot(1, 3, 3)
+    sns.histplot(bootstrapped_adjusted_r2, kde=True, bins=30)
+    plt.axvline(adjusted_r2_mean, color='red', linestyle='--', label=f"Mean Adjusted R²: {adjusted_r2_mean:.3f}")
+    plt.axvline(adjusted_r2_ci[0], color='gray', linestyle=':', label=f"95% CI: [{adjusted_r2_ci[0]:.3f}, {adjusted_r2_ci[1]:.3f}]")
+    plt.title("Bootstrapped Adjusted R² Distribution", fontsize=16)
+    plt.xlabel("Adjusted R²", fontsize=14)
+    plt.legend()
+
     plt.tight_layout()
     plt.show()
 
+    # 6. PRINT MEAN ADJUSTED R²
+    print(f"\nMean Adjusted R-squared (Bootstrapped): {adjusted_r2_mean:.3f}")
+    print(f"95% CI for Adjusted R-squared: {adjusted_r2_ci}")
