@@ -247,15 +247,18 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
 
     # ------------------ BOOTSTRAPPING ------------------
     bootstrapped_coefs = []
+    bootstrapped_r2 = []
     
     for _ in range(bootstraps):
         X_resampled, y_resampled = resample(X, y, random_state=None)  # Ensure different resampling
         model.fit(X_resampled, y_resampled)
         bootstrapped_coefs.append(model.coef_)
+        bootstrapped_r2.append(model.score(X_resampled, y_resampled))
     
     bootstrapped_coefs = np.array(bootstrapped_coefs)
+    bootstrapped_r2 = np.array(bootstrapped_r2)
 
-    # Compute statistics
+    # Compute statistics for coefficients
     lower_bound = np.percentile(bootstrapped_coefs, 2.5, axis=0)
     upper_bound = np.percentile(bootstrapped_coefs, 97.5, axis=0)
     standard_errors = np.std(bootstrapped_coefs, axis=0)
@@ -263,14 +266,21 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
     # Compute p-values using a t-test
     p_values = np.array([ttest_1samp(bootstrapped_coefs[:, i], 0)[1] for i in range(bootstrapped_coefs.shape[1])])
 
+    # Compute statistics for R²
+    r2_mean = np.mean(bootstrapped_r2)
+    r2_ci = np.percentile(bootstrapped_r2, [2.5, 97.5])
+
     return {
         "y_pred_cv": y_pred_cv,
         "coefficients": coefficients,
         "feature_names": feature_names,
         "r2_scores": scores,
         "bootstrapped_coefs": bootstrapped_coefs,
+        "bootstrapped_r2": bootstrapped_r2,
         "ci_lower": lower_bound,
         "ci_upper": upper_bound,
         "standard_errors": standard_errors,
-        "p_values": p_values
+        "p_values": p_values,
+        "r2_mean": r2_mean,
+        "r2_ci": r2_ci
     }

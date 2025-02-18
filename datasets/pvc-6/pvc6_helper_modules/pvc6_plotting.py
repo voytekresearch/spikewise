@@ -181,10 +181,13 @@ def plot_confusion_matrix(best_model, X_test, y_test):
     plt.show()
 
 
-# Function to plot Ridge regression results and bootstrapping if applicable
+
+
+
 def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     """
-    Plots Actual vs Predicted values, Feature Importance, and Bootstrapped Coefficients with CIs.
+    Plots Actual vs Predicted values, Feature Importance, Bootstrapped Coefficients with CIs,
+    and Bootstrapped R² distribution.
 
     Args:
         y (pd.Series): Actual values.
@@ -198,6 +201,10 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     ci_lower = ridge_results["ci_lower"]
     ci_upper = ridge_results["ci_upper"]
     p_values = ridge_results["p_values"]
+    r2_scores = ridge_results["r2_scores"]
+    bootstrapped_r2 = ridge_results["bootstrapped_r2"]
+    r2_mean = ridge_results["r2_mean"]
+    r2_ci = ridge_results["r2_ci"]
 
     # Create DataFrame for plotting
     feature_importance_df = pd.DataFrame({
@@ -227,8 +234,7 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     # 2. PLOT FEATURE IMPORTANCE with CIs
     plt.figure(figsize=(10, 6))
     sns.barplot(
-        x='Coefficient', y='Feature', data=feature_importance_df, 
-        xerr=(feature_importance_df["CI Upper"] - feature_importance_df["CI Lower"]) / 2  # Correct error bars
+        x='Coefficient', y='Feature', data=feature_importance_df
     )
 
     plt.title('Feature Importance (Ridge Regression)', fontsize=20)
@@ -256,3 +262,22 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.title("Bootstrapped Coefficient Distributions", fontsize=20)
     plt.ylabel("Coefficient Value", fontsize=16)
     plt.show()
+
+    # 5. PLOT K-FOLD AND BOOTSTRAPPED R²
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    sns.boxplot(x=r2_scores)
+    plt.title("K-Fold R² Scores", fontsize=16)
+    plt.xlabel("R²", fontsize=14)
+
+    plt.subplot(1, 2, 2)
+    sns.histplot(bootstrapped_r2, kde=True, bins=30)
+    plt.axvline(r2_mean, color='red', linestyle='--', label=f"Mean R²: {r2_mean:.3f}")
+    plt.axvline(r2_ci[0], color='gray', linestyle=':', label=f"95% CI: [{r2_ci[0]:.3f}, {r2_ci[1]:.3f}]")
+    plt.title("Bootstrapped R² Distribution", fontsize=16)
+    plt.xlabel("R²", fontsize=14)
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
+
