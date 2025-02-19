@@ -362,3 +362,7 @@ def plot_spike_and_derivative(i_sweeps, f, fs, one_ms):
     plt.plot(d_smoothed_times, (d_smoothed_data*80)-50, 'k', linewidth = 3., label='differenced')
     plt.legend()
     plt.show()
+
+
+
+

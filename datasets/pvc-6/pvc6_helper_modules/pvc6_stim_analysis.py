@@ -26,165 +26,49 @@ warnings.filterwarnings('ignore')
 
 #CATEGORICAL STIM PREDICTION
 
+# Bootstrapping function
+def bootstrap_model(model, X_train, y_train, X_test, y_test, n_bootstraps=1000):
+    bootstrapped_accuracies = []
+    for _ in range(n_bootstraps):
+        X_resampled, y_resampled = resample(X_train, y_train, random_state=None)
+        model.fit(X_resampled, y_resampled)
+        y_pred = model.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+        bootstrapped_accuracies.append(acc)
+    return np.array(bootstrapped_accuracies)
 
-#Logistic regression to predict stimulation type
+# Logistic Regression with bootstrapping
 def logistic_regression_stim(X, y, X_train, X_test, y_train, y_test):
-    
-    # Define preprocessing steps
-    numeric_features = X.select_dtypes(include=['float64']).columns
-    categorical_features = X.select_dtypes(include=['object']).columns
-    
-    numeric_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler())
-    ])
-    
-    categorical_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='most_frequent')),
-        ('onehot', OneHotEncoder(handle_unknown='ignore'))
-    ])
-    
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', numeric_transformer, numeric_features),
-            ('cat', categorical_transformer, categorical_features)
-        ])
-    
-    # Define logistic regression model
-    model = Pipeline(steps=[
-        ('preprocessor', preprocessor),
-        ('classifier', LogisticRegression(multi_class='multinomial', solver='lbfgs'))
-    ])
-    
-    # Train the model
-    model.fit(X_train, y_train)
-    
-   
- 
+    model = LogisticRegression(multi_class='multinomial', solver='lbfgs')
+    accs = bootstrap_model(model, X_train, y_train, X_test, y_test)
+    return model, accs
 
-    return model
-
-#SVM to predict stimulation type with grid search
+# SVM with Grid Search and bootstrapping
 def svm_stim(X, y, X_train, X_test, y_train, y_test):
-
-    # Define preprocessing steps
-    numeric_features = X.select_dtypes(include=['float64']).columns
-    categorical_features = X.select_dtypes(include=['object']).columns
-    
-    numeric_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler())
-    ])
-    
-    categorical_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='most_frequent')),
-        ('onehot', OneHotEncoder(handle_unknown='ignore'))
-    ])
-    
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', numeric_transformer, numeric_features),
-            ('cat', categorical_transformer, categorical_features)
-        ])
-    
-    # Define pipeline with SVM classifier
-    model = Pipeline(steps=[
-        ('preprocessor', preprocessor),
-        ('classifier', SVC(kernel='linear', probability=True))  # Linear kernel for simplicity
-    ])
-    
-    # Define hyperparameters for grid search
-    param_grid = {
-        'classifier__C': [0.1, 1, 10, 100]  # Regularization parameter
-    }
-    
-    # Perform grid search with cross-validation
-    grid_search = GridSearchCV(model, param_grid, cv=5, scoring='accuracy')
+    param_grid = {'C': [0.1, 1, 10, 100]}
+    grid_search = GridSearchCV(SVC(kernel='linear', probability=True), param_grid, cv=5, scoring='accuracy')
     grid_search.fit(X_train, y_train)
-    
-    # Get the best model and its accuracy
     best_model = grid_search.best_estimator_
-   
+    accs = bootstrap_model(best_model, X_train, y_train, X_test, y_test)
+    return best_model, accs
+
+# Random Forest with Grid Search and bootstrapping
+def random_forest_stim(X, y, X_train, X_test, y_train, y_test):
+    param_grid = {
+        'n_estimators': [50, 100, 200],
+        'max_depth': [None, 10, 20],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4],
+        'bootstrap': [True]
+    }
+    grid_search = GridSearchCV(RandomForestClassifier(random_state=42), param_grid, cv=5, scoring='accuracy')
+    grid_search.fit(X_train, y_train)
+    best_model = grid_search.best_estimator_
+    accs = bootstrap_model(best_model, X_train, y_train, X_test, y_test)
+    return best_model, accs
 
 
-    return model
 
-#Random forest to predict stimulation type with grid search. Option for getting average accuracy of multiple ranndom states 
-def random_forest_stim(X, y, X_train, X_test, y_train, y_test, multiple_random_states=True):
-
-
-    # Define preprocessing steps
-    numeric_features = X.select_dtypes(include=['float64']).columns
-    categorical_features = X.select_dtypes(include=['object']).columns
-    
-    numeric_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler())
-    ])
-    
-    categorical_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='most_frequent')),
-        ('onehot', OneHotEncoder(handle_unknown='ignore'))
-    ])
-    
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', numeric_transformer, numeric_features),
-            ('cat', categorical_transformer, categorical_features)
-        ])
-
-    if multiple_random_states == False:
-
-        # Define pipeline with Random Forest classifier
-        model = Pipeline(steps=[
-            ('preprocessor', preprocessor),
-            ('classifier', RandomForestClassifier(n_estimators=100, random_state=48))  # 100 decision trees
-        ])
-        
-        # Define hyperparameters for grid search
-        param_grid = {
-            'classifier__max_depth': [None, 10, 20],  # Maximum depth of the tree
-            'classifier__min_samples_split': [2, 5, 10],  # Minimum number of samples required to split an internal node
-            'classifier__min_samples_leaf': [1, 2, 4],  # Minimum number of samples required to be at a leaf node
-            'classifier__bootstrap': [True, False]  # Whether bootstrap samples are used when building trees
-        }
-        
-        # Perform grid search with cross-validation
-        grid_search = GridSearchCV(model, param_grid, cv=5, scoring='accuracy')
-        grid_search.fit(X_train, y_train)
-        
-        # Get the best model and its accuracy
-        best_model = grid_search.best_estimator_
-        accuracy = best_model.score(X_test, y_test)
-        return model
-    else:
-        # Define a range of random states
-        random_states = [42, 48, 64, 128, 256]
-        
-        # List to store results
-        accuracies = []
-        
-        for state in random_states:
-            model = Pipeline(steps=[
-                ('preprocessor', preprocessor),
-                ('classifier', RandomForestClassifier(n_estimators=100, random_state=state))
-            ])
-
-             # Define hyperparameters for grid search
-            param_grid = {
-            'classifier__max_depth': [None, 10, 20],  # Maximum depth of the tree
-            'classifier__min_samples_split': [2, 5, 10],  # Minimum number of samples required to split an internal node
-            'classifier__min_samples_leaf': [1, 2, 4],  # Minimum number of samples required to be at a leaf node
-            'classifier__bootstrap': [True, False]  # Whether bootstrap samples are used when building trees
-            }
-            grid_search = GridSearchCV(model, param_grid, cv=5, scoring='accuracy')
-            grid_search.fit(X_train, y_train)
-            best_model = grid_search.best_estimator_
-            accuracies.append(best_model.score(X_test, y_test))
-
-      
-
-        return best_model, accuracies
                     
 
 #PINK STIM PREDICTIONS

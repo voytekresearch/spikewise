@@ -101,51 +101,7 @@ def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_sp
     plt.xlim(1600, 2400)
     plt.show()
 
-def plot_feature_importance_categorical(best_model, X, X_train):
-    """
-    Plots feature importance for a categorical model.
 
-    Args:
-        best_model: Trained model.
-        X: Full feature set.
-        X_train: Training feature set.
-    """
-    numeric_features = X.select_dtypes(include=['float64']).columns
-    categorical_features = X.select_dtypes(include=['object']).columns
-    
-    importances = best_model.named_steps['classifier'].feature_importances_
-    
-    best_model.named_steps['preprocessor'].named_transformers_['cat'].named_steps['onehot'].fit(X_train[categorical_features])
-    
-    feature_names_cat = best_model.named_steps['preprocessor'].named_transformers_['cat'].named_steps['onehot'].get_feature_names_out(categorical_features)
-    
-    feature_names = list(feature_names_cat) + list(numeric_features)
-    feature_importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': importances})
-    feature_importance_df.sort_values(by='Importance', ascending=False, inplace=True)
-    
-    color_mapping = {
-        'peak_amp': 'C5',
-        'exp_const': 'C6',
-        'exp_lambda': 'C6',
-        'inflection_amp': 'C3',
-        'ramp_amp': 'C4',
-        'inflection_time': 'C3',
-        'peak_sharpness': 'C5',
-        'peak_width': 'C5',
-        'log_isi': 'C7'
-    }
-    
-    feature_importance_df['Color'] = feature_importance_df['Feature'].map(color_mapping)
-    feature_importance_df['Color'].fillna('gray', inplace=True)
-    
-    plt.figure(figsize=(10, 6))
-    sns.barplot(x='Importance', y='Feature', data=feature_importance_df, palette=feature_importance_df['Color'])
-    plt.title('Feature Importance (Random Forest)')
-    plt.xlabel('Importance', fontsize=20)
-    plt.ylabel('Feature', fontsize=20)
-    plt.xticks(fontsize=20)
-    plt.yticks(fontsize=20)
-    plt.show()
 
 def plot_confusion_matrix(best_model, X_test, y_test):
     """
@@ -291,6 +247,7 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     sns.histplot(bootstrapped_r2, kde=True, bins=30)
     plt.axvline(r2_mean, color='red', linestyle='--', label=f"Mean R²: {r2_mean:.3f}")
     plt.axvline(r2_ci[0], color='gray', linestyle=':', label=f"95% CI: [{r2_ci[0]:.3f}, {r2_ci[1]:.3f}]")
+    plt.axvline(r2_ci[1], color='gray', linestyle=':')
     plt.title("Bootstrapped R² Distribution", fontsize=16)
     plt.xlabel("R²", fontsize=14)
     plt.legend()
@@ -299,6 +256,7 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     sns.histplot(bootstrapped_adjusted_r2, kde=True, bins=30)
     plt.axvline(adjusted_r2_mean, color='red', linestyle='--', label=f"Mean Adjusted R²: {adjusted_r2_mean:.3f}")
     plt.axvline(adjusted_r2_ci[0], color='gray', linestyle=':', label=f"95% CI: [{adjusted_r2_ci[0]:.3f}, {adjusted_r2_ci[1]:.3f}]")
+    plt.axvline(adjusted_r2_ci[1], color='gray', linestyle=':')
     plt.title("Bootstrapped Adjusted R² Distribution", fontsize=16)
     plt.xlabel("Adjusted R²", fontsize=14)
     plt.legend()
@@ -428,3 +386,64 @@ def plot_combined_feature_importance(all_features_feature_importance_df, all_fea
     
     # Show the plot
     plt.show()
+
+
+# Function to plot feature importance
+def plot_feature_importance_categorical(best_model, X):
+    if hasattr(best_model, 'feature_importances_'):
+        importances = best_model.feature_importances_
+    else:
+        raise AttributeError("The model does not have feature_importances_ attribute.")
+    
+    feature_names = X.columns
+    df_importance = pd.DataFrame({"Feature": feature_names, "Importance": importances})
+    df_importance = df_importance.sort_values(by="Importance", ascending=False)
+    
+    color_mapping = {
+        'peak_amp': 'C5',
+        'exp_const': 'C6',
+        'exp_lambda': 'C6',
+        'inflection_amp': 'C3',
+        'ramp_amp': 'C4',
+        'inflection_time': 'C3',
+        'peak_sharpness': 'C5',
+        'peak_width': 'C5',
+        'log_isi': 'C7'
+    }
+    df_importance['Color'] = df_importance['Feature'].map(color_mapping).fillna('#8c8c8c')
+
+    
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x="Importance", y="Feature", data=df_importance, palette=df_importance['Color'].tolist())
+    plt.title("Feature Importance (Random Forest)", fontsize=20)
+    plt.xlabel("Importance", fontsize=16)
+    plt.ylabel("Feature", fontsize=16)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
+    plt.gca().spines['top'].set_visible(False)
+    plt.gca().spines['right'].set_visible(False)
+    plt.show()
+
+# Function to plot bootstrapped accuracies as histograms
+def plot_bootstrap_histograms(bootstrapped_results, model_names):
+    plt.figure(figsize=(18, 6))
+    for i, (accs, model_name) in enumerate(zip(bootstrapped_results, model_names)):
+
+        # Compute statistics for R² and Adjusted R²
+        accs_mean = np.mean(accs)
+        accs_ci = np.percentile(accs, [2.5, 97.5])
+        
+        plt.subplot(1, 3, i+1)
+        sns.histplot(accs, kde=True, bins=30)
+        plt.axvline(accs_mean , color='red', linestyle='--', label=f"Mean R²: {accs_mean:.3f}")
+        plt.axvline(accs_ci[0], color='gray', linestyle=':', label=f"95% CI: [{accs_ci[0]:.3f}, {accs_ci[1]:.3f}]")
+        plt.axvline(accs_ci[1], color='gray', linestyle=':')
+        plt.title(f"{model_name} Bootrstrapped Accuracy Distribution", fontsize=16)
+        plt.xlabel("Accuracy", fontsize=14)
+        plt.ylabel("Frequency", fontsize=16)
+        plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+
