@@ -4,79 +4,79 @@ import pandas as pd
 import seaborn as sns
 from sklearn.metrics import ConfusionMatrixDisplay
 import warnings
+
 warnings.filterwarnings('ignore')
 
 def plot_pink_spikes(sp, indices_to_plot):
-    sp.plot(indices_to_plot, color='hotpink', mode = 'full', show_points=True)
+    """
+    Plots pink spikes with specified indices.
 
-    # After plotting, get the current figure and axis
-    fig = plt.gcf()  # Get the current figure
-    ax = plt.gca()   # Get the current axis
+    Args:
+        sp: Spike data.
+        indices_to_plot: Indices of spikes to plot.
+    """
+    sp.plot(indices_to_plot, color='hotpink', mode='full', show_points=True)
+    fig = plt.gcf()
+    ax = plt.gca()
     
-    # Modify the font size of the labels
     ax.set_xlabel('Time (ms)', fontsize=18)
     ax.set_ylabel('Voltage', fontsize=18)
     
-    # Modify the font size of the legend
     legend = ax.get_legend()
     if legend:
         plt.setp(legend.get_texts(), fontsize=18)
-    # Modify the font size of the tick numbers
-    ax.tick_params(axis='both', which='major', labelsize=16)  # Adjust tick label size for both axes
     
+    ax.tick_params(axis='both', which='major', labelsize=16)
     
-    # Modify line thickness
     for line in ax.get_lines():
         line.set_linewidth(3)
     
-    # Finally, re-display the updated plot
     plt.show()
 
-
 def plot_correlation_scatter(df_pink_filtered):
-    # Create a figure with 3 subplots side by side
-    fig, axs = plt.subplots(1, 3, figsize=(19, 6))  # Adjust the size as needed
+    """
+    Plots correlation scatter plots for specified features.
+
+    Args:
+        df_pink_filtered: DataFrame containing the data.
+    """
+    fig, axs = plt.subplots(1, 3, figsize=(19, 6))
     
-    # First plot: exp_lambda vs stim_mean
-    axs[0].plot(df_pink_filtered['exp_const'], df_pink_filtered['stim_mean'], '.C6', markersize=20)  # Blue dots
-    
+    axs[0].plot(df_pink_filtered['exp_const'], df_pink_filtered['stim_mean'], '.C6', markersize=20)
     axs[0].set_xlabel('Decay exp constant', fontsize=30)
     axs[0].set_ylabel('Stim mean', fontsize=30)
     axs[0].spines['top'].set_visible(False)
     axs[0].spines['right'].set_visible(False)
-    
     axs[0].tick_params(axis='both', labelsize=20)
     
-    
-    # First plot: exp_lambda vs stim_mean
-    axs[1].plot(df_pink_filtered['peak_sharpness'], df_pink_filtered['stim_mean'], '.C5', markersize=20)  # Blue dots
-    
+    axs[1].plot(df_pink_filtered['peak_sharpness'], df_pink_filtered['stim_mean'], '.C5', markersize=20)
     axs[1].set_xlabel('Peak sharpness', fontsize=30)
     axs[1].set_ylabel('Stim mean', fontsize=30)
     axs[1].spines['top'].set_visible(False)
     axs[1].spines['right'].set_visible(False)
     axs[1].tick_params(axis='both', labelsize=20)
-                 
-    # Third plot: stim_mean vs log_isi
-    axs[2].plot(df_pink_filtered['stim_mean'], df_pink_filtered['log_isi'], '.C7', markersize=20) 
     
+    axs[2].plot(df_pink_filtered['stim_mean'], df_pink_filtered['log_isi'], '.C7', markersize=20)
     axs[2].set_xlabel('Log isi', fontsize=30)
     axs[2].set_ylabel('Stim mean', fontsize=30)
     axs[2].spines['top'].set_visible(False)
     axs[2].spines['right'].set_visible(False)
     axs[2].tick_params(axis='both', labelsize=20)
-
     
-    # Adjust layout to prevent overlap
     plt.tight_layout()
     plt.show()
 
+def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_spks):
+    """
+    Plots average waveforms for different stimulus types.
 
-
-def plot_avg_waveform_by_stim_type(all_contant_spks, all_ramp_spks,all_pink_spks):
-    # Calculate mean and standard deviation for each array
-    mean_constant_spks = np.mean(all_contant_spks, axis=0)
-    std_constant_spks = np.std(all_contant_spks, axis=0)
+    Args:
+        all_constant_spks: Constant spike data.
+        all_ramp_spks: Ramp spike data.
+        all_pink_spks: Pink spike data.
+    """
+    mean_constant_spks = np.mean(all_constant_spks, axis=0)
+    std_constant_spks = np.std(all_constant_spks, axis=0)
     
     mean_ramp_spks = np.mean(all_ramp_spks, axis=0)
     std_ramp_spks = np.std(all_ramp_spks, axis=0)
@@ -84,51 +84,47 @@ def plot_avg_waveform_by_stim_type(all_contant_spks, all_ramp_spks,all_pink_spks
     mean_pink_spks = np.mean(all_pink_spks, axis=0)
     std_pink_spks = np.std(all_pink_spks, axis=0)
     
-    # Plot the mean and standard deviation
     plt.figure(figsize=(10, 6))
     
-    # Plot for all_constant_spks
     plt.plot(mean_constant_spks, label='Mean Constant Spikes', color='green', linewidth=4)
     plt.fill_between(range(len(mean_constant_spks)), mean_constant_spks - std_constant_spks, mean_constant_spks + std_constant_spks, color='green', alpha=0.3)
     
-    # Plot for all_ramp_spks
     plt.plot(mean_ramp_spks, label='Mean Ramp Spikes', color='purple', linewidth=4)
     plt.fill_between(range(len(mean_ramp_spks)), mean_ramp_spks - std_ramp_spks, mean_ramp_spks + std_ramp_spks, color='purple', alpha=0.3)
     
-    # Plot for all_pink_spks
     plt.plot(mean_pink_spks, label='Mean Pink Spikes', color='hotpink', linewidth=4)
     plt.fill_between(range(len(mean_pink_spks)), mean_pink_spks - std_pink_spks, mean_pink_spks + std_pink_spks, color='lightpink', alpha=0.3)
     
-    # Set plot labels and title
     plt.xlabel('Time (ms)')
     plt.ylabel('Voltage')
     plt.title('Mean and Standard Deviation of Spikes')
-    #plt.legend()
-    plt.xlim(1600,2400)
+    plt.xlim(1600, 2400)
+    plt.show()
 
+def plot_feature_importance_categorical(best_model, X, X_train):
+    """
+    Plots feature importance for a categorical model.
 
-
-def plot_feature_importance_categorical(best_model,X, X_train):
-    # Define preprocessing steps
+    Args:
+        best_model: Trained model.
+        X: Full feature set.
+        X_train: Training feature set.
+    """
     numeric_features = X.select_dtypes(include=['float64']).columns
     categorical_features = X.select_dtypes(include=['object']).columns
-    # Visualize feature importance
+    
     importances = best_model.named_steps['classifier'].feature_importances_
     
-    # Fit OneHotEncoder on the categorical features using training data
     best_model.named_steps['preprocessor'].named_transformers_['cat'].named_steps['onehot'].fit(X_train[categorical_features])
     
-    # Get feature names for categorical features after one-hot encoding
     feature_names_cat = best_model.named_steps['preprocessor'].named_transformers_['cat'].named_steps['onehot'].get_feature_names_out(categorical_features)
     
-    # Combine encoded column names with numeric feature names
     feature_names = list(feature_names_cat) + list(numeric_features)
     feature_importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': importances})
     feature_importance_df.sort_values(by='Importance', ascending=False, inplace=True)
     
-    # Define color mapping
     color_mapping = {
-        'peak_amp': 'C5', # Example colors
+        'peak_amp': 'C5',
         'exp_const': 'C6',
         'exp_lambda': 'C6',
         'inflection_amp': 'C3',
@@ -137,15 +133,11 @@ def plot_feature_importance_categorical(best_model,X, X_train):
         'peak_sharpness': 'C5',
         'peak_width': 'C5',
         'log_isi': 'C7'
-        
-}
+    }
     
-    # Apply color mapping
     feature_importance_df['Color'] = feature_importance_df['Feature'].map(color_mapping)
-    feature_importance_df['Color'].fillna('gray', inplace=True)  # Assign default color to missing values
+    feature_importance_df['Color'].fillna('gray', inplace=True)
     
-    
-    # Plot
     plt.figure(figsize=(10, 6))
     sns.barplot(x='Importance', y='Feature', data=feature_importance_df, palette=feature_importance_df['Color'])
     plt.title('Feature Importance (Random Forest)')
@@ -155,44 +147,39 @@ def plot_feature_importance_categorical(best_model,X, X_train):
     plt.yticks(fontsize=20)
     plt.show()
 
-
 def plot_confusion_matrix(best_model, X_test, y_test):
+    """
+    Plots confusion matrix for a model.
 
-    # Generate confusion matrix
+    Args:
+        best_model: Trained model.
+        X_test: Test feature set.
+        y_test: Test labels.
+    """
     conf_matrix = ConfusionMatrixDisplay.from_estimator(best_model, X_test, y_test)
     
-    # Plot confusion matrix
     plt.figure(figsize=(8, 6))
     ax = plt.gca()
-    conf_matrix.plot(cmap='Blues', ax=ax, xticks_rotation=45, values_format='d')  # Plot the confusion matrix
+    conf_matrix.plot(cmap='Blues', ax=ax, xticks_rotation=45, values_format='d')
     
-    # Adjust font size for annotations (numbers within the matrix)
     for text in ax.texts:
-        text.set_fontsize(14)  # Set the font size for annotations
+        text.set_fontsize(14)
     
-    
-    
-    plt.title('Confusion Matrix', fontsize=16)  # Increase the font size for title
-    plt.xlabel('Predicted Label', fontsize=17)  # Increase the font size for x-axis label
-    plt.ylabel('True Label', fontsize=17)       # Increase the font size for y-axis label
-    plt.xticks(fontsize=16)  # Increase the font size for x-axis ticks
-    plt.yticks(fontsize=16)  # Increase the font size for y-axis ticks
-    
+    plt.title('Confusion Matrix', fontsize=16)
+    plt.xlabel('Predicted Label', fontsize=17)
+    plt.ylabel('True Label', fontsize=17)
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=16)
     plt.show()
-
-
-
-
 
 def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     """
-    Plots Actual vs Predicted values, Feature Importance, Bootstrapped Coefficients with CIs,
-    and Bootstrapped R² and Adjusted R² distributions.
+    Plots results of ridge regression.
 
     Args:
-        y (pd.Series): Actual values.
-        ridge_results (dict): Dictionary containing model results from `run_ridge_regression_kfold()`.
-        title (str): Title for the scatter plot.
+        y: Actual values.
+        ridge_results: Dictionary containing ridge regression results.
+        title: Plot title.
     """
     y_pred_cv = ridge_results["y_pred_cv"]
     coefficients = ridge_results["coefficients"]
@@ -209,7 +196,6 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     adjusted_r2_mean = ridge_results["adjusted_r2_mean"]
     adjusted_r2_ci = ridge_results["adjusted_r2_ci"]
 
-    # Create DataFrame for plotting
     feature_importance_df = pd.DataFrame({
         'Feature': feature_names, 
         'Coefficient': coefficients,
@@ -220,7 +206,22 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     
     feature_importance_df = feature_importance_df.sort_values(by='Coefficient', ascending=False)
 
-    # 1. PLOT ACTUAL vs PREDICTED
+    color_mapping = {
+        'peak_amp': 'C5',
+        'exp_const': 'C6',
+        'exp_lambda': 'C6',
+        'inflection_amp': 'C3',
+        'ramp_amp': 'C4',
+        'inflection_time': 'C3',
+        'peak_sharpness': 'C5',
+        'peak_width': 'C5',
+        'log_isi': 'C7'
+    }
+    
+    feature_importance_df['Color'] = feature_importance_df['Feature'].apply(
+        lambda x: 'hotpink' if x.startswith('stim_') else color_mapping.get(x, 'gray')
+    )
+
     plt.figure(figsize=(10, 6))
     sns.scatterplot(x=y, y=y_pred_cv, s=55)
     plt.xlabel("Actual Values", fontsize=20)
@@ -229,15 +230,13 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.xticks(fontsize=16)
     plt.yticks(fontsize=16)
 
-    # Regression Line
     m, b = np.polyfit(y, y_pred_cv, 1)
     plt.plot(y, m * y + b, color='red', linewidth=2)  
     plt.show()
 
-    # 2. PLOT FEATURE IMPORTANCE with CIs
     plt.figure(figsize=(10, 6))
     sns.barplot(
-        x='Coefficient', y='Feature', data=feature_importance_df
+        x='Coefficient', y='Feature', data=feature_importance_df, palette=feature_importance_df['Color']
     )
 
     plt.title('Feature Importance (Ridge Regression)', fontsize=20)
@@ -247,7 +246,6 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.yticks(fontsize=20)
     plt.show()
 
-    # 3. PRINT SIGNIFICANT FEATURES
     significant_features = feature_importance_df[feature_importance_df["p-value"] < 0.05]
     
     if not significant_features.empty:
@@ -256,20 +254,34 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     else:
         print("\nNo features were statistically significant (p < 0.05).")
 
-    # 4. PLOT BOOTSTRAPPED DISTRIBUTIONS
     bootstrapped_coefs = ridge_results["bootstrapped_coefs"]
-
+    
     plt.figure(figsize=(12, 6))
-    sns.violinplot(data=bootstrapped_coefs, inner="point", scale="width")
-    plt.xticks(ticks=np.arange(len(feature_names)), labels=feature_names, rotation=45)
+    
+    coef_df = pd.DataFrame(bootstrapped_coefs, columns=feature_names)
+    coef_df = coef_df.melt(var_name='Feature', value_name='Coefficient Value')
+    
+    coef_df['Color'] = coef_df['Feature'].apply(
+        lambda x: 'hotpink' if x.startswith('stim_') else color_mapping.get(x, 'gray')
+    )
+    
+    sns.violinplot(
+        x='Feature', 
+        y='Coefficient Value', 
+        data=coef_df, 
+        palette=coef_df['Color'].unique(), 
+        inner="point", 
+        scale="width"
+    )
+    
+    plt.xticks(rotation=45)
     plt.title("Bootstrapped Coefficient Distributions", fontsize=20)
     plt.ylabel("Coefficient Value", fontsize=16)
+    plt.xlabel("Feature", fontsize=16)
     plt.show()
 
-    # 5. PLOT K-FOLD AND BOOTSTRAPPED R² AND ADJUSTED R²
     plt.figure(figsize=(18, 6))
 
-    # K-Fold R² and Adjusted R²
     plt.subplot(1, 3, 1)
     sns.boxplot(x=r2_scores)
     plt.title("K-Fold R² Scores", fontsize=16)
@@ -294,6 +306,125 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.tight_layout()
     plt.show()
 
-    # 6. PRINT MEAN ADJUSTED R²
     print(f"\nMean Adjusted R-squared (Bootstrapped): {adjusted_r2_mean:.3f}")
     print(f"95% CI for Adjusted R-squared: {adjusted_r2_ci}")
+
+
+
+# --- Define the function to plot R-squared comparison ---
+def plot_r2_comparison(ridge_results_spike_only, ridge_results_spike_stim, ridge_results_stim_only):
+    feature_sets = ["No stim features", "With stim features", "Only stim features"]
+    # Names of the models
+    labels = ['Average r-squared', 'Adjusted r-squared']
+    no_stim = [ridge_results_spike_only["r2_mean"], ridge_results_spike_only["adjusted_r2_mean"]]
+    with_stim = [ridge_results_spike_stim["r2_mean"],ridge_results_spike_stim["adjusted_r2_mean"] ]
+    only_stim = [ridge_results_stim_only["r2_mean"], ridge_results_stim_only["adjusted_r2_mean"]]
+  
+    width = 0.3
+    
+    x = np.arange(len(labels))  # the label locations
+    width = 0.2  # the width of the bars
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    rects1 = ax.bar(x - width, no_stim, width, label='No stim features', color='#5b83bc')
+    rects2 = ax.bar(x, with_stim, width, label='With stim features', color='#974a75')
+    rects3 = ax.bar(x + width, only_stim, width, label='Only stim features', color='#df8ac1')
+    
+    # Adding titles and labels
+    
+    ax.set_ylabel('R-squared', fontsize=20, fontweight='bold')
+    
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=16, fontweight='bold')
+    
+    # Set the y-ticks to specific values to reduce clutter
+    ax.set_yticks([0, 0.1, 0.2, 0.3, 0.4])
+    ax.set_yticklabels(['0', '0.1', '0.2', '0.3', '0.4'], fontsize=14)
+    
+    # Adding text labels on the bars
+    def autolabel(rects):
+        """Attach a text label above each bar displaying its height, formatted to three decimal places."""
+        for rect in rects:
+            height = rect.get_height()
+            ax.annotate(f'{height:.3f}',
+                        xy=(rect.get_x() + rect.get_width() / 2, height),
+                        xytext=(0, 3),  # 3 points vertical offset
+                        textcoords="offset points",
+                        ha='center', va='bottom', fontsize=16, fontweight='bold')
+    
+    autolabel(rects1)
+    autolabel(rects2)
+    autolabel(rects3)
+    
+    ax.legend(fontsize=16, frameon=True, facecolor='white', framealpha=1)
+    
+    # Removing the top and right borders
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
+    # Show the plot
+    #plt.ylim(0, 0.2)
+    plt.show()
+
+
+# --- Define the function to plot Actual vs Predicted log ISI ---
+def plot_combined_actual_vs_predicted(y_actual, all_features_y_pred, all_features_and_stim_y_pred, only_stim_y_pred):
+    
+    # Create a new figure
+    plt.figure(figsize=(10, 6))
+    
+    # First set: all_features (No stim features)
+    sns.scatterplot(x=y_actual, y=all_features_y_pred, s=55, label='No stim features', color='#5b83bc')
+    m, b = np.polyfit(y_actual, all_features_y_pred, 1)
+    plt.plot(y_actual, m * y_actual + b, color='#5b83bc', linewidth=2)
+    
+    # Second set: all_features_and_stim (With stim features)
+    sns.scatterplot(x=y_actual, y=all_features_and_stim_y_pred, s=55, label='With stim features', color='#974a75')
+    m, b = np.polyfit(y_actual, all_features_and_stim_y_pred, 1)
+    plt.plot(y_actual, m * y_actual + b, color='#974a75', linewidth=2)
+    
+    # Third set: only_stim (Only stim features)
+    sns.scatterplot(x=y_actual, y=only_stim_y_pred, s=55, label='Only stim features', color='#df8ac1')
+    m, b = np.polyfit(y_actual, only_stim_y_pred, 1)
+    plt.plot(y_actual, m * y_actual + b, color='#df8ac1', linewidth=2)
+    
+    # Add labels and title
+    plt.xlabel('Actual log_isi', fontsize=20)
+    plt.ylabel('Predicted log_isi', fontsize=20)
+    plt.title('Combined Scatter Plot of Actual vs. Predicted Values for All Models', fontsize=20)
+    plt.xticks(fontsize=16)               
+    plt.yticks(fontsize=16)
+    
+    # Add legend
+    plt.legend([], [], frameon=False)
+    
+    # Show the plot
+    plt.show()
+
+
+# --- Define the function to plot Feature Importance ---
+def plot_combined_feature_importance(all_features_feature_importance_df, all_features_and_stim_feature_importance_df,only_stim_feature_importance_df):
+    # Combine the three DataFrames
+    combined_feature_importance_df = pd.concat([
+        all_features_feature_importance_df,
+        all_features_and_stim_feature_importance_df,
+        only_stim_feature_importance_df
+    ])
+    
+    # Plot combined feature importance without the legend
+    plt.figure(figsize=(12, 8))  # Increase the figure size
+    sns.barplot(x='Coefficient', y='Feature', hue='Model', data=combined_feature_importance_df, 
+                palette=['#5b83bc', '#974a75', '#df8ac1'], linewidth=0.5)  # Increased bar thickness
+    
+    # Add labels and title
+    plt.title('Combined Feature Importance for All Models', fontsize=20)
+    plt.xlabel('Coefficient (Importance)', fontsize=20)
+    
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=20)  # Increase font size for the feature names
+    
+    # Disable the legend
+    plt.legend([], [], frameon=False)
+    
+    # Show the plot
+    plt.show()
