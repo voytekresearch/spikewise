@@ -68,10 +68,10 @@ def random_forest_stim(X, y, X_train, X_test, y_train, y_test):
     return best_model, accs
 
 
-
+    return best_model, accuracies
                     
 
-#PINK STIM PREDICTIONS
+#PINK STIM PREDICTIONS (RIDGE REGRESSION TO PREDIC STIM FEATURES AND LOG ISI) 
 
 # Function to train the model with progress tracking
 def train_model_with_progress(X_train, y_train, max_iter=100, regression_type = 'Ridge'):
