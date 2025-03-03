@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import warnings
 import matplotlib.pyplot as plt
-from typing import List, Tuple, Dict, Union
+from typing import List, Tuple, Dict, Union, Literal
 from neurodsp import spectral
 from fooof import FOOOF
 
@@ -320,3 +320,90 @@ def _append_null_features(
     df.at[row_idx, f"{prefix}_r_squared"].append(None)
     df.at[row_idx, f"{prefix}_error"].append(None)
     df.at[row_idx, f"{prefix}_n_peaks"].append(None)
+
+
+
+
+
+def compute_lfp_feature_means(
+    df: pd.DataFrame,
+    lfp_type: Literal["current", "previous"],
+    drop_irrelevant: bool = True,
+    drop_original: bool = True,
+) -> pd.DataFrame:
+    """
+    Compute the mean of LFP features (current or previous) and optionally drop irrelevant/original columns.
+
+    Parameters:
+        df (pd.DataFrame): The input DataFrame containing LFP features.
+        lfp_type (Literal["current", "previous"]): Whether to process current or previous LFP features.
+        drop_irrelevant (bool): Whether to drop the irrelevant LFP features (e.g., drop previous when processing current).
+        drop_original (bool): Whether to drop the original LFP list columns after computing their means.
+
+    Returns:
+        pd.DataFrame: A processed DataFrame with mean LFP features and optionally dropped columns.
+    """
+    # Create a copy of the DataFrame to avoid modifying the original
+    df_processed = df.copy()
+
+    # Define LFP features based on type
+    if lfp_type == "current":
+        lfp_features = [
+            'lfp_current_offset',
+            'lfp_current_exponent',
+            'lfp_current_r_squared',
+            'lfp_current_error',
+            'lfp_current_n_peaks'
+        ]
+        irrelevant_features = [
+            'lfp_previous_offset',
+            'lfp_previous_exponent',
+            'lfp_previous_r_squared',
+            'lfp_previous_error',
+            'lfp_previous_n_peaks'
+        ]
+    elif lfp_type == "previous":
+        lfp_features = [
+            'lfp_previous_offset',
+            'lfp_previous_exponent',
+            'lfp_previous_r_squared',
+            'lfp_previous_error',
+            'lfp_previous_n_peaks'
+        ]
+        irrelevant_features = [
+            'lfp_current_offset',
+            'lfp_current_exponent',
+            'lfp_current_r_squared',
+            'lfp_current_error',
+            'lfp_current_n_peaks'
+        ]
+    else:
+        raise ValueError("lfp_type must be 'current' or 'previous'.")
+
+    # Compute the mean of the two windows for each LFP feature
+    for feature in lfp_features:
+        new_col_name = f"{feature}_mean"
+        df_processed[new_col_name] = df_processed[feature].apply(
+            lambda x: (
+                sum([v for v in x if v is not None]) / len([v for v in x if v is not None]) 
+                if isinstance(x, list) and len([v for v in x if v is not None]) > 0 
+                else None
+            )
+        )
+
+    # Drop rows where all LFP means are NaN
+    df_processed.dropna(
+        subset=[f"{feature}_mean" for feature in lfp_features],
+        how='all',  # Drop rows only if ALL LFP means are NaN
+        inplace=True
+    )
+
+    # Drop original LFP list columns (optional)
+    if drop_original:
+        df_processed.drop(columns=lfp_features, inplace=True, errors='ignore')
+
+    # Drop irrelevant LFP features (optional)
+    if drop_irrelevant:
+        df_processed.drop(columns=irrelevant_features, inplace=True, errors='ignore')
+
+    return df_processed
