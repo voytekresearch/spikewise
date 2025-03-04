@@ -352,30 +352,30 @@ def compute_lfp_feature_means(
             'lfp_current_offset',
             'lfp_current_exponent',
             'lfp_current_r_squared',
-            'lfp_current_error',
             'lfp_current_n_peaks'
         ]
         irrelevant_features = [
             'lfp_previous_offset',
             'lfp_previous_exponent',
             'lfp_previous_r_squared',
-            'lfp_previous_error',
-            'lfp_previous_n_peaks'
+            'lfp_previous_n_peaks',
+            'lfp_current_error',
+            'lfp_previous_error'
         ]
     elif lfp_type == "previous":
         lfp_features = [
             'lfp_previous_offset',
             'lfp_previous_exponent',
             'lfp_previous_r_squared',
-            'lfp_previous_error',
             'lfp_previous_n_peaks'
         ]
         irrelevant_features = [
             'lfp_current_offset',
             'lfp_current_exponent',
             'lfp_current_r_squared',
-            'lfp_current_error',
             'lfp_current_n_peaks'
+            'lfp_current_error',
+            'lfp_previous_error'
         ]
     else:
         raise ValueError("lfp_type must be 'current' or 'previous'.")
