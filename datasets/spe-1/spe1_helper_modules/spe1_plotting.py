@@ -3,6 +3,8 @@ import seaborn as sns
 import numpy as np
 import pandas as pd
 from typing import List, Optional, Tuple
+from spikeparam_plotting import *
+
 
 def plot_spike_time_histogram(
     spk_times_ms: np.ndarray,
@@ -80,19 +82,6 @@ def plot_lfp_spk_correlation_heatmap(
     correlation_matrix = df[spike_features + lfp_features].corr()
     spike_vs_lfp_corr = correlation_matrix.loc[spike_features, lfp_features]
 
-    plt.figure(figsize=figsize)
-    sns.heatmap(
-        spike_vs_lfp_corr,
-        annot=annot,
-        cmap=cmap,
-        fmt=fmt,
-        vmin=-1,
-        vmax=1,
-    )
-    plt.title(title)
-    plt.xlabel("LFP Features")
-    plt.ylabel("Spike Features")
+    plot_corr_heatmap(spike_vs_lfp_corr, calculate_corr = False)
 
-    if save_path:
-        plt.savefig(save_path, bbox_inches="tight")
-    plt.show()
+    
