@@ -3,15 +3,17 @@ import seaborn as sns
 import numpy as np
 import pandas as pd
 
+from scipy.stats import pearsonr
 
-def plot_corr_heatmap(df_features, calculate_corr = True, type_heatmap="half"):
+def plot_corr_heatmap(df_features, calculate_corr = True,type_heatmap="half"):
     """
     Plots correlation heatmap of spike paramaterization features.
 
     Args:
         df_features: pandas dataframe with features 
+        calculate_corr: calculates correlations between features when True (defualt). If False, user should input correlations. 
         type_heatmap: plot full matrix "full" or half matrix "half" (default)
-        
+       
     """
 
     if calculate_corr:
@@ -29,23 +31,26 @@ def plot_corr_heatmap(df_features, calculate_corr = True, type_heatmap="half"):
         
         # Plot the heatmap
         plt.figure(figsize=(10, 8))
-        sns.heatmap(rho, mask=mask, cmap='coolwarm', annot=True, fmt='.2', linewidths=0.5, center=0, square=True,  annot_kws={"size": 14})
+        sns.heatmap(rho, mask=mask, cmap='coolwarm', annot=True, fmt='.2', linewidths=0.5, center=0, square=True,  annot_kws={"size": 12})
         # Increase fontsize of tick labels on both axes
         plt.xticks(fontsize=14)
         plt.yticks(fontsize=14)
         
         plt.title('Correlation Heatmap')
-        plt.show()
+       
         
     else:
         # Plot the heatmap
         plt.figure(figsize=(10, 8))
-        sns.heatmap(rho, cmap='coolwarm', annot=True, fmt='.2', linewidths=0.5, center=0, square=True,  annot_kws={"size": 14})
+        sns.heatmap(rho, cmap='coolwarm', annot=True, fmt='.2', linewidths=0.5, center=0, square=True,  annot_kws={"size": 12})
         # Increase fontsize of tick labels on both axes
         plt.xticks(fontsize=14)
         plt.yticks(fontsize=14)
         
         plt.title('Correlation Heatmap')
-        plt.show()
-        
+  
+
+
+
+    plt.show()
     
