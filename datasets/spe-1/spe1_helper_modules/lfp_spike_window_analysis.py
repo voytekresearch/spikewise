@@ -9,6 +9,10 @@ import matplotlib.pyplot as plt
 from typing import List, Tuple, Dict, Union, Literal
 from neurodsp import spectral
 from fooof import FOOOF
+from fooof import FOOOFGroup, Bands
+
+
+import mne
 
 # Custom Exceptions -----------------------------------------------------------
 class LFPSpikeWindowAnalysisError(Exception):
@@ -36,12 +40,7 @@ class WindowIndexError(LFPSpikeWindowAnalysisError):
     pass
 
 # LFP Analysis Core Functions --------------------------------------------------
-from fooof import FOOOF
-import numpy as np
-from typing import List, Tuple, Dict, Union
-import matplotlib.pyplot as plt
-import warnings
-from scipy.signal import welch
+
 
 class LFPAnalysisError(Exception):
     """Base class for LFP analysis errors"""
@@ -59,93 +58,185 @@ class FOOOFFitError(LFPAnalysisError):
     """Raised when FOOOF model fitting fails"""
     pass
 
-
-
-import warnings
-
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
     window_length_sec: int = 25,
     step_size_sec: int = 15,
     freq_range: Tuple[float, float] = (1, 90),
-    fooof_params: Dict = None,
-    plot: bool = False,
-    min_overlap_percent: float = 50.0  # New parameter
-) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF], List[Tuple[int, int]]]:
+    n_freqs: int = 100,
+    time_window_len: float = 1.0,
+    time_bandwidth: float = 4.0,
+    n_peaks: int = 4,
+    peak_width_lims: Tuple[float, float] = (1.0, 6.0),
+) -> pd.DataFrame:
     """
-    Compute sliding windows of LFP data with overlap validation.
-    
-    New Args:
-        min_overlap_percent: Minimum required overlap percentage (0-100) to trigger warning
+    Perform sliding window LFP analysis with FOOOF spectral parameterization
+    Includes debug prints for troubleshooting
     """
-    # Calculate actual overlap percentage
-    actual_overlap = window_length_sec - step_size_sec
-    overlap_percent = (actual_overlap / window_length_sec) * 100
     
-    # Check for insufficient overlap
-    if overlap_percent < min_overlap_percent:
-        warnings.warn(
-            f"\n\n⚠️ Insufficient window overlap: {overlap_percent:.1f}% "
-            f"(minimum recommended: {min_overlap_percent}%)\n"
-            "This may result in:\n"
-            "1. Spikes mapping to only one window\n"
-            "2. Gaps in temporal coverage\n"
-            "3. Reduced statistical power\n\n"
-            "Recommended fix:\n"
-            f"Set step_size_sec <= {window_length_sec * (1 - min_overlap_percent/100):.1f} "
-            f"for {min_overlap_percent}% overlap\n",
-            UserWarning
-        )
-    
-    # Convert window and step size to samples
+    # Convert time parameters to samples
     window_length = int(window_length_sec * fs)
     step_size = int(step_size_sec * fs)
+    n_samples = len(lfp_signal)
+    print(f"\nInitial parameters:\n"
+          f"- Signal length: {n_samples} samples ({n_samples/fs:.1f}s)\n"
+          f"- Window length: {window_length} samples ({window_length_sec}s)\n"
+          f"- Step size: {step_size} samples ({step_size_sec}s)\n"
+          f"- Expected windows: {int((n_samples - window_length)/step_size) + 1}")
 
-   
+    # Create window indices
+    starts = np.arange(0, n_samples - window_length + 1, step_size)
+    ends = starts + window_length
+    window_times = list(zip(starts, ends))
+    n_windows = len(window_times)
+    print(f"Created {n_windows} windows")
 
-    # Initialize results storage
-    spectra = []
-    foof_results = []
-  
-    # Define window start and end times
-    window_times = [
-        (start, start + window_length)
-        for start in range(0, len(lfp_signal) - window_length + 1, step_size)
-    ]
+    # Create epochs array
+    try:
+        epochs = np.stack([lfp_signal[start:end] for start, end in window_times])
+        epochs = epochs[:, np.newaxis, :]  # Add channel dimension
+        print(f"Epochs array shape: {epochs.shape}")
+    except Exception as e:
+        print(f"Error creating epochs: {str(e)}")
+        raise
 
+    # Compute multitaper TFR
+    freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
+    n_cycles = freqs * time_window_len
+    print(f"\nSpectral parameters:\n"
+          f"- Frequency range: {freq_range} Hz\n"
+          f"- Number of frequencies: {n_freqs}\n"
+          f"- Time-bandwidth product: {time_bandwidth}\n"
+          f"- Cycle range: {n_cycles[0]:.1f}-{n_cycles[-1]:.1f} cycles")
 
-    # Loop through sliding windows
-    for start, end in window_times:
-        # Extract the LFP segment
-        lfp_segment = lfp_signal[start:end]
-        
-        # Compute the power spectrum using Welch's method
+    try:
+        tfr = mne.time_frequency.tfr_array_multitaper(
+            epochs,
+            sfreq=fs,
+            freqs=freqs,
+            n_cycles=n_cycles,
+            time_bandwidth=time_bandwidth,
+            output='power',
+            verbose=False
+        )
+        power_spectra = np.squeeze(tfr.mean(axis=-1))
+        print(f"TFR computed successfully. Power spectra shape: {power_spectra.shape}")
+    except Exception as e:
+        print(f"Error in TFR computation: {str(e)}")
+        raise
+
+    # Configure FOOOFGroup
+    aperiodic_mode = 'knee' if time_window_len >= 0.5 else 'fixed'
+    print(f"\nFOOOF configuration:\n"
+          f"- Aperiodic mode: {aperiodic_mode}\n"
+          f"- Max peaks: {n_peaks}\n"
+          f"- Peak width limits: {peak_width_lims}")
+
+    fooof_grp = FOOOFGroup(
+        peak_width_limits=peak_width_lims,
+        max_n_peaks=n_peaks,
+        aperiodic_mode=aperiodic_mode,
+        verbose=False
+    )
+
+    # Fit models with error tracking
+    n_failed = 0
+    failed_indices = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
         try:
-            fxx, pxx = spectral.compute_spectrum(
-                lfp_segment, fs, method='welch', window='hann', nperseg=fs * 4
-            )
-        except ValueError as e:
-            raise SpectralComputationError(f"Error computing power spectrum: {str(e)}") from e
-        
-        # Fit the FOOOF model
-        fm = FOOOF(**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
-        try:
-            fm.fit(fxx, pxx, freq_range=freq_range)
-            # Optional: plot the power spectrum
-            if plot:
-                fm.plot(plot_peaks='shade', peak_kwargs={'color' : 'green'})
-        
-
+            fooof_grp.fit(freqs, power_spectra, freq_range)
+            print("\nFOOOF fitting completed")
         except Exception as e:
-            raise FOOOFFitError(f"FOOOF fitting failed for window {start}-{end}: {str(e)}") from e
+            print(f"FOOOF group fit failed: {str(e)}")
+            raise
 
-        # Store results
-        spectra.append((fxx, pxx))
-        foof_results.append(fm)
-      
+    # Analyze fit results
+    print("\nFit results:")
+    print(f"- Total models: {len(fooof_grp)}")
+    print(f"- Successful fits: {sum(~np.isnan(fooof_grp.r_squared_))}")
+    print(f"- Failed fits: {sum(np.isnan(fooof_grp.r_squared_))}")
+    
+    if len(fooof_grp) > 0:
+        print("\nFirst successful fit parameters:")
+        print(fooof_grp[0])  # Print first model parameters
+    else:
+        print("\nNo successful fits!")
 
-    return spectra, foof_results, window_times
+    # Initialize results dataframe
+    results_df = pd.DataFrame({
+        'window_start': starts,
+        'window_end': ends,
+        'window_duration': window_length_sec,
+        'sample_rate': fs
+    })
+
+    # Robust parameter extraction with debug info
+    def safe_aperiodic(params, idx: int, param_idx: int) -> float:
+        try:
+            param_set = params[idx]
+            if isinstance(param_set, np.ndarray) and len(param_set) > param_idx:
+                return param_set[param_idx]
+        except (IndexError, TypeError) as e:
+            failed_indices.append(idx)
+            return np.nan
+        return np.nan
+
+    # Track failed parameter extractions
+    failed_indices = []
+    
+    results_df['offset'] = [safe_aperiodic(fooof_grp.aperiodic_params_, i, 0) 
+                          for i in range(n_windows)]
+    results_df['exponent'] = [safe_aperiodic(fooof_grp.aperiodic_params_, i, -1) 
+                            for i in range(n_windows)]
+    
+    if aperiodic_mode == 'knee':
+        results_df['knee'] = [safe_aperiodic(fooof_grp.aperiodic_params_, i, 1) 
+                            for i in range(n_windows)]
+
+    # Report parameter extraction issues
+    if failed_indices:
+        print(f"\nParameter extraction issues detected in {len(set(failed_indices))} windows")
+        print("Example problematic indices:", failed_indices[:5])
+        print("Example problematic parameters:", [fooof_grp.aperiodic_params_[i] 
+                                                for i in failed_indices[:3]])
+
+    # Add model metrics
+    results_df['r_squared'] = [fooof_grp.r_squared_[i] if i < len(fooof_grp.r_squared_) else np.nan 
+                              for i in range(n_windows)]
+    results_df['error'] = [fooof_grp.error_[i] if i < len(fooof_grp.error_) else np.nan 
+                          for i in range(n_windows)]
+
+    # Add peak parameters with debug info
+    freq_bands = Bands({
+        'delta': [1, 4],
+        'theta': [4, 8],
+        'alpha': [8, 12],
+        'beta': [12, 30],
+        'gamma': [30, 90]
+    })
+    
+    if len(fooof_grp) > 0:
+        try:
+            peak_df = fooof_grp.to_df(freq_bands)
+            results_df = pd.concat([results_df, peak_df], axis=1)
+            print("\nPeak parameters added successfully")
+        except Exception as e:
+            print(f"Error creating peak dataframe: {str(e)}")
+    else:
+        print("\nNo peak parameters to add - all fits failed")
+        peak_cols = [f"{pre}_{band}_{n}" 
+                    for band in freq_bands.labels 
+                    for pre in ['CF', 'PW', 'BW'] 
+                    for n in range(n_peaks)]
+        for col in peak_cols:
+            results_df[col] = np.nan
+
+    print("\nFinal dataframe columns:", results_df.columns.tolist())
+    print("First row sample:", results_df.iloc[0].to_dict())
+    
+    return results_df
 
 
 # Spike-LFP Integration Functions ----------------------------------------------
