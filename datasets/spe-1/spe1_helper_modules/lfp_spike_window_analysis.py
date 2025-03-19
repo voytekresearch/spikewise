@@ -58,6 +58,8 @@ class FOOOFFitError(LFPAnalysisError):
     """Raised when FOOOF model fitting fails"""
     pass
 
+
+
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
@@ -72,25 +74,32 @@ def compute_lfp_windows(
 ) -> pd.DataFrame:
     """
     Perform sliding window LFP analysis with FOOOF spectral parameterization
-    Includes debug prints for troubleshooting
+    Includes comprehensive error handling and debug prints
     """
     
+    # Initial parameters debug print
+    print("\n=== Initial Parameters ===")
+    print(f"Signal length: {len(lfp_signal)/fs:.1f}s ({len(lfp_signal)} samples)")
+    print(f"Window: {window_length_sec}s ({int(window_length_sec*fs)} samples)")
+    print(f"Step: {step_size_sec}s ({int(step_size_sec*fs)} samples)")
+    print(f"Frequency range: {freq_range[0]}-{freq_range[1]}Hz")
+    print(f"FOOOF peaks: {n_peaks}, Width limits: {peak_width_lims}")
+
     # Convert time parameters to samples
     window_length = int(window_length_sec * fs)
     step_size = int(step_size_sec * fs)
     n_samples = len(lfp_signal)
-    print(f"\nInitial parameters:\n"
-          f"- Signal length: {n_samples} samples ({n_samples/fs:.1f}s)\n"
-          f"- Window length: {window_length} samples ({window_length_sec}s)\n"
-          f"- Step size: {step_size} samples ({step_size_sec}s)\n"
-          f"- Expected windows: {int((n_samples - window_length)/step_size) + 1}")
 
     # Create window indices
-    starts = np.arange(0, n_samples - window_length + 1, step_size)
-    ends = starts + window_length
-    window_times = list(zip(starts, ends))
-    n_windows = len(window_times)
-    print(f"Created {n_windows} windows")
+    try:
+        starts = np.arange(0, n_samples - window_length + 1, step_size)
+        ends = starts + window_length
+        window_times = list(zip(starts, ends))
+        n_windows = len(window_times)
+        print(f"\nCreated {n_windows} windows")
+    except Exception as e:
+        print(f"\nError creating windows: {str(e)}")
+        raise
 
     # Create epochs array
     try:
@@ -98,19 +107,17 @@ def compute_lfp_windows(
         epochs = epochs[:, np.newaxis, :]  # Add channel dimension
         print(f"Epochs array shape: {epochs.shape}")
     except Exception as e:
-        print(f"Error creating epochs: {str(e)}")
+        print(f"\nError creating epochs array: {str(e)}")
         raise
 
     # Compute multitaper TFR
-    freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
-    n_cycles = freqs * time_window_len
-    print(f"\nSpectral parameters:\n"
-          f"- Frequency range: {freq_range} Hz\n"
-          f"- Number of frequencies: {n_freqs}\n"
-          f"- Time-bandwidth product: {time_bandwidth}\n"
-          f"- Cycle range: {n_cycles[0]:.1f}-{n_cycles[-1]:.1f} cycles")
-
     try:
+        print("\n=== Computing Power Spectra ===")
+        freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
+        n_cycles = freqs * time_window_len
+        print(f"Frequency bins: {n_freqs}")
+        print(f"Cycle range: {n_cycles[0]:.1f}-{n_cycles[-1]:.1f} cycles")
+
         tfr = mne.time_frequency.tfr_array_multitaper(
             epochs,
             sfreq=fs,
@@ -121,18 +128,19 @@ def compute_lfp_windows(
             verbose=False
         )
         power_spectra = np.squeeze(tfr.mean(axis=-1))
-        print(f"TFR computed successfully. Power spectra shape: {power_spectra.shape}")
+        print(f"Power spectra shape: {power_spectra.shape}")
     except Exception as e:
-        print(f"Error in TFR computation: {str(e)}")
+        print(f"\nError in spectral computation: {str(e)}")
         raise
 
-    # Configure FOOOFGroup
+    # Configure FOOOF
     aperiodic_mode = 'knee' if time_window_len >= 0.5 else 'fixed'
-    print(f"\nFOOOF configuration:\n"
-          f"- Aperiodic mode: {aperiodic_mode}\n"
-          f"- Max peaks: {n_peaks}\n"
-          f"- Peak width limits: {peak_width_lims}")
+    print("\n=== FOOOF Configuration ===")
+    print(f"Aperiodic mode: {aperiodic_mode}")
+    print(f"Max peaks: {n_peaks}")
+    print(f"Peak width limits: {peak_width_lims}")
 
+    # Initialize and fit FOOOFGroup
     fooof_grp = FOOOFGroup(
         peak_width_limits=peak_width_lims,
         max_n_peaks=n_peaks,
@@ -140,29 +148,32 @@ def compute_lfp_windows(
         verbose=False
     )
 
-    # Fit models with error tracking
-    n_failed = 0
-    failed_indices = []
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        try:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
             fooof_grp.fit(freqs, power_spectra, freq_range)
-            print("\nFOOOF fitting completed")
-        except Exception as e:
-            print(f"FOOOF group fit failed: {str(e)}")
-            raise
+        print("\nFOOOF fitting completed successfully")
+    except Exception as e:
+        print(f"\nFOOOF fitting failed: {str(e)}")
+        raise
 
     # Analyze fit results
-    print("\nFit results:")
-    print(f"- Total models: {len(fooof_grp)}")
-    print(f"- Successful fits: {sum(~np.isnan(fooof_grp.r_squared_))}")
-    print(f"- Failed fits: {sum(np.isnan(fooof_grp.r_squared_))}")
+    print("\n=== Fit Results ===")
+    print(f"Total windows processed: {n_windows}")
+    print(f"FOOOF models created: {len(fooof_grp)}")
     
-    if len(fooof_grp) > 0:
-        print("\nFirst successful fit parameters:")
-        print(fooof_grp[0])  # Print first model parameters
+    # Convert to numpy arrays for safe handling
+    r_squared = np.array(fooof_grp.r_squared_)
+    error = np.array(fooof_grp.error_)
+    
+    if r_squared.size > 0:
+        success_mask = ~np.isnan(r_squared)
+        print(f"Successful fits: {np.sum(success_mask)}")
+        print(f"Failed fits: {np.sum(np.isnan(r_squared))}")
+        print(f"Mean R²: {np.nanmean(r_squared):.2f}")
+        print(f"Median error: {np.nanmedian(error):.2f}")
     else:
-        print("\nNo successful fits!")
+        print("No valid fit metrics available")
 
     # Initialize results dataframe
     results_df = pd.DataFrame({
@@ -172,20 +183,20 @@ def compute_lfp_windows(
         'sample_rate': fs
     })
 
-    # Robust parameter extraction with debug info
+    # Safe parameter extraction functions
     def safe_aperiodic(params, idx: int, param_idx: int) -> float:
+        """Safely extract aperiodic parameters with validation"""
         try:
-            param_set = params[idx]
-            if isinstance(param_set, np.ndarray) and len(param_set) > param_idx:
-                return param_set[param_idx]
-        except (IndexError, TypeError) as e:
-            failed_indices.append(idx)
-            return np.nan
+            if idx < len(params):
+                param_set = params[idx]
+                if isinstance(param_set, np.ndarray) and len(param_set) > param_idx:
+                    return param_set[param_idx]
+        except (IndexError, TypeError, KeyError):
+            pass
         return np.nan
 
-    # Track failed parameter extractions
-    failed_indices = []
-    
+    # Extract parameters
+    print("\n=== Extracting Parameters ===")
     results_df['offset'] = [safe_aperiodic(fooof_grp.aperiodic_params_, i, 0) 
                           for i in range(n_windows)]
     results_df['exponent'] = [safe_aperiodic(fooof_grp.aperiodic_params_, i, -1) 
@@ -195,49 +206,42 @@ def compute_lfp_windows(
         results_df['knee'] = [safe_aperiodic(fooof_grp.aperiodic_params_, i, 1) 
                             for i in range(n_windows)]
 
-    # Report parameter extraction issues
-    if failed_indices:
-        print(f"\nParameter extraction issues detected in {len(set(failed_indices))} windows")
-        print("Example problematic indices:", failed_indices[:5])
-        print("Example problematic parameters:", [fooof_grp.aperiodic_params_[i] 
-                                                for i in failed_indices[:3]])
-
     # Add model metrics
-    results_df['r_squared'] = [fooof_grp.r_squared_[i] if i < len(fooof_grp.r_squared_) else np.nan 
+    results_df['r_squared'] = [r_squared[i] if i < len(r_squared) else np.nan 
                               for i in range(n_windows)]
-    results_df['error'] = [fooof_grp.error_[i] if i < len(fooof_grp.error_) else np.nan 
+    results_df['error'] = [error[i] if i < len(error) else np.nan 
                           for i in range(n_windows)]
 
-    # Add peak parameters with debug info
-    freq_bands = Bands({
-        'delta': [1, 4],
-        'theta': [4, 8],
-        'alpha': [8, 12],
-        'beta': [12, 30],
-        'gamma': [30, 90]
-    })
-    
-    if len(fooof_grp) > 0:
-        try:
-            peak_df = fooof_grp.to_df(freq_bands)
-            results_df = pd.concat([results_df, peak_df], axis=1)
-            print("\nPeak parameters added successfully")
-        except Exception as e:
-            print(f"Error creating peak dataframe: {str(e)}")
-    else:
-        print("\nNo peak parameters to add - all fits failed")
+    # Add peak parameters
+    try:
+        print("Organizing peak parameters...")
+        freq_bands = Bands({
+            'delta': [1, 4],
+            'theta': [4, 8],
+            'alpha': [8, 12],
+            'beta': [12, 30],
+            'gamma': [30, 90]
+        })
+        peak_df = fooof_grp.to_df(freq_bands)
+        results_df = pd.concat([results_df, peak_df], axis=1)
+        print("Peak parameters added successfully")
+    except Exception as e:
+        print(f"Error organizing peak parameters: {str(e)}")
+        # Create empty peak columns
         peak_cols = [f"{pre}_{band}_{n}" 
-                    for band in freq_bands.labels 
+                    for band in ['delta', 'theta', 'alpha', 'beta', 'gamma']
                     for pre in ['CF', 'PW', 'BW'] 
                     for n in range(n_peaks)]
         for col in peak_cols:
             results_df[col] = np.nan
 
-    print("\nFinal dataframe columns:", results_df.columns.tolist())
-    print("First row sample:", results_df.iloc[0].to_dict())
-    
-    return results_df
+    # Final debug output
+    print("\n=== Final Output ===")
+    print(f"Result columns: {results_df.columns.tolist()}")
+    print("First row sample:")
+    print(results_df.iloc[0].to_dict())
 
+    return results_df
 
 # Spike-LFP Integration Functions ----------------------------------------------
 def map_spikes_to_windows(
