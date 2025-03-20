@@ -50,198 +50,140 @@ class InvalidParameterError(LFPAnalysisError):
     """Raised for invalid input parameters"""
     pass
 
-class SpectralComputationError(LFPAnalysisError):
-    """Raised for errors in spectral computation"""
-    pass
-
-class FOOOFFitError(LFPAnalysisError):
-    """Raised when FOOOF model fitting fails"""
-    pass
-
-
 
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
+    method: str = "welch",  # New parameter to select method
     window_length_sec: int = 25,
-    step_size_sec: int = 15,
+    step_size_sec: float = 12.5,
     freq_range: Tuple[float, float] = (1, 90),
-    n_freqs: int = 100,
-    time_window_len: float = 1.0,
-    time_bandwidth: float = 4.0,
-    n_peaks: int = 4,
-    peak_width_lims: Tuple[float, float] = (1.0, 6.0),
-) -> pd.DataFrame:
+    fooof_params: Dict = None,
+    plot: bool = False,
+    min_overlap_percent: float = 50.0  # Minimum required overlap percentage
+) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF], List[Tuple[int, int]]]:
     """
-    Perform sliding window LFP analysis with FOOOF spectral parameterization
-    Includes comprehensive error handling and debug prints
-    """
-    
-    # Initial parameters debug print
-    print("\n=== Initial Parameters ===")
-    print(f"Signal length: {len(lfp_signal)/fs:.1f}s ({len(lfp_signal)} samples)")
-    print(f"Window: {window_length_sec}s ({int(window_length_sec*fs)} samples)")
-    print(f"Step: {step_size_sec}s ({int(step_size_sec*fs)} samples)")
-    print(f"Frequency range: {freq_range[0]}-{freq_range[1]}Hz")
-    print(f"FOOOF peaks: {n_peaks}, Width limits: {peak_width_lims}")
+    Compute sliding windows of LFP data using Welch or Multitaper spectral estimation.
 
-    # Convert time parameters to samples
+    Parameters:
+        lfp_signal (np.ndarray): LFP time series (1D array).
+        fs (float): Sampling frequency.
+        method (str): "welch" or "multitaper" (default: "welch").
+        window_length_sec (int): Length of each time window in seconds.
+        step_size_sec (int): Step size between windows in seconds.
+        freq_range (Tuple[float, float]): Frequency range for spectral analysis.
+        fooof_params (Dict): Parameters for FOOOF model fitting.
+        plot (bool): If True, plot the power spectrum.
+        min_overlap_percent (float): Minimum required overlap percentage.
+
+    Returns:
+        spectra (List[Tuple[np.ndarray, np.ndarray]]): Frequency and power spectra pairs.
+        foof_results (List[FOOOF]): List of FOOOF model fits.
+        window_times (List[Tuple[int, int]]): List of start and end indices of windows.
+    """
+
+    # Validate method selection
+    if method not in ["welch", "multitaper"]:
+        raise ValueError("Method must be 'welch' or 'multitaper'.")
+
+    # Convert window and step size to samples
     window_length = int(window_length_sec * fs)
     step_size = int(step_size_sec * fs)
-    n_samples = len(lfp_signal)
 
-    # Create window indices
-    try:
-        starts = np.arange(0, n_samples - window_length + 1, step_size)
-        ends = starts + window_length
-        window_times = list(zip(starts, ends))
-        n_windows = len(window_times)
-        print(f"\nCreated {n_windows} windows")
-    except Exception as e:
-        print(f"\nError creating windows: {str(e)}")
-        raise
+    # Define window start and end times
+    window_times = [
+        (start, start + window_length)
+        for start in range(0, len(lfp_signal) - window_length + 1, step_size)
+    ]
 
-    # Create epochs array
-    try:
-        epochs = np.stack([lfp_signal[start:end] for start, end in window_times])
-        epochs = epochs[:, np.newaxis, :]  # Add channel dimension
-        print(f"Epochs array shape: {epochs.shape}")
-    except Exception as e:
-        print(f"\nError creating epochs array: {str(e)}")
-        raise
+    # Initialize results storage
+    spectra = []
+    foof_results = []
 
-    # Compute multitaper TFR
-    try:
-        print("\n=== Computing Power Spectra ===")
-        freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
-        n_cycles = freqs * time_window_len
-        print(f"Frequency bins: {n_freqs}")
-        print(f"Cycle range: {n_cycles[0]:.1f}-{n_cycles[-1]:.1f} cycles")
+    if method == "welch":
+        # Loop through sliding windows (Welch processes one at a time)
+        for start, end in window_times:
+            lfp_segment = lfp_signal[start:end]
 
-        tfr = mne.time_frequency.tfr_array_multitaper(
-            epochs,
-            sfreq=fs,
-            freqs=freqs,
-            n_cycles=n_cycles,
-            time_bandwidth=time_bandwidth,
-            output='power',
-            verbose=False
-        )
-        power_spectra = np.squeeze(tfr.mean(axis=-1))
-        print(f"Power spectra shape: {power_spectra.shape}")
-    except Exception as e:
-        print(f"\nError in spectral computation: {str(e)}")
-        raise
+            # Compute the power spectrum using Welch's method
+            try:
+                fxx, pxx = spectral.compute_spectrum(
+                    lfp_segment, fs, method="welch", window="hann", nperseg=int(fs * 4)
+                )
+            except ValueError as e:
+                raise SpectralComputationError(f"Error computing Welch power spectrum: {str(e)}") from e
 
-    # Configure FOOOF
-    aperiodic_mode = 'knee' if time_window_len >= 0.5 else 'fixed'
-    print("\n=== FOOOF Configuration ===")
-    print(f"Aperiodic mode: {aperiodic_mode}")
-    print(f"Max peaks: {n_peaks}")
-    print(f"Peak width limits: {peak_width_lims}")
+            # Fit the FOOOF model
+            fm = FOOOF(**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
+            try:
+                fm.fit(fxx, pxx, freq_range=freq_range)
+                if plot:
+                    fm.plot(plot_peaks="shade", peak_kwargs={"color": "green"})
+            except Exception as e:
+                raise FOOOFFitError(f"FOOOF fitting failed for window {start}-{end}: {str(e)}") from e
 
-    # Initialize and fit FOOOFGroup
-    fooof_grp = FOOOFGroup(
-        peak_width_limits=peak_width_lims,
-        max_n_peaks=n_peaks,
-        aperiodic_mode=aperiodic_mode,
-        verbose=False
-    )
+            # Store results
+            spectra.append((fxx, pxx))
+            foof_results.append(fm)
 
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            fooof_grp.fit(freqs, power_spectra, freq_range)
-        print("\nFOOOF fitting completed successfully")
-    except Exception as e:
-        print(f"\nFOOOF fitting failed: {str(e)}")
-        raise
+    elif method == "multitaper":
+        # **NEW APPROACH:** Treat all windows as epochs and apply Multitaper in one call
 
-    # Analyze fit results
-    print("\n=== Fit Results ===")
-    print(f"Total windows processed: {n_windows}")
-    print(f"FOOOF models created: {len(fooof_grp)}")
-    
-    # Convert to numpy arrays for safe handling
-    r_squared = np.array(fooof_grp.r_squared_)
-    error = np.array(fooof_grp.error_)
-    
-    if r_squared.size > 0:
-        success_mask = ~np.isnan(r_squared)
-        print(f"Successful fits: {np.sum(success_mask)}")
-        print(f"Failed fits: {np.sum(np.isnan(r_squared))}")
-        print(f"Mean R²: {np.nanmean(r_squared):.2f}")
-        print(f"Median error: {np.nanmedian(error):.2f}")
-    else:
-        print("No valid fit metrics available")
+        # Prepare epochs: (n_epochs, n_channels=1, n_times)
+        epochs_array = np.array([lfp_signal[start:end] for start, end in window_times])
+        epochs_array = np.expand_dims(epochs_array, axis=1)  # Shape: (n_epochs, 1, n_times)
 
-    # Initialize results dataframe
-    results_df = pd.DataFrame({
-        'window_start': starts,
-        'window_end': ends,
-        'window_duration': window_length_sec,
-        'sample_rate': fs
-    })
+        # Define frequency settings
+        freqs = np.linspace(freq_range[0], freq_range[1], 50)  # Adjust n_freqs as needed
+        n_cycles = freqs * 0.2  # Adjust time window length scaling
 
-    # Safe parameter extraction functions
-    def safe_aperiodic(params, idx: int, param_idx: int) -> float:
-        """Safely extract aperiodic parameters with validation"""
         try:
-            if idx < len(params):
-                param_set = params[idx]
-                if isinstance(param_set, np.ndarray) and len(param_set) > param_idx:
-                    return param_set[param_idx]
-        except (IndexError, TypeError, KeyError):
-            pass
-        return np.nan
+            # Compute power using Multitaper
+            tfr = mne.time_frequency.tfr_array_multitaper(
+                epochs_array,
+                sfreq=fs,
+                freqs=freqs,
+                n_cycles=n_cycles,
+                time_bandwidth=2.0,  # Adjust for better smoothing
+                output="power",
+                verbose=False,
+            )
 
-    # Extract parameters
-    print("\n=== Extracting Parameters ===")
-    results_df['offset'] = [safe_aperiodic(fooof_grp.aperiodic_params_, i, 0) 
-                          for i in range(n_windows)]
-    results_df['exponent'] = [safe_aperiodic(fooof_grp.aperiodic_params_, i, -1) 
-                            for i in range(n_windows)]
-    
-    if aperiodic_mode == 'knee':
-        results_df['knee'] = [safe_aperiodic(fooof_grp.aperiodic_params_, i, 1) 
-                            for i in range(n_windows)]
+            # Extract frequency and power spectra (ensure correct shape)
+            fxx = freqs
+            pxx = np.squeeze(np.mean(tfr, axis=-1))  # Mean over time, remove unnecessary dimensions
 
-    # Add model metrics
-    results_df['r_squared'] = [r_squared[i] if i < len(r_squared) else np.nan 
-                              for i in range(n_windows)]
-    results_df['error'] = [error[i] if i < len(error) else np.nan 
-                          for i in range(n_windows)]
+            # **Debugging: Check shapes**
+            if fxx.ndim != 1:
+                raise ValueError(f"freqs should be 1D, but got shape {fxx.shape}")
+            if pxx.ndim != 2:
+                raise ValueError(f"psd should be 2D (n_epochs, n_freqs), but got shape {pxx.shape}")
 
-    # Add peak parameters
-    try:
-        print("Organizing peak parameters...")
-        freq_bands = Bands({
-            'delta': [1, 4],
-            'theta': [4, 8],
-            'alpha': [8, 12],
-            'beta': [12, 30],
-            'gamma': [30, 90]
-        })
-        peak_df = fooof_grp.to_df(freq_bands)
-        results_df = pd.concat([results_df, peak_df], axis=1)
-        print("Peak parameters added successfully")
-    except Exception as e:
-        print(f"Error organizing peak parameters: {str(e)}")
-        # Create empty peak columns
-        peak_cols = [f"{pre}_{band}_{n}" 
-                    for band in ['delta', 'theta', 'alpha', 'beta', 'gamma']
-                    for pre in ['CF', 'PW', 'BW'] 
-                    for n in range(n_peaks)]
-        for col in peak_cols:
-            results_df[col] = np.nan
+        except Exception as e:
+            raise SpectralComputationError(f"Error computing Multitaper power spectrum: {str(e)}") from e
 
-    # Final debug output
-    print("\n=== Final Output ===")
-    print(f"Result columns: {results_df.columns.tolist()}")
-    print("First row sample:")
-    print(results_df.iloc[0].to_dict())
+        # Fit FOOOF on each window
+        for i, psd in enumerate(pxx):
+            fm = FOOOF(**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
+            try:
+                # **Ensure correct shape before fitting**
+                if fxx.ndim != 1 or psd.ndim != 1:
+                    raise ValueError(f"FOOOF input dimensions are incorrect: freqs {fxx.shape}, psd {psd.shape}")
 
-    return results_df
+                fm.fit(fxx, psd, freq_range=freq_range)
+
+                if plot:
+                    fm.plot(plot_peaks="shade", peak_kwargs={"color": "blue"})
+
+            except Exception as e:
+                raise FOOOFFitError(f"FOOOF fitting failed for window {window_times[i]}: {str(e)}") from e
+
+            # Store results
+            spectra.append((fxx, psd))
+            foof_results.append(fm)
+
+    return spectra, foof_results, window_times
+
 
 # Spike-LFP Integration Functions ----------------------------------------------
 def map_spikes_to_windows(
