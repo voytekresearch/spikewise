@@ -46,10 +46,6 @@ class LFPAnalysisError(Exception):
     """Base class for LFP analysis errors"""
     pass
 
-class InvalidParameterError(LFPAnalysisError):
-    """Raised for invalid input parameters"""
-    pass
-
 
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
@@ -60,7 +56,8 @@ def compute_lfp_windows(
     freq_range: Tuple[float, float] = (1, 90),
     fooof_params: Dict = None,
     plot: bool = False,
-    min_overlap_percent: float = 50.0  # Minimum required overlap percentage
+    min_overlap_percent: float = 50.0,  # Minimum required overlap percentage
+    decim_factor: int = 1  # New: Decimation factor for Multitaper
 ) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF], List[Tuple[int, int]]]:
     """
     Compute sliding windows of LFP data using Welch or Multitaper spectral estimation.
@@ -75,6 +72,7 @@ def compute_lfp_windows(
         fooof_params (Dict): Parameters for FOOOF model fitting.
         plot (bool): If True, plot the power spectrum.
         min_overlap_percent (float): Minimum required overlap percentage.
+        decim_factor (int): Decimation factor for Multitaper.
 
     Returns:
         spectra (List[Tuple[np.ndarray, np.ndarray]]): Frequency and power spectra pairs.
@@ -138,7 +136,7 @@ def compute_lfp_windows(
         n_cycles = freqs * 0.2  # Adjust time window length scaling
 
         try:
-            # Compute power using Multitaper
+            # Compute power using Multitaper WITH DECIMATION
             tfr = mne.time_frequency.tfr_array_multitaper(
                 epochs_array,
                 sfreq=fs,
@@ -146,31 +144,32 @@ def compute_lfp_windows(
                 n_cycles=n_cycles,
                 time_bandwidth=2.0,  # Adjust for better smoothing
                 output="power",
+                decim=decim_factor,  # **NEW: Apply decimation**
                 verbose=False,
             )
 
-            # Extract frequency and power spectra (ensure correct shape)
-            fxx = freqs
-            pxx = np.squeeze(np.mean(tfr, axis=-1))  # Mean over time, remove unnecessary dimensions
+            # **UPDATED: Extract spectrogram with reshaping similar to your colleague**
+            tfr_arr = np.squeeze(np.swapaxes(tfr, 2, 3))  # (n_epochs, n_channels, n_freqs, n_timepts) → (n_epochs, n_timepts, n_freqs)
 
             # **Debugging: Check shapes**
-            if fxx.ndim != 1:
-                raise ValueError(f"freqs should be 1D, but got shape {fxx.shape}")
-            if pxx.ndim != 2:
-                raise ValueError(f"psd should be 2D (n_epochs, n_freqs), but got shape {pxx.shape}")
+            if tfr_arr.ndim != 3:
+                raise ValueError(f"tfr_arr should be (n_epochs, n_timepts, n_freqs), but got shape {tfr_arr.shape}")
+
+            fxx = freqs
+            pxx = tfr_arr  # Use reshaped spectrogram (no time averaging)
 
         except Exception as e:
             raise SpectralComputationError(f"Error computing Multitaper power spectrum: {str(e)}") from e
 
-        # Fit FOOOF on each window
+        # Fit FOOOF on each epoch
         for i, psd in enumerate(pxx):
             fm = FOOOF(**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
             try:
                 # **Ensure correct shape before fitting**
-                if fxx.ndim != 1 or psd.ndim != 1:
-                    raise ValueError(f"FOOOF input dimensions are incorrect: freqs {fxx.shape}, psd {psd.shape}")
+                if fxx.ndim != 1 or psd.ndim != 2:
+                    raise ValueError(f"FOOOF input dimensions incorrect: freqs {fxx.shape}, psd {psd.shape}")
 
-                fm.fit(fxx, psd, freq_range=freq_range)
+                fm.fit(fxx, psd.mean(axis=0), freq_range=freq_range)  # Take mean over time dimension
 
                 if plot:
                     fm.plot(plot_peaks="shade", peak_kwargs={"color": "blue"})
@@ -179,7 +178,7 @@ def compute_lfp_windows(
                 raise FOOOFFitError(f"FOOOF fitting failed for window {window_times[i]}: {str(e)}") from e
 
             # Store results
-            spectra.append((fxx, psd))
+            spectra.append((fxx, psd.mean(axis=0)))  # Store mean over time
             foof_results.append(fm)
 
     return spectra, foof_results, window_times
