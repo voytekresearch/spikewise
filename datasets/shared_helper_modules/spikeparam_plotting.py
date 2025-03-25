@@ -25,29 +25,18 @@ def plot_corr_heatmap(df_features, calculate_corr = True,type_heatmap="half"):
     else:
         rho = df_features
 
-    if type_heatmap == "half":
+    if type_heatmap == "half" and rho.shape[0] == rho.shape[1]:
         # Create a mask for the upper triangle
         mask = np.triu(np.ones_like(rho, dtype=bool))
         
-        # Plot the heatmap
         plt.figure(figsize=(10, 8))
-        sns.heatmap(rho, mask=mask, cmap='coolwarm', annot=True, fmt='.2', linewidths=0.5, center=0, square=True,  annot_kws={"size": 12})
-        # Increase fontsize of tick labels on both axes
-        plt.xticks(fontsize=14)
-        plt.yticks(fontsize=14)
-        
-        plt.title('Correlation Heatmap')
-       
-        
+        sns.heatmap(rho, mask=mask, cmap='coolwarm', annot=True, fmt='.2f',
+                    linewidths=0.5, center=0, square=True, annot_kws={"size": 12})
     else:
-        # Plot the heatmap
         plt.figure(figsize=(10, 8))
-        sns.heatmap(rho, cmap='coolwarm', annot=True, fmt='.2', linewidths=0.5, center=0, square=True,  annot_kws={"size": 12})
-        # Increase fontsize of tick labels on both axes
-        plt.xticks(fontsize=14)
-        plt.yticks(fontsize=14)
-        
-        plt.title('Correlation Heatmap')
+        sns.heatmap(rho, cmap='coolwarm', annot=True, fmt='.2f',
+                    linewidths=0.5, center=0, square=False, annot_kws={"size": 12})
+
   
 
 
