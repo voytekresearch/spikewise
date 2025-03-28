@@ -80,10 +80,10 @@ def plot_lfp_spk_correlation_heatmap(
         fmt (str): Format for the annotations (e.g., ".2f" for 2 decimal places).
         save_path (Optional[str]): Path to save the plot (e.g., "heatmap.png"). If None, plot is displayed.
     """
-    print("📊 Calculating correlation matrix...")
+
     correlation_matrix = df[spike_features + lfp_features].corr()
     spike_vs_lfp_corr = correlation_matrix.loc[spike_features, lfp_features]
-    print("✅ Correlation matrix calculated. Plotting heatmap...")
+
 
     # Plot with significance stars
     plot_corr_heatmap(
