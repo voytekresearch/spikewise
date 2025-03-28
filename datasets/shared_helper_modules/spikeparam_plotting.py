@@ -13,7 +13,8 @@ def plot_corr_heatmap(
     type_heatmap="half",
     show_sig=True,
     cmap="coolwarm",
-    corr_threshold=0.1  # Correlation threshold for plotting stars
+    corr_threshold=0.1,  # Correlation threshold for plotting stars
+    star_offset=0.2  # Adjust to move the stars above the numbers
 ):
     """
     Plots correlation heatmap of spike and LFP features with optional significance stars.
@@ -27,6 +28,7 @@ def plot_corr_heatmap(
         show_sig: Whether to overlay significance stars.
         cmap: Color map for heatmap.
         corr_threshold: Minimum correlation value to display significance stars (default: 0.1).
+        star_offset: Adjust this to move the stars vertically (default: 0.2).
     """
 
     # Select only relevant features
@@ -43,7 +45,7 @@ def plot_corr_heatmap(
     else:
         correlation_matrix = df_features.corr()
 
-    # ✅ Extract the correct matrix with spikes on Y and LFPs on X
+    # Extract the correct matrix with spikes on Y and LFPs on X
     rho = correlation_matrix.loc[spike_features, lfp_features]
 
     # Compute p-values using Pearson correlation
@@ -54,41 +56,52 @@ def plot_corr_heatmap(
             pval.at[row, col] = p
 
     # Convert p-values to stars (show only if correlation > threshold)
-    if show_sig:
-        def p_to_star(p, r):
-            if abs(r) < corr_threshold:
-                return ""  # No stars for low correlations
-            if p < 0.001: return '***'
-            elif p < 0.01: return '**'
-            elif p < 0.05: return '*'
-            else: return ''
-        stars = pval.copy()
-        for i in range(len(spike_features)):
-            for j in range(len(lfp_features)):
-                stars.iloc[i, j] = p_to_star(pval.iloc[i, j], rho.iloc[i, j])
+    def p_to_star(p, r):
+        if abs(r) < corr_threshold:
+            return ""  # No stars for low correlations
+        if p < 0.001: return '***'
+        elif p < 0.01: return '**'
+        elif p < 0.05: return '*'
+        else: return ''
+    
+    # ✅ Initialize the stars DataFrame with object (string) dtype to avoid warnings
+    stars = pd.DataFrame("", index=rho.index, columns=rho.columns, dtype="object")
 
-    # Plotting adjustments
+    # Apply stars using the significance function
+    for i in range(len(spike_features)):
+        for j in range(len(lfp_features)):
+            stars.iloc[i, j] = p_to_star(pval.iloc[i, j], rho.iloc[i, j])
+
+    # Handle half matrix
+    if type_heatmap == "half" and rho.shape[0] == rho.shape[1]:
+        mask = np.triu(np.ones_like(rho, dtype=bool))
+        square = True
+    else:
+        mask = None
+        square = False
+
+    # Plot correlation values
     plt.figure(figsize=(14, 12))
-
-    # Plot the heatmap
     sns.heatmap(
         rho,
+        mask=mask,
         annot=rho.round(2),
         fmt=".2f",
         cmap=cmap,
         linewidths=0.5,
         center=0,
+        square=square,
         xticklabels=lfp_features,
         yticklabels=spike_features,
         annot_kws={"size": 8, "color": "black"}
     )
 
-    # ✅ Plot significance stars on top
+    # ✅ Plot significance stars above the correlation numbers
     if show_sig:
         for i in range(len(spike_features)):
             for j in range(len(lfp_features)):
                 if stars.iloc[i, j] != "":
-                    plt.text(j + 0.5, i + 0.5, stars.iloc[i, j],
+                    plt.text(j + 0.5, i + 0.35 - star_offset, stars.iloc[i, j],
                              ha='center', va='center', color='black', fontsize=10)
 
     # Adjust axis labels
