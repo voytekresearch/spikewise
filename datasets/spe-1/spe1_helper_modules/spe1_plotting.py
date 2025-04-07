@@ -91,5 +91,5 @@ def plot_lfp_spk_correlation_heatmap(
         spike_features=spike_features,
         lfp_features=lfp_features,
         calculate_corr=calculate_corr,
-        show_sig=show_sig
+        show_sig=show_sig, title = title 
     )

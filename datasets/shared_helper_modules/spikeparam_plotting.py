@@ -14,7 +14,8 @@ def plot_corr_heatmap(
     show_sig=True,
     cmap="coolwarm",
     corr_threshold=0.1,  # Correlation threshold for plotting stars
-    star_offset=0.2  # Adjust to move the stars above the numbers
+    star_offset=0.2,  # Adjust to move the stars above the numbers
+    title: str = "Correlation Heatmap"
 ):
     """
     Plots correlation heatmap of spike and LFP features with optional significance stars.
@@ -108,7 +109,7 @@ def plot_corr_heatmap(
     plt.xticks(rotation=45, ha='right')
     plt.yticks(rotation=0)
 
-    plt.title("Correlation Heatmap with Significance")
+    plt.title(title)
     plt.tight_layout()
     plt.show()
 
