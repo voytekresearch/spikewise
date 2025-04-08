@@ -88,10 +88,9 @@ def compute_lfp_windows(
                 feats[f"peak_pw_{i}"] = pw
                 feats[f"peak_bw_{i}"] = bw
 
-                
-                print(cf)
+              
                 band = assign_peak_to_band(cf)
-                print(band)
+             
                 if band in band_features:
                     band_features[band]["pw"].append(pw)
                     band_features[band]["cf"].append(cf)
@@ -240,7 +239,7 @@ def _map_spikes_to_window_helper(
 # -------------------------------------------------------------------
 def combine_spike_lfp_features(
     spike_data: pd.DataFrame,
-    foof_results: List[FOOOF],
+    lfp_summary_df: pd.DataFrame,
     spike_to_window_map: Dict[int, List[int]],
     lfp_prefix: str = "lfp_"
 ) -> pd.DataFrame:
@@ -248,29 +247,43 @@ def combine_spike_lfp_features(
     if 'spk_id' not in df.columns:
         raise ValueError("spk_id column missing from spike_data")
 
-    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
-    band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma'] for kind in ['peak_power', 'peak_cf', 'peak_bw']]
-    all_feats = base_feats + band_feats
+    # Extract all features except time
+    feature_cols = [col for col in lfp_summary_df.columns if col not in ['window_start', 'window_end']]
 
+    # Prepopulate empty lists for each LFP feature
     for t in ["current", "previous"]:
-        for f in all_feats:
-            df[f"{lfp_prefix}{t}_{f}"] = [[] for _ in range(len(df))]
+        for feat in feature_cols:
+            df[f"{lfp_prefix}{t}_{feat}"] = [[] for _ in range(len(df))]
 
+    # Fill in LFP values
     for spk_id, window_idxs in spike_to_window_map.items():
         row_idx = df.index[df["spk_id"] == spk_id]
         if row_idx.empty: continue
         row_idx = row_idx[0]
+
         for win_idx in sorted(window_idxs):
-            if win_idx < len(foof_results):
-                _append_features(df, row_idx, foof_results[win_idx], f"{lfp_prefix}current")
+            if win_idx < len(lfp_summary_df):
+                # Current window features
+                current_row = lfp_summary_df.iloc[win_idx]
+                for feat in feature_cols:
+                    df.at[row_idx, f"{lfp_prefix}current_{feat}"].append(current_row[feat])
+
+                # Previous window features
                 if win_idx > 0:
-                    _append_features(df, row_idx, foof_results[win_idx - 1], f"{lfp_prefix}previous")
+                    prev_row = lfp_summary_df.iloc[win_idx - 1]
+                    for feat in feature_cols:
+                        df.at[row_idx, f"{lfp_prefix}previous_{feat}"].append(prev_row[feat])
                 else:
-                    _append_null_features(df, row_idx, f"{lfp_prefix}previous")
-            else:
-                _append_null_features(df, row_idx, f"{lfp_prefix}current")
+                    for feat in feature_cols:
+                        df.at[row_idx, f"{lfp_prefix}previous_{feat}"].append(None)
+
+    # Optional: Drop columns that are completely empty (e.g., no peaks for a band)
+    for col in df.columns:
+        if isinstance(df[col].iloc[0], list) and all(all(x is None for x in v) for v in df[col]):
+            df.drop(columns=col, inplace=True)
 
     return df
+
 
 def _append_features(df: pd.DataFrame, row_idx: int, fm: FOOOF, prefix: str) -> None:
     try:
