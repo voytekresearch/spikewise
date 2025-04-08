@@ -239,7 +239,7 @@ def _map_spikes_to_window_helper(
 # -------------------------------------------------------------------
 def combine_spike_lfp_features(
     spike_data: pd.DataFrame,
-    lfp_summary_df: pd.DataFrame,
+    summary_df: pd.DataFrame,
     spike_to_window_map: Dict[int, List[int]],
     lfp_prefix: str = "lfp_"
 ) -> pd.DataFrame:
@@ -247,42 +247,61 @@ def combine_spike_lfp_features(
     if 'spk_id' not in df.columns:
         raise ValueError("spk_id column missing from spike_data")
 
-    # Extract all features except time
-    feature_cols = [col for col in lfp_summary_df.columns if col not in ['window_start', 'window_end']]
+    # List of all band-based features
+    bands = ['delta', 'theta', 'alpha', 'beta', 'gamma']
+    band_feats = [f"{band}_{kind}" for band in bands for kind in ['peak_power', 'peak_cf', 'peak_bw']]
+    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
+    all_feats = base_feats + band_feats
 
-    # Prepopulate empty lists for each LFP feature
+    # Initialize list-style columns
     for t in ["current", "previous"]:
-        for feat in feature_cols:
-            df[f"{lfp_prefix}{t}_{feat}"] = [[] for _ in range(len(df))]
+        for f in all_feats:
+            df[f"{lfp_prefix}{t}_{f}"] = [[] for _ in range(len(df))]
 
-    # Fill in LFP values
     for spk_id, window_idxs in spike_to_window_map.items():
         row_idx = df.index[df["spk_id"] == spk_id]
-        if row_idx.empty: continue
+        if row_idx.empty:
+            continue
         row_idx = row_idx[0]
 
         for win_idx in sorted(window_idxs):
-            if win_idx < len(lfp_summary_df):
-                # Current window features
-                current_row = lfp_summary_df.iloc[win_idx]
-                for feat in feature_cols:
-                    df.at[row_idx, f"{lfp_prefix}current_{feat}"].append(current_row[feat])
+            if win_idx < len(summary_df):
+                current_row = summary_df.iloc[win_idx]
+                _append_summary_features(df, row_idx, current_row, f"{lfp_prefix}current")
 
-                # Previous window features
                 if win_idx > 0:
-                    prev_row = lfp_summary_df.iloc[win_idx - 1]
-                    for feat in feature_cols:
-                        df.at[row_idx, f"{lfp_prefix}previous_{feat}"].append(prev_row[feat])
+                    prev_row = summary_df.iloc[win_idx - 1]
+                    _append_summary_features(df, row_idx, prev_row, f"{lfp_prefix}previous")
                 else:
-                    for feat in feature_cols:
-                        df.at[row_idx, f"{lfp_prefix}previous_{feat}"].append(None)
+                    _append_null_features(df, row_idx, f"{lfp_prefix}previous")
+            else:
+                _append_null_features(df, row_idx, f"{lfp_prefix}current")
 
-    # Optional: Drop columns that are completely empty (e.g., no peaks for a band)
+    #Remove original generic peak features (cf/pw/bw if still there)
+    peak_cols = [col for col in df.columns if any(x in col for x in ['peak_cf_', 'peak_pw_', 'peak_bw_'])]
+    df.drop(columns=peak_cols, inplace=True, errors="ignore")
+
+    #Drop band features where all values are None
     for col in df.columns:
-        if isinstance(df[col].iloc[0], list) and all(all(x is None for x in v) for v in df[col]):
+        if isinstance(df[col].iloc[0], list) and all(
+            (v is None or (isinstance(v, list) and all(x is None for x in v)))
+            for v in df[col]
+        ):
             df.drop(columns=col, inplace=True)
 
     return df
+
+def _append_summary_features(df: pd.DataFrame, row_idx: int, row: pd.Series, prefix: str) -> None:
+    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
+    bands = ['delta', 'theta', 'alpha', 'beta', 'gamma']
+    band_feats = [f"{band}_{kind}" for band in bands for kind in ['peak_power', 'peak_cf', 'peak_bw']]
+    all_feats = base_feats + band_feats
+
+    for feat in all_feats:
+        col = f"{prefix}_{feat}"
+        val = row.get(feat, None)
+        df.at[row_idx, col].append(val)
+
 
 
 def _append_features(df: pd.DataFrame, row_idx: int, fm: FOOOF, prefix: str) -> None:
