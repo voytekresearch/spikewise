@@ -111,7 +111,7 @@ def compute_lfp_windows(
             except ValueError as e:
                 raise SpectralComputationError(f"Error computing Welch power spectrum: {str(e)}") from e
 
-            fm = FOOOF(**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
+            fm = FOOOF(**(fooof_params or {"max_n_peaks": 3, "verbose": False}))
             try:
                 fm.fit(fxx, pxx, freq_range=freq_range)
                 if plot:
@@ -138,7 +138,8 @@ def compute_lfp_windows(
         epochs_array = np.expand_dims(epochs_array, axis=1)
 
         freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
-        n_cycles = freqs * window_length_sec
+        #PLAYING AROUND WITH THIS RN 
+        n_cycles = 7.0 
 
         try:
             tfr = mne.time_frequency.tfr_array_multitaper(
@@ -146,7 +147,6 @@ def compute_lfp_windows(
                 sfreq=fs,
                 freqs=freqs,
                 n_cycles=n_cycles,
-                time_bandwidth=2.0,
                 output="power",
                 decim=decim_factor,
                 verbose=False,
@@ -161,7 +161,7 @@ def compute_lfp_windows(
             raise SpectralComputationError(f"Error computing Multitaper power spectrum: {str(e)}") from e
 
         for i, psd in enumerate(tfr_arr):
-            fm = FOOOF(**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
+            fm = FOOOF(**(fooof_params or {"max_n_peaks": 3, "verbose": False}))
             try:
                 if fxx.ndim != 1 or psd.ndim != 2:
                     raise ValueError(f"FOOOF input dims incorrect: freqs {fxx.shape}, psd {psd.shape}")
