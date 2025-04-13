@@ -210,31 +210,46 @@ else:
 def print_stats(df, condition, anova = True, postH = True):
     spike_features = ['ramp_amp', 'inflection_time', 'inflection_amp', 'peak_amp', 'peak_width', 
                                'peak_sharpness', 'exp_lambda', 'exp_const', 'log_isi', 'r_squared_ramp']
+    '''
+    prints ANOVA and/or PostHoc Tukey results for each feature
+    params: df- the data frame to look through (for groups)
+            condition- the non-fixed metadata variable
+    returns: nothing, prints results
+    '''
     if anova:
-        '''
-        prints ANOVA results for each feature
-        params: df- the data frame to look through (for groups)
-                condition- the non-fixed metadata variable
-        returns: nothing, prints results
-        '''
-        
-        # Initialize a dictionary to store ANOVA results
+        print("=== ANOVA Results ===")
         anova_results = {feature: {} for feature in spike_features}
-        # Perform ANOVA for each spike feature against each condition
-        for feature in spike_features:
-            groups = [df[feature][df[condition] == cond] for cond in df[condition].unique()]  #scrutinize
-            anova_results[feature][condition] = scipy.stats.f_oneway(*groups)
-        for feature, results in anova_results.items():
-            print(f"ANOVA results for {feature}:")
-            for condit, result in results.items():
-                if result:
-                    f_value, p_value = result
-                    print(f"  Condition: {condit}, F-value: {f_value}, p-value: {p_value:.10e}")  #print results
-    if postH:
-        '''
-        prints PostHoc Tukey results for each feature
-        '''
         
+        for feature in spike_features:
+            # Prepare groups: one list of Series per condition
+            if feature == 'log_isi':
+                groups = [
+                    df[df[condition] == cond][feature].dropna()
+                    for cond in df[condition].unique()
+                ]
+            else:
+                groups = [
+                    df[df[condition] == cond][feature]
+                    for cond in df[condition].unique()
+                ]
+            
+            # Skip the ANOVA if any group is empty (e.g., all NaNs)
+            if any(len(group) == 0 for group in groups):
+                print(f"  Skipping ANOVA for {feature} due to empty group(s).")
+                continue
+
+            try:
+                anova_results[feature][condition] = scipy.stats.f_oneway(*groups)
+            except Exception as e:
+                print(f"  Error running ANOVA for {feature}: {e}")
+        
+        # Print results
+        for feature, results in anova_results.items():
+            if condition in results:
+                f_value, p_value = results[condition]
+                print(f"  {feature:20s} | F = {f_value:.4f}, p = {p_value:.4e}")
+    if postH:
+        print("===PostHoc Tukey Results===")
         # Initialize a dictionary to store Tukey's test results
         tukey_results = {feature: None for feature in spike_features}
         # Perform ANOVA and Tukey's test for each spike feature against the given condition
@@ -284,7 +299,7 @@ def printAll_stats(sub_dfs_dict, anova = True, postH = True):
     index = 0
     for key in sub_dfs_dict:
         sub_df = sub_dfs_dict[key]                #while iterating through dictionary, get varying metadata
-        print(index)
+        print(key)
         index +=1
         varying_metadata = next(
             (col for col in metadata_cols if sub_df[col].nunique() > 1), None 
@@ -397,7 +412,7 @@ def plot_waveforms_grid(sub_dfs_dict, param, combined_dict_filt, median=False):
     plt.show()
 
 
-def combined_boxplots(param, grouped_dfs_dict):
+def combined_boxplots(param, grouped_dfs_dict, group_metadata_dict=None):
     """
     Generates separate box plots for each parameter, grouped by dataset groups, 
     with ANOVA-based significance annotations.
@@ -486,7 +501,73 @@ def combined_boxplots(param, grouped_dfs_dict):
         for grp, (x_pos, y_pos, stars) in group_positions.items():
             if stars:
                 plt.text(x_pos, y_pos, stars, ha='center', va='bottom', fontsize=12, color='red')
+        
+        #below is fixed metadata labels
+        raw_labels = ax.get_xticklabels()
+        if group_metadata_dict is not None:
+            new_labels = []
+            for lbl in raw_labels:
+                grp = f'{param} {lbl.get_text()}'
+                if group_metadata_dict and grp in group_metadata_dict:
+                    new_label = f"{grp}\n{group_metadata_dict[grp]}"
+                else:
+                    new_label = grp
+                new_labels.append(new_label)
+    
+            ax.set_xticklabels(new_labels, rotation=0, fontsize=9)
+    
+            plt.tight_layout()
+            plt.legend(title=f'{param} Value', bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.show()
+
+
+def generate_group_metadata_dict(grouped_dfs_dict):
+    """
+    Generate a metadata label string for each group in grouped_dfs_dict.
+    Returns a dictionary mapping group name (as string) to metadata summary.
+    """
+    metadata_dict = {}
+    for key, df in grouped_dfs_dict.items():
+        # Assume group name follows "param group_num" format (e.g., 'species 1')
+        split_key = key.split(" ")
+        if len(split_key) < 2:
+            continue
+        param, group_name = split_key[0], key
+
+        # Define which metadata columns to use (can be customized)
+        columns_to_extract = ['Species', 'Sex', 'brainOrigin', 'SomaLayerLoc', 'dendriticType']
+        abbrev_map = {
+            'Species': 'Sp',
+            'Sex': 'S',
+            'brainOrigin': 'bO',
+            'SomaLayerLoc': 'SLL',
+            'dendriticType': 'dT'
+        }
+
+        metadata_parts = []
+        for col in columns_to_extract:
+            if col in df.columns:
+                unique_vals = df[col].dropna().unique()
+                if len(unique_vals) == 1:
+                    if unique_vals[0] == "Macaca fascicularis":
+                        val = "Mf"
+                    elif unique_vals[0] == "Macaca mulatta":
+                        val = "Mm"
+                    else:
+                        val = str(unique_vals[0])
+                elif len(unique_vals) > 1:
+                    val = "Mix"
+                else:
+                    val = "NA"
+                metadata_parts.append(f"\n{abbrev_map[col]}='{val}'")
+            else:
+                metadata_parts.append(f"{abbrev_map[col]}='NA'")
+
+        metadata_str = ",".join(metadata_parts)
+        metadata_dict[group_name] = metadata_str
+
+    return metadata_dict
+
 
 def generate_plots(sub_dfs_dict, grouping_results_df, combined_dict_filt, waveforms = True, boxplots = True, med = False):
     '''
@@ -500,7 +581,8 @@ def generate_plots(sub_dfs_dict, grouping_results_df, combined_dict_filt, wavefo
     varyingMetadata = grouping_results_df['Varying Metadata'].unique()
     for param in varyingMetadata:
         if boxplots:
-            combined_boxplots(param, sub_dfs_dict)
+            group_metadata = generate_group_metadata_dict(sub_dfs_dict)   
+            combined_boxplots(param, sub_dfs_dict, group_metadata_dict=group_metadata)  
         if waveforms:
             plot_waveforms_grid(sub_dfs_dict, param, combined_dict_filt, median=med)
 
