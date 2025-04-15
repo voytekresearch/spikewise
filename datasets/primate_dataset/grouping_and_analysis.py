@@ -555,11 +555,18 @@ def generate_group_metadata_dict(grouped_dfs_dict):
                         val = "Mm"
                     else:
                         val = str(unique_vals[0])
+                    metadata_parts.append(f"\n{abbrev_map[col]}='{val}'")
                 elif len(unique_vals) > 1:
-                    val = "Mix"
+                    val = ""
+                    for type in unique_vals:
+                        if type == "unknown":
+                            val += f'NA:{len(df[df[col]==type])}\n'
+                        else:
+                            val += f'{type}:{len(df[df[col]==type])}\n'
+                    metadata_parts.append(f"\n{val}")
                 else:
                     val = "NA"
-                metadata_parts.append(f"\n{abbrev_map[col]}='{val}'")
+                    metadata_parts.append(f"\n{abbrev_map[col]}='{val}'")
             else:
                 metadata_parts.append(f"{abbrev_map[col]}='NA'")
 
