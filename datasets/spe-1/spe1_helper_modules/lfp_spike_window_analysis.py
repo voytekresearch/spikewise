@@ -292,14 +292,24 @@ def combine_spike_lfp_features(
     return df
 
 def _append_summary_features(df: pd.DataFrame, row_idx: int, row: pd.Series, prefix: str) -> None:
-    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
+    base_feat_map = {
+        'offset': 'aperiodic_offset',
+        'exponent': 'aperiodic_exponent',
+        'r_squared': 'r_squared',
+        'error': 'error',
+        'n_peaks': 'n_peaks',
+    }
+
     bands = ['delta', 'theta', 'alpha', 'beta', 'gamma']
     band_feats = [f"{band}_{kind}" for band in bands for kind in ['peak_power', 'peak_cf', 'peak_bw']]
-    all_feats = base_feats + band_feats
+    all_feats = list(base_feat_map.keys()) + band_feats
 
     for feat in all_feats:
         col = f"{prefix}_{feat}"
-        val = row.get(feat, None)
+        if feat in base_feat_map:
+            val = row.get(base_feat_map[feat], None)
+        else:
+            val = row.get(feat, None)
         df.at[row_idx, col].append(val)
 
 
@@ -342,8 +352,10 @@ def compute_lfp_feature_means(
     drop_original: bool = True
 ) -> pd.DataFrame:
     df_out = df.copy()
+
     base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
-    band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma'] for kind in ['peak_power', 'peak_cf', 'peak_bw']]
+    band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma']
+                  for kind in ['peak_power', 'peak_cf', 'peak_bw']]
     feats = base_feats + band_feats
 
     for feat in feats:
@@ -353,8 +365,10 @@ def compute_lfp_feature_means(
                 lambda x: np.nanmean([v for v in x if v is not None]) if isinstance(x, list) and x else None
             )
 
+    # Only keep columns that actually exist
     mean_cols = [f"lfp_{lfp_type}_{feat}_mean" for feat in feats]
-    df_out.dropna(subset=mean_cols, how="all", inplace=True)
+    existing_mean_cols = [col for col in mean_cols if col in df_out.columns]
+    df_out.dropna(subset=existing_mean_cols, how="all", inplace=True)
 
     if drop_original:
         df_out.drop(columns=[f"lfp_{lfp_type}_{feat}" for feat in feats], inplace=True, errors="ignore")
@@ -363,6 +377,8 @@ def compute_lfp_feature_means(
         other = "previous" if lfp_type == "current" else "current"
         to_drop = [col for col in df_out.columns if f"lfp_{other}_" in col]
         df_out.drop(columns=to_drop, inplace=True, errors="ignore")
+
+    return df_out
 
     return df_out
 

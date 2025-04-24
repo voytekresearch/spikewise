@@ -285,7 +285,7 @@ def plot_r2_comparison(ridge_results_spike_only, ridge_results_spike_stim, ridge
     
     fig, ax = plt.subplots(figsize=(10, 6))
     rects1 = ax.bar(x - width, no_stim, width, label='No stim features', color='#5b83bc')
-    rects2 = ax.bar(x, with_stim, width, label='With stim features', color='#974a75')
+    rects2 = ax.bar(x, with_stim, width, label='With stim features (Combined)', color='#974a75')
     rects3 = ax.bar(x + width, only_stim, width, label='Only stim features', color='#df8ac1')
     
     # Adding titles and labels
