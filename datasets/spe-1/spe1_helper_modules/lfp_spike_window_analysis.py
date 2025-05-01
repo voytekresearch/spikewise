@@ -80,7 +80,7 @@ def compute_lfp_windows(
 
     def extract_peak_features(fm: FOOOF, max_peaks: int) -> Dict:
         feats = {}
-        band_features = {band: {"pw": [], "cf": []} for band in BANDS.keys()}
+        band_features = {band: {"pw": [], "cf": [], "bw": []} for band in BANDS.keys()}
 
         if fm.has_model and fm.peak_params_ is not None:
             for i, (cf, pw, bw) in enumerate(fm.peak_params_[:max_peaks]):
@@ -94,6 +94,7 @@ def compute_lfp_windows(
                 if band in band_features:
                     band_features[band]["pw"].append(pw)
                     band_features[band]["cf"].append(cf)
+                    band_features[band]["bw"].append(bw)
             for i in range(len(fm.peak_params_), max_peaks):
                 feats[f"peak_cf_{i}"] = np.nan
                 feats[f"peak_pw_{i}"] = np.nan
@@ -107,8 +108,10 @@ def compute_lfp_windows(
         for band in BANDS.keys():
             pws = band_features[band]["pw"]
             cfs = band_features[band]["cf"]
+            bws = band_features[band]["bw"]
             feats[f"{band}_peak_power"] = np.mean(pws) if pws else np.nan
             feats[f"{band}_peak_cf"] = np.mean(cfs) if cfs else np.nan
+            feats[f"{band}_peak_bw"] = np.mean(bws) if cfs else np.nan
 
         return feats
 
