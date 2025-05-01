@@ -46,6 +46,44 @@ def assign_peak_to_band(cf: float) -> str:
 
 
 # ------------------------------ Core LFP Function ------------------------------
+def extract_peak_features(fm: FOOOF, max_peaks: int) -> Dict:
+    feats = {}
+    band_features = {band: {"pw": [], "cf": [], "bw": []} for band in BANDS.keys()}
+
+    if fm.has_model and fm.peak_params_ is not None:
+        for i, (cf, pw, bw) in enumerate(fm.peak_params_[:max_peaks]):
+            feats[f"peak_cf_{i}"] = cf
+            feats[f"peak_pw_{i}"] = pw
+            feats[f"peak_bw_{i}"] = bw
+
+          
+            band = assign_peak_to_band(cf)
+         
+            if band in band_features:
+                band_features[band]["pw"].append(pw)
+                band_features[band]["cf"].append(cf)
+                band_features[band]["bw"].append(bw)
+        for i in range(len(fm.peak_params_), max_peaks):
+            feats[f"peak_cf_{i}"] = np.nan
+            feats[f"peak_pw_{i}"] = np.nan
+            feats[f"peak_bw_{i}"] = np.nan
+    else:
+        for i in range(max_peaks):
+            feats[f"peak_cf_{i}"] = np.nan
+            feats[f"peak_pw_{i}"] = np.nan
+            feats[f"peak_bw_{i}"] = np.nan
+
+    for band in BANDS.keys():
+        pws = band_features[band]["pw"]
+        cfs = band_features[band]["cf"]
+        bws = band_features[band]["bw"]
+        feats[f"{band}_peak_power"] = np.mean(pws) if pws else np.nan
+        feats[f"{band}_peak_cf"] = np.mean(cfs) if cfs else np.nan
+        feats[f"{band}_peak_bw"] = np.mean(bws) if cfs else np.nan
+
+    return feats
+
+
 
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
@@ -78,42 +116,7 @@ def compute_lfp_windows(
     summary_records = []
     max_peaks = 3
 
-    def extract_peak_features(fm: FOOOF, max_peaks: int) -> Dict:
-        feats = {}
-        band_features = {band: {"pw": [], "cf": [], "bw": []} for band in BANDS.keys()}
 
-        if fm.has_model and fm.peak_params_ is not None:
-            for i, (cf, pw, bw) in enumerate(fm.peak_params_[:max_peaks]):
-                feats[f"peak_cf_{i}"] = cf
-                feats[f"peak_pw_{i}"] = pw
-                feats[f"peak_bw_{i}"] = bw
-
-              
-                band = assign_peak_to_band(cf)
-             
-                if band in band_features:
-                    band_features[band]["pw"].append(pw)
-                    band_features[band]["cf"].append(cf)
-                    band_features[band]["bw"].append(bw)
-            for i in range(len(fm.peak_params_), max_peaks):
-                feats[f"peak_cf_{i}"] = np.nan
-                feats[f"peak_pw_{i}"] = np.nan
-                feats[f"peak_bw_{i}"] = np.nan
-        else:
-            for i in range(max_peaks):
-                feats[f"peak_cf_{i}"] = np.nan
-                feats[f"peak_pw_{i}"] = np.nan
-                feats[f"peak_bw_{i}"] = np.nan
-
-        for band in BANDS.keys():
-            pws = band_features[band]["pw"]
-            cfs = band_features[band]["cf"]
-            bws = band_features[band]["bw"]
-            feats[f"{band}_peak_power"] = np.mean(pws) if pws else np.nan
-            feats[f"{band}_peak_cf"] = np.mean(cfs) if cfs else np.nan
-            feats[f"{band}_peak_bw"] = np.mean(bws) if cfs else np.nan
-
-        return feats
 
     # ------------------ Welch Method ------------------
     if method == "welch":
@@ -400,7 +403,7 @@ def run_sensitivity_analysis(
     time_bandwidth_default: float = 4.0
 ) -> pd.DataFrame:
     from neurodsp import spectral
-    from mne.time_frequency import psd_array_multitaper
+    from mne.time_frequency import tfr_array_multitaper
 
     results = []
 
@@ -430,31 +433,36 @@ def run_sensitivity_analysis(
             except Exception as e:
                 print(f"[Welch] Skipped window {idx} due to: {e}")
 
-        # --- Multitaper
-        for mt_params in multitaper_params_list:
-            try:
-                freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
-                n_cycles = freqs * 1
-                epochs_array = np.expand_dims(np.expand_dims(window, axis=0), axis=0)
+    # Stack windows into expected shape: (n_windows, 1, window_length)
+    epochs_array = np.expand_dims(np.array(lfp_windows), axis=1)
 
-                tfr = psd_array_multitaper(
-                    epochs_array,
-                    sfreq=fs,
-                    fmin=freq_range[0],
-                    fmax=freq_range[1],
-                    bandwidth=mt_params.get("bandwidth", time_bandwidth_default),
-                    adaptive=mt_params.get("adaptive", True),
-                    normalization="full",
-                    verbose=False
-                )
+    freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
+    n_cycles = freqs * 1
 
-                psd = np.squeeze(tfr[0])
+    # --- Multitaper
+    for mt_params in multitaper_params_list:
+        try:
+            tfr = tfr_array_multitaper(
+                epochs_array,
+                sfreq=fs,
+                freqs=freqs,
+                n_cycles=n_cycles,
+                time_bandwidth=mt_params.get("bandwidth", time_bandwidth_default),
+                output="power",
+                decim=1,
+                verbose=False
+            )
+            fxx = freqs
+            tfr_arr = np.squeeze(np.swapaxes(tfr, 2, 3))  # shape: (n_windows, time, freqs)
+
+            for i, psd in enumerate(tfr_arr):
+                mean_psd = psd.mean(axis=0)
                 for fooof_params in fooof_params_list:
                     fm = FOOOF(**fooof_params, verbose=False)
-                    fm.fit(freqs, psd, freq_range=freq_range)
+                    fm.fit(fxx, mean_psd, freq_range=freq_range)
                     feats = extract_peak_features(fm, max_peaks=3)
                     results.append({
-                        "window_idx": idx,
+                        "window_idx": i,
                         "psd_method": "multitaper",
                         "mt_bandwidth": mt_params.get("bandwidth", time_bandwidth_default),
                         "mt_adaptive": mt_params.get("adaptive", True),
@@ -465,7 +473,7 @@ def run_sensitivity_analysis(
                         **fooof_params,
                         **feats
                     })
-            except Exception as e:
-                print(f"[Multitaper] Skipped window {idx} due to: {e}")
+        except Exception as e:
+            print(f"[Multitaper] Skipped multitaper analysis due to: {e}")
 
     return pd.DataFrame(results)
