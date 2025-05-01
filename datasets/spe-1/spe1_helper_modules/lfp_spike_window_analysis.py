@@ -383,6 +383,89 @@ def compute_lfp_feature_means(
 
     return df_out
 
-    return df_out
 
 
+# ==========================
+# Sensitivity Analysis Code
+# ==========================
+
+def run_sensitivity_analysis(
+    lfp_windows: List[np.ndarray],
+    fs: float,
+    multitaper_params_list: List[Dict],
+    fooof_params_list: List[Dict],
+    include_welch: bool = True,
+    freq_range: Tuple[float, float] = (1, 90),
+    n_freqs: int = 50,
+    time_bandwidth_default: float = 4.0
+) -> pd.DataFrame:
+    from neurodsp import spectral
+    from mne.time_frequency import psd_array_multitaper
+
+    results = []
+
+    for idx, window in enumerate(lfp_windows):
+        # --- Welch
+        if include_welch:
+            try:
+                fxx, pxx = spectral.compute_spectrum(
+                    window, fs, method="welch", window="hann", nperseg=int(fs * 4)
+                )
+                for fooof_params in fooof_params_list:
+                    fm = FOOOF(**fooof_params, verbose=False)
+                    fm.fit(fxx, pxx, freq_range=freq_range)
+                    feats = extract_peak_features(fm, max_peaks=3)
+                    results.append({
+                        "window_idx": idx,
+                        "psd_method": "welch",
+                        "mt_bandwidth": None,
+                        "mt_adaptive": None,
+                        "aperiodic_offset": fm.aperiodic_params_[0] if fm.has_model else np.nan,
+                        "aperiodic_exponent": fm.aperiodic_params_[1] if fm.has_model else np.nan,
+                        "r_squared": fm.r_squared_ if fm.has_model else np.nan,
+                        "n_peaks": len(fm.peak_params_) if fm.has_model else 0,
+                        **fooof_params,
+                        **feats
+                    })
+            except Exception as e:
+                print(f"[Welch] Skipped window {idx} due to: {e}")
+
+        # --- Multitaper
+        for mt_params in multitaper_params_list:
+            try:
+                freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
+                n_cycles = freqs * 1
+                epochs_array = np.expand_dims(np.expand_dims(window, axis=0), axis=0)
+
+                tfr = psd_array_multitaper(
+                    epochs_array,
+                    sfreq=fs,
+                    fmin=freq_range[0],
+                    fmax=freq_range[1],
+                    bandwidth=mt_params.get("bandwidth", time_bandwidth_default),
+                    adaptive=mt_params.get("adaptive", True),
+                    normalization="full",
+                    verbose=False
+                )
+
+                psd = np.squeeze(tfr[0])
+                for fooof_params in fooof_params_list:
+                    fm = FOOOF(**fooof_params, verbose=False)
+                    fm.fit(freqs, psd, freq_range=freq_range)
+                    feats = extract_peak_features(fm, max_peaks=3)
+                    results.append({
+                        "window_idx": idx,
+                        "psd_method": "multitaper",
+                        "mt_bandwidth": mt_params.get("bandwidth", time_bandwidth_default),
+                        "mt_adaptive": mt_params.get("adaptive", True),
+                        "aperiodic_offset": fm.aperiodic_params_[0] if fm.has_model else np.nan,
+                        "aperiodic_exponent": fm.aperiodic_params_[1] if fm.has_model else np.nan,
+                        "r_squared": fm.r_squared_ if fm.has_model else np.nan,
+                        "n_peaks": len(fm.peak_params_) if fm.has_model else 0,
+                        **fooof_params,
+                        **feats
+                    })
+            except Exception as e:
+                print(f"[Multitaper] Skipped window {idx} due to: {e}")
+
+    return pd.DataFrame(results)
