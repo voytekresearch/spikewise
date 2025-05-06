@@ -456,3 +456,66 @@ def save_foof_fit_examples(foof_by_config, output_dir="foof_fit_plots", n_exampl
             plt.close()
 
 
+def plot_fits_near_global_mean_and_outliers(
+    results_df,
+    foof_by_config,
+    metric="aperiodic_exponent",
+    n_mean=3,
+    n_outliers=3
+):
+    """
+    Auto-select a config whose mean metric is close to global mean, and plot:
+    - FOOOF fits near that config's mean
+    - Outlier fits from that config
+
+    Parameters:
+    - results_df: DataFrame from sensitivity analysis
+    - foof_by_config: dict mapping config_id to list of FOOOF objects
+    - metric: the metric to evaluate (e.g. "aperiodic_exponent")
+    - n_mean: number of fits closest to config mean to plot
+    - n_outliers: number of lowest and highest fits to plot
+    """
+    import matplotlib.pyplot as plt
+
+    if metric not in results_df.columns:
+        print(f"Metric '{metric}' not found in DataFrame.")
+        return
+
+    # Compute global mean
+    global_mean = results_df[metric].mean()
+
+    # Compute per-config means
+    config_means = results_df.groupby("config_id")[metric].mean()
+    chosen_config_id = (config_means - global_mean).abs().sort_values().index[0]
+
+    print(f"\n Selected config_id: {chosen_config_id} (mean {metric} ≈ {config_means[chosen_config_id]:.2f}, global ≈ {global_mean:.2f})")
+
+    subset = results_df[results_df["config_id"] == chosen_config_id].copy()
+    foofs = foof_by_config[chosen_config_id]
+
+    # --- Plot fits closest to config's own mean
+    config_mean = subset[metric].mean()
+    subset["abs_diff_from_mean"] = (subset[metric] - config_mean).abs()
+    closest_idx = subset.sort_values("abs_diff_from_mean").index[:n_mean]
+
+    print(f"\n Plotting {n_mean} fits closest to config mean {metric} ({config_mean:.2f}):")
+    for i in closest_idx:
+        fm = foofs[i]
+        fig = fm.plot(plot_peaks="shade", add_legend=True)
+        val = getattr(fm, 'aperiodic_params_', [None, None])[1]
+        plt.title(f"{metric} ≈ {val:.2f} (idx={i})")
+        plt.show()
+
+    # --- Plot outliers from this config
+    outlier_idx = pd.concat([
+        subset.sort_values(metric).head(n_outliers),
+        subset.sort_values(metric).tail(n_outliers)
+    ]).index
+
+    print(f"\n Plotting {2 * n_outliers} outlier fits based on {metric}:")
+    for i in outlier_idx:
+        fm = foofs[i]
+        val = getattr(fm, 'aperiodic_params_', [None, None])[1]
+        fig = fm.plot(plot_peaks="shade", add_legend=True)
+        plt.title(f"Outlier {metric} = {val:.2f} (idx={i})")
+        plt.show()
