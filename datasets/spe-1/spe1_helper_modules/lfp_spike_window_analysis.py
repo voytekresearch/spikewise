@@ -10,7 +10,7 @@ from neurodsp import spectral
 from fooof import FOOOF
 import matplotlib.pyplot as plt
 import mne
-
+from tqdm.notebook import tqdm
 
 # ------------------------------ Custom Exceptions ------------------------------
 
@@ -391,7 +391,6 @@ def compute_lfp_feature_means(
 # ==========================
 # Sensitivity Analysis Code
 # ==========================
-
 def run_sensitivity_analysis(
     lfp_windows: List[np.ndarray],
     fs: float,
@@ -407,7 +406,8 @@ def run_sensitivity_analysis(
 
     results = []
 
-    for idx, window in enumerate(lfp_windows):
+    print("Running sensitivity analysis...")
+    for idx, window in enumerate(tqdm(lfp_windows, desc="Welch & Multitaper per window")):
         # --- Welch
         if include_welch:
             try:
@@ -433,14 +433,12 @@ def run_sensitivity_analysis(
             except Exception as e:
                 print(f"[Welch] Skipped window {idx} due to: {e}")
 
-    # Stack windows into expected shape: (n_windows, 1, window_length)
+    # Stack windows for multitaper
     epochs_array = np.expand_dims(np.array(lfp_windows), axis=1)
-
     freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
     n_cycles = freqs * 1
 
-    # --- Multitaper
-    for mt_params in multitaper_params_list:
+    for mt_params in tqdm(multitaper_params_list, desc="Multitaper configs"):
         try:
             tfr = tfr_array_multitaper(
                 epochs_array,
@@ -453,7 +451,7 @@ def run_sensitivity_analysis(
                 verbose=False
             )
             fxx = freqs
-            tfr_arr = np.squeeze(np.swapaxes(tfr, 2, 3))  # shape: (n_windows, time, freqs)
+            tfr_arr = np.squeeze(np.swapaxes(tfr, 2, 3))
 
             for i, psd in enumerate(tfr_arr):
                 mean_psd = psd.mean(axis=0)
@@ -474,6 +472,6 @@ def run_sensitivity_analysis(
                         **feats
                     })
         except Exception as e:
-            print(f"[Multitaper] Skipped multitaper analysis due to: {e}")
+            print(f"[Multitaper] Skipped multitaper config {mt_params} due to: {e}")
 
     return pd.DataFrame(results)
