@@ -445,5 +445,14 @@ def plot_bootstrap_histograms(bootstrapped_results, model_names):
     plt.tight_layout()
     plt.show()
 
+def save_foof_fit_examples(foof_by_config, output_dir="foof_fit_plots", n_examples=3):
+    os.makedirs(output_dir, exist_ok=True)
+    for config_id, foof_list in foof_by_config.items():
+        for i, fm in enumerate(foof_list[:n_examples]):
+            fig = fm.plot(plot_peaks="shade", add_legend=True)
+            fname = f"{config_id}_example_{i}.png"
+            path = os.path.join(output_dir, fname)
+            plt.savefig(path)
+            plt.close()
 
 

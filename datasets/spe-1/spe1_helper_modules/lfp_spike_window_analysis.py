@@ -404,10 +404,12 @@ def make_fooof_param_grid(
         {
             "max_n_peaks": n,
             "peak_threshold": t,
-            "aperiodic_mode": mode
+            "aperiodic_mode": mode,
+            "peak_width_limits": (2.0, 8.0)  # 🔒 fixed range
         }
         for n, t, mode in product(max_n_peaks_list, peak_threshold_list, aperiodic_modes)
     ]
+
 
 
 def make_config_id(config: dict) -> str:
@@ -426,8 +428,9 @@ def sensitivity_analysis(
     step_ratio: float = 0.5,
     n_freqs: int = 50,
     verbose: bool = True
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Dict[str, List[FOOOF]]]:
     all_results = []
+    foof_by_config = {}
 
     # Build full parameter grid
     param_grid = []
@@ -444,7 +447,7 @@ def sensitivity_analysis(
 
     for config in tqdm(param_grid, desc="Param combos"):
         try:
-            _, _, _, summary_df = compute_lfp_windows(
+            _, foof_results, _, summary_df = compute_lfp_windows(
                 lfp_signal=lfp_signal,
                 fs=fs,
                 method=config["method"],
@@ -457,23 +460,27 @@ def sensitivity_analysis(
                 time_bandwidth=config["time_bandwidth"]
             )
 
-            # Add config info to summary_df
             summary_df["config_id"] = config["config_id"]
             for key, val in config.items():
-                summary_df[key] = val
+                if key != "peak_width_limits":
+                    summary_df[key] = val
 
-            # Apply filtering
-            summary_df = summary_df[summary_df["r_squared"] >= 0.8]
+
+            # Filtering
+            valid_idx = summary_df["r_squared"] >= 0.8
             if config["aperiodic_mode"] == "knee":
-                summary_df = summary_df[
-                    (summary_df["aperiodic_offset"] >= freq_range[0]) &
-                    (summary_df["aperiodic_offset"] <= freq_range[1])
-                ]
+                valid_idx &= (summary_df["aperiodic_offset"] >= freq_range[0]) & \
+                             (summary_df["aperiodic_offset"] <= freq_range[1])
+
+            summary_df = summary_df[valid_idx]
+            valid_foofs = [f for f, keep in zip(foof_results, valid_idx) if keep]
 
             all_results.append(summary_df)
+            foof_by_config[config["config_id"]] = valid_foofs
 
         except Exception as e:
             if verbose:
                 print(f"[SKIPPED] {config['config_id']} due to: {e}")
 
-    return pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
+    combined_df = pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
+    return combined_df, foof_by_config
