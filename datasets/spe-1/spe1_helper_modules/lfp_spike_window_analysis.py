@@ -11,6 +11,8 @@ from fooof import FOOOF
 import matplotlib.pyplot as plt
 import mne
 from tqdm.notebook import tqdm
+import hashlib
+from itertools import product
 
 # ------------------------------ Custom Exceptions ------------------------------
 
@@ -389,89 +391,89 @@ def compute_lfp_feature_means(
 
 
 # ==========================
-# Sensitivity Analysis Code
+# Sensitivity Analysis Code 
 # ==========================
-def run_sensitivity_analysis(
-    lfp_windows: List[np.ndarray],
+
+
+def make_fooof_param_grid(
+    max_n_peaks_list: List[int],
+    peak_threshold_list: List[float],
+    aperiodic_modes: List[str]
+) -> List[Dict]:
+    return [
+        {
+            "max_n_peaks": n,
+            "peak_threshold": t,
+            "aperiodic_mode": mode
+        }
+        for n, t, mode in product(max_n_peaks_list, peak_threshold_list, aperiodic_modes)
+    ]
+
+
+def make_config_id(config: dict) -> str:
+    """Generate a short hash for a config dictionary."""
+    config_str = str(sorted(config.items()))
+    return hashlib.md5(config_str.encode()).hexdigest()[:8]
+
+def sensitivity_analysis(
+    lfp_signal: np.ndarray,
     fs: float,
-    multitaper_params_list: List[Dict],
-    fooof_params_list: List[Dict],
-    include_welch: bool = True,
-    freq_range: Tuple[float, float] = (1, 90),
+    freq_range: Tuple[float, float],
+    window_lengths: List[int],
+    methods: List[str],
+    time_bandwidths: List[float],
+    fooof_param_grid: List[Dict],
+    step_ratio: float = 0.5,
     n_freqs: int = 50,
-    time_bandwidth_default: float = 4.0
+    verbose: bool = True
 ) -> pd.DataFrame:
-    from neurodsp import spectral
-    from mne.time_frequency import tfr_array_multitaper
+    all_results = []
 
-    results = []
+    # Build full parameter grid
+    param_grid = []
+    for wl, method, tb, fooof_params in product(window_lengths, methods, time_bandwidths, fooof_param_grid):
+        config = {
+            "window_length_sec": wl,
+            "step_size_sec": wl * step_ratio,
+            "method": method,
+            "time_bandwidth": tb,
+            **fooof_params
+        }
+        config["config_id"] = make_config_id(config)
+        param_grid.append(config)
 
-    print("Running sensitivity analysis...")
-    for idx, window in enumerate(tqdm(lfp_windows, desc="Welch & Multitaper per window")):
-        # --- Welch
-        if include_welch:
-            try:
-                fxx, pxx = spectral.compute_spectrum(
-                    window, fs, method="welch", window="hann", nperseg=int(fs * 4)
-                )
-                for fooof_params in fooof_params_list:
-                    fm = FOOOF(**fooof_params, verbose=False)
-                    fm.fit(fxx, pxx, freq_range=freq_range)
-                    feats = extract_peak_features(fm, max_peaks=3)
-                    results.append({
-                        "window_idx": idx,
-                        "psd_method": "welch",
-                        "mt_bandwidth": None,
-                        "mt_adaptive": None,
-                        "aperiodic_offset": fm.aperiodic_params_[0] if fm.has_model else np.nan,
-                        "aperiodic_exponent": fm.aperiodic_params_[1] if fm.has_model else np.nan,
-                        "r_squared": fm.r_squared_ if fm.has_model else np.nan,
-                        "n_peaks": len(fm.peak_params_) if fm.has_model else 0,
-                        **fooof_params,
-                        **feats
-                    })
-            except Exception as e:
-                print(f"[Welch] Skipped window {idx} due to: {e}")
-
-    # Stack windows for multitaper
-    epochs_array = np.expand_dims(np.array(lfp_windows), axis=1)
-    freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
-    n_cycles = freqs * 1
-
-    for mt_params in tqdm(multitaper_params_list, desc="Multitaper configs"):
+    for config in tqdm(param_grid, desc="Param combos"):
         try:
-            tfr = tfr_array_multitaper(
-                epochs_array,
-                sfreq=fs,
-                freqs=freqs,
-                n_cycles=n_cycles,
-                time_bandwidth=mt_params.get("bandwidth", time_bandwidth_default),
-                output="power",
-                decim=1,
-                verbose=False
+            _, _, _, summary_df = compute_lfp_windows(
+                lfp_signal=lfp_signal,
+                fs=fs,
+                method=config["method"],
+                window_length_sec=config["window_length_sec"],
+                step_size_sec=config["step_size_sec"],
+                freq_range=freq_range,
+                fooof_params={k: config[k] for k in fooof_param_grid[0].keys()},
+                plot=False,
+                n_freqs=n_freqs,
+                time_bandwidth=config["time_bandwidth"]
             )
-            fxx = freqs
-            tfr_arr = np.squeeze(np.swapaxes(tfr, 2, 3))
 
-            for i, psd in enumerate(tfr_arr):
-                mean_psd = psd.mean(axis=0)
-                for fooof_params in fooof_params_list:
-                    fm = FOOOF(**fooof_params, verbose=False)
-                    fm.fit(fxx, mean_psd, freq_range=freq_range)
-                    feats = extract_peak_features(fm, max_peaks=3)
-                    results.append({
-                        "window_idx": i,
-                        "psd_method": "multitaper",
-                        "mt_bandwidth": mt_params.get("bandwidth", time_bandwidth_default),
-                        "mt_adaptive": mt_params.get("adaptive", True),
-                        "aperiodic_offset": fm.aperiodic_params_[0] if fm.has_model else np.nan,
-                        "aperiodic_exponent": fm.aperiodic_params_[1] if fm.has_model else np.nan,
-                        "r_squared": fm.r_squared_ if fm.has_model else np.nan,
-                        "n_peaks": len(fm.peak_params_) if fm.has_model else 0,
-                        **fooof_params,
-                        **feats
-                    })
+            # Add config info to summary_df
+            summary_df["config_id"] = config["config_id"]
+            for key, val in config.items():
+                summary_df[key] = val
+
+            # Apply filtering
+            summary_df = summary_df[summary_df["r_squared"] >= 0.8]
+            if config["aperiodic_mode"] == "knee":
+                summary_df = summary_df[
+                    (summary_df["aperiodic_offset"] >= freq_range[0]) &
+                    (summary_df["aperiodic_offset"] <= freq_range[1])
+                ]
+
+            all_results.append(summary_df)
+
         except Exception as e:
-            print(f"[Multitaper] Skipped multitaper config {mt_params} due to: {e}")
+            if verbose:
+                print(f"[SKIPPED] {config['config_id']} due to: {e}")
 
-    return pd.DataFrame(results)
+    return pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
