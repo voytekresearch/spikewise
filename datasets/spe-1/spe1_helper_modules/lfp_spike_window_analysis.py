@@ -131,7 +131,7 @@ def compute_lfp_windows(
             except Exception as e:
                 raise SpectralComputationError(f"Welch error: {str(e)}")
 
-            fm = FOOOF(**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
+            fm = FOOOF(peak_width_limits = (4,8),**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
             try:
                 fm.fit(fxx, pxx, freq_range=freq_range)
                 if plot:
@@ -180,7 +180,7 @@ def compute_lfp_windows(
             raise SpectralComputationError(f"Multitaper error: {str(e)}") from e
 
         for i, psd in enumerate(tfr_arr):
-            fm = FOOOF(**(fooof_params or {"max_n_peaks": 3, "verbose": False}))
+            fm = FOOOF(peak_width_limits = (4,8),**(fooof_params or {"max_n_peaks": 3, "verbose": False}))
             try:
                 mean_psd = psd.mean(axis=0)
                 fm.fit(fxx, mean_psd, freq_range=freq_range)
@@ -404,8 +404,7 @@ def make_fooof_param_grid(
         {
             "max_n_peaks": n,
             "peak_threshold": t,
-            "aperiodic_mode": mode,
-            "peak_width_limits": (2.0, 8.0)  # 🔒 fixed range
+            "aperiodic_mode": mode
         }
         for n, t, mode in product(max_n_peaks_list, peak_threshold_list, aperiodic_modes)
     ]
@@ -416,6 +415,7 @@ def make_config_id(config: dict) -> str:
     """Generate a short hash for a config dictionary."""
     config_str = str(sorted(config.items()))
     return hashlib.md5(config_str.encode()).hexdigest()[:8]
+
 
 def sensitivity_analysis(
     lfp_signal: np.ndarray,
@@ -428,7 +428,14 @@ def sensitivity_analysis(
     step_ratio: float = 0.5,
     n_freqs: int = 50,
     verbose: bool = True
-) -> Tuple[pd.DataFrame, Dict[str, List[FOOOF]]]:
+) -> Tuple[pd.DataFrame, Dict[str, List]]:
+    """
+    Perform sensitivity analysis over various parameter combinations.
+
+    Returns:
+    - A DataFrame containing the summary of FOOOF fits.
+    - A dictionary mapping config_id to the list of corresponding FOOOF model objects.
+    """
     all_results = []
     foof_by_config = {}
 
@@ -447,7 +454,8 @@ def sensitivity_analysis(
 
     for config in tqdm(param_grid, desc="Param combos"):
         try:
-            _, foof_results, _, summary_df = compute_lfp_windows(
+            # Compute LFP windows and obtain FOOOF results
+            _, _, foof_results, summary_df = compute_lfp_windows(
                 lfp_signal=lfp_signal,
                 fs=fs,
                 method=config["method"],
@@ -460,27 +468,31 @@ def sensitivity_analysis(
                 time_bandwidth=config["time_bandwidth"]
             )
 
+            # Apply filtering
+            mask = summary_df["r_squared"] >= 0.8
+            if config["aperiodic_mode"] == "knee":
+                mask &= (
+                    (summary_df["aperiodic_offset"] >= freq_range[0]) &
+                    (summary_df["aperiodic_offset"] <= freq_range[1])
+                )
+
+            # Apply mask to summary_df and foof_results
+            summary_df = summary_df[mask].reset_index(drop=True)
+            foof_results = [f for f, keep in zip(foof_results, mask) if keep]
+
+            # Add config info to summary_df
             summary_df["config_id"] = config["config_id"]
             for key, val in config.items():
-                if key != "peak_width_limits":
-                    summary_df[key] = val
-
-
-            # Filtering
-            valid_idx = summary_df["r_squared"] >= 0.8
-            if config["aperiodic_mode"] == "knee":
-                valid_idx &= (summary_df["aperiodic_offset"] >= freq_range[0]) & \
-                             (summary_df["aperiodic_offset"] <= freq_range[1])
-
-            summary_df = summary_df[valid_idx]
-            valid_foofs = [f for f, keep in zip(foof_results, valid_idx) if keep]
+                summary_df[key] = val
 
             all_results.append(summary_df)
-            foof_by_config[config["config_id"]] = valid_foofs
+            foof_by_config[config["config_id"]] = foof_results
 
         except Exception as e:
             if verbose:
                 print(f"[SKIPPED] {config['config_id']} due to: {e}")
 
-    combined_df = pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
-    return combined_df, foof_by_config
+    if all_results:
+        return pd.concat(all_results, ignore_index=True), foof_by_config
+    else:
+        return pd.DataFrame(), {}
