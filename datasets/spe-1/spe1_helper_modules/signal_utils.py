@@ -3,15 +3,29 @@
 import numpy as np
 from scipy.signal import sosfiltfilt, butter
 
+
 def butter_bandpass(data: np.ndarray, fs: float, filt_freq: list, order: int = 4) -> np.ndarray:
-    """Original sequential highpass + lowpass filter from your code."""
-    if len(filt_freq) != 2:
-        raise ValueError("filt_freq must contain exactly two frequencies")
+    """
+    Apply a bandpass Butterworth filter to a signal using second-order sections (SOS).
     
+    Parameters:
+        data (np.ndarray): The input signal.
+        fs (float): Sampling rate in Hz.
+        filt_freq (list or tuple): Two-element list or tuple with [low, high] cutoff frequencies in Hz.
+        order (int): Filter order (recommended: 4 or higher).
+    
+    Returns:
+        np.ndarray: The filtered signal.
+    """
+    if not isinstance(filt_freq, (list, tuple)) or len(filt_freq) != 2:
+        raise ValueError("filt_freq must be a list or tuple of two numbers [low, high]")
+
     nyq = 0.5 * fs
-    # Highpass first
-    sos_high = butter(order, filt_freq[0]/nyq, btype='high', output='sos')
-    y = sosfiltfilt(sos_high, data)
-    # Then lowpass
-    sos_low = butter(order, filt_freq[1]/nyq, btype='low', output='sos')
-    return sosfiltfilt(sos_low, y)
+    low = filt_freq[0] / nyq
+    high = filt_freq[1] / nyq
+
+    if low <= 0 or high >= 1 or low >= high:
+        raise ValueError("Cutoff frequencies must be within (0, Nyquist) and low < high")
+
+    sos = butter(order, [low, high], btype='band', output='sos')
+    return sosfiltfilt(sos, data)
