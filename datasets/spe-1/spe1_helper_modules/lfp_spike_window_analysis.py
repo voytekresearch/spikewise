@@ -100,6 +100,7 @@ def compute_lfp_windows(
     decim_factor: int = 1,
     n_freqs: int = 50,
     time_bandwidth: float = 4.0,
+    welch_params: Dict = None,  
 ) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF], List[Tuple[int, int]], pd.DataFrame]:
 
     if method not in ["welch", "multitaper"]:
@@ -126,8 +127,12 @@ def compute_lfp_windows(
             segment = lfp_signal[start:end]
             try:
                 fxx, pxx = spectral.compute_spectrum(
-                    segment, fs, method="welch", window="hann", nperseg=int(fs * 4)
+                segment,
+                fs,
+                method="welch",
+                **(welch_params or {"window": "hann", "nperseg": int(fs)})
                 )
+
             except Exception as e:
                 raise SpectralComputationError(f"Welch error: {str(e)}")
 
