@@ -501,3 +501,50 @@ def sensitivity_analysis(
         return pd.concat(all_results, ignore_index=True), foof_by_config
     else:
         return pd.DataFrame(), {}
+
+
+def merge_windows_with_tolerance(
+    window_starts, fs, window_len_sec=2, min_duration_sec=5, max_gap_windows=1
+):
+    """
+    Merge windows into blocks, allowing small gaps between windows.
+
+    Parameters:
+    - window_starts: list of start indices (in samples)
+    - fs: sampling frequency
+    - window_len_sec: length of each window (seconds)
+    - min_duration_sec: minimum duration (in seconds) for a valid block
+    - max_gap_windows: number of allowed missing windows between merged blocks
+
+    Returns:
+    - blocks: list of (start_sample, end_sample) tuples
+    """
+    if not window_starts:
+        return []
+
+    window_starts = sorted(window_starts)
+    blocks = []
+    current_block = [window_starts[0]]
+    expected_step = int(window_len_sec * fs)
+
+    for i in range(1, len(window_starts)):
+        gap = window_starts[i] - window_starts[i - 1]
+        if gap <= expected_step * (max_gap_windows + 1):  # allow small gaps
+            current_block.append(window_starts[i])
+        else:
+            duration = len(current_block) * window_len_sec
+            if duration >= min_duration_sec:
+                block_start = current_block[0]
+                block_end = current_block[-1] + expected_step
+                blocks.append((block_start, block_end))
+            current_block = [window_starts[i]]
+
+    if current_block:
+        duration = len(current_block) * window_len_sec
+        if duration >= min_duration_sec:
+            block_start = current_block[0]
+            block_end = current_block[-1] + expected_step
+            blocks.append((block_start, block_end))
+
+    return blocks
+
