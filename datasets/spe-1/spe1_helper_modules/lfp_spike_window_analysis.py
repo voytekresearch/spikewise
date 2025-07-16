@@ -7,7 +7,7 @@ import pandas as pd
 import warnings
 from typing import List, Tuple, Dict, Union, Literal
 from neurodsp import spectral
-from fooof import FOOOF
+from specparam import SpectralTimeModel
 import matplotlib.pyplot as plt
 import mne
 from tqdm.notebook import tqdm
@@ -91,17 +91,15 @@ def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
     method: str = "welch",
-    window_length_sec: int = 25,
-    step_size_sec: float = 12.5,
+    window_length_sec: int = 2,
+    step_size_sec: float = 1,
     freq_range: Tuple[float, float] = (1, 90),
     fooof_params: Dict = None,
-    plot: bool = False,
-    min_overlap_percent: float = 50.0,
     decim_factor: int = 1,
     n_freqs: int = 50,
     time_bandwidth: float = 4.0,
-    welch_params: Dict = None,  
-) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[FOOOF], List[Tuple[int, int]], pd.DataFrame]:
+    welch_params: Dict = None,
+) -> Tuple[SpectralTimeModel, np.ndarray, List[Tuple[int, int]]]:
 
     if method not in ["welch", "multitaper"]:
         raise ValueError("Method must be 'welch' or 'multitaper'.")
@@ -114,49 +112,20 @@ def compute_lfp_windows(
         for start in range(0, len(lfp_signal) - window_length + 1, step_size)
     ]
 
-    spectra = []
-    foof_results = []
-    summary_records = []
-    max_peaks = 3
-
-
+    psd_list = []
 
     # ------------------ Welch Method ------------------
     if method == "welch":
         for start, end in window_times:
             segment = lfp_signal[start:end]
-            try:
-                fxx, pxx = spectral.compute_spectrum(
+            fxx, pxx = spectral.compute_spectrum(
                 segment,
                 fs,
                 method="welch",
                 **(welch_params or {"window": "hann", "nperseg": int(fs)})
-                )
-
-            except Exception as e:
-                raise SpectralComputationError(f"Welch error: {str(e)}")
-
-            fm = FOOOF(peak_width_limits = (4,8),**(fooof_params or {"max_n_peaks": 4, "verbose": False}))
-            try:
-                fm.fit(fxx, pxx, freq_range=freq_range)
-                if plot:
-                    fm.plot(plot_peaks="shade")
-            except Exception as e:
-                raise FOOOFFitError(f"FOOOF fit failed: {e}") from e
-
-            spectra.append((fxx, pxx))
-            foof_results.append(fm)
-
-            summary = {
-                "window_start": start,
-                "window_end": end,
-                "aperiodic_offset": fm.aperiodic_params_[0] if fm.has_model else np.nan,
-                "aperiodic_exponent": fm.aperiodic_params_[1] if fm.has_model else np.nan,
-                "r_squared": fm.r_squared_ if fm.has_model else np.nan,
-                "n_peaks": len(fm.peak_params_) if fm.has_model else 0,
-            }
-            summary.update(extract_peak_features(fm, max_peaks))
-            summary_records.append(summary)
+            )
+            psd_list.append(pxx)
+        freqs = fxx
 
     # ------------------ Multitaper Method ------------------
     elif method == "multitaper":
@@ -166,52 +135,27 @@ def compute_lfp_windows(
         freqs = np.linspace(freq_range[0], freq_range[1], n_freqs)
         n_cycles = freqs * 1
 
-        try:
-            tfr = mne.time_frequency.tfr_array_multitaper(
-                epochs_array,
-                sfreq=fs,
-                freqs=freqs,
-                n_cycles=n_cycles,
-                time_bandwidth=time_bandwidth,
-                output="power",
-                decim=decim_factor,
-                verbose=False,
-            )
-            fxx = freqs
-            tfr_arr = np.squeeze(np.swapaxes(tfr, 2, 3))
-            if tfr_arr.ndim != 3:
-                raise ValueError(f"Unexpected TFR shape: {tfr_arr.shape}")
-        except Exception as e:
-            raise SpectralComputationError(f"Multitaper error: {str(e)}") from e
+        tfr = mne.time_frequency.tfr_array_multitaper(
+            epochs_array,
+            sfreq=fs,
+            freqs=freqs,
+            n_cycles=n_cycles,
+            time_bandwidth=time_bandwidth,
+            output="power",
+            decim=decim_factor,
+            verbose=False,
+        )
+        tfr_arr = np.squeeze(np.swapaxes(tfr, 2, 3))  # shape (n_windows, n_times, n_freqs)
+        psd_list = [psd.mean(axis=0) for psd in tfr_arr]  # average across time
 
-        for i, psd in enumerate(tfr_arr):
-            fm = FOOOF(peak_width_limits = (4,8),**(fooof_params or {"max_n_peaks": 3, "verbose": False}))
-            try:
-                mean_psd = psd.mean(axis=0)
-                fm.fit(fxx, mean_psd, freq_range=freq_range)
-                if plot:
-                    fm.plot(plot_peaks="shade")
-            except Exception as e:
-                raise FOOOFFitError(f"FOOOF fit failed: {e}") from e
+    # Convert PSDs to 2D array
+    powers = np.array(psd_list)  # shape (n_windows, n_freqs)
 
-            spectra.append((fxx, mean_psd))
-            foof_results.append(fm)
+    # --- Fit Specparam Time Model ---
+    model = SpectralTimeModel(**(fooof_params or {"peak_width_limits": (4, 8), "max_n_peaks": 4}))
+    model.fit(freqs, powers, freq_range=freq_range)
 
-            summary = {
-                "window_start": window_times[i][0],
-                "window_end": window_times[i][1],
-                "aperiodic_offset": fm.aperiodic_params_[0] if fm.has_model else np.nan,
-                "aperiodic_exponent": fm.aperiodic_params_[1] if fm.has_model else np.nan,
-                "r_squared": fm.r_squared_ if fm.has_model else np.nan,
-                "n_peaks": len(fm.peak_params_) if fm.has_model else 0,
-            }
-            summary.update(extract_peak_features(fm, max_peaks))
-            summary_records.append(summary)
-
-    summary_df = pd.DataFrame(summary_records)
-    return spectra, foof_results, window_times, summary_df
-
-
+    return model, freqs, window_times
 
 
 
