@@ -118,9 +118,6 @@ def compute_lfp_windows(
 
     # ------------------ Welch Method ------------------
     if method == "welch":
-        psd_list = []
-        valid_window_times = []
-        
         for start, end in window_times:
             segment = lfp_signal[start:end]
             fxx, pxx = spectral.compute_spectrum(
@@ -129,33 +126,8 @@ def compute_lfp_windows(
                 method="welch",
                 **(welch_params or {"window": "hann", "nperseg": int(fs)})
             )
-        
-            if not np.isrealobj(pxx) or np.isnan(pxx).any():
-                continue
-        
-            if len(psd_list) == 0:
-                freqs = fxx
-            elif not np.allclose(freqs, fxx):
-                print(f"Skipping window due to freq mismatch: got {len(fxx)}, expected {len(freqs)}")
-                continue
-        
-            if len(pxx) != len(freqs):
-                print(f"Skipping window due to PSD length mismatch: {len(pxx)} vs {len(freqs)}")
-                continue
-        
             psd_list.append(pxx)
-            valid_window_times.append((start, end))
-        
-        powers = np.array(psd_list)
-        window_times = valid_window_times
-
-            # Debug shape consistency
-        print("freqs shape:", freqs.shape)            # should be (N,)
-        print("powers shape:", powers.shape)          # should be (M, N)
-        
-        for i, psd in enumerate(powers):
-            if psd.shape[0] != freqs.shape[0]:
-                print(f"❌ Mismatch at index {i}: PSD shape {psd.shape}, expected {freqs.shape[0]}")
+        freqs = fxx
 
     # ------------------ Multitaper Method ------------------
     elif method == "multitaper":
@@ -180,10 +152,11 @@ def compute_lfp_windows(
 
     # Convert PSDs to 2D array
     powers = np.array(psd_list)  # shape (n_windows, n_freqs)
+    powers_T = powers.T          # shape (n_freqs, n_windows) — required by SpectralTimeModel
 
     # --- Fit Specparam Time Model ---
     model = SpectralTimeModel(**(fooof_params or {"peak_width_limits": (4, 8), "max_n_peaks": 4}))
-    model.fit(freqs, powers, freq_range=freq_range)
+    model.fit(freqs, powers_T, freq_range=freq_range)
 
     return model, freqs, window_times
 
