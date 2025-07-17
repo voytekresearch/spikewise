@@ -8,6 +8,7 @@ import warnings
 from typing import List, Tuple, Dict, Union, Literal
 from neurodsp import spectral
 from specparam import SpectralTimeModel
+from specparam import SpectralModel
 import matplotlib.pyplot as plt
 import mne
 from tqdm.notebook import tqdm
@@ -47,8 +48,9 @@ def assign_peak_to_band(cf: float) -> str:
     return "other"
 
 
-# ------------------------------ Core LFP Function ------------------------------
-def extract_peak_features(fm: FOOOF, max_peaks: int) -> Dict:
+
+
+def extract_peak_features(fm: SpectralModel, max_peaks: int) -> Dict:
     feats = {}
     band_features = {band: {"pw": [], "cf": [], "bw": []} for band in BANDS.keys()}
 
@@ -58,17 +60,17 @@ def extract_peak_features(fm: FOOOF, max_peaks: int) -> Dict:
             feats[f"peak_pw_{i}"] = pw
             feats[f"peak_bw_{i}"] = bw
 
-          
             band = assign_peak_to_band(cf)
-         
             if band in band_features:
                 band_features[band]["pw"].append(pw)
                 band_features[band]["cf"].append(cf)
                 band_features[band]["bw"].append(bw)
+
         for i in range(len(fm.peak_params_), max_peaks):
             feats[f"peak_cf_{i}"] = np.nan
             feats[f"peak_pw_{i}"] = np.nan
             feats[f"peak_bw_{i}"] = np.nan
+
     else:
         for i in range(max_peaks):
             feats[f"peak_cf_{i}"] = np.nan
@@ -81,7 +83,7 @@ def extract_peak_features(fm: FOOOF, max_peaks: int) -> Dict:
         bws = band_features[band]["bw"]
         feats[f"{band}_peak_power"] = np.mean(pws) if pws else np.nan
         feats[f"{band}_peak_cf"] = np.mean(cfs) if cfs else np.nan
-        feats[f"{band}_peak_bw"] = np.mean(bws) if cfs else np.nan
+        feats[f"{band}_peak_bw"] = np.mean(bws) if bws else np.nan
 
     return feats
 
@@ -270,18 +272,16 @@ def _append_summary_features(df: pd.DataFrame, row_idx: int, row: pd.Series, pre
         df.at[row_idx, col].append(val)
 
 
-
-def _append_features(df: pd.DataFrame, row_idx: int, fm: FOOOF, prefix: str) -> None:
+def _append_features(df: pd.DataFrame, row_idx: int, fm: SpectralModel, prefix: str) -> None:
     try:
         df.at[row_idx, f"{prefix}_offset"].append(fm.aperiodic_params_[0])
         df.at[row_idx, f"{prefix}_exponent"].append(fm.aperiodic_params_[-1])
         df.at[row_idx, f"{prefix}_r_squared"].append(fm.r_squared_)
         df.at[row_idx, f"{prefix}_error"].append(fm.error_)
-        df.at[row_idx, f"{prefix}_n_peaks"].append(fm.n_peaks_)
+        df.at[row_idx, f"{prefix}_n_peaks"].append(len(fm.peak_params_))
 
-        from fooof.analysis import get_band_peak_fg
         for band, frange in FREQ_BANDS.items():
-            peak = get_band_peak_fg(fm, frange, select_highest=True)
+            peak = get_band_peak_manual(fm, frange)
             if peak is not None:
                 cf, pw, bw = peak
             else:
@@ -292,6 +292,16 @@ def _append_features(df: pd.DataFrame, row_idx: int, fm: FOOOF, prefix: str) -> 
 
     except Exception:
         _append_null_features(df, row_idx, prefix)
+
+def get_band_peak_manual(fm: SpectralModel, band: Tuple[float, float]):
+    """Manually extract the peak with highest power within a given band."""
+    peaks = fm.peak_params_
+    band_peaks = [peak for peak in peaks if band[0] <= peak[0] <= band[1]]
+    if band_peaks:
+        return max(band_peaks, key=lambda x: x[1])
+    return None
+
+
 
 def _append_null_features(df: pd.DataFrame, row_idx: int, prefix: str) -> None:
     base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
