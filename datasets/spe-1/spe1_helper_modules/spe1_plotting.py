@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from typing import List, Optional, Tuple
 from spikeparam_plotting import *
+from specparam import SpectralTimeModel
 
 
 def plot_spike_time_histogram(
@@ -93,3 +94,48 @@ def plot_lfp_spk_correlation_heatmap(
         calculate_corr=calculate_corr,
         show_sig=show_sig, title = title 
     )
+
+
+def plot_avg_spectra(model: SpectralTimeModel, freqs: np.ndarray, high_inds: List[int], low_inds: List[int]):
+    spectra = model.spectrogram.T  # shape: (n_windows, n_freqs)
+    avg_high = np.nanmean(spectra[high_inds], axis=0)
+    avg_low = np.nanmean(spectra[low_inds], axis=0)
+    std_high = np.nanstd(spectra[high_inds], axis=0)
+    std_low = np.nanstd(spectra[low_inds], axis=0)
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(freqs, avg_high, label=f"High Gamma (n={len(high_inds)})", color='red')
+    plt.fill_between(freqs, avg_high - std_high, avg_high + std_high, color='red', alpha=0.3)
+    plt.plot(freqs, avg_low, label=f"Low Gamma (n={len(low_inds)})", color='blue')
+    plt.fill_between(freqs, avg_low - std_low, avg_low + std_low, color='blue', alpha=0.3)
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Power (log10)')
+    plt.title('Average Spectra: High vs Low Gamma Windows')
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+def plot_gamma_blocks(high_inds, low_inds, window_times, window_len_sec, fs):
+    """
+    Plot block classifications for gamma windows.
+    """
+    import matplotlib.pyplot as plt
+
+    total_duration = window_times[-1][1] / fs
+    block_labels = np.full(len(window_times), 'Other', dtype=object)
+    for i in high_inds:
+        block_labels[i] = 'High'
+    for i in low_inds:
+        block_labels[i] = 'Low'
+
+    times = [start / fs for start, _ in window_times]
+
+    plt.figure(figsize=(12, 1.5))
+    plt.scatter(times, np.ones_like(times), c=[{'High': 'r', 'Low': 'b'}.get(lbl, 'gray') for lbl in block_labels], s=10)
+    plt.yticks([])
+    plt.xlabel('Time (s)')
+    plt.title('Gamma Power Blocks')
+    plt.tight_layout()
+    plt.show()
+
+
