@@ -101,6 +101,7 @@ def compute_lfp_windows(
     n_freqs: int = 50,
     time_bandwidth: float = 4.0,
     welch_params: Dict = None,
+    multitaper_params: Dict = None,  
 ) -> Tuple[SpectralTimeModel, np.ndarray, List[Tuple[int, int]]]:
 
     if method not in ["welch", "multitaper"]:
@@ -131,6 +132,12 @@ def compute_lfp_windows(
 
     # ------------------ Multitaper Method ------------------
     elif method == "multitaper":
+        # Override defaults with multitaper_params if provided
+        if multitaper_params:
+            n_freqs = multitaper_params.get("n_freqs", n_freqs)
+            time_bandwidth = multitaper_params.get("time_bandwidth", time_bandwidth)
+            decim_factor = multitaper_params.get("decim_factor", decim_factor)
+
         epochs_array = np.array([lfp_signal[start:end] for start, end in window_times])
         epochs_array = np.expand_dims(epochs_array, axis=1)
 
@@ -159,6 +166,7 @@ def compute_lfp_windows(
     model.fit(freqs, powers_T, freq_range=freq_range)
 
     return model, freqs, window_times
+
 
 
 
