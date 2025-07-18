@@ -171,31 +171,18 @@ def compute_lfp_windows(
 # ========================================
 #Classify windows by gamma pw
 # ========================================
-def classify_gamma_windows(summary_df: pd.DataFrame, percentile_high=77, percentile_low=20) -> Tuple[List[int], List[int]]:
-    """
-    Classify gamma windows into high and low based on percentile thresholds.
-
-    Returns:
-        Tuple of indices: (high_indices, low_indices)
-    """
-    gamma_powers = summary_df['gamma_pw'].values
-    high_thresh = np.nanpercentile(gamma_powers, percentile_high)
-    low_thresh = np.nanpercentile(gamma_powers, percentile_low)
-
-    high_inds = np.where(gamma_powers >= high_thresh)[0].tolist()
-    low_inds = np.where(gamma_powers <= low_thresh)[0].tolist()
-
-    return high_inds, low_inds
-
+def classify_windows(model: SpectralTimeModel, high_percentile=75, low_percentile=25):
+    gamma_pw = model.get_params("peak_params", col="PW")[:, 1]
+    high_thresh = np.nanpercentile(gamma_pw, high_percentile)
+    low_thresh = np.nanpercentile(gamma_pw, low_percentile)
+    high_windows = [i for i, pw in enumerate(gamma_pw) if pw >= high_thresh]
+    low_windows = [i for i, pw in enumerate(gamma_pw) if pw <= low_thresh]
+    return high_windows, low_windows, gamma_pw
 
 
 # ============================================
 #  Convert window inds into blocks
 # ============================================
-def compute_block_stats(window_inds: List[int], window_len_sec: float):
-    blocks = [(start * window_len_sec, (start + 1) * window_len_sec) for start in window_inds]
-    total_length = sum([(end - start) for start, end in blocks])
-    return blocks, total_length
 
 
 # =====================================

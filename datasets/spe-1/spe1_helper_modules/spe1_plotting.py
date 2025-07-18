@@ -115,27 +115,24 @@ def plot_avg_spectra(model: SpectralTimeModel, freqs: np.ndarray, high_inds: Lis
     plt.tight_layout()
     plt.show()
 
-def plot_gamma_blocks(high_inds, low_inds, window_times, window_len_sec, fs):
+def plot_gamma_blocks_merged(high_blocks, low_blocks, window_len_sec, total_duration_sec):
     """
-    Plot block classifications for gamma windows.
+    Plot merged high/low gamma blocks with legend showing block count and total duration.
     """
-    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(12, 2))
 
-    total_duration = window_times[-1][1] / fs
-    block_labels = np.full(len(window_times), 'Other', dtype=object)
-    for i in high_inds:
-        block_labels[i] = 'High'
-    for i in low_inds:
-        block_labels[i] = 'Low'
+    for start, end in high_blocks:
+        ax.axvspan(start * window_len_sec, (end + 1) * window_len_sec, color='red', alpha=0.3)
 
-    times = [start / fs for start, _ in window_times]
+    for start, end in low_blocks:
+        ax.axvspan(start * window_len_sec, (end + 1) * window_len_sec, color='blue', alpha=0.3)
 
-    plt.figure(figsize=(12, 1.5))
-    plt.scatter(times, np.ones_like(times), c=[{'High': 'r', 'Low': 'b'}.get(lbl, 'gray') for lbl in block_labels], s=10)
-    plt.yticks([])
-    plt.xlabel('Time (s)')
-    plt.title('Gamma Power Blocks')
-    plt.tight_layout()
+    ax.set_xlim(0, total_duration_sec)
+    ax.set_xlabel("Time (s)")
+    ax.set_yticks([])
+    ax.set_title("Gamma Power Blocks")
+    ax.legend([
+        f"High gamma (n={len(high_blocks)}, {compute_block_lengths(high_blocks, window_len_sec):.1f}s)",
+        f"Low gamma (n={len(low_blocks)}, {compute_block_lengths(low_blocks, window_len_sec):.1f}s)"
+    ])
     plt.show()
-
-
