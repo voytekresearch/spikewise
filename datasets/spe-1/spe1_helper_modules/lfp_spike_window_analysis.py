@@ -171,13 +171,41 @@ def compute_lfp_windows(
 # ========================================
 #Classify windows by gamma pw
 # ========================================
-def classify_windows(model: SpectralTimeModel, high_percentile=75, low_percentile=25):
-    gamma_pw = model.get_params("peak_params", col="PW")[:, 1]
-    high_thresh = np.nanpercentile(gamma_pw, high_percentile)
-    low_thresh = np.nanpercentile(gamma_pw, low_percentile)
-    high_windows = [i for i, pw in enumerate(gamma_pw) if pw >= high_thresh]
-    low_windows = [i for i, pw in enumerate(gamma_pw) if pw <= low_thresh]
-    return high_windows, low_windows, gamma_pw
+
+def classify_gamma_windows(
+    summary_df: pd.DataFrame,
+    window_times: List[Tuple[int, int]],
+    gamma_band_name: str = "gamma",
+    high_percentile: float = 75,
+    low_percentile: float = 25,
+) -> Tuple[List[int], List[int]]:
+    """
+    Classify LFP windows as high or low gamma based on percentile thresholds.
+
+    Args:
+        summary_df : DataFrame from SpectralTimeModel.to_df()
+        window_times : List of (start, end) sample indices per window
+        gamma_band_name : The base name used for gamma power column (e.g., "gamma" → "gamma_pw")
+        high_percentile : Percentile cutoff for high gamma windows
+        low_percentile : Percentile cutoff for low gamma windows
+
+    Returns:
+        high_windows : List of window start times (in samples) classified as high gamma
+        low_windows : List of window start times (in samples) classified as low gamma
+    """
+    gamma_powers = summary_df[f"{gamma_band_name}_pw"].values
+
+    high_thresh = np.nanpercentile(gamma_powers, high_percentile)
+    low_thresh = np.nanpercentile(gamma_powers, low_percentile)
+
+    high_windows = [
+        start for (start, _), pw in zip(window_times, gamma_powers) if pw >= high_thresh
+    ]
+    low_windows = [
+        start for (start, _), pw in zip(window_times, gamma_powers) if pw <= low_thresh
+    ]
+
+    return high_windows, low_windows
 
 
 # ============================================
