@@ -211,6 +211,50 @@ def classify_gamma_windows(
 # ============================================
 #  Convert window inds into blocks
 # ============================================
+def merge_gamma_windows(
+    gamma_windows: List[int],
+    fs: float,
+    step_size_sec: float,
+    min_block_len_sec: float = 2.0,
+) -> List[Tuple[int, int]]:
+    """
+    Merge consecutive gamma windows into blocks if they are contiguous and long enough.
+
+    Args:
+        gamma_windows : List of window start times (in samples)
+        fs : Sampling frequency of the LFP signal
+        step_size_sec : Step size used in windowing (in seconds)
+        min_block_len_sec : Minimum duration for a block (in seconds)
+
+    Returns:
+        List of (start_sample, end_sample) tuples for valid blocks
+    """
+    if not gamma_windows:
+        return []
+
+    gamma_windows = sorted(gamma_windows)
+    step_size_samples = int(step_size_sec * fs)
+    min_block_len_samples = int(min_block_len_sec * fs)
+
+    blocks = []
+    current_block = [gamma_windows[0]]
+
+    for i in range(1, len(gamma_windows)):
+        if gamma_windows[i] - gamma_windows[i - 1] == step_size_samples:
+            current_block.append(gamma_windows[i])
+        else:
+            # End of block
+            block_start = current_block[0]
+            block_end = current_block[-1] + step_size_samples
+            if block_end - block_start >= min_block_len_samples:
+                blocks.append((block_start, block_end))
+            current_block = [gamma_windows[i]]
+
+    # Check the last block
+    block_start = current_block[0]
+    block_end = current_block[-1] + step_size_samples
+    if block_end - block_start >= min_block_len_samples:
+        blocks.append((block_start, block_end))
 
 
 # =====================================
