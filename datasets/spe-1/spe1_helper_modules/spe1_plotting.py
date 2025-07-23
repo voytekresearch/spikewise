@@ -115,24 +115,56 @@ def plot_avg_spectra(model: SpectralTimeModel, freqs: np.ndarray, high_inds: Lis
     plt.tight_layout()
     plt.show()
 
-def plot_gamma_blocks_merged(high_blocks, low_blocks, window_len_sec, total_duration_sec):
+def plot_lfp_with_blocks(
+    lfp_signal: np.ndarray,
+    fs: float,
+    high_blocks: List[Tuple[float, float]],
+    low_blocks: List[Tuple[float, float]],
+    title: str = "LFP Signal with Gamma Blocks"
+):
     """
-    Plot merged high/low gamma blocks with legend showing block count and total duration.
+    Plot the LFP signal and overlay high/low gamma blocks.
+
+    Args:
+        lfp_signal : 1D LFP time series
+        fs : Sampling frequency in Hz
+        high_blocks : List of (start, end) for high gamma blocks (samples or seconds)
+        low_blocks : List of (start, end) for low gamma blocks (samples or seconds)
+        title : Plot title
     """
-    fig, ax = plt.subplots(figsize=(12, 2))
+    def convert_to_samples(blocks):
+        return [
+            (int(start * fs), int(end * fs)) if start < 100000 and end < 100000 else (start, end)
+            for start, end in blocks
+        ]
 
-    for start, end in high_blocks:
-        ax.axvspan(start * window_len_sec, (end + 1) * window_len_sec, color='red', alpha=0.3)
+    # Convert to sample indices if needed
+    high_blocks_s = convert_to_samples(high_blocks)
+    low_blocks_s = convert_to_samples(low_blocks)
 
-    for start, end in low_blocks:
-        ax.axvspan(start * window_len_sec, (end + 1) * window_len_sec, color='blue', alpha=0.3)
+    # Plot
+    time = np.arange(len(lfp_signal)) / fs
+    plt.figure(figsize=(15, 5))
+    plt.plot(time, lfp_signal, color='black', linewidth=0.8, label='LFP Signal')
 
-    ax.set_xlim(0, total_duration_sec)
-    ax.set_xlabel("Time (s)")
-    ax.set_yticks([])
-    ax.set_title("Gamma Power Blocks")
-    ax.legend([
-        f"High gamma (n={len(high_blocks)}, {compute_block_lengths(high_blocks, window_len_sec):.1f}s)",
-        f"Low gamma (n={len(low_blocks)}, {compute_block_lengths(low_blocks, window_len_sec):.1f}s)"
-    ])
+    for start, end in high_blocks_s:
+        plt.axvspan(start / fs, end / fs, color='red', alpha=0.3, label='High Gamma')
+    for start, end in low_blocks_s:
+        plt.axvspan(start / fs, end / fs, color='blue', alpha=0.3, label='Low Gamma')
+
+    plt.title(title)
+    plt.xlabel("Time (s)")
+    plt.ylabel("Amplitude")
+    plt.xlim([0, time[-1]])
+
+    handles, labels = plt.gca().get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    plt.legend(by_label.values(), by_label.keys())
+    plt.tight_layout()
     plt.show()
+
+    # Print stats
+    high_duration = sum([(end - start) / fs for start, end in high_blocks_s])
+    low_duration = sum([(end - start) / fs for start, end in low_blocks_s])
+    print(f"High gamma blocks: {len(high_blocks_s)} | Total duration: {high_duration:.2f} s")
+    print(f"Low gamma blocks:  {len(low_blocks_s)} | Total duration: {low_duration:.2f} s")

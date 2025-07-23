@@ -211,50 +211,57 @@ def classify_gamma_windows(
 # ============================================
 #  Convert window inds into blocks
 # ============================================
-def merge_gamma_windows(
-    gamma_windows: List[int],
+def merge_windows_into_blocks_flexible(
+    window_starts: List[int],
+    window_len_sec: float,
     fs: float,
-    step_size_sec: float,
-    min_block_len_sec: float = 2.0,
-) -> List[Tuple[int, int]]:
+    max_gap_sec: float = 1.0,
+    min_block_len_sec: float = 4.0,
+) -> List[Tuple[float, float]]:
     """
-    Merge consecutive gamma windows into blocks if they are contiguous and long enough.
+    Merge nearby windows into longer blocks, allowing for small gaps between them.
 
     Args:
-        gamma_windows : List of window start times (in samples)
-        fs : Sampling frequency of the LFP signal
-        step_size_sec : Step size used in windowing (in seconds)
-        min_block_len_sec : Minimum duration for a block (in seconds)
+        window_starts: List of window start times (in samples).
+        window_len_sec: Length of each window in seconds.
+        fs: Sampling frequency.
+        max_gap_sec: Maximum gap (in seconds) allowed between adjacent windows to still be merged.
+        min_block_len_sec: Minimum block duration to keep (in seconds).
 
     Returns:
-        List of (start_sample, end_sample) tuples for valid blocks
+        blocks: List of (start_time_sec, end_time_sec) tuples.
     """
-    if not gamma_windows:
+    if not window_starts:
         return []
 
-    gamma_windows = sorted(gamma_windows)
-    step_size_samples = int(step_size_sec * fs)
-    min_block_len_samples = int(min_block_len_sec * fs)
+    window_starts = sorted(window_starts)
+    max_gap_samples = int(max_gap_sec * fs)
+    window_len_samples = int(window_len_sec * fs)
 
     blocks = []
-    current_block = [gamma_windows[0]]
+    block_start = window_starts[0]
+    block_end = block_start + window_len_samples
 
-    for i in range(1, len(gamma_windows)):
-        if gamma_windows[i] - gamma_windows[i - 1] == step_size_samples:
-            current_block.append(gamma_windows[i])
+    for start in window_starts[1:]:
+        if start - block_end <= max_gap_samples:
+            # Extend the current block
+            block_end = start + window_len_samples
         else:
-            # End of block
-            block_start = current_block[0]
-            block_end = current_block[-1] + step_size_samples
-            if block_end - block_start >= min_block_len_samples:
-                blocks.append((block_start, block_end))
-            current_block = [gamma_windows[i]]
+            # Finalize current block
+            duration = (block_end - block_start) / fs
+            if duration >= min_block_len_sec:
+                blocks.append((block_start / fs, block_end / fs))
+            # Start new block
+            block_start = start
+            block_end = start + window_len_samples
 
-    # Check the last block
-    block_start = current_block[0]
-    block_end = current_block[-1] + step_size_samples
-    if block_end - block_start >= min_block_len_samples:
-        blocks.append((block_start, block_end))
+    # Final block
+    duration = (block_end - block_start) / fs
+    if duration >= min_block_len_sec:
+        blocks.append((block_start / fs, block_end / fs))
+
+    return blocks
+
 
 
 # =====================================
