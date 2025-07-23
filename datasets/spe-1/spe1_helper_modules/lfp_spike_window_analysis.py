@@ -14,6 +14,7 @@ import mne
 from tqdm.notebook import tqdm
 import hashlib
 from itertools import product
+from spe1_plotting import *
 
 # ------------------------------ Custom Exceptions ------------------------------
 
@@ -262,6 +263,75 @@ def merge_windows_into_blocks_flexible(
 
     return blocks
 
+# ============================================
+## Wrapper function for blocking analysis 
+# ============================================
+
+def segment_gamma_epochs(
+    summary_df: pd.DataFrame,
+    window_times: List[Tuple[int, int]],
+    lfp_signal: np.ndarray,
+    fs: float,
+    window_len_sec: float = 2,
+    gamma_band_name: str = "gamma",
+    high_percentile: float = 77,
+    low_percentile: float = 20,
+    max_gap_sec: float = 1.0,
+    min_block_len_sec: float = 5.0,
+    visualize: bool = True,
+) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+    """
+    Classify gamma windows and merge them into contiguous high/low gamma blocks.
+
+    Args:
+        summary_df : Output of model.to_df() with gamma band features
+        window_times : List of (start, end) sample indices per window
+        lfp_signal : Raw LFP signal (1D)
+        fs : Sampling frequency
+        window_len_sec : Window length in seconds
+        gamma_band_name : Band label used in summary_df (e.g., 'gamma')
+        high_percentile : Percentile cutoff for high gamma classification
+        low_percentile : Percentile cutoff for low gamma classification
+        max_gap_sec : Maximum gap (in seconds) allowed between windows to merge into one block
+        min_block_len_sec : Minimum length (in seconds) for a block to be included
+        visualize : Whether to plot the LFP and gamma blocks
+
+    Returns:
+        high_blocks : List of (start_sec, end_sec) tuples for high gamma blocks
+        low_blocks : List of (start_sec, end_sec) tuples for low gamma blocks
+    """
+    # 1. Classify windows
+    high_windows, low_windows = classify_gamma_windows(
+        summary_df,
+        window_times,
+        gamma_band_name=gamma_band_name,
+        high_percentile=high_percentile,
+        low_percentile=low_percentile,
+    )
+
+    # 2. Merge into blocks
+    high_blocks = merge_windows_into_blocks_flexible(
+        high_windows, window_len_sec, fs,
+        max_gap_sec=max_gap_sec,
+        min_block_len_sec=min_block_len_sec
+    )
+    low_blocks = merge_windows_into_blocks_flexible(
+        low_windows, window_len_sec, fs,
+        max_gap_sec=max_gap_sec,
+        min_block_len_sec=min_block_len_sec
+    )
+
+    # 3. Optional visualization
+    if visualize:
+        plot_lfp_with_blocks(
+            lfp_signal=lfp_signal,
+            fs=fs,
+            high_blocks=high_blocks,
+            low_blocks=low_blocks,
+            title="Gamma Block Segmentation"
+        )
+
+    return high_blocks, low_blocks
 
 
 # =====================================
@@ -561,49 +631,4 @@ def sensitivity_analysis(
     else:
         return pd.DataFrame(), {}
 
-
-def merge_windows_with_tolerance(
-    window_starts, fs, window_len_sec=2, min_duration_sec=5, max_gap_windows=1
-):
-    """
-    Merge windows into blocks, allowing small gaps between windows.
-
-    Parameters:
-    - window_starts: list of start indices (in samples)
-    - fs: sampling frequency
-    - window_len_sec: length of each window (seconds)
-    - min_duration_sec: minimum duration (in seconds) for a valid block
-    - max_gap_windows: number of allowed missing windows between merged blocks
-
-    Returns:
-    - blocks: list of (start_sample, end_sample) tuples
-    """
-    if not window_starts:
-        return []
-
-    window_starts = sorted(window_starts)
-    blocks = []
-    current_block = [window_starts[0]]
-    expected_step = int(window_len_sec * fs)
-
-    for i in range(1, len(window_starts)):
-        gap = window_starts[i] - window_starts[i - 1]
-        if gap <= expected_step * (max_gap_windows + 1):  # allow small gaps
-            current_block.append(window_starts[i])
-        else:
-            duration = len(current_block) * window_len_sec
-            if duration >= min_duration_sec:
-                block_start = current_block[0]
-                block_end = current_block[-1] + expected_step
-                blocks.append((block_start, block_end))
-            current_block = [window_starts[i]]
-
-    if current_block:
-        duration = len(current_block) * window_len_sec
-        if duration >= min_duration_sec:
-            block_start = current_block[0]
-            block_end = current_block[-1] + expected_step
-            blocks.append((block_start, block_end))
-
-    return blocks
 
