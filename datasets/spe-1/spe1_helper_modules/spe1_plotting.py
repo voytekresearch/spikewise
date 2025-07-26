@@ -168,3 +168,55 @@ def plot_lfp_with_blocks(
     low_duration = sum([(end - start) / fs for start, end in low_blocks_s])
     print(f"High gamma blocks: {len(high_blocks_s)} | Total duration: {high_duration:.2f} s")
     print(f"Low gamma blocks:  {len(low_blocks_s)} | Total duration: {low_duration:.2f} s")
+
+
+
+def plot_param_spectra_high_low(
+    model: SpectralTimeModel,
+    high_windows: List[int],
+    low_windows: List[int],
+    window_times: List[Tuple[int, int]],
+    title: str = "Average Parameterized Spectra High vs Low Gamma"
+):
+    """
+    Plot the average parameterized spectra for high vs low gamma windows.
+
+    Args:
+        model : Fitted SpectralTimeModel.
+        high_windows : Either indices or start sample values for high gamma windows.
+        low_windows : Either indices or start sample values for low gamma windows.
+        window_times : List of (start, end) sample indices for each window.
+        title : Plot title.
+    """
+    # Extract spectrogram: shape (n_windows, n_freqs)
+    spectra = model.spectrogram.T
+    freqs = model.freqs
+
+    # If user passed window start times, convert to indices
+    win_starts = [start for start, _ in window_times]
+    if any(w not in range(len(spectra)) for w in high_windows + low_windows):
+        high_inds = [i for i, s in enumerate(win_starts) if s in high_windows]
+        low_inds = [i for i, s in enumerate(win_starts) if s in low_windows]
+    else:
+        high_inds = high_windows
+        low_inds = low_windows
+
+    # Compute mean and std
+    avg_high, std_high = np.nanmean(spectra[high_inds], axis=0), np.nanstd(spectra[high_inds], axis=0)
+    avg_low, std_low = np.nanmean(spectra[low_inds], axis=0), np.nanstd(spectra[low_inds], axis=0)
+
+    # Plot with shaded error
+    plt.figure(figsize=(10, 5))
+    plt.plot(freqs, avg_high, color="red", label=f"High Gamma (n={len(high_inds)})")
+    plt.fill_between(freqs, avg_high - std_high, avg_high + std_high, color="red", alpha=0.3)
+
+    plt.plot(freqs, avg_low, color="blue", label=f"Low Gamma (n={len(low_inds)})")
+    plt.fill_between(freqs, avg_low - std_low, avg_low + std_low, color="blue", alpha=0.3)
+
+    plt.xlabel("Frequency (Hz)")
+    plt.ylabel("Log Power (a.u.)")
+    plt.title(title)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
