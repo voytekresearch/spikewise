@@ -279,26 +279,15 @@ def segment_gamma_epochs(
     max_gap_sec: float = 1.0,
     min_block_len_sec: float = 5.0,
     visualize: bool = True,
-) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+) -> Tuple[List[int], List[int], List[Tuple[int, int]], List[Tuple[int, int]]]:
     """
     Classify gamma windows and merge them into contiguous high/low gamma blocks.
 
-    Args:
-        summary_df : Output of model.to_df() with gamma band features
-        window_times : List of (start, end) sample indices per window
-        lfp_signal : Raw LFP signal (1D)
-        fs : Sampling frequency
-        window_len_sec : Window length in seconds
-        gamma_band_name : Band label used in summary_df (e.g., 'gamma')
-        high_percentile : Percentile cutoff for high gamma classification
-        low_percentile : Percentile cutoff for low gamma classification
-        max_gap_sec : Maximum gap (in seconds) allowed between windows to merge into one block
-        min_block_len_sec : Minimum length (in seconds) for a block to be included
-        visualize : Whether to plot the LFP and gamma blocks
-
     Returns:
-        high_blocks : List of (start_sec, end_sec) tuples for high gamma blocks
-        low_blocks : List of (start_sec, end_sec) tuples for low gamma blocks
+        high_windows : List of window start sample indices classified as high gamma
+        low_windows : List of window start sample indices classified as low gamma
+        high_blocks : List of (start_sample, end_sample) tuples for high gamma blocks
+        low_blocks : List of (start_sample, end_sample) tuples for low gamma blocks
     """
     # 1. Classify windows
     high_windows, low_windows = classify_gamma_windows(
@@ -309,7 +298,7 @@ def segment_gamma_epochs(
         low_percentile=low_percentile,
     )
 
-    # 2. Merge into blocks
+    # 2. Merge windows into blocks
     high_blocks = merge_windows_into_blocks_flexible(
         high_windows, window_len_sec, fs,
         max_gap_sec=max_gap_sec,
@@ -331,7 +320,8 @@ def segment_gamma_epochs(
             title="Gamma Block Segmentation"
         )
 
-    return high_blocks, low_blocks
+    return high_windows, low_windows, high_blocks, low_blocks
+
 
 
 # =====================================
