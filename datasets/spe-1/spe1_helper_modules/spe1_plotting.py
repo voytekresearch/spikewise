@@ -315,3 +315,52 @@ def compare_and_plot_gamma_blocks(
 
 
 
+
+def plot_patch_lfp_aligned(patch_times, patch_signal, lfp_times, lfp_signal,
+                           t_start_ms=80000, t_end_ms=154000, fs_common=60000):
+    """
+    Plot patch and LFP data aligned to a common time axis (in minutes) 
+    with interpolation.
+
+    Args:
+        patch_times : array (ms) - time points for patch data
+        patch_signal : array - patch data values
+        lfp_times : array (ms) - time points for LFP data
+        lfp_signal : array - LFP data values
+        t_start_ms : start of common time axis (ms)
+        t_end_ms : end of common time axis (ms)
+        fs_common : sampling rate for interpolation (Hz, default 60000)
+    """
+
+    # Convert times to minutes
+    patch_times_min = patch_times / 60000
+    lfp_times_min = lfp_times / 60000
+
+    # Define common time axis (minutes)
+    common_time_min = np.arange(t_start_ms / 60000, t_end_ms / 60000, 1 / fs_common)
+
+    # Interpolate both signals
+    patch_interp = np.interp(common_time_min, patch_times_min, patch_signal)
+    lfp_interp = np.interp(common_time_min, lfp_times_min, lfp_signal)
+
+    # Plot Patch Data
+    plt.figure(figsize=(12, 4))
+    plt.plot(common_time_min, patch_interp, label='Patch Data', color='darkgreen')
+    plt.xlabel('Time (minutes)')
+    plt.ylabel('Voltage')
+    plt.title('Patch Data with Common Time Axis')
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # Plot LFP Data
+    plt.figure(figsize=(12, 4))
+    plt.plot(common_time_min, lfp_interp, label='LFP Data', color='black')
+    plt.xlabel('Time (minutes)')
+    plt.ylabel('Voltage')
+    plt.title('LFP Data with Common Time Axis')
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    return common_time_min, patch_interp, lfp_interp
