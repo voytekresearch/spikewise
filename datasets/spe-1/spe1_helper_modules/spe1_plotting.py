@@ -214,7 +214,7 @@ def plot_param_spectra_high_low(
     plt.fill_between(freqs, avg_low - std_low, avg_low + std_low, color="blue", alpha=0.3)
 
     plt.xlabel("Frequency (Hz)")
-    plt.ylabel("Log Power (a.u.)")
+    plt.ylabel("Log Power")
     plt.title(title)
     plt.legend()
     plt.tight_layout()
