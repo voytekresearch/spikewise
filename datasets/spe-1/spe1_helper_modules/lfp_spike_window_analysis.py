@@ -323,6 +323,31 @@ def segment_gamma_epochs(
     return high_windows, low_windows, high_blocks, low_blocks
 
 
+def compute_block_overlap(blocks_a, blocks_b):
+    """
+    Compute the total overlap duration (in seconds) and overlapping intervals
+    between two sets of blocks.
+
+    Args:
+        blocks_a, blocks_b : List of (start_sec, end_sec) tuples
+
+    Returns:
+        total_overlap : float, total overlapping time in seconds
+        overlap_intervals : list of (start, end) overlap segments
+    """
+    overlaps = []
+    total_overlap = 0.0
+    
+    for a_start, a_end in blocks_a:
+        for b_start, b_end in blocks_b:
+            overlap_start = max(a_start, b_start)
+            overlap_end = min(a_end, b_end)
+            if overlap_start < overlap_end:
+                overlaps.append((overlap_start, overlap_end))
+                total_overlap += (overlap_end - overlap_start)
+    
+    return total_overlap, overlaps
+
 
 # =====================================
 
