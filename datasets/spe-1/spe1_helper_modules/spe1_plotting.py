@@ -5,6 +5,8 @@ import pandas as pd
 from typing import List, Optional, Tuple
 from spikeparam_plotting import *
 from specparam import SpectralTimeModel
+import matplotlib.patches as mpatches
+
 
 
 def plot_spike_time_histogram(
