@@ -11,6 +11,7 @@ from specparam import SpectralTimeModel
 from specparam import SpectralModel
 import matplotlib.pyplot as plt
 import mne
+import os 
 from tqdm.notebook import tqdm
 import hashlib
 from itertools import product
@@ -348,6 +349,39 @@ def compute_block_overlap(blocks_a, blocks_b):
     
     return total_overlap, overlaps
 
+
+
+def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir):
+    """
+    Save LFP segments for overlapping high and low gamma blocks as binary (.bin) files.
+
+    Args:
+        lfp_signal : 1D numpy array of the LFP signal
+        fs : sampling frequency (Hz)
+        overlap_high : list of (start_sec, end_sec) tuples for high gamma overlap segments
+        overlap_low : list of (start_sec, end_sec) tuples for low gamma overlap segments
+        output_dir : full path to the directory where .bin files will be saved
+    """
+    # Create the directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    # --- High Gamma Blocks ---
+    for i, (start_sec, end_sec) in enumerate(overlap_high):
+        start_idx = int(start_sec * fs)
+        end_idx = int(end_sec * fs)
+        segment = lfp_signal[start_idx:end_idx].astype('float32')
+        file_path = os.path.join(output_dir, f"high_block_{i}.bin")
+        segment.tofile(file_path)
+
+    # --- Low Gamma Blocks ---
+    for i, (start_sec, end_sec) in enumerate(overlap_low):
+        start_idx = int(start_sec * fs)
+        end_idx = int(end_sec * fs)
+        segment = lfp_signal[start_idx:end_idx].astype('float32')
+        file_path = os.path.join(output_dir, f"low_block_{i}.bin")
+        segment.tofile(file_path)
+
+    print(f"✅ Saved {len(overlap_high)} high gamma blocks and {len(overlap_low)} low gamma blocks in:\n{output_dir}")
 
 # =====================================
 
