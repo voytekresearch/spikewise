@@ -386,6 +386,77 @@ def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir
 # =====================================
 
 # -------------------------------------------------------------------
+# Spike-LFP BLOCKING Mapping
+# -------------------------------------------------------------------
+def label_spikes_with_overlap_blocks(spike_df, overlap_high, overlap_low):
+    """
+    Label each spike as belonging to overlapping high or low gamma blocks.
+
+    Args:
+        spike_df : pd.DataFrame with a 'spk_times_ms' column
+        overlap_high : list of (start_sec, end_sec) tuples for high gamma overlap blocks
+        overlap_low : list of (start_sec, end_sec) tuples for low gamma overlap blocks
+
+    Returns:
+        pd.DataFrame with a new column 'overlap_block_label' 
+        having values: 'high_overlap', 'low_overlap', or 'none'
+    """
+    spikes = spike_df.copy()
+    spike_times_sec = spikes['spk_times_ms'].values / 1000.0
+    labels = np.array(['none'] * len(spike_times_sec), dtype=object)
+
+    for i, t in enumerate(spike_times_sec):
+        for start, end in overlap_high:
+            if start <= t < end:
+                labels[i] = 'high_overlap'
+                break
+        if labels[i] == 'none':  # only check low if not already high
+            for start, end in overlap_low:
+                if start <= t < end:
+                    labels[i] = 'low_overlap'
+                    break
+
+    spikes['overlap_block_label'] = labels
+    return spikes
+
+def label_non_contradictory_block_spikes(spike_df, welch_high, welch_low, mt_high, mt_low):
+    """
+    Label spikes as 'high_noncontradictory' or 'low_noncontradictory' 
+    if they belong to high/low gamma blocks in either method 
+    AND are not in a contradictory block of the other method.
+    
+    Spikes that contradict classifications (e.g., Welch high & MT low) are excluded.
+
+    Args:
+        spike_df : pd.DataFrame with 'spk_times_ms'
+        welch_high, welch_low : (start_sec, end_sec) Welch blocks
+        mt_high, mt_low       : (start_sec, end_sec) MT blocks
+
+    Returns:
+        spike_df_labeled : DataFrame with 'noncontradictory_label' column
+    """
+    spikes = spike_df.copy()
+    spike_times_sec = spikes['spk_times_ms'].values / 1000.0
+    labels = np.array(['exclude'] * len(spikes), dtype=object)
+
+    def in_block(t, blocks):
+        return any(start <= t < end for start, end in blocks)
+
+    for i, t in enumerate(spike_times_sec):
+        w_high, w_low = in_block(t, welch_high), in_block(t, welch_low)
+        m_high, m_low = in_block(t, mt_high), in_block(t, mt_low)
+
+        # High: in high of at least one method, not in low of the other
+        if (w_high and not m_low) or (m_high and not w_low):
+            labels[i] = 'high_noncontradictory'
+
+        # Low: in low of at least one method, not in high of the other
+        elif (w_low and not m_high) or (m_low and not w_high):
+            labels[i] = 'low_noncontradictory'
+
+    spikes['noncontradictory_label'] = labels
+    return spikes
+# -------------------------------------------------------------------
 # Spike-LFP Mapping
 # -------------------------------------------------------------------
 def map_spikes_to_windows(
