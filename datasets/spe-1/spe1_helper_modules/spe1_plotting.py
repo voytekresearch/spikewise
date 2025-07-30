@@ -223,60 +223,60 @@ def plot_param_spectra_high_low(
     plt.show()
 
 
-def plot_gamma_blocks_comparison(
-    lfp_signal, fs,
-    welch_high, welch_low,
-    mt_high, mt_low,
-    mode="overlap",   # "overlap" or "noncontradictory"
-    title="Gamma Blocks Comparison"
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
+
+# ===========================================================
+# Compute blocks from method comparison (overlap / non-contradictory)
+# ===========================================================
+def compute_method_comparison_blocks(
+    welch_high, welch_low, mt_high, mt_low,
+    mode="overlap"
 ):
     """
-    Plot LFP with high/low gamma blocks comparing Welch and Multitaper.
+    Compute high/low gamma blocks based on Welch vs Multitaper comparison.
 
     Parameters
     ----------
-    lfp_signal : np.ndarray
-        Raw LFP signal.
-    fs : float
-        Sampling frequency (Hz).
     welch_high, welch_low : list of (start, end)
-        Welch high/low gamma blocks in seconds.
+        Welch high/low gamma blocks (sec)
     mt_high, mt_low : list of (start, end)
-        Multitaper high/low gamma blocks in seconds.
+        Multitaper high/low gamma blocks (sec)
     mode : str
-        "overlap" → AND logic (only overlapping segments).
-        "noncontradictory" → OR logic minus conflicts.
-    title : str
-        Plot title.
+        "overlap" → AND logic (only blocks present in both methods)
+        "noncontradictory" → OR logic minus conflicts
+
+    Returns
+    -------
+    comp_high_blocks, comp_low_blocks : list of (start, end)
+    info_label : str
+        Description of the comparison logic
     """
 
-    # --- helper: compute intersection (AND) ---
     def intersect_blocks(blocks_a, blocks_b):
+        """Return intersections (AND) between two block lists."""
         overlaps = []
         for a_start, a_end in blocks_a:
             for b_start, b_end in blocks_b:
-                start = max(a_start, b_start)
-                end = min(a_end, b_end)
-                if start < end:
-                    overlaps.append((start, end))
+                s, e = max(a_start, b_start), min(a_end, b_end)
+                if s < e:
+                    overlaps.append((s, e))
         return overlaps
 
-    # --- helper: union of highs while removing contradictions with lows ---
     def union_noncontradictory(high_a, low_a, high_b, low_b):
+        """Return high blocks from either method while cutting out overlaps with any low blocks."""
         combined_highs = sorted(high_a + high_b)
         combined_lows = sorted(low_a + low_b)
-
         cleaned = []
         for hs, he in combined_highs:
             segments = [(hs, he)]
             for ls, le in combined_lows:
                 new_segments = []
                 for seg_s, seg_e in segments:
-                    # if low does not intersect, keep as is
                     if le <= seg_s or ls >= seg_e:
                         new_segments.append((seg_s, seg_e))
                     else:
-                        # cut out overlapping low part
                         if seg_s < ls:
                             new_segments.append((seg_s, ls))
                         if le < seg_e:
@@ -285,53 +285,84 @@ def plot_gamma_blocks_comparison(
             cleaned.extend(segments)
         return cleaned
 
-    # --- select blocks based on mode ---
+    # --- Choose comparison logic ---
     if mode == "overlap":
-        high_blocks = intersect_blocks(welch_high, mt_high)
-        low_blocks  = intersect_blocks(welch_low, mt_low)
+        comp_high_blocks = intersect_blocks(welch_high, mt_high)
+        comp_low_blocks  = intersect_blocks(welch_low, mt_low)
         info_label = "Overlap (AND logic)"
     elif mode == "noncontradictory":
-        high_blocks = union_noncontradictory(welch_high, welch_low, mt_high, mt_low)
-        low_blocks  = union_noncontradictory(welch_low, welch_high, mt_low, mt_high)
+        comp_high_blocks = union_noncontradictory(welch_high, welch_low, mt_high, mt_low)
+        comp_low_blocks  = union_noncontradictory(welch_low, welch_high, mt_low, mt_high)
         info_label = "Non-Contradictory (OR minus conflicts)"
     else:
         raise ValueError("mode must be 'overlap' or 'noncontradictory'")
 
-    # --- block stats ---
-    def block_stats(blocks):
-        return len(blocks), sum(end - start for start, end in blocks)
+    return comp_high_blocks, comp_low_blocks, info_label
 
-    n_high, dur_high = block_stats(high_blocks)
-    n_low, dur_low   = block_stats(low_blocks)
 
-    # --- plot ---
+
+# Plotting for method comparison blocks
+
+def plot_method_comparison_blocks(lfp_signal, fs, comp_high_blocks, comp_low_blocks, info_label="", title="Method Comparison: Gamma Blocks"):
+    """
+    Plot LFP with high/low gamma blocks derived from Welch vs Multitaper comparison.
+    """
+    n_high = len(comp_high_blocks)
+    n_low  = len(comp_low_blocks)
+    dur_high = sum(e - s for s, e in comp_high_blocks)
+    dur_low  = sum(e - s for s, e in comp_low_blocks)
+
     time = np.arange(len(lfp_signal)) / fs
     plt.figure(figsize=(18, 6))
     plt.plot(time, lfp_signal, color="black", linewidth=0.7, label="LFP")
 
-    for s, e in high_blocks:
-        plt.axvspan(s, e, facecolor="red", alpha=0.4, hatch="//", edgecolor="red", label=None)
-    for s, e in low_blocks:
-        plt.axvspan(s, e, facecolor="blue", alpha=0.4, hatch="//", edgecolor="blue", label=None)
+    # Plot high and low blocks
+    for s, e in comp_high_blocks:
+        plt.axvspan(s, e, facecolor="red", alpha=0.4, hatch="//", edgecolor="red")
+    for s, e in comp_low_blocks:
+        plt.axvspan(s, e, facecolor="blue", alpha=0.4, hatch="//", edgecolor="blue")
 
     legend_handles = [
-        mpatches.Patch(facecolor="red", alpha=0.4, hatch="//", edgecolor="red", label="High Gamma"),
-        mpatches.Patch(facecolor="blue", alpha=0.4, hatch="//", edgecolor="blue", label="Low Gamma"),
+        mpatches.Patch(facecolor="red", alpha=0.4, hatch="//", edgecolor="red", label="High Gamma (Method Comparison)"),
+        mpatches.Patch(facecolor="blue", alpha=0.4, hatch="//", edgecolor="blue", label="Low Gamma (Method Comparison)")
     ]
     plt.legend(handles=legend_handles, loc="upper right")
-
     plt.xlabel("Time (s)")
     plt.ylabel("LFP (µV)")
     plt.title(f"{title} – {info_label}")
     plt.tight_layout()
     plt.show()
 
-    # --- print stats ---
-    print(f"Mode: {info_label}")
-    print(f"High Gamma: {n_high} blocks | Total duration: {dur_high:.2f} s")
-    print(f"Low Gamma:  {n_low} blocks | Total duration: {dur_low:.2f} s")
+    print(f"[{info_label}]")
+    print(f"High Gamma (Method Comparison): {n_high} blocks | Total duration: {dur_high:.2f} s")
+    print(f"Low Gamma (Method Comparison):  {n_low} blocks | Total duration: {dur_low:.2f} s")
 
 
+
+# Wrapper that does both
+
+def get_and_plot_method_comparison_blocks(
+    lfp_signal, fs,
+    welch_high, welch_low, mt_high, mt_low,
+    mode="overlap",
+    plot=True
+):
+    """
+    Compute and optionally plot gamma blocks from Welch vs Multitaper comparison.
+
+    Returns
+    -------
+    comp_high_blocks, comp_low_blocks
+    """
+    comp_high, comp_low, info = compute_method_comparison_blocks(
+        welch_high, welch_low, mt_high, mt_low, mode=mode
+    )
+
+    if plot:
+        plot_method_comparison_blocks(lfp_signal, fs, comp_high, comp_low, info)
+
+    return comp_high, comp_low
+# ===========================================================
 
 def plot_patch_lfp_aligned(patch_times, patch_signal, lfp_times, lfp_signal,
                            t_start_ms=80000, t_end_ms=154000, fs_common=60000):
