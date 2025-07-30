@@ -117,59 +117,79 @@ def plot_avg_spectra(model: SpectralTimeModel, freqs: np.ndarray, high_inds: Lis
     plt.tight_layout()
     plt.show()
 
-def plot_lfp_with_blocks(
+
+
+def plot_gamma_blocks_generic(
     lfp_signal: np.ndarray,
     fs: float,
     high_blocks: List[Tuple[float, float]],
     low_blocks: List[Tuple[float, float]],
-    title: str = "LFP Signal with Gamma Blocks"
+    title: str = "LFP with Gamma Blocks",
+    info_label: Optional[str] = None,
+    color_high: str = "red",
+    color_low: str = "blue",
+    hatch_high: Optional[str] = None,
+    hatch_low: Optional[str] = None
 ):
     """
-    Plot the LFP signal and overlay high/low gamma blocks.
+    General-purpose plotting for gamma blocks (works for both single-method and method-comparison).
 
-    Args:
-        lfp_signal : 1D LFP time series
-        fs : Sampling frequency in Hz
-        high_blocks : List of (start, end) for high gamma blocks (samples or seconds)
-        low_blocks : List of (start, end) for low gamma blocks (samples or seconds)
-        title : Plot title
+    Parameters
+    ----------
+    lfp_signal : np.ndarray
+        1D LFP time series.
+    fs : float
+        Sampling frequency (Hz).
+    high_blocks, low_blocks : list of (start, end) in seconds.
+    title : str
+        Plot title.
+    info_label : str, optional
+        Extra label to show (e.g., 'Overlap (AND logic)').
+    color_high, color_low : str
+        Colors for high and low gamma blocks.
+    hatch_high, hatch_low : str or None
+        Hatch patterns (e.g. '//' or '\\\\') for high/low blocks. None means solid fill.
     """
-    def convert_to_samples(blocks):
-        return [
-            (int(start * fs), int(end * fs)) if start < 100000 and end < 100000 else (start, end)
-            for start, end in blocks
-        ]
 
-    # Convert to sample indices if needed
-    high_blocks_s = convert_to_samples(high_blocks)
-    low_blocks_s = convert_to_samples(low_blocks)
+    # --- Compute block stats ---
+    n_high = len(high_blocks)
+    n_low = len(low_blocks)
+    dur_high = sum(e - s for s, e in high_blocks)
+    dur_low = sum(e - s for s, e in low_blocks)
 
-    # Plot
+    # --- Plot ---
     time = np.arange(len(lfp_signal)) / fs
-    plt.figure(figsize=(15, 5))
-    plt.plot(time, lfp_signal, color='black', linewidth=0.8, label='LFP Signal')
+    plt.figure(figsize=(16, 5))
+    plt.plot(time, lfp_signal, color="black", linewidth=0.8, label="LFP Signal")
 
-    for start, end in high_blocks_s:
-        plt.axvspan(start / fs, end / fs, color='red', alpha=0.3, label='High Gamma')
-    for start, end in low_blocks_s:
-        plt.axvspan(start / fs, end / fs, color='blue', alpha=0.3, label='Low Gamma')
+    for s, e in high_blocks:
+        plt.axvspan(s, e, facecolor=color_high, alpha=0.3,
+                    edgecolor=color_high, hatch=hatch_high)
+    for s, e in low_blocks:
+        plt.axvspan(s, e, facecolor=color_low, alpha=0.3,
+                    edgecolor=color_low, hatch=hatch_low)
 
-    plt.title(title)
+    # --- Legend ---
+    legend_handles = [
+        mpatches.Patch(facecolor=color_high, alpha=0.3, hatch=hatch_high or '',
+                       edgecolor=color_high, label="High Gamma"),
+        mpatches.Patch(facecolor=color_low, alpha=0.3, hatch=hatch_low or '',
+                       edgecolor=color_low, label="Low Gamma")
+    ]
+    plt.legend(handles=legend_handles, loc="upper right")
+
+    # --- Title ---
+    label_text = f"{title}" + (f" – {info_label}" if info_label else "")
+    plt.title(label_text)
     plt.xlabel("Time (s)")
-    plt.ylabel("Amplitude")
-    plt.xlim([0, time[-1]])
-
-    handles, labels = plt.gca().get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    plt.legend(by_label.values(), by_label.keys())
+    plt.ylabel("LFP (µV)")
     plt.tight_layout()
     plt.show()
 
-    # Print stats
-    high_duration = sum([(end - start) / fs for start, end in high_blocks_s])
-    low_duration = sum([(end - start) / fs for start, end in low_blocks_s])
-    print(f"High gamma blocks: {len(high_blocks_s)} | Total duration: {high_duration:.2f} s")
-    print(f"Low gamma blocks:  {len(low_blocks_s)} | Total duration: {low_duration:.2f} s")
+    # --- Stats ---
+    print(f"{info_label if info_label else '[Blocks]'}")
+    print(f"High Gamma: {n_high} blocks | Total duration: {dur_high:.2f} s")
+    print(f"Low Gamma:  {n_low} blocks | Total duration: {dur_low:.2f} s")
 
 
 
@@ -223,76 +243,6 @@ def plot_param_spectra_high_low(
     plt.show()
 
 
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import numpy as np
-
-
-
-
-
-# Plotting for method comparison blocks
-
-def plot_method_comparison_blocks(lfp_signal, fs, comp_high_blocks, comp_low_blocks, info_label="", title="Method Comparison: Gamma Blocks"):
-    """
-    Plot LFP with high/low gamma blocks derived from Welch vs Multitaper comparison.
-    """
-    n_high = len(comp_high_blocks)
-    n_low  = len(comp_low_blocks)
-    dur_high = sum(e - s for s, e in comp_high_blocks)
-    dur_low  = sum(e - s for s, e in comp_low_blocks)
-
-    time = np.arange(len(lfp_signal)) / fs
-    plt.figure(figsize=(18, 6))
-    plt.plot(time, lfp_signal, color="black", linewidth=0.7, label="LFP")
-
-    # Plot high and low blocks
-    for s, e in comp_high_blocks:
-        plt.axvspan(s, e, facecolor="red", alpha=0.4, hatch="//", edgecolor="red")
-    for s, e in comp_low_blocks:
-        plt.axvspan(s, e, facecolor="blue", alpha=0.4, hatch="//", edgecolor="blue")
-
-    legend_handles = [
-        mpatches.Patch(facecolor="red", alpha=0.4, hatch="//", edgecolor="red", label="High Gamma (Method Comparison)"),
-        mpatches.Patch(facecolor="blue", alpha=0.4, hatch="//", edgecolor="blue", label="Low Gamma (Method Comparison)")
-    ]
-    plt.legend(handles=legend_handles, loc="upper right")
-    plt.xlabel("Time (s)")
-    plt.ylabel("LFP (µV)")
-    plt.title(f"{title} – {info_label}")
-    plt.tight_layout()
-    plt.show()
-
-    print(f"[{info_label}]")
-    print(f"High Gamma (Method Comparison): {n_high} blocks | Total duration: {dur_high:.2f} s")
-    print(f"Low Gamma (Method Comparison):  {n_low} blocks | Total duration: {dur_low:.2f} s")
-
-
-
-# Wrapper that does both
-
-def get_and_plot_method_comparison_blocks(
-    lfp_signal, fs,
-    welch_high, welch_low, mt_high, mt_low,
-    mode="overlap",
-    plot=True
-):
-    """
-    Compute and optionally plot gamma blocks from Welch vs Multitaper comparison.
-
-    Returns
-    -------
-    comp_high_blocks, comp_low_blocks
-    """
-    comp_high, comp_low, info = compute_method_comparison_blocks(
-        welch_high, welch_low, mt_high, mt_low, mode=mode
-    )
-
-    if plot:
-        plot_method_comparison_blocks(lfp_signal, fs, comp_high, comp_low, info)
-
-    return comp_high, comp_low
-# ===========================================================
 
 def plot_patch_lfp_aligned(patch_times, patch_signal, lfp_times, lfp_signal,
                            t_start_ms=80000, t_end_ms=154000, fs_common=60000):
