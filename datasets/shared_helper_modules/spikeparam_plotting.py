@@ -260,7 +260,7 @@ def plot_fits_near_global_mean_and_outliers(
     config_mean = subset[metric].mean()
     subset["abs_diff_from_mean"] = (subset[metric] - config_mean).abs()
 
-    # ✅ Correct list indices aligned with foofs
+    
     closest_idx = list(subset.sort_values("abs_diff_from_mean").iloc[:n_mean].index.values)
 
     print(f"\nPlotting {n_mean} fits closest to config mean ({metric} = {config_mean:.2f}):")
