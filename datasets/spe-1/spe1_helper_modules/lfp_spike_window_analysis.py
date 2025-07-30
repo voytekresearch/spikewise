@@ -387,75 +387,74 @@ def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir
 
 # -------------------------------------------------------------------
 # Spike-LFP BLOCKING Mapping
-# -------------------------------------------------------------------
-def label_spikes_with_overlap_blocks(spike_df, overlap_high, overlap_low):
+def label_spikes_blocks(spike_df, mode,
+                        overlap_high=None, overlap_low=None,
+                        welch_high=None, welch_low=None,
+                        mt_high=None, mt_low=None):
     """
-    Label each spike as belonging to overlapping high or low gamma blocks.
-
-    Args:
-        spike_df : pd.DataFrame with a 'spk_times_ms' column
-        overlap_high : list of (start_sec, end_sec) tuples for high gamma overlap blocks
-        overlap_low : list of (start_sec, end_sec) tuples for low gamma overlap blocks
-
-    Returns:
-        pd.DataFrame with a new column 'overlap_block_label' 
-        having values: 'high_overlap', 'low_overlap', or 'none'
-    """
-    spikes = spike_df.copy()
-    spike_times_sec = spikes['spk_times_ms'].values / 1000.0
-    labels = np.array(['none'] * len(spike_times_sec), dtype=object)
-
-    for i, t in enumerate(spike_times_sec):
-        for start, end in overlap_high:
-            if start <= t < end:
-                labels[i] = 'high_overlap'
-                break
-        if labels[i] == 'none':  # only check low if not already high
-            for start, end in overlap_low:
-                if start <= t < end:
-                    labels[i] = 'low_overlap'
-                    break
-
-    spikes['overlap_block_label'] = labels
-    return spikes
-
-def label_non_contradictory_block_spikes(spike_df, welch_high, welch_low, mt_high, mt_low):
-    """
-    Label spikes as 'high_noncontradictory' or 'low_noncontradictory' 
-    if they belong to high/low gamma blocks in either method 
-    AND are not in a contradictory block of the other method.
+    Label spikes based on different block classification modes:
     
-    Spikes that contradict classifications (e.g., Welch high & MT low) are excluded.
-
+    Modes:
+    - "overlap"          : Labels 'high_overlap', 'low_overlap', or 'none'
+    - "noncontradictory" : Labels 'high_noncontradictory', 'low_noncontradictory', or 'exclude'
+    - "high_vs_rest"     : Labels 'high_gamma' (spikes in high blocks) or 'rest'
+    
     Args:
-        spike_df : pd.DataFrame with 'spk_times_ms'
-        welch_high, welch_low : (start_sec, end_sec) Welch blocks
-        mt_high, mt_low       : (start_sec, end_sec) MT blocks
-
+        spike_df : pd.DataFrame with column 'spk_times_ms'
+        mode : str, one of {'overlap', 'noncontradictory', 'high_vs_rest'}
+        overlap_high, overlap_low : required for 'overlap'
+        welch_high, welch_low, mt_high, mt_low : required for 'noncontradictory'
+        welch_high (or any high blocks) : required for 'high_vs_rest'
+    
     Returns:
-        spike_df_labeled : DataFrame with 'noncontradictory_label' column
+        pd.DataFrame with a new column depending on mode:
+        - 'overlap_block_label'
+        - 'noncontradictory_label'
+        - 'high_vs_rest_label'
     """
     spikes = spike_df.copy()
     spike_times_sec = spikes['spk_times_ms'].values / 1000.0
-    labels = np.array(['exclude'] * len(spikes), dtype=object)
 
+    # --- Helper: check if spike is inside a block list ---
     def in_block(t, blocks):
-        return any(start <= t < end for start, end in blocks)
+        return any(start <= t < end for start, end in blocks) if blocks is not None else False
 
-    for i, t in enumerate(spike_times_sec):
-        w_high, w_low = in_block(t, welch_high), in_block(t, welch_low)
-        m_high, m_low = in_block(t, mt_high), in_block(t, mt_low)
+    if mode == "overlap":
+        labels = np.array(['none'] * len(spikes), dtype=object)
+        for i, t in enumerate(spike_times_sec):
+            if in_block(t, overlap_high):
+                labels[i] = 'high_overlap'
+            elif in_block(t, overlap_low):
+                labels[i] = 'low_overlap'
+        spikes['overlap_block_label'] = labels
+        return spikes
 
-        # High: in high of at least one method, not in low of the other
-        if (w_high and not m_low) or (m_high and not w_low):
-            labels[i] = 'high_noncontradictory'
+    elif mode == "noncontradictory":
+        labels = np.array(['exclude'] * len(spikes), dtype=object)
+        for i, t in enumerate(spike_times_sec):
+            w_high, w_low = in_block(t, welch_high), in_block(t, welch_low)
+            m_high, m_low = in_block(t, mt_high), in_block(t, mt_low)
 
-        # Low: in low of at least one method, not in high of the other
-        elif (w_low and not m_high) or (m_low and not w_high):
-            labels[i] = 'low_noncontradictory'
+            # High: in high of at least one method, not in low of the other
+            if (w_high and not m_low) or (m_high and not w_low):
+                labels[i] = 'high_noncontradictory'
+            # Low: in low of at least one method, not in high of the other
+            elif (w_low and not m_high) or (m_low and not w_high):
+                labels[i] = 'low_noncontradictory'
+        spikes['noncontradictory_label'] = labels
+        return spikes
 
-    spikes['noncontradictory_label'] = labels
-    return spikes
+    elif mode == "high_vs_rest":
+        labels = np.array(['rest'] * len(spikes), dtype=object)
+        for i, t in enumerate(spike_times_sec):
+            if in_block(t, welch_high):  # use any high block list you pass
+                labels[i] = 'high_gamma'
+        spikes['high_vs_rest_label'] = labels
+        return spikes
+
+    else:
+        raise ValueError("Invalid mode. Choose from 'overlap', 'noncontradictory', or 'high_vs_rest'.")
+
 # -------------------------------------------------------------------
 # Spike-LFP Mapping
 # -------------------------------------------------------------------
