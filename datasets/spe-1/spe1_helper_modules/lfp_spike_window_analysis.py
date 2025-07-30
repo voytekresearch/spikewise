@@ -313,7 +313,7 @@ def segment_gamma_epochs(
 
     # 3. Optional visualization
     if visualize:
-        plot_lfp_with_blocks(
+        plot_gamma_blocks_generic(
             lfp_signal=lfp_signal,
             fs=fs,
             high_blocks=high_blocks,
@@ -418,7 +418,7 @@ def get_and_plot_method_comparison_blocks(
     )
 
     if plot:
-        plot_method_comparison_blocks(lfp_signal, fs, comp_high, comp_low, info)
+        plot_gamma_blocks_generic(lfp_signal, fs, comp_high, comp_low, info)
 
     return comp_high, comp_low
 # ===========================================================
