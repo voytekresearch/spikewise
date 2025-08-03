@@ -296,7 +296,8 @@ def plot_patch_lfp_aligned(patch_times, patch_signal, lfp_times, lfp_signal,
 
 def plot_spike_groups_from_labels(sp, spike_df_labeled, label_column, label_groups, group_names):
     """
-    Plot average waveforms for given label groups from a labeled spike dataframe.
+    Plot average waveforms for given label groups from a labeled spike dataframe,
+    and print the number of spikes in each group.
 
     Parameters
     ----------
@@ -311,14 +312,13 @@ def plot_spike_groups_from_labels(sp, spike_df_labeled, label_column, label_grou
     group_names : list of str
         Names to display for the groups in the legend.
     """
-    # Collect spike indices for each group
-    ind_groups = [
-        spike_df_labeled.loc[spike_df_labeled[label_column] == lbl, 'spk_id'].values
-        for lbl in label_groups
-    ]
-
-    # Remove indices out of bounds (safety)
-    ind_groups = [[i for i in inds if i < len(sp.spikes)] for inds in ind_groups]
+    ind_groups = []
+    
+    for lbl, name in zip(label_groups, group_names):
+        inds = spike_df_labeled.loc[spike_df_labeled[label_column] == lbl, 'spk_id'].values
+        valid_inds = [i for i in inds if i < len(sp.spikes)]
+        ind_groups.append(valid_inds)
+        print(f"Group '{name}' → {len(valid_inds)} spikes")
 
     # Plot with Spike class built-in plotting
     sp.plot(
