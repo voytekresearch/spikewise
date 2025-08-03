@@ -15,6 +15,7 @@ import os
 from tqdm.notebook import tqdm
 import hashlib
 from itertools import product
+from scipy.stats import ttest_ind
 from spe1_plotting import *
 
 # ------------------------------ Custom Exceptions ------------------------------
@@ -515,6 +516,59 @@ def label_spikes_method_comparison(
 
     spikes['method_block_label'] = labels
     return spikes
+
+def compare_spike_params_groups(spike_df, group_col, groups, params):
+    """
+    Compare spike parameters between two groups using t-tests and violin plots.
+
+    Args:
+        spike_df : pd.DataFrame
+            DataFrame with spike parameters and a group label column.
+        group_col : str
+            Column name that contains the group labels.
+        groups : tuple of str
+            (group1, group2) where group2 can be 'rest' to include all spikes not in group1.
+        params : list of str
+            Parameter columns to compare.
+
+    Returns:
+        results : dict
+            Dictionary with parameter -> (t_stat, p_value).
+    """
+    group1, group2 = groups
+
+    #  Handle "rest" logic
+    if group2 == "rest":
+        df1 = spike_df[spike_df[group_col] == group1]
+        df2 = spike_df[spike_df[group_col] != group1]
+    else:
+        df1 = spike_df[spike_df[group_col] == group1]
+        df2 = spike_df[spike_df[group_col] == group2]
+
+    results = {}
+
+    for param in params:
+        vals1 = df1[param].dropna()
+        vals2 = df2[param].dropna()
+
+        if len(vals1) == 0 or len(vals2) == 0:
+            print(f"⚠️ Skipping {param} – one of the groups has no data.")
+            continue
+
+        # Welch's t-test
+        t_stat, p_val = ttest_ind(vals1, vals2, equal_var=False, nan_policy='omit')
+        results[param] = (t_stat, p_val)
+
+        # --- Violin Plot ---
+        plt.figure(figsize=(5, 4))
+        sns.violinplot(data=[vals1, vals2], cut=0)
+        plt.xticks([0, 1], [group1, group2])
+        plt.ylabel(param)
+        plt.title(f"{param}\n t={t_stat:.2f}, p={p_val:.4f}")  # formatted p-value
+        plt.tight_layout()
+        plt.show()
+
+    return results
 
 
 # -------------------------------------------------------------------
