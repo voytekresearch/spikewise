@@ -454,7 +454,7 @@ def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir
         file_path = os.path.join(output_dir, f"low_block_{i}.bin")
         segment.tofile(file_path)
 
-    print(f"✅ Saved {len(overlap_high)} high gamma blocks and {len(overlap_low)} low gamma blocks in:\n{output_dir}")
+    print(f"Saved {len(overlap_high)} high gamma blocks and {len(overlap_low)} low gamma blocks in:\n{output_dir}")
 
 # =====================================
 # Spike-LFP BLOCKING Mapping
