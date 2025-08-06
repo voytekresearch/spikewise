@@ -306,99 +306,6 @@ def segment_gamma_epochs(
     return high_windows, low_windows, high_blocks, low_blocks
 
 
-def compute_method_comparison_blocks(
-    welch_high, welch_low, mt_high, mt_low,
-    mode="overlap"
-):
-    """
-     Compute blocks from method comparison (overlap / non-contradictory)
-
-    Parameters
-    ----------
-    welch_high, welch_low : list of (start, end)
-        Welch high/low gamma blocks (sec)
-    mt_high, mt_low : list of (start, end)
-        Multitaper high/low gamma blocks (sec)
-    mode : str
-        "overlap" → AND logic (only blocks present in both methods)
-        "noncontradictory" → OR logic minus conflicts
-
-    Returns
-    -------
-    comp_high_blocks, comp_low_blocks : list of (start, end)
-    info_label : str
-        Description of the comparison logic
-    """
-
-    def intersect_blocks(blocks_a, blocks_b):
-        """Return intersections (AND) between two block lists."""
-        overlaps = []
-        for a_start, a_end in blocks_a:
-            for b_start, b_end in blocks_b:
-                s, e = max(a_start, b_start), min(a_end, b_end)
-                if s < e:
-                    overlaps.append((s, e))
-        return overlaps
-
-    def union_noncontradictory(high_a, low_a, high_b, low_b):
-        """Return high blocks from either method while cutting out overlaps with any low blocks."""
-        combined_highs = sorted(high_a + high_b)
-        combined_lows = sorted(low_a + low_b)
-        cleaned = []
-        for hs, he in combined_highs:
-            segments = [(hs, he)]
-            for ls, le in combined_lows:
-                new_segments = []
-                for seg_s, seg_e in segments:
-                    if le <= seg_s or ls >= seg_e:
-                        new_segments.append((seg_s, seg_e))
-                    else:
-                        if seg_s < ls:
-                            new_segments.append((seg_s, ls))
-                        if le < seg_e:
-                            new_segments.append((le, seg_e))
-                segments = new_segments
-            cleaned.extend(segments)
-        return cleaned
-
-    # --- Choose comparison logic ---
-    if mode == "overlap":
-        comp_high_blocks = intersect_blocks(welch_high, mt_high)
-        comp_low_blocks  = intersect_blocks(welch_low, mt_low)
-        info_label = "Overlap (AND logic)"
-    elif mode == "noncontradictory":
-        comp_high_blocks = union_noncontradictory(welch_high, welch_low, mt_high, mt_low)
-        comp_low_blocks  = union_noncontradictory(welch_low, welch_high, mt_low, mt_high)
-        info_label = "Non-Contradictory (OR minus conflicts)"
-    else:
-        raise ValueError("mode must be 'overlap' or 'noncontradictory'")
-
-    return comp_high_blocks, comp_low_blocks, info_label
-
-
-
-def get_and_plot_method_comparison_blocks(
-    lfp_signal, fs,
-    welch_high, welch_low, mt_high, mt_low,
-    mode="overlap",
-    plot=True
-):
-    """
-    Wrapper to compute and optionally plot gamma blocks from Welch vs Multitaper comparison.
-
-    Returns
-    -------
-    comp_high_blocks, comp_low_blocks
-    """
-    comp_high, comp_low, info = compute_method_comparison_blocks(
-        welch_high, welch_low, mt_high, mt_low, mode=mode
-    )
-
-    if plot:
-        plot_gamma_blocks_generic(lfp_signal, fs, comp_high, comp_low, info)
-
-    return comp_high, comp_low
-
 
 def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir):
     """
@@ -529,6 +436,102 @@ def classify_gamma_windows(
     ]
 
     return high_windows, low_windows
+
+#Functions to compare windowing specparam result via Welch vs multitaper
+
+def compute_method_comparison_blocks(
+    welch_high, welch_low, mt_high, mt_low,
+    mode="overlap"
+):
+    """
+     Compute blocks from method comparison (overlap / non-contradictory)
+
+    Parameters
+    ----------
+    welch_high, welch_low : list of (start, end)
+        Welch high/low gamma blocks (sec)
+    mt_high, mt_low : list of (start, end)
+        Multitaper high/low gamma blocks (sec)
+    mode : str
+        "overlap" → AND logic (only blocks present in both methods)
+        "noncontradictory" → OR logic minus conflicts
+
+    Returns
+    -------
+    comp_high_blocks, comp_low_blocks : list of (start, end)
+    info_label : str
+        Description of the comparison logic
+    """
+
+    def intersect_blocks(blocks_a, blocks_b):
+        """Return intersections (AND) between two block lists."""
+        overlaps = []
+        for a_start, a_end in blocks_a:
+            for b_start, b_end in blocks_b:
+                s, e = max(a_start, b_start), min(a_end, b_end)
+                if s < e:
+                    overlaps.append((s, e))
+        return overlaps
+
+    def union_noncontradictory(high_a, low_a, high_b, low_b):
+        """Return high blocks from either method while cutting out overlaps with any low blocks."""
+        combined_highs = sorted(high_a + high_b)
+        combined_lows = sorted(low_a + low_b)
+        cleaned = []
+        for hs, he in combined_highs:
+            segments = [(hs, he)]
+            for ls, le in combined_lows:
+                new_segments = []
+                for seg_s, seg_e in segments:
+                    if le <= seg_s or ls >= seg_e:
+                        new_segments.append((seg_s, seg_e))
+                    else:
+                        if seg_s < ls:
+                            new_segments.append((seg_s, ls))
+                        if le < seg_e:
+                            new_segments.append((le, seg_e))
+                segments = new_segments
+            cleaned.extend(segments)
+        return cleaned
+
+    # --- Choose comparison logic ---
+    if mode == "overlap":
+        comp_high_blocks = intersect_blocks(welch_high, mt_high)
+        comp_low_blocks  = intersect_blocks(welch_low, mt_low)
+        info_label = "Overlap (AND logic)"
+    elif mode == "noncontradictory":
+        comp_high_blocks = union_noncontradictory(welch_high, welch_low, mt_high, mt_low)
+        comp_low_blocks  = union_noncontradictory(welch_low, welch_high, mt_low, mt_high)
+        info_label = "Non-Contradictory (OR minus conflicts)"
+    else:
+        raise ValueError("mode must be 'overlap' or 'noncontradictory'")
+
+    return comp_high_blocks, comp_low_blocks, info_label
+
+
+
+def get_and_plot_method_comparison_blocks(
+    lfp_signal, fs,
+    welch_high, welch_low, mt_high, mt_low,
+    mode="overlap",
+    plot=True
+):
+    """
+    Wrapper to compute and optionally plot gamma blocks from Welch vs Multitaper comparison.
+
+    Returns
+    -------
+    comp_high_blocks, comp_low_blocks
+    """
+    comp_high, comp_low, info = compute_method_comparison_blocks(
+        welch_high, welch_low, mt_high, mt_low, mode=mode
+    )
+
+    if plot:
+        plot_gamma_blocks_generic(lfp_signal, fs, comp_high, comp_low, info)
+
+    return comp_high, comp_low
+
 
 
 # ------------------------------------------------------------------------------------------- #
