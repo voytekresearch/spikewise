@@ -21,99 +21,6 @@ from spe1_plotting import *
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ CODE FOR ALL LFP-PATCH METHODS ------------------------------
 # ------------------------------------------------------------------------------------------- #
-
-
-
-# ------------------------------------------------------------------------------------------- #
-# ------------------CODE FOR LARGE LFP WINDOW GAMMA CLASSIFICATION  ----------------------
-# ------------------------------------------------------------------------------------------- #
-
-# ------------------------------------------------------------------------------------------- #
-# -------------------------CODE GAMMA BURST CLASSIFICATION  ---------------------------------
-# ------------------------------------------------------------------------------------------- #
-
-# ------------------------------------------------------------------------------------------- #
-# ------------------CODE FOR TIME RESOLVED SPECPARAM CLASSIFICATION  ----------------------
-# ------------------------------------------------------------------------------------------- #
-
-
-
-
-
-# ------------------------------ Custom Exceptions ------------------------------
-
-class LFPSpikeWindowAnalysisError(Exception):
-    pass
-
-class SpectralComputationError(LFPSpikeWindowAnalysisError):
-    pass
-
-class FOOOFFitError(LFPSpikeWindowAnalysisError):
-    pass
-
-class MissingColumnError(LFPSpikeWindowAnalysisError):
-    pass
-
-
-# ------------------------------ Band Settings ------------------------------
-
-BANDS = {
-    "theta": (4, 8),
-    "alpha": (8, 12),
-    "beta": (15, 30),
-    "gamma": (30, 90),
-}
-
-
-
-def assign_peak_to_band(cf: float) -> str:
-    for band, (f_low, f_high) in BANDS.items():
-        if f_low <= cf <= f_high:
-            return band
-    return "other"
-
-
-
-
-def extract_peak_features(fm: SpectralModel, max_peaks: int) -> Dict:
-    feats = {}
-    band_features = {band: {"pw": [], "cf": [], "bw": []} for band in BANDS.keys()}
-
-    if fm.has_model and fm.peak_params_ is not None:
-        for i, (cf, pw, bw) in enumerate(fm.peak_params_[:max_peaks]):
-            feats[f"peak_cf_{i}"] = cf
-            feats[f"peak_pw_{i}"] = pw
-            feats[f"peak_bw_{i}"] = bw
-
-            band = assign_peak_to_band(cf)
-            if band in band_features:
-                band_features[band]["pw"].append(pw)
-                band_features[band]["cf"].append(cf)
-                band_features[band]["bw"].append(bw)
-
-        for i in range(len(fm.peak_params_), max_peaks):
-            feats[f"peak_cf_{i}"] = np.nan
-            feats[f"peak_pw_{i}"] = np.nan
-            feats[f"peak_bw_{i}"] = np.nan
-
-    else:
-        for i in range(max_peaks):
-            feats[f"peak_cf_{i}"] = np.nan
-            feats[f"peak_pw_{i}"] = np.nan
-            feats[f"peak_bw_{i}"] = np.nan
-
-    for band in BANDS.keys():
-        pws = band_features[band]["pw"]
-        cfs = band_features[band]["cf"]
-        bws = band_features[band]["bw"]
-        feats[f"{band}_peak_power"] = np.mean(pws) if pws else np.nan
-        feats[f"{band}_peak_cf"] = np.mean(cfs) if cfs else np.nan
-        feats[f"{band}_peak_bw"] = np.mean(bws) if bws else np.nan
-
-    return feats
-
-
-
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
@@ -192,45 +99,104 @@ def compute_lfp_windows(
 
     return model, freqs, window_times
 
-
-# ========================================
-#Classify windows by gamma pw
-# ========================================
-
-def classify_gamma_windows(
-    summary_df: pd.DataFrame,
-    window_times: List[Tuple[int, int]],
-    gamma_band_name: str = "gamma",
-    high_percentile: float = 75,
-    low_percentile: float = 25,
-) -> Tuple[List[int], List[int]]:
+def compare_spike_params_groups(spike_df, group_col, groups, params):
     """
-    Classify LFP windows as high or low gamma based on percentile thresholds.
+    Compare spike parameters between two groups using t-tests and violin plots.
 
     Args:
-        summary_df : DataFrame from SpectralTimeModel.to_df()
-        window_times : List of (start, end) sample indices per window
-        gamma_band_name : The base name used for gamma power column (e.g., "gamma" → "gamma_pw")
-        high_percentile : Percentile cutoff for high gamma windows
-        low_percentile : Percentile cutoff for low gamma windows
+        spike_df : pd.DataFrame
+            DataFrame with spike parameters and a group label column.
+        group_col : str
+            Column name that contains the group labels.
+        groups : tuple of str
+            (group1, group2) where group2 can be 'rest' to include all spikes not in group1.
+        params : list of str
+            Parameter columns to compare.
 
     Returns:
-        high_windows : List of window start times (in samples) classified as high gamma
-        low_windows : List of window start times (in samples) classified as low gamma
+        results : dict
+            Dictionary with parameter -> (t_stat, p_value).
     """
-    gamma_powers = summary_df[f"{gamma_band_name}_pw"].values
+    group1, group2 = groups
 
-    high_thresh = np.nanpercentile(gamma_powers, high_percentile)
-    low_thresh = np.nanpercentile(gamma_powers, low_percentile)
+    #  Handle "rest" logic
+    if group2 == "rest":
+        df1 = spike_df[spike_df[group_col] == group1]
+        df2 = spike_df[spike_df[group_col] != group1]
+    else:
+        df1 = spike_df[spike_df[group_col] == group1]
+        df2 = spike_df[spike_df[group_col] == group2]
 
-    high_windows = [
-        start for (start, _), pw in zip(window_times, gamma_powers) if pw >= high_thresh
-    ]
-    low_windows = [
-        start for (start, _), pw in zip(window_times, gamma_powers) if pw <= low_thresh
-    ]
+    results = {}
 
-    return high_windows, low_windows
+    for param in params:
+        vals1 = df1[param].dropna()
+        vals2 = df2[param].dropna()
+
+        if len(vals1) == 0 or len(vals2) == 0:
+            print(f"⚠️ Skipping {param} – one of the groups has no data.")
+            continue
+
+        # Welch's t-test
+        t_stat, p_val = ttest_ind(vals1, vals2, equal_var=False, nan_policy='omit')
+        results[param] = (t_stat, p_val)
+
+        # --- Violin Plot ---
+        plt.figure(figsize=(5, 4))
+        sns.violinplot(data=[vals1, vals2], cut=0)
+        plt.xticks([0, 1], [group1, group2])
+        plt.ylabel(param)
+        plt.title(f"{param}\n t={t_stat:.2f}, p={p_val:.4f}")  # formatted p-value
+        plt.tight_layout()
+        plt.show()
+
+    return results
+
+
+
+# -------------------------------------------------------------------
+# Average list-style LFP features into mean features
+# -------------------------------------------------------------------
+def compute_lfp_feature_means(
+    df: pd.DataFrame,
+    lfp_type: Literal["current", "previous"],
+    drop_irrelevant: bool = True,
+    drop_original: bool = True
+) -> pd.DataFrame:
+    df_out = df.copy()
+
+    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
+    band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma']
+                  for kind in ['peak_power', 'peak_cf', 'peak_bw']]
+    feats = base_feats + band_feats
+
+    for feat in feats:
+        col = f"lfp_{lfp_type}_{feat}"
+        if col in df_out.columns:
+            df_out[f"{col}_mean"] = df_out[col].apply(
+                lambda x: np.nanmean([v for v in x if v is not None]) if isinstance(x, list) and x else None
+            )
+
+    # Only keep columns that actually exist
+    mean_cols = [f"lfp_{lfp_type}_{feat}_mean" for feat in feats]
+    existing_mean_cols = [col for col in mean_cols if col in df_out.columns]
+    df_out.dropna(subset=existing_mean_cols, how="all", inplace=True)
+
+    if drop_original:
+        df_out.drop(columns=[f"lfp_{lfp_type}_{feat}" for feat in feats], inplace=True, errors="ignore")
+
+    if drop_irrelevant:
+        other = "previous" if lfp_type == "current" else "current"
+        to_drop = [col for col in df_out.columns if f"lfp_{other}_" in col]
+        df_out.drop(columns=to_drop, inplace=True, errors="ignore")
+
+    return df_out
+
+
+
+# ------------------------------------------------------------------------------------------- #
+# ------------------CODE CLASSIFICIATION BLOCKING METHODS 1) AND 2)   ----------------------
+# ------------------------------------------------------------------------------------------- #
 
 
 # ============================================
@@ -539,274 +505,58 @@ def label_spikes_method_comparison(
     spikes['method_block_label'] = labels
     return spikes
 
-def compare_spike_params_groups(spike_df, group_col, groups, params):
+# ------------------------------------------------------------------------------------------- #
+# ------------------1) CODE FOR LARGE LFP WINDOW GAMMA CLASSIFICATION  ----------------------
+# ------------------------------------------------------------------------------------------- #
+
+
+# ========================================
+#Classify windows by gamma pw from specparam
+# ========================================
+
+def classify_gamma_windows(
+    summary_df: pd.DataFrame,
+    window_times: List[Tuple[int, int]],
+    gamma_band_name: str = "gamma",
+    high_percentile: float = 75,
+    low_percentile: float = 25,
+) -> Tuple[List[int], List[int]]:
     """
-    Compare spike parameters between two groups using t-tests and violin plots.
+    Classify LFP windows as high or low gamma based on percentile thresholds.
 
     Args:
-        spike_df : pd.DataFrame
-            DataFrame with spike parameters and a group label column.
-        group_col : str
-            Column name that contains the group labels.
-        groups : tuple of str
-            (group1, group2) where group2 can be 'rest' to include all spikes not in group1.
-        params : list of str
-            Parameter columns to compare.
+        summary_df : DataFrame from SpectralTimeModel.to_df()
+        window_times : List of (start, end) sample indices per window
+        gamma_band_name : The base name used for gamma power column (e.g., "gamma" → "gamma_pw")
+        high_percentile : Percentile cutoff for high gamma windows
+        low_percentile : Percentile cutoff for low gamma windows
 
     Returns:
-        results : dict
-            Dictionary with parameter -> (t_stat, p_value).
+        high_windows : List of window start times (in samples) classified as high gamma
+        low_windows : List of window start times (in samples) classified as low gamma
     """
-    group1, group2 = groups
+    gamma_powers = summary_df[f"{gamma_band_name}_pw"].values
 
-    #  Handle "rest" logic
-    if group2 == "rest":
-        df1 = spike_df[spike_df[group_col] == group1]
-        df2 = spike_df[spike_df[group_col] != group1]
-    else:
-        df1 = spike_df[spike_df[group_col] == group1]
-        df2 = spike_df[spike_df[group_col] == group2]
+    high_thresh = np.nanpercentile(gamma_powers, high_percentile)
+    low_thresh = np.nanpercentile(gamma_powers, low_percentile)
 
-    results = {}
-
-    for param in params:
-        vals1 = df1[param].dropna()
-        vals2 = df2[param].dropna()
-
-        if len(vals1) == 0 or len(vals2) == 0:
-            print(f"⚠️ Skipping {param} – one of the groups has no data.")
-            continue
-
-        # Welch's t-test
-        t_stat, p_val = ttest_ind(vals1, vals2, equal_var=False, nan_policy='omit')
-        results[param] = (t_stat, p_val)
-
-        # --- Violin Plot ---
-        plt.figure(figsize=(5, 4))
-        sns.violinplot(data=[vals1, vals2], cut=0)
-        plt.xticks([0, 1], [group1, group2])
-        plt.ylabel(param)
-        plt.title(f"{param}\n t={t_stat:.2f}, p={p_val:.4f}")  # formatted p-value
-        plt.tight_layout()
-        plt.show()
-
-    return results
-
-
-# -------------------------------------------------------------------
-# Spike-LFP Mapping
-# -------------------------------------------------------------------
-def map_spikes_to_windows(
-    spk_times_ms: List[float],
-    spk_ids: List[int],
-    window_times: List[Tuple[int, int]],
-    df_spike_ids: Union[pd.Series, List[int]],
-    fs: float
-) -> Dict[int, List[int]]:
-    window_times_ms = [(start / fs * 1000, end / fs * 1000) for (start, end) in window_times]
-    return _map_spikes_to_window_helper(spk_times_ms, spk_ids, window_times_ms, df_spike_ids)
-
-def _map_spikes_to_window_helper(
-    spk_times_ms: List[float],
-    spk_ids: List[int],
-    window_times_ms: List[Tuple[float, float]],
-    df_spike_ids: Union[pd.Series, List[int]]
-) -> Dict[int, List[int]]:
-    if len(spk_times_ms) != len(spk_ids):
-        raise ValueError("spk_times_ms and spk_ids must match in length")
-    valid_spike_ids = set(df_spike_ids)
-    spike_to_window_map = {}
-    for spk_id, spike_ms in zip(spk_ids, spk_times_ms):
-        if spk_id not in valid_spike_ids:
-            continue
-        spike_to_window_map[spk_id] = []
-        for window_idx, (start, end) in enumerate(window_times_ms):
-            if start <= spike_ms < end or (spike_ms == end and window_idx < len(window_times_ms) - 1):
-                spike_to_window_map[spk_id].append(window_idx)
-    return spike_to_window_map
-
-# -------------------------------------------------------------------
-# Combine spike features with LFP window features
-# -------------------------------------------------------------------
-def combine_spike_lfp_features(
-    spike_data: pd.DataFrame,
-    summary_df: pd.DataFrame,
-    spike_to_window_map: Dict[int, List[int]],
-    lfp_prefix: str = "lfp_"
-) -> pd.DataFrame:
-    df = spike_data.copy()
-    if 'spk_id' not in df.columns:
-        raise ValueError("spk_id column missing from spike_data")
-
-    # List of all band-based features
-    bands = ['delta', 'theta', 'alpha', 'beta', 'gamma']
-    band_feats = [f"{band}_{kind}" for band in bands for kind in ['peak_power', 'peak_cf', 'peak_bw']]
-    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
-    all_feats = base_feats + band_feats
-
-    # Initialize list-style columns
-    for t in ["current", "previous"]:
-        for f in all_feats:
-            df[f"{lfp_prefix}{t}_{f}"] = [[] for _ in range(len(df))]
-
-    for spk_id, window_idxs in spike_to_window_map.items():
-        row_idx = df.index[df["spk_id"] == spk_id]
-        if row_idx.empty:
-            continue
-        row_idx = row_idx[0]
-
-        for win_idx in sorted(window_idxs):
-            if win_idx < len(summary_df):
-                current_row = summary_df.iloc[win_idx]
-                _append_summary_features(df, row_idx, current_row, f"{lfp_prefix}current")
-
-                if win_idx > 0:
-                    prev_row = summary_df.iloc[win_idx - 1]
-                    _append_summary_features(df, row_idx, prev_row, f"{lfp_prefix}previous")
-                else:
-                    _append_null_features(df, row_idx, f"{lfp_prefix}previous")
-            else:
-                _append_null_features(df, row_idx, f"{lfp_prefix}current")
-
-    #Remove original generic peak features (cf/pw/bw if still there)
-    peak_cols = [col for col in df.columns if any(x in col for x in ['peak_cf_', 'peak_pw_', 'peak_bw_'])]
-    df.drop(columns=peak_cols, inplace=True, errors="ignore")
-
-    #Drop band features where all values are None
-    for col in df.columns:
-        if isinstance(df[col].iloc[0], list) and all(
-            (v is None or (isinstance(v, list) and all(x is None for x in v)))
-            for v in df[col]
-        ):
-            df.drop(columns=col, inplace=True)
-
-    return df
-
-def _append_summary_features(df: pd.DataFrame, row_idx: int, row: pd.Series, prefix: str) -> None:
-    base_feat_map = {
-        'offset': 'aperiodic_offset',
-        'exponent': 'aperiodic_exponent',
-        'r_squared': 'r_squared',
-        'error': 'error',
-        'n_peaks': 'n_peaks',
-    }
-
-    bands = ['delta', 'theta', 'alpha', 'beta', 'gamma']
-    band_feats = [f"{band}_{kind}" for band in bands for kind in ['peak_power', 'peak_cf', 'peak_bw']]
-    all_feats = list(base_feat_map.keys()) + band_feats
-
-    for feat in all_feats:
-        col = f"{prefix}_{feat}"
-        if feat in base_feat_map:
-            val = row.get(base_feat_map[feat], None)
-        else:
-            val = row.get(feat, None)
-        df.at[row_idx, col].append(val)
-
-
-def _append_features(df: pd.DataFrame, row_idx: int, fm: SpectralModel, prefix: str) -> None:
-    try:
-        df.at[row_idx, f"{prefix}_offset"].append(fm.aperiodic_params_[0])
-        df.at[row_idx, f"{prefix}_exponent"].append(fm.aperiodic_params_[-1])
-        df.at[row_idx, f"{prefix}_r_squared"].append(fm.r_squared_)
-        df.at[row_idx, f"{prefix}_error"].append(fm.error_)
-        df.at[row_idx, f"{prefix}_n_peaks"].append(len(fm.peak_params_))
-
-        for band, frange in FREQ_BANDS.items():
-            peak = get_band_peak_manual(fm, frange)
-            if peak is not None:
-                cf, pw, bw = peak
-            else:
-                cf, pw, bw = None, None, None
-            df.at[row_idx, f"{prefix}_{band}_peak_power"].append(pw)
-            df.at[row_idx, f"{prefix}_{band}_peak_cf"].append(cf)
-            df.at[row_idx, f"{prefix}_{band}_peak_bw"].append(bw)
-
-    except Exception:
-        _append_null_features(df, row_idx, prefix)
-
-def get_band_peak_manual(fm: SpectralModel, band: Tuple[float, float]):
-    """Manually extract the peak with highest power within a given band."""
-    peaks = fm.peak_params_
-    band_peaks = [peak for peak in peaks if band[0] <= peak[0] <= band[1]]
-    if band_peaks:
-        return max(band_peaks, key=lambda x: x[1])
-    return None
-
-
-
-def _append_null_features(df: pd.DataFrame, row_idx: int, prefix: str) -> None:
-    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
-    band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma'] for kind in ['peak_power', 'peak_cf', 'peak_bw']]
-    for f in base_feats + band_feats:
-        df.at[row_idx, f"{prefix}_{f}"].append(None)
-
-# -------------------------------------------------------------------
-# Average list-style LFP features into mean features
-# -------------------------------------------------------------------
-def compute_lfp_feature_means(
-    df: pd.DataFrame,
-    lfp_type: Literal["current", "previous"],
-    drop_irrelevant: bool = True,
-    drop_original: bool = True
-) -> pd.DataFrame:
-    df_out = df.copy()
-
-    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
-    band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma']
-                  for kind in ['peak_power', 'peak_cf', 'peak_bw']]
-    feats = base_feats + band_feats
-
-    for feat in feats:
-        col = f"lfp_{lfp_type}_{feat}"
-        if col in df_out.columns:
-            df_out[f"{col}_mean"] = df_out[col].apply(
-                lambda x: np.nanmean([v for v in x if v is not None]) if isinstance(x, list) and x else None
-            )
-
-    # Only keep columns that actually exist
-    mean_cols = [f"lfp_{lfp_type}_{feat}_mean" for feat in feats]
-    existing_mean_cols = [col for col in mean_cols if col in df_out.columns]
-    df_out.dropna(subset=existing_mean_cols, how="all", inplace=True)
-
-    if drop_original:
-        df_out.drop(columns=[f"lfp_{lfp_type}_{feat}" for feat in feats], inplace=True, errors="ignore")
-
-    if drop_irrelevant:
-        other = "previous" if lfp_type == "current" else "current"
-        to_drop = [col for col in df_out.columns if f"lfp_{other}_" in col]
-        df_out.drop(columns=to_drop, inplace=True, errors="ignore")
-
-    return df_out
-
-
-
-# ==========================
-# Sensitivity Analysis Code 
-# ==========================
-
-
-def make_fooof_param_grid(
-    max_n_peaks_list: List[int],
-    peak_threshold_list: List[float],
-    aperiodic_modes: List[str]
-) -> List[Dict]:
-    return [
-        {
-            "max_n_peaks": n,
-            "peak_threshold": t,
-            "aperiodic_mode": mode
-        }
-        for n, t, mode in product(max_n_peaks_list, peak_threshold_list, aperiodic_modes)
+    high_windows = [
+        start for (start, _), pw in zip(window_times, gamma_powers) if pw >= high_thresh
+    ]
+    low_windows = [
+        start for (start, _), pw in zip(window_times, gamma_powers) if pw <= low_thresh
     ]
 
+    return high_windows, low_windows
 
 
-def make_config_id(config: dict) -> str:
-    """Generate a short hash for a config dictionary."""
-    config_str = str(sorted(config.items()))
-    return hashlib.md5(config_str.encode()).hexdigest()[:8]
+# ------------------------------------------------------------------------------------------- #
+# -------------------------2) CODE GAMMA BURST CLASSIFICATION  ---------------------------------
+# ------------------------------------------------------------------------------------------- #
 
+# ------------------------------------------------------------------------------------------- #
+# ------------------3) CODE FOR TIME RESOLVED SPECPARAM   ----------------------
+# ------------------------------------------------------------------------------------------- #
 
 def sensitivity_analysis(
     lfp_signal: np.ndarray,
@@ -887,5 +637,76 @@ def sensitivity_analysis(
         return pd.concat(all_results, ignore_index=True), foof_by_config
     else:
         return pd.DataFrame(), {}
+
+
+# -------------------------------------------------------------------
+# Combine spike features with LFP window features
+# -------------------------------------------------------------------
+def combine_spike_lfp_features(
+    spike_data: pd.DataFrame,
+    summary_df: pd.DataFrame,
+    spike_to_window_map: Dict[int, List[int]],
+    lfp_prefix: str = "lfp_"
+) -> pd.DataFrame:
+    df = spike_data.copy()
+    if 'spk_id' not in df.columns:
+        raise ValueError("spk_id column missing from spike_data")
+
+    # List of all band-based features
+    bands = ['delta', 'theta', 'alpha', 'beta', 'gamma']
+    band_feats = [f"{band}_{kind}" for band in bands for kind in ['peak_power', 'peak_cf', 'peak_bw']]
+    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
+    all_feats = base_feats + band_feats
+
+    # Initialize list-style columns
+    for t in ["current", "previous"]:
+        for f in all_feats:
+            df[f"{lfp_prefix}{t}_{f}"] = [[] for _ in range(len(df))]
+
+    for spk_id, window_idxs in spike_to_window_map.items():
+        row_idx = df.index[df["spk_id"] == spk_id]
+        if row_idx.empty:
+            continue
+        row_idx = row_idx[0]
+
+        for win_idx in sorted(window_idxs):
+            if win_idx < len(summary_df):
+                current_row = summary_df.iloc[win_idx]
+                _append_summary_features(df, row_idx, current_row, f"{lfp_prefix}current")
+
+                if win_idx > 0:
+                    prev_row = summary_df.iloc[win_idx - 1]
+                    _append_summary_features(df, row_idx, prev_row, f"{lfp_prefix}previous")
+                else:
+                    _append_null_features(df, row_idx, f"{lfp_prefix}previous")
+            else:
+                _append_null_features(df, row_idx, f"{lfp_prefix}current")
+
+    #Remove original generic peak features (cf/pw/bw if still there)
+    peak_cols = [col for col in df.columns if any(x in col for x in ['peak_cf_', 'peak_pw_', 'peak_bw_'])]
+    df.drop(columns=peak_cols, inplace=True, errors="ignore")
+
+    #Drop band features where all values are None
+    for col in df.columns:
+        if isinstance(df[col].iloc[0], list) and all(
+            (v is None or (isinstance(v, list) and all(x is None for x in v)))
+            for v in df[col]
+        ):
+            df.drop(columns=col, inplace=True)
+
+    return df
+
+
+# ------------------------------------------------------------------------------------------- #
+
+
+
+
+
+
+
+
+
+
 
 
