@@ -538,6 +538,66 @@ def get_and_plot_method_comparison_blocks(
 # -------------------------2) CODE GAMMA BURST CLASSIFICATION  ---------------------------------
 # ------------------------------------------------------------------------------------------- #
 
+def detect_gamma_bursts(
+    gamma_amp: np.ndarray,
+    lfp_times: np.ndarray,
+    high_thresh_percentile: float = 80,
+    low_thresh_percentile: float = 20,
+    min_duration_ms: int = 50
+) -> dict:
+    """
+    Detect high and low gamma bursts based on analytic amplitude thresholds.
+
+    Returns:
+        Dictionary with:
+        - 'high_bursts': list of (start_ms, end_ms)
+        - 'low_bursts': list of (start_ms, end_ms)
+        - 'rest': list of (start_ms, end_ms)
+        - 'high_mask': boolean mask over lfp_times
+        - 'low_mask': boolean mask over lfp_times
+    """
+    amp = gamma_amp
+    times = lfp_times
+
+    high_thresh = np.nanpercentile(amp, high_thresh_percentile)
+    low_thresh = np.nanpercentile(amp, low_thresh_percentile)
+
+    def get_mask(thresh_type):
+        if thresh_type == 'high':
+            return amp >= high_thresh
+        elif thresh_type == 'low':
+            return amp <= low_thresh
+        else:
+            return np.logical_and(amp < high_thresh, amp > low_thresh)
+
+    def extract_bursts(mask, min_len):
+        bursts = []
+        in_burst = False
+        start = None
+        for i, val in enumerate(mask):
+            if val and not in_burst:
+                start = times[i]
+                in_burst = True
+            elif not val and in_burst:
+                end = times[i]
+                if (end - start) >= min_len:
+                    bursts.append((start, end))
+                in_burst = False
+        if in_burst and (times[-1] - start) >= min_len:
+            bursts.append((start, times[-1]))
+        return bursts
+
+    high_mask = get_mask('high')
+    low_mask = get_mask('low')
+    rest_mask = get_mask('rest')
+
+    return {
+        'high_bursts': extract_bursts(high_mask, min_duration_ms),
+        'low_bursts': extract_bursts(low_mask, min_duration_ms),
+        'rest_bursts': extract_bursts(rest_mask, min_duration_ms),
+        'high_mask': high_mask,
+        'low_mask': low_mask
+    }
 # ------------------------------------------------------------------------------------------- #
 # ------------------3) CODE FOR TIME RESOLVED SPECPARAM   ----------------------
 # ------------------------------------------------------------------------------------------- #

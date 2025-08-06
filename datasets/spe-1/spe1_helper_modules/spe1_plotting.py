@@ -129,7 +129,8 @@ def plot_gamma_blocks_generic(
     color_high: str = "red",
     color_low: str = "blue",
     hatch_high: Optional[str] = None,
-    hatch_low: Optional[str] = None
+    hatch_low: Optional[str] = None,
+    time_range: Optional[Tuple[float, float]] = None,  # 
 ):
     """
     General-purpose plotting for gamma blocks (works for both single-method and method-comparison).
@@ -141,24 +142,31 @@ def plot_gamma_blocks_generic(
     fs : float
         Sampling frequency (Hz).
     high_blocks, low_blocks : list of (start, end) in seconds.
-    title : str
-        Plot title.
-    info_label : str, optional
-        Extra label to show (e.g., 'Overlap (AND logic)').
-    color_high, color_low : str
-        Colors for high and low gamma blocks.
-    hatch_high, hatch_low : str or None
-        Hatch patterns (e.g. '//' or '\\\\') for high/low blocks. None means solid fill.
+    time_range : tuple (start_sec, end_sec), optional
+        If provided, zooms into this time window.
     """
+    import matplotlib.patches as mpatches
 
-    # --- Compute block stats ---
-    n_high = len(high_blocks)
-    n_low = len(low_blocks)
-    dur_high = sum(e - s for s, e in high_blocks)
-    dur_low = sum(e - s for s, e in low_blocks)
+    # --- Setup full time array ---
+    time = np.arange(len(lfp_signal)) / fs
+
+    # --- If time_range is given, zoom into that section ---
+    if time_range is not None:
+        t_start, t_end = time_range
+        idx_start = int(t_start * fs)
+        idx_end = int(t_end * fs)
+
+        time = time[idx_start:idx_end]
+        lfp_signal = lfp_signal[idx_start:idx_end]
+
+        # Crop block lists to time_range
+        def crop_blocks(blocks):
+            return [(max(s, t_start), min(e, t_end)) for s, e in blocks if e > t_start and s < t_end]
+
+        high_blocks = crop_blocks(high_blocks)
+        low_blocks = crop_blocks(low_blocks)
 
     # --- Plot ---
-    time = np.arange(len(lfp_signal)) / fs
     plt.figure(figsize=(16, 5))
     plt.plot(time, lfp_signal, color="black", linewidth=0.8, label="LFP Signal")
 
@@ -188,8 +196,9 @@ def plot_gamma_blocks_generic(
 
     # --- Stats ---
     print(f"{info_label if info_label else '[Blocks]'}")
-    print(f"High Gamma: {n_high} blocks | Total duration: {dur_high:.2f} s")
-    print(f"Low Gamma:  {n_low} blocks | Total duration: {dur_low:.2f} s")
+    print(f"High Gamma: {len(high_blocks)} blocks | Total duration: {sum(e - s for s, e in high_blocks):.2f} s")
+    print(f"Low Gamma:  {len(low_blocks)} blocks | Total duration: {sum(e - s for s, e in low_blocks):.2f} s")
+
 
 
 
