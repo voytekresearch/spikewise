@@ -153,10 +153,6 @@ def compare_spike_params_groups(spike_df, group_col, groups, params):
     return results
 
 
-
-# -------------------------------------------------------------------
-# Average list-style LFP features into mean features
-# -------------------------------------------------------------------
 def compute_lfp_feature_means(
     df: pd.DataFrame,
     lfp_type: Literal["current", "previous"],
@@ -164,6 +160,8 @@ def compute_lfp_feature_means(
     drop_original: bool = True
 ) -> pd.DataFrame:
     df_out = df.copy()
+
+    """ # Average list-style LFP features into mean features"""
 
     base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
     band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma']
@@ -199,9 +197,6 @@ def compute_lfp_feature_means(
 # ------------------------------------------------------------------------------------------- #
 
 
-# ============================================
-#  Convert window inds into blocks
-# ============================================
 def merge_windows_into_blocks_flexible(
     window_starts: List[int],
     window_len_sec: float,
@@ -253,9 +248,7 @@ def merge_windows_into_blocks_flexible(
 
     return blocks
 
-# ============================================
-## Wrapper function for blocking analysis 
-# ============================================
+
 
 def segment_gamma_epochs(
     summary_df: pd.DataFrame,
@@ -271,7 +264,7 @@ def segment_gamma_epochs(
     visualize: bool = True,
 ) -> Tuple[List[int], List[int], List[Tuple[int, int]], List[Tuple[int, int]]]:
     """
-    Classify gamma windows and merge them into contiguous high/low gamma blocks.
+    Wrapper function for blocking analysis 
 
     Returns:
         high_windows : List of window start sample indices classified as high gamma
@@ -313,15 +306,12 @@ def segment_gamma_epochs(
     return high_windows, low_windows, high_blocks, low_blocks
 
 
-# ===========================================================
-# Compute blocks from method comparison (overlap / non-contradictory)
-# ===========================================================
 def compute_method_comparison_blocks(
     welch_high, welch_low, mt_high, mt_low,
     mode="overlap"
 ):
     """
-    Compute high/low gamma blocks based on Welch vs Multitaper comparison.
+     Compute blocks from method comparison (overlap / non-contradictory)
 
     Parameters
     ----------
@@ -387,8 +377,6 @@ def compute_method_comparison_blocks(
 
 
 
-# Wrapper that does both method comparison blocking and plotting 
-
 def get_and_plot_method_comparison_blocks(
     lfp_signal, fs,
     welch_high, welch_low, mt_high, mt_low,
@@ -396,7 +384,7 @@ def get_and_plot_method_comparison_blocks(
     plot=True
 ):
     """
-    Compute and optionally plot gamma blocks from Welch vs Multitaper comparison.
+    Wrapper to compute and optionally plot gamma blocks from Welch vs Multitaper comparison.
 
     Returns
     -------
@@ -410,7 +398,7 @@ def get_and_plot_method_comparison_blocks(
         plot_gamma_blocks_generic(lfp_signal, fs, comp_high, comp_low, info)
 
     return comp_high, comp_low
-# ===========================================================
+
 
 def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir):
     """
@@ -444,9 +432,7 @@ def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir
 
     print(f"Saved {len(overlap_high)} high gamma blocks and {len(overlap_low)} low gamma blocks in:\n{output_dir}")
 
-# =====================================
-# Spike-LFP BLOCKING Mapping
-# -------------------------------------------------------------------
+
 def label_spikes_method_comparison(
     spike_df: pd.DataFrame,
     high_blocks: List[Tuple[float, float]],
@@ -510,9 +496,6 @@ def label_spikes_method_comparison(
 # ------------------------------------------------------------------------------------------- #
 
 
-# ========================================
-#Classify windows by gamma pw from specparam
-# ========================================
 
 def classify_gamma_windows(
     summary_df: pd.DataFrame,
@@ -639,9 +622,7 @@ def sensitivity_analysis(
         return pd.DataFrame(), {}
 
 
-# -------------------------------------------------------------------
-# Combine spike features with LFP window features
-# -------------------------------------------------------------------
+
 def combine_spike_lfp_features(
     spike_data: pd.DataFrame,
     summary_df: pd.DataFrame,
