@@ -5,13 +5,13 @@ lfp_spike_window_analysis.py - Comprehensive module for LFP-spike analysis integ
 import numpy as np
 import pandas as pd
 import warnings
+import mne
+import os 
 from typing import List, Tuple, Dict, Union, Literal
 from neurodsp import spectral
 from specparam import SpectralTimeModel
 from specparam import SpectralModel
 import matplotlib.pyplot as plt
-import mne
-import os 
 from tqdm.notebook import tqdm
 import hashlib
 from itertools import product
@@ -495,8 +495,6 @@ def label_spikes_method_comparison(
 # ------------------1) CODE FOR LARGE LFP WINDOW GAMMA CLASSIFICATION  ----------------------
 # ------------------------------------------------------------------------------------------- #
 
-
-
 def classify_gamma_windows(
     summary_df: pd.DataFrame,
     window_times: List[Tuple[int, int]],
@@ -540,7 +538,7 @@ def classify_gamma_windows(
 # ------------------------------------------------------------------------------------------- #
 # ------------------3) CODE FOR TIME RESOLVED SPECPARAM   ----------------------
 # ------------------------------------------------------------------------------------------- #
-
+### CLEAN SOON ###
 def sensitivity_analysis(
     lfp_signal: np.ndarray,
     fs: float,
@@ -677,7 +675,8 @@ def combine_spike_lfp_features(
 
     return df
 
-
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
 
 
