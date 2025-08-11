@@ -251,10 +251,10 @@ def merge_windows_into_blocks_flexible(
 
 
 def segment_gamma_epochs(
-    summary_df: Optional[pd.DataFrame] = None,
-    window_times: Optional[List[Tuple[int, int]]] = None,
-    lfp_signal: Optional[np.ndarray] = None,
-    fs: Optional[float] = None,
+    summary_df: pd.DataFrame,
+    window_times: List[Tuple[int, int]],
+    lfp_signal: np.ndarray,
+    fs: float,
     window_len_sec: float = 2,
     gamma_band_name: str = "gamma",
     high_percentile: float = 80,
@@ -262,15 +262,9 @@ def segment_gamma_epochs(
     max_gap_sec: float = 1.0,
     min_block_len_sec: float = 5.0,
     visualize: bool = True,
-    high_windows: Optional[List[int]] = None,
-    low_windows: Optional[List[int]] = None
 ) -> Tuple[List[int], List[int], List[Tuple[int, int]], List[Tuple[int, int]]]:
     """
-    Wrapper for blocking analysis.
-
-    Modes:
-    - Default: Provide `summary_df` and `window_times` → classify gamma windows.
-    - External: Provide `high_windows` and `low_windows` directly.
+    Wrapper function for blocking analysis 
 
     Returns:
         high_windows : List of window start sample indices classified as high gamma
@@ -278,19 +272,16 @@ def segment_gamma_epochs(
         high_blocks : List of (start_sample, end_sample) tuples for high gamma blocks
         low_blocks : List of (start_sample, end_sample) tuples for low gamma blocks
     """
-    # --- Mode 1: classify from summary_df ---
-    if high_windows is None or low_windows is None:
-        if summary_df is None or window_times is None:
-            raise ValueError("Need summary_df & window_times if high/low windows not provided.")
-        high_windows, low_windows = classify_gamma_windows(
-            summary_df,
-            window_times,
-            gamma_band_name=gamma_band_name,
-            high_percentile=high_percentile,
-            low_percentile=low_percentile,
-        )
+    # 1. Classify windows
+    high_windows, low_windows = classify_gamma_windows(
+        summary_df,
+        window_times,
+        gamma_band_name=gamma_band_name,
+        high_percentile=high_percentile,
+        low_percentile=low_percentile,
+    )
 
-    # --- Merge into blocks ---
+    # 2. Merge windows into blocks
     high_blocks = merge_windows_into_blocks_flexible(
         high_windows, window_len_sec, fs,
         max_gap_sec=max_gap_sec,
@@ -302,8 +293,8 @@ def segment_gamma_epochs(
         min_block_len_sec=min_block_len_sec
     )
 
-    # --- Optional visualization ---
-    if visualize and lfp_signal is not None and fs is not None:
+    # 3. Optional visualization
+    if visualize:
         plot_gamma_blocks_generic(
             lfp_signal=lfp_signal,
             fs=fs,
@@ -446,7 +437,7 @@ def classify_gamma_windows(
 
     return high_windows, low_windows
 
-#Functions to compare windowing specparam result via Welch vs multitaper
+#Functions to compare windowing specparam result via 
 
 def compute_method_comparison_blocks(
     welch_high, welch_low, mt_high, mt_low,
@@ -547,66 +538,6 @@ def get_and_plot_method_comparison_blocks(
 # -------------------------2) CODE GAMMA BURST CLASSIFICATION  ---------------------------------
 # ------------------------------------------------------------------------------------------- #
 
-def detect_gamma_bursts(
-    gamma_amp: np.ndarray,
-    lfp_times: np.ndarray,
-    high_thresh_percentile: float = 80,
-    low_thresh_percentile: float = 20,
-    min_duration_ms: int = 50
-) -> dict:
-    """
-    Detect high and low gamma bursts based on analytic amplitude thresholds.
-
-    Returns:
-        Dictionary with:
-        - 'high_bursts': list of (start_ms, end_ms)
-        - 'low_bursts': list of (start_ms, end_ms)
-        - 'rest': list of (start_ms, end_ms)
-        - 'high_mask': boolean mask over lfp_times
-        - 'low_mask': boolean mask over lfp_times
-    """
-    amp = gamma_amp
-    times = lfp_times
-
-    high_thresh = np.nanpercentile(amp, high_thresh_percentile)
-    low_thresh = np.nanpercentile(amp, low_thresh_percentile)
-
-    def get_mask(thresh_type):
-        if thresh_type == 'high':
-            return amp >= high_thresh
-        elif thresh_type == 'low':
-            return amp <= low_thresh
-        else:
-            return np.logical_and(amp < high_thresh, amp > low_thresh)
-
-    def extract_bursts(mask, min_len):
-        bursts = []
-        in_burst = False
-        start = None
-        for i, val in enumerate(mask):
-            if val and not in_burst:
-                start = times[i]
-                in_burst = True
-            elif not val and in_burst:
-                end = times[i]
-                if (end - start) >= min_len:
-                    bursts.append((start, end))
-                in_burst = False
-        if in_burst and (times[-1] - start) >= min_len:
-            bursts.append((start, times[-1]))
-        return bursts
-
-    high_mask = get_mask('high')
-    low_mask = get_mask('low')
-    rest_mask = get_mask('rest')
-
-    return {
-        'high_bursts': extract_bursts(high_mask, min_duration_ms),
-        'low_bursts': extract_bursts(low_mask, min_duration_ms),
-        'rest_bursts': extract_bursts(rest_mask, min_duration_ms),
-        'high_mask': high_mask,
-        'low_mask': low_mask
-    }
 # ------------------------------------------------------------------------------------------- #
 # ------------------3) CODE FOR TIME RESOLVED SPECPARAM   ----------------------
 # ------------------------------------------------------------------------------------------- #
