@@ -251,10 +251,10 @@ def merge_windows_into_blocks_flexible(
 
 
 def segment_gamma_epochs(
-    summary_df: pd.DataFrame,
-    window_times: List[Tuple[int, int]],
-    lfp_signal: np.ndarray,
-    fs: float,
+    summary_df: Optional[pd.DataFrame] = None,
+    window_times: Optional[List[Tuple[int, int]]] = None,
+    lfp_signal: Optional[np.ndarray] = None,
+    fs: Optional[float] = None,
     window_len_sec: float = 2,
     gamma_band_name: str = "gamma",
     high_percentile: float = 80,
@@ -262,9 +262,15 @@ def segment_gamma_epochs(
     max_gap_sec: float = 1.0,
     min_block_len_sec: float = 5.0,
     visualize: bool = True,
+    high_windows: Optional[List[int]] = None,
+    low_windows: Optional[List[int]] = None
 ) -> Tuple[List[int], List[int], List[Tuple[int, int]], List[Tuple[int, int]]]:
     """
-    Wrapper function for blocking analysis 
+    Wrapper for blocking analysis.
+
+    Modes:
+    - Default: Provide `summary_df` and `window_times` → classify gamma windows.
+    - External: Provide `high_windows` and `low_windows` directly.
 
     Returns:
         high_windows : List of window start sample indices classified as high gamma
@@ -272,16 +278,19 @@ def segment_gamma_epochs(
         high_blocks : List of (start_sample, end_sample) tuples for high gamma blocks
         low_blocks : List of (start_sample, end_sample) tuples for low gamma blocks
     """
-    # 1. Classify windows
-    high_windows, low_windows = classify_gamma_windows(
-        summary_df,
-        window_times,
-        gamma_band_name=gamma_band_name,
-        high_percentile=high_percentile,
-        low_percentile=low_percentile,
-    )
+    # --- Mode 1: classify from summary_df ---
+    if high_windows is None or low_windows is None:
+        if summary_df is None or window_times is None:
+            raise ValueError("Need summary_df & window_times if high/low windows not provided.")
+        high_windows, low_windows = classify_gamma_windows(
+            summary_df,
+            window_times,
+            gamma_band_name=gamma_band_name,
+            high_percentile=high_percentile,
+            low_percentile=low_percentile,
+        )
 
-    # 2. Merge windows into blocks
+    # --- Merge into blocks ---
     high_blocks = merge_windows_into_blocks_flexible(
         high_windows, window_len_sec, fs,
         max_gap_sec=max_gap_sec,
@@ -293,8 +302,8 @@ def segment_gamma_epochs(
         min_block_len_sec=min_block_len_sec
     )
 
-    # 3. Optional visualization
-    if visualize:
+    # --- Optional visualization ---
+    if visualize and lfp_signal is not None and fs is not None:
         plot_gamma_blocks_generic(
             lfp_signal=lfp_signal,
             fs=fs,
