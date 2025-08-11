@@ -250,60 +250,6 @@ def merge_windows_into_blocks_flexible(
 
 
 
-def segment_gamma_epochs(
-    summary_df: pd.DataFrame,
-    window_times: List[Tuple[int, int]],
-    lfp_signal: np.ndarray,
-    fs: float,
-    window_len_sec: float = 2,
-    gamma_band_name: str = "gamma",
-    high_percentile: float = 80,
-    low_percentile: float = 10,
-    max_gap_sec: float = 1.0,
-    min_block_len_sec: float = 5.0,
-    visualize: bool = True,
-) -> Tuple[List[int], List[int], List[Tuple[int, int]], List[Tuple[int, int]]]:
-    """
-    Wrapper function for blocking analysis 
-
-    Returns:
-        high_windows : List of window start sample indices classified as high gamma
-        low_windows : List of window start sample indices classified as low gamma
-        high_blocks : List of (start_sample, end_sample) tuples for high gamma blocks
-        low_blocks : List of (start_sample, end_sample) tuples for low gamma blocks
-    """
-    # 1. Classify windows
-    high_windows, low_windows = classify_gamma_windows(
-        summary_df,
-        window_times,
-        gamma_band_name=gamma_band_name,
-        high_percentile=high_percentile,
-        low_percentile=low_percentile,
-    )
-
-    # 2. Merge windows into blocks
-    high_blocks = merge_windows_into_blocks_flexible(
-        high_windows, window_len_sec, fs,
-        max_gap_sec=max_gap_sec,
-        min_block_len_sec=min_block_len_sec
-    )
-    low_blocks = merge_windows_into_blocks_flexible(
-        low_windows, window_len_sec, fs,
-        max_gap_sec=max_gap_sec,
-        min_block_len_sec=min_block_len_sec
-    )
-
-    # 3. Optional visualization
-    if visualize:
-        plot_gamma_blocks_generic(
-            lfp_signal=lfp_signal,
-            fs=fs,
-            high_blocks=high_blocks,
-            low_blocks=low_blocks,
-            title="Gamma Block Segmentation"
-        )
-
-    return high_windows, low_windows, high_blocks, low_blocks
 
 
 
@@ -533,10 +479,115 @@ def get_and_plot_method_comparison_blocks(
     return comp_high, comp_low
 
 
+def segment_gamma_epochs(
+    summary_df: pd.DataFrame,
+    window_times: List[Tuple[int, int]],
+    lfp_signal: np.ndarray,
+    fs: float,
+    window_len_sec: float = 2,
+    gamma_band_name: str = "gamma",
+    high_percentile: float = 80,
+    low_percentile: float = 10,
+    max_gap_sec: float = 1.0,
+    min_block_len_sec: float = 5.0,
+    visualize: bool = True,
+) -> Tuple[List[int], List[int], List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """
+    Wrapper function for blocking analysis 
+
+    Returns:
+        high_windows : List of window start sample indices classified as high gamma
+        low_windows : List of window start sample indices classified as low gamma
+        high_blocks : List of (start_sample, end_sample) tuples for high gamma blocks
+        low_blocks : List of (start_sample, end_sample) tuples for low gamma blocks
+    """
+    # 1. Classify windows
+    high_windows, low_windows = classify_gamma_windows(
+        summary_df,
+        window_times,
+        gamma_band_name=gamma_band_name,
+        high_percentile=high_percentile,
+        low_percentile=low_percentile,
+    )
+
+    # 2. Merge windows into blocks
+    high_blocks = merge_windows_into_blocks_flexible(
+        high_windows, window_len_sec, fs,
+        max_gap_sec=max_gap_sec,
+        min_block_len_sec=min_block_len_sec
+    )
+    low_blocks = merge_windows_into_blocks_flexible(
+        low_windows, window_len_sec, fs,
+        max_gap_sec=max_gap_sec,
+        min_block_len_sec=min_block_len_sec
+    )
+
+    # 3. Optional visualization
+    if visualize:
+        plot_gamma_blocks_generic(
+            lfp_signal=lfp_signal,
+            fs=fs,
+            high_blocks=high_blocks,
+            low_blocks=low_blocks,
+            title="Gamma Block Segmentation"
+        )
+
+    return high_windows, low_windows, high_blocks, low_blocks
+
+
+
 
 # ------------------------------------------------------------------------------------------- #
 # -------------------------2) CODE GAMMA BURST CLASSIFICATION  ---------------------------------
 # ------------------------------------------------------------------------------------------- #
+
+def merge_bursts_into_blocks(
+    burst_blocks_sec,
+    max_gap_sec=0.1,
+    min_block_len_sec=0.05
+):
+    """
+    Merge gamma bursts (in seconds) into larger contiguous blocks.
+
+    Parameters
+    ----------
+    burst_blocks_sec : list of (start_sec, end_sec)
+        List of gamma bursts in seconds.
+    max_gap_sec : float
+        Maximum allowed gap between bursts to merge into the same block.
+    min_block_len_sec : float
+        Minimum total block length (in seconds) to keep.
+
+    Returns
+    -------
+    merged_blocks : list of (start_sec, end_sec)
+        Merged gamma burst blocks in seconds.
+    """
+    if not burst_blocks_sec:
+        return []
+
+    # Sort by start time
+    bursts_sorted = sorted(burst_blocks_sec, key=lambda x: x[0])
+
+    merged_blocks = []
+    current_start, current_end = bursts_sorted[0]
+
+    for start, end in bursts_sorted[1:]:
+        if start - current_end <= max_gap_sec:
+            # Extend current block
+            current_end = max(current_end, end)
+        else:
+            # Save and start new block
+            if current_end - current_start >= min_block_len_sec:
+                merged_blocks.append((current_start, current_end))
+            current_start, current_end = start, end
+
+    # Append the final block
+    if current_end - current_start >= min_block_len_sec:
+        merged_blocks.append((current_start, current_end))
+
+    return merged_blocks
+
 
 # ------------------------------------------------------------------------------------------- #
 # ------------------3) CODE FOR TIME RESOLVED SPECPARAM   ----------------------
