@@ -541,6 +541,85 @@ def segment_gamma_epochs(
 # -------------------------2) CODE GAMMA BURST CLASSIFICATION  ---------------------------------
 # ------------------------------------------------------------------------------------------- #
 
+def detect_gamma_bursts(
+    gamma_amp: np.ndarray,
+    lfp_times: np.ndarray,
+    high_thresh_percentile: float = 80,
+    low_thresh_percentile: float = 20,
+    min_duration_ms: int = 50
+) -> dict:
+    """
+    Detect high and low gamma bursts based on analytic amplitude thresholds.
+
+    Parameters
+    ----------
+    gamma_amp : np.ndarray
+        Amplitude of gamma-filtered LFP (same length as lfp_times).
+    lfp_times : np.ndarray
+        Time vector for the LFP in milliseconds.
+    high_thresh_percentile : float
+        Percentile threshold for defining high gamma bursts.
+    low_thresh_percentile : float
+        Percentile threshold for defining low gamma bursts.
+    min_duration_ms : int
+        Minimum burst duration to include (milliseconds).
+
+    Returns
+    -------
+    dict
+        {
+            'high_bursts': list of (start_ms, end_ms),
+            'low_bursts': list of (start_ms, end_ms),
+            'rest_bursts': list of (start_ms, end_ms),
+            'high_mask': boolean array,
+            'low_mask': boolean array
+        }
+    """
+    amp = gamma_amp
+    times = lfp_times
+
+    # Thresholds
+    high_thresh = np.nanpercentile(amp, high_thresh_percentile)
+    low_thresh = np.nanpercentile(amp, low_thresh_percentile)
+
+    def get_mask(thresh_type):
+        if thresh_type == 'high':
+            return amp >= high_thresh
+        elif thresh_type == 'low':
+            return amp <= low_thresh
+        else:
+            return np.logical_and(amp < high_thresh, amp > low_thresh)
+
+    def extract_bursts(mask, min_len):
+        bursts = []
+        in_burst = False
+        start = None
+        for i, val in enumerate(mask):
+            if val and not in_burst:
+                start = times[i]
+                in_burst = True
+            elif not val and in_burst:
+                end = times[i]
+                if (end - start) >= min_len:
+                    bursts.append((start, end))
+                in_burst = False
+        if in_burst and (times[-1] - start) >= min_len:
+            bursts.append((start, times[-1]))
+        return bursts
+
+    high_mask = get_mask('high')
+    low_mask = get_mask('low')
+    rest_mask = get_mask('rest')
+
+    return {
+        'high_bursts': extract_bursts(high_mask, min_duration_ms),
+        'low_bursts': extract_bursts(low_mask, min_duration_ms),
+        'rest_bursts': extract_bursts(rest_mask, min_duration_ms),
+        'high_mask': high_mask,
+        'low_mask': low_mask
+    }
+
+
 def merge_bursts_into_blocks(
     burst_blocks_sec,
     max_gap_sec=0.1,
