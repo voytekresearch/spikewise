@@ -197,60 +197,6 @@ def compute_lfp_feature_means(
 # ------------------------------------------------------------------------------------------- #
 
 
-def merge_windows_into_blocks_flexible(
-    window_starts: List[int],
-    window_len_sec: float,
-    fs: float,
-    max_gap_sec: float = 1.0,
-    min_block_len_sec: float = 4.0,
-) -> List[Tuple[float, float]]:
-    """
-    Merge nearby windows into longer blocks, allowing for small gaps between them.
-
-    Args:
-        window_starts: List of window start times (in samples).
-        window_len_sec: Length of each window in seconds.
-        fs: Sampling frequency.
-        max_gap_sec: Maximum gap (in seconds) allowed between adjacent windows to still be merged.
-        min_block_len_sec: Minimum block duration to keep (in seconds).
-
-    Returns:
-        blocks: List of (start_time_sec, end_time_sec) tuples.
-    """
-    if not window_starts:
-        return []
-
-    window_starts = sorted(window_starts)
-    max_gap_samples = int(max_gap_sec * fs)
-    window_len_samples = int(window_len_sec * fs)
-
-    blocks = []
-    block_start = window_starts[0]
-    block_end = block_start + window_len_samples
-
-    for start in window_starts[1:]:
-        if start - block_end <= max_gap_samples:
-            # Extend the current block
-            block_end = start + window_len_samples
-        else:
-            # Finalize current block
-            duration = (block_end - block_start) / fs
-            if duration >= min_block_len_sec:
-                blocks.append((block_start / fs, block_end / fs))
-            # Start new block
-            block_start = start
-            block_end = start + window_len_samples
-
-    # Final block
-    duration = (block_end - block_start) / fs
-    if duration >= min_block_len_sec:
-        blocks.append((block_start / fs, block_end / fs))
-
-    return blocks
-
-
-
-
 
 
 def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir):
@@ -383,7 +329,58 @@ def classify_gamma_windows(
 
     return high_windows, low_windows
 
-#Functions to compare windowing specparam result via 
+def merge_windows_into_blocks_flexible(
+    window_starts: List[int],
+    window_len_sec: float,
+    fs: float,
+    max_gap_sec: float = 1.0,
+    min_block_len_sec: float = 4.0,
+) -> List[Tuple[float, float]]:
+    """
+    Merge nearby windows into longer blocks, allowing for small gaps between them.
+
+    Args:
+        window_starts: List of window start times (in samples).
+        window_len_sec: Length of each window in seconds.
+        fs: Sampling frequency.
+        max_gap_sec: Maximum gap (in seconds) allowed between adjacent windows to still be merged.
+        min_block_len_sec: Minimum block duration to keep (in seconds).
+
+    Returns:
+        blocks: List of (start_time_sec, end_time_sec) tuples.
+    """
+    if not window_starts:
+        return []
+
+    window_starts = sorted(window_starts)
+    max_gap_samples = int(max_gap_sec * fs)
+    window_len_samples = int(window_len_sec * fs)
+
+    blocks = []
+    block_start = window_starts[0]
+    block_end = block_start + window_len_samples
+
+    for start in window_starts[1:]:
+        if start - block_end <= max_gap_samples:
+            # Extend the current block
+            block_end = start + window_len_samples
+        else:
+            # Finalize current block
+            duration = (block_end - block_start) / fs
+            if duration >= min_block_len_sec:
+                blocks.append((block_start / fs, block_end / fs))
+            # Start new block
+            block_start = start
+            block_end = start + window_len_samples
+
+    # Final block
+    duration = (block_end - block_start) / fs
+    if duration >= min_block_len_sec:
+        blocks.append((block_start / fs, block_end / fs))
+
+    return blocks
+
+#Functions to compare windowing specparam results
 
 def compute_method_comparison_blocks(
     welch_high, welch_low, mt_high, mt_low,
@@ -620,52 +617,78 @@ def detect_gamma_bursts(
     }
 
 
-def merge_bursts_into_blocks(
-    burst_blocks_sec,
-    max_gap_sec=0.1,
-    min_block_len_sec=0.05
+def merge_burst_intervals_into_blocks(
+    burst_intervals,
+    fs: float,
+    max_gap_sec: float = 1.0,
+    min_block_len_sec: float = 4.0,
+    units: str = "auto",  # "auto", "seconds", "samples"
 ):
     """
-    Merge gamma bursts (in seconds) into larger contiguous blocks.
+    Merge gamma burst intervals into longer blocks, allowing small gaps.
 
     Parameters
     ----------
-    burst_blocks_sec : list of (start_sec, end_sec)
-        List of gamma bursts in seconds.
+    burst_intervals : list[tuple]
+        List of (start, end) for bursts. Can be in seconds or samples.
+    fs : float
+        Sampling rate (Hz).
     max_gap_sec : float
-        Maximum allowed gap between bursts to merge into the same block.
+        Max gap between adjacent bursts (in seconds) to still be merged.
     min_block_len_sec : float
-        Minimum total block length (in seconds) to keep.
+        Minimum duration (in seconds) to keep a merged block.
+    units : {"auto","seconds","samples"}
+        - "seconds": treat burst_intervals as seconds.
+        - "samples": treat burst_intervals as samples and convert to seconds.
+        - "auto": detect based on magnitude/type.
 
     Returns
     -------
-    merged_blocks : list of (start_sec, end_sec)
-        Merged gamma burst blocks in seconds.
+    list[tuple[float,float]]
+        Merged (start_sec, end_sec) blocks in seconds.
     """
-    if not burst_blocks_sec:
+    if not burst_intervals:
         return []
 
-    # Sort by start time
-    bursts_sorted = sorted(burst_blocks_sec, key=lambda x: x[0])
+    # --- Normalize to seconds ---
+    norm = []
+    for s, e in burst_intervals:
+        if e < s:
+            s, e = e, s
 
-    merged_blocks = []
-    current_start, current_end = bursts_sorted[0]
+        if units == "seconds":
+            s_sec, e_sec = float(s), float(e)
+        elif units == "samples":
+            s_sec, e_sec = float(s) / fs, float(e) / fs
+        else:  # auto
+            is_samples = (
+                isinstance(s, (int, np.integer)) and isinstance(e, (int, np.integer))
+            ) or (s > 1e5 or e > 1e5)
+            if is_samples:
+                s_sec, e_sec = float(s) / fs, float(e) / fs
+            else:
+                s_sec, e_sec = float(s), float(e)
 
-    for start, end in bursts_sorted[1:]:
-        if start - current_end <= max_gap_sec:
-            # Extend current block
-            current_end = max(current_end, end)
+        norm.append((s_sec, e_sec))
+
+    # --- Sort & merge with gap rule ---
+    norm.sort(key=lambda x: x[0])
+
+    merged = []
+    cur_s, cur_e = norm[0]
+    for s, e in norm[1:]:
+        if s <= cur_e + max_gap_sec:  # merge if within allowed gap
+            cur_e = max(cur_e, e)
         else:
-            # Save and start new block
-            if current_end - current_start >= min_block_len_sec:
-                merged_blocks.append((current_start, current_end))
-            current_start, current_end = start, end
+            if (cur_e - cur_s) >= min_block_len_sec:
+                merged.append((cur_s, cur_e))
+            cur_s, cur_e = s, e
 
-    # Append the final block
-    if current_end - current_start >= min_block_len_sec:
-        merged_blocks.append((current_start, current_end))
+    if (cur_e - cur_s) >= min_block_len_sec:
+        merged.append((cur_s, cur_e))
 
-    return merged_blocks
+    return merged
+
 
 
 # ------------------------------------------------------------------------------------------- #
