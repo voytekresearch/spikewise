@@ -233,56 +233,85 @@ def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir
 
 
 
-def label_spikes_two_labels(
+
+def label_spikes(
     spike_df: pd.DataFrame,
     blocks_a: List[Tuple[float, float]],
     label_a: str,
-    blocks_b: List[Tuple[float, float]],
-    label_b: str,
+    blocks_b: Optional[List[Tuple[float, float]]] = None,
+    label_b: Optional[str] = None,
     default_label: str = "none",
-    time_col: str = "spk_times_ms"
+    time_col: str = "spk_times_ms",
+    priority: str = "a"  # {"a","b","first"} — which label wins if a spike is in both
 ) -> pd.DataFrame:
     """
-    Label spikes based on two sets of blocks.
+    Label spikes based on time blocks.
+
+    Modes
+    -----
+    1) Two-label mode:
+       - Provide blocks_a + label_a AND blocks_b + label_b.
+       - Spikes in A -> label_a; in B -> label_b; in neither -> default_label.
+       - If a spike falls in BOTH, use `priority`.
+
+    2) Label-vs-rest/none mode:
+       - Provide only blocks_a + label_a (leave blocks_b=None / label_b=None).
+       - Spikes in A -> label_a; everything else -> default_label (e.g., "rest").
 
     Parameters
     ----------
-    spike_df : pd.DataFrame
-        DataFrame containing spike times in `time_col` (ms).
-    blocks_a : list of (start_sec, end_sec)
-        First set of blocks in seconds.
-    label_a : str
-        Label to assign for spikes in `blocks_a`.
-    blocks_b : list of (start_sec, end_sec)
-        Second set of blocks in seconds.
-    label_b : str
-        Label to assign for spikes in `blocks_b`.
-    default_label : str
-        Label to assign if spike is in neither block list.
-    time_col : str
-        Column name containing spike times in ms.
+    spike_df : DataFrame with spike times column in ms.
+    blocks_a, blocks_b : lists of (start_sec, end_sec).
+    label_a, label_b : labels to assign.
+    default_label : label for spikes in neither (or the 'rest' label for mode 2).
+    time_col : name of spike time column in ms.
+    priority : "a", "b", or "first":
+        - "a": A wins if spike in both A and B
+        - "b": B wins if spike in both
+        - "first": whichever block list hits first in the check order (A then B)
 
     Returns
     -------
-    pd.DataFrame
-        Copy of `spike_df` with new column `method_block_label`.
+    DataFrame with new column 'method_block_label'.
     """
 
+    def in_block(t: float, blocks: List[Tuple[float, float]]) -> bool:
+        # blocks are in SECONDS; t is in SECONDS
+        return any(s <= t < e for s, e in blocks)
+
     spikes = spike_df.copy()
-    spike_times_sec = spikes[time_col].values / 1000.0
-    labels = np.array([default_label] * len(spikes), dtype=object)
+    spike_times_sec = spikes[time_col].to_numpy(dtype=float) / 1000.0
+    labels = np.full(len(spikes), default_label, dtype=object)
 
-    def in_block(t, blocks):
-        return any(start <= t < end for start, end in blocks)
+    two_label_mode = blocks_b is not None and label_b is not None
 
-    for i, t in enumerate(spike_times_sec):
-        if in_block(t, blocks_a):
-            labels[i] = label_a
-        elif in_block(t, blocks_b):
-            labels[i] = label_b
+    if not two_label_mode:
+        # ----- Label-vs-rest -----
+        for i, t in enumerate(spike_times_sec):
+            if in_block(t, blocks_a):
+                labels[i] = label_a
+    else:
+        # ----- Two-label mode -----
+        for i, t in enumerate(spike_times_sec):
+            in_a = in_block(t, blocks_a)
+            in_b = in_block(t, blocks_b)
+
+            if in_a and in_b:
+                if priority == "a":
+                    labels[i] = label_a
+                elif priority == "b":
+                    labels[i] = label_b
+                else:  # "first" => A checked first, so label_a if in_a else label_b
+                    labels[i] = label_a
+            elif in_a:
+                labels[i] = label_a
+            elif in_b:
+                labels[i] = label_b
+            # else: keep default_label
 
     spikes["method_block_label"] = labels
     return spikes
+
 
 
 # ------------------------------------------------------------------------------------------- #
