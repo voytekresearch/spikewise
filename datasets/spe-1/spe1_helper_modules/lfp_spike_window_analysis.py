@@ -232,63 +232,58 @@ def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir
     print(f"Saved {len(overlap_high)} high gamma blocks and {len(overlap_low)} low gamma blocks in:\n{output_dir}")
 
 
-def label_spikes_method_comparison(
+
+def label_spikes_two_labels(
     spike_df: pd.DataFrame,
-    high_blocks: List[Tuple[float, float]],
-    low_blocks: Optional[List[Tuple[float, float]]] = None,
-    mode: str = "overlap"
-):
+    blocks_a: List[Tuple[float, float]],
+    label_a: str,
+    blocks_b: List[Tuple[float, float]],
+    label_b: str,
+    default_label: str = "none",
+    time_col: str = "spk_times_ms"
+) -> pd.DataFrame:
     """
-    Label spikes based on different block classification modes.
+    Label spikes based on two sets of blocks.
 
     Parameters
     ----------
     spike_df : pd.DataFrame
-        Must have 'spk_times_ms' column.
-    high_blocks : list of (start, end)
-        High gamma blocks in seconds (from the selected logic).
-    low_blocks : list of (start, end), optional
-        Low gamma blocks in seconds. Required for modes other than 'high_vs_rest'.
-    mode : str
-        One of:
-            - "overlap" → Label as 'high_overlap', 'low_overlap', or 'none'
-            - "noncontradictory" → Label as 'high_noncontradictory', 'low_noncontradictory', or 'none'
-            - "high_vs_rest" → Label only as 'high' or 'rest'
+        DataFrame containing spike times in `time_col` (ms).
+    blocks_a : list of (start_sec, end_sec)
+        First set of blocks in seconds.
+    label_a : str
+        Label to assign for spikes in `blocks_a`.
+    blocks_b : list of (start_sec, end_sec)
+        Second set of blocks in seconds.
+    label_b : str
+        Label to assign for spikes in `blocks_b`.
+    default_label : str
+        Label to assign if spike is in neither block list.
+    time_col : str
+        Column name containing spike times in ms.
 
     Returns
     -------
     pd.DataFrame
-        Copy of input with a new column `method_block_label`.
+        Copy of `spike_df` with new column `method_block_label`.
     """
+
     spikes = spike_df.copy()
-    spike_times_sec = spikes['spk_times_ms'].values / 1000.0
-    labels = np.array(['rest'] * len(spikes), dtype=object) if mode == "high_vs_rest" else np.array(['none'] * len(spikes), dtype=object)
+    spike_times_sec = spikes[time_col].values / 1000.0
+    labels = np.array([default_label] * len(spikes), dtype=object)
 
     def in_block(t, blocks):
         return any(start <= t < end for start, end in blocks)
 
     for i, t in enumerate(spike_times_sec):
-        if mode == "high_vs_rest":
-            if in_block(t, high_blocks):
-                labels[i] = 'high'
+        if in_block(t, blocks_a):
+            labels[i] = label_a
+        elif in_block(t, blocks_b):
+            labels[i] = label_b
 
-        elif mode == "overlap":
-            if in_block(t, high_blocks):
-                labels[i] = 'high_overlap'
-            elif low_blocks is not None and in_block(t, low_blocks):
-                labels[i] = 'low_overlap'
-
-        elif mode == "noncontradictory":
-            if in_block(t, high_blocks):
-                labels[i] = 'high_noncontradictory'
-            elif low_blocks is not None and in_block(t, low_blocks):
-                labels[i] = 'low_noncontradictory'
-
-        else:
-            raise ValueError("mode must be one of: 'overlap', 'noncontradictory', 'high_vs_rest'")
-
-    spikes['method_block_label'] = labels
+    spikes["method_block_label"] = labels
     return spikes
+
 
 # ------------------------------------------------------------------------------------------- #
 # ------------------1) CODE FOR LARGE LFP WINDOW GAMMA CLASSIFICATION  ----------------------
