@@ -21,6 +21,31 @@ from spe1_plotting import *
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ CODE FOR ALL LFP-PATCH METHODS ------------------------------
 # ------------------------------------------------------------------------------------------- #
+
+def windows_to_tuples(
+    window_starts: list[int],
+    window_len_sec: float,
+    fs: float
+) -> list[tuple[float, float]]:
+    """
+    Convert a list of window start sample indices to (start_sec, end_sec) tuples.
+
+    Args:
+        window_starts : list of window start times in samples
+        window_len_sec : length of each window in seconds
+        fs : sampling frequency
+
+    Returns:
+        List of (start_sec, end_sec) tuples
+    """
+    window_tuples = []
+    for start in sorted(window_starts):
+        start_sec = start / fs
+        end_sec = start_sec + window_len_sec
+        window_tuples.append((start_sec, end_sec))
+    return window_tuples
+
+
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
