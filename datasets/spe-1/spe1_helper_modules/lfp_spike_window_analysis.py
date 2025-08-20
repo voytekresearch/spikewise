@@ -743,7 +743,39 @@ def merge_burst_intervals_into_blocks(
 # ------------------------------------------------------------------------------------------- #
 # ------------------3) CODE FOR TIME RESOLVED SPECPARAM   ----------------------
 # ------------------------------------------------------------------------------------------- #
-### CLEAN SOON ###
+# -------------------------------------------------------------------
+# Spike-LFP Mapping
+# -------------------------------------------------------------------
+def map_spikes_to_windows(
+    spk_times_ms: List[float],
+    spk_ids: List[int],
+    window_times: List[Tuple[int, int]],
+    df_spike_ids: Union[pd.Series, List[int]],
+    fs: float
+) -> Dict[int, List[int]]:
+    window_times_ms = [(start / fs * 1000, end / fs * 1000) for (start, end) in window_times]
+    return _map_spikes_to_window_helper(spk_times_ms, spk_ids, window_times_ms, df_spike_ids)
+
+def _map_spikes_to_window_helper(
+    spk_times_ms: List[float],
+    spk_ids: List[int],
+    window_times_ms: List[Tuple[float, float]],
+    df_spike_ids: Union[pd.Series, List[int]]
+) -> Dict[int, List[int]]:
+    if len(spk_times_ms) != len(spk_ids):
+        raise ValueError("spk_times_ms and spk_ids must match in length")
+    valid_spike_ids = set(df_spike_ids)
+    spike_to_window_map = {}
+    for spk_id, spike_ms in zip(spk_ids, spk_times_ms):
+        if spk_id not in valid_spike_ids:
+            continue
+        spike_to_window_map[spk_id] = []
+        for window_idx, (start, end) in enumerate(window_times_ms):
+            if start <= spike_ms < end or (spike_ms == end and window_idx < len(window_times_ms) - 1):
+                spike_to_window_map[spk_id].append(window_idx)
+    return spike_to_window_map
+# -------------------------------------------------------------------
+
 def sensitivity_analysis(
     lfp_signal: np.ndarray,
     fs: float,
