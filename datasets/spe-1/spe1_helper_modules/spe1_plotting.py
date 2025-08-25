@@ -8,54 +8,90 @@ from specparam import SpectralTimeModel
 import matplotlib.patches as mpatches
 
 
-
-def plot_spike_time_histogram(
+def plot_spike_time_histogram_with_windows(
     spk_times_ms: np.ndarray,
-    window_times: List[Tuple[int, int]],  # List of (start_sample, end_sample) tuples
-    lfp_fs: float,  # LFP sampling rate (Hz)
+    window_times: List[Tuple[int, int]],   # (start_sample, end_sample)
+    lfp_fs: float,
     bins: int = 300,
+    mode: str = "lines",                   # "lines" | "rugs" | "bands"
+    stride: int = 20,                      # plot every Nth window
+    xlim_ms: Optional[Tuple[float, float]] = None,
     spike_color: str = "blue",
     window_color: str = "orange",
-    alpha: float = 0.7,
-    title: str = "Spike Time Distribution with LFP Windows",
+    alpha: float = 0.6,
+    title: str = "Spike Time Distribution with Sliding Windows",
     save_path: Optional[str] = None,
-) -> None:
+):
     """
-    Plot a histogram of spike times with overlaid LFP windows.
-    
-    Parameters:
-        spk_times_ms (np.ndarray): Array of spike times in milliseconds.
-        window_times (List[Tuple[int, int]]): List of (start, end) tuples for LFP windows (in samples).
-        lfp_fs (float): Sampling rate of the LFP signal (Hz).
-        bins (int): Number of bins for the histogram.
-        spike_color (str): Color for the spike time histogram.
-        window_color (str): Color for the LFP window overlays.
-        alpha (float): Transparency for the histogram and windows.
-        title (str): Title of the plot.
-        save_path (Optional[str]): Path to save the plot (e.g., "plot.png"). If None, plot is displayed.
-    """
-    plt.figure(figsize=(12, 6))
-    plt.hist(spk_times_ms, bins=bins, color=spike_color, alpha=alpha, edgecolor='black', label="Spike Times")
+    Plot spike-time histogram with overlaid sliding-window markers.
 
-    # Plot LFP windows
-    for idx, (start, end) in enumerate(window_times):
-        start_ms = start / lfp_fs * 1000  # Convert to milliseconds
-        end_ms = end / lfp_fs * 1000      # Convert to milliseconds
-        plt.axvspan(start_ms, end_ms, color=window_color, alpha=0.2, label='LFP Window' if idx == 0 else "")
-        
-        # Add vertical lines (optional)
-        plt.axvline(start_ms, color=window_color, linestyle='--', alpha=0.5)
-        plt.axvline(end_ms, color=window_color, linestyle='--', alpha=0.5)
+    mode:
+      - "lines": a thin vertical line at each window start (clean & fast)
+      - "rugs": short ticks at bottom of the axis at each window start
+      - "bands": translucent spans for [start, end] (can look like bars if many)
+    stride:
+      - draw every Nth window to avoid visual overload
+    xlim_ms:
+      - (start_ms, end_ms) to zoom in
+    """
+    # convert window sample indices -> ms
+    win_ms = np.array([(s / lfp_fs * 1000.0, e / lfp_fs * 1000.0) for s, e in window_times])
+
+    # optional zoom: also restrict spikes to the range we’ll show (helps speed)
+    if xlim_ms is not None:
+        x0, x1 = xlim_ms
+        sel = (win_ms[:, 1] >= x0) & (win_ms[:, 0] <= x1)
+        win_ms = win_ms[sel]
+        spk_sel = (spk_times_ms >= x0) & (spk_times_ms <= x1)
+        spk_plot = spk_times_ms[spk_sel]
+    else:
+        spk_plot = spk_times_ms
+
+    plt.figure(figsize=(12, 6))
+    n, edges, _ = plt.hist(
+        spk_plot, bins=bins, color=spike_color, alpha=0.7, edgecolor="black", label="Spike times"
+    )
+
+    # draw windows with stride
+    win_ms_strided = win_ms[::max(1, stride)]
+
+    if mode == "lines":
+        # thin line at each start
+        for i, (s_ms, e_ms) in enumerate(win_ms_strided):
+            plt.axvline(s_ms, color=window_color, linestyle='-', linewidth=0.6, alpha=alpha,
+                        label="LFP window start" if i == 0 else "")
+    elif mode == "rugs":
+        # short ticks at bottom
+        ymin, ymax = plt.ylim()
+        rug_y = ymin + 0.02 * (ymax - ymin)
+        for i, (s_ms, e_ms) in enumerate(win_ms_strided):
+            plt.plot([s_ms, s_ms], [ymin, rug_y], color=window_color, alpha=alpha, linewidth=0.8,
+                     label="LFP window start" if i == 0 else "")
+        plt.ylim(ymin, ymax)  # restore
+    elif mode == "bands":
+        # translucent spans for the full window (use small alpha; can look like bars)
+        for i, (s_ms, e_ms) in enumerate(win_ms_strided):
+            plt.axvspan(s_ms, e_ms, color=window_color, alpha=0.15,
+                        label="LFP window" if i == 0 else "")
+    else:
+        raise ValueError("mode must be one of: 'lines', 'rugs', 'bands'")
+
+    if xlim_ms is not None:
+        plt.xlim(*xlim_ms)
+
+    # de-duplicate legend labels
+    handles, labels = plt.gca().get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    plt.legend(by_label.values(), by_label.keys(), loc="upper right")
 
     plt.xlabel("Time (ms)")
-    plt.ylabel("Spike Count")
-    plt.title(title)
-    plt.legend(loc='upper right')
+    plt.ylabel("Spike count")
+    plt.title(title + f"  (windows shown: {len(win_ms_strided)}/{len(win_ms)})")
     plt.tight_layout()
-
     if save_path:
-        plt.savefig(save_path, bbox_inches="tight")
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.show()
+
 
 def plot_lfp_spk_correlation_heatmap(
     df: pd.DataFrame,
