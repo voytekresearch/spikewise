@@ -906,6 +906,7 @@ def combine_spike_lfp_features(
                 _append_null_features(df, row_idx, f"{lfp_prefix}current")
 
     #Remove original generic peak features (cf/pw/bw if still there)
+
     peak_cols = [col for col in df.columns if any(x in col for x in ['peak_cf_', 'peak_pw_', 'peak_bw_'])]
     df.drop(columns=peak_cols, inplace=True, errors="ignore")
 
@@ -922,8 +923,8 @@ def combine_spike_lfp_features(
 
 def _append_summary_features(df: pd.DataFrame, row_idx: int, row: pd.Series, prefix: str) -> None:
     base_feat_map = {
-        'offset': 'aperiodic_offset',
-        'exponent': 'aperiodic_exponent',
+        'offset': 'offset',
+        'exponent': 'exponent',
         'r_squared': 'r_squared',
         'error': 'error',
         'n_peaks': 'n_peaks',
