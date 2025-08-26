@@ -1038,7 +1038,7 @@ BANDS = {
     "theta": (4, 8),
     "alpha": (8, 12),
     "beta": (15, 30),
-    "gamma": (30, 90),
+    "gamma": (30, 55),
 }
 
 def assign_peak_to_band(cf: float) -> str:
