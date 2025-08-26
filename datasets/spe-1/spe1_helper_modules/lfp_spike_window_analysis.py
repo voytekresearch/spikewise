@@ -46,6 +46,7 @@ def windows_to_tuples(
     return window_tuples
 
 
+
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
@@ -946,6 +947,61 @@ def _append_null_features(df: pd.DataFrame, row_idx: int, prefix: str) -> None:
     band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma'] for kind in ['peak_power', 'peak_cf', 'peak_bw']]
     for f in base_feats + band_feats:
         df.at[row_idx, f"{prefix}_{f}"].append(None)
+
+
+
+
+BANDS = {
+    "theta": (4, 8),
+    "alpha": (8, 12),
+    "beta": (15, 30),
+    "gamma": (30, 90),
+}
+
+def assign_peak_to_band(cf: float) -> str:
+    for band, (f_low, f_high) in BANDS.items():
+        if f_low <= cf <= f_high:
+            return band
+    return "other"
+
+
+
+def extract_peak_features(fm: SpectralModel, max_peaks: int) -> Dict:
+    feats = {}
+    band_features = {band: {"pw": [], "cf": [], "bw": []} for band in BANDS.keys()}
+
+    if fm.has_model and fm.peak_params_ is not None:
+        for i, (cf, pw, bw) in enumerate(fm.peak_params_[:max_peaks]):
+            feats[f"peak_cf_{i}"] = cf
+            feats[f"peak_pw_{i}"] = pw
+            feats[f"peak_bw_{i}"] = bw
+
+            band = assign_peak_to_band(cf)
+            if band in band_features:
+                band_features[band]["pw"].append(pw)
+                band_features[band]["cf"].append(cf)
+                band_features[band]["bw"].append(bw)
+
+        for i in range(len(fm.peak_params_), max_peaks):
+            feats[f"peak_cf_{i}"] = np.nan
+            feats[f"peak_pw_{i}"] = np.nan
+            feats[f"peak_bw_{i}"] = np.nan
+
+    else:
+        for i in range(max_peaks):
+            feats[f"peak_cf_{i}"] = np.nan
+            feats[f"peak_pw_{i}"] = np.nan
+            feats[f"peak_bw_{i}"] = np.nan
+
+    for band in BANDS.keys():
+        pws = band_features[band]["pw"]
+        cfs = band_features[band]["cf"]
+        bws = band_features[band]["bw"]
+        feats[f"{band}_peak_power"] = np.mean(pws) if pws else np.nan
+        feats[f"{band}_peak_cf"] = np.mean(cfs) if cfs else np.nan
+        feats[f"{band}_peak_bw"] = np.mean(bws) if bws else np.nan
+
+    return feats
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
