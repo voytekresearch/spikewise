@@ -187,39 +187,41 @@ def compute_lfp_feature_means(
 ) -> pd.DataFrame:
     df_out = df.copy()
 
-    """ # Average list-style LFP features into mean features"""
-
     base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
-    band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma']
-                  for kind in ['peak_power', 'peak_cf', 'peak_bw']]
+    band_feats = [f"{band}_{kind}" for band in ['delta','theta','alpha','beta','gamma']
+                  for kind in ['peak_power','peak_cf','peak_bw']]
     feats = base_feats + band_feats
 
     for feat in feats:
         col = f"lfp_{lfp_type}_{feat}"
         if col in df_out.columns:
             df_out[f"{col}_mean"] = df_out[col].apply(
-                # minimal change: guard nanmean so we don't call it on an effectively empty list
+                # CHANGE #1: broader type check + empty-after-cleaning guard
                 lambda x: (
-                    np.nanmean([v for v in x if v is not None])
-                    if isinstance(x, list) and x and any(v is not None for v in x)
-                    else (np.nan if isinstance(x, list) else None)
+                    np.nanmean([v for v in x if v is not None and not pd.isna(v)])
+                    if isinstance(x, (list, tuple, np.ndarray, pd.Series))
+                       and any(v is not None and not pd.isna(v) for v in x)
+                    else (np.nan if isinstance(x, (list, tuple, np.ndarray, pd.Series)) else None)
                 )
             )
 
-    # Only keep columns that actually exist
     mean_cols = [f"lfp_{lfp_type}_{feat}_mean" for feat in feats]
-    existing_mean_cols = [col for col in mean_cols if col in df_out.columns]
-    df_out.dropna(subset=existing_mean_cols, how="all", inplace=True)
+    existing_mean_cols = [c for c in mean_cols if c in df_out.columns]
+
+    # CHANGE #2: only drop rows if we actually created at least one mean col
+    if existing_mean_cols:
+        df_out.dropna(subset=existing_mean_cols, how="all", inplace=True)
 
     if drop_original:
         df_out.drop(columns=[f"lfp_{lfp_type}_{feat}" for feat in feats], inplace=True, errors="ignore")
 
     if drop_irrelevant:
         other = "previous" if lfp_type == "current" else "current"
-        to_drop = [col for col in df_out.columns if f"lfp_{other}_" in col]
+        to_drop = [c for c in df_out.columns if f"lfp_{other}_" in c]
         df_out.drop(columns=to_drop, inplace=True, errors="ignore")
 
     return df_out
+
 
 
 
