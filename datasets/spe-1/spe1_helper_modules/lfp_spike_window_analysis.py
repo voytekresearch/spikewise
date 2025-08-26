@@ -53,7 +53,7 @@ def compute_lfp_windows(
     method: Literal["welch", "multitaper"] = "multitaper",
     # Paper-style defaults:
     window_length_sec: float = 0.5,             # 500 ms
-    freq_range: Tuple[float, float] = (0.25, 256.0),
+    freq_range: Tuple[float, float] = (5,90),
     n_freqs: int = 256,                         # linear freqs
     time_bandwidth: float = 2.0,                # ~4 Hz half-bandwidth @ 0.5 s (~3 tapers)
     decim_factor: int = 9,                      # step ≈ decim_factor/fs
