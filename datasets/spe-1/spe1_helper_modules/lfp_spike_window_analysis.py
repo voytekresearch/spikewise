@@ -1002,6 +1002,118 @@ def extract_peak_features(fm: SpectralModel, max_peaks: int) -> Dict:
         feats[f"{band}_peak_bw"] = np.mean(bws) if bws else np.nan
 
     return feats
+
+
+
+# ==========================
+# Sensitivity Analysis Code 
+# ==========================
+
+
+def make_fooof_param_grid(
+    max_n_peaks_list: List[int],
+    peak_threshold_list: List[float],
+    aperiodic_modes: List[str]
+) -> List[Dict]:
+    return [
+        {
+            "max_n_peaks": n,
+            "peak_threshold": t,
+            "aperiodic_mode": mode
+        }
+        for n, t, mode in product(max_n_peaks_list, peak_threshold_list, aperiodic_modes)
+    ]
+
+
+
+def make_config_id(config: dict) -> str:
+    """Generate a short hash for a config dictionary."""
+    config_str = str(sorted(config.items()))
+    return hashlib.md5(config_str.encode()).hexdigest()[:8]
+
+
+def sensitivity_analysis(
+    lfp_signal: np.ndarray,
+    fs: float,
+    freq_range: Tuple[float, float],
+    window_lengths: List[int],
+    methods: List[str],
+    time_bandwidths: List[float],
+    fooof_param_grid: List[Dict],
+    step_ratio: float = 0.5,
+    n_freqs: int = 50,
+    verbose: bool = True
+) -> Tuple[pd.DataFrame, Dict[str, List]]:
+    """
+    Perform sensitivity analysis over various parameter combinations.
+
+    Returns:
+    - A DataFrame containing the summary of FOOOF fits.
+    - A dictionary mapping config_id to the list of corresponding FOOOF model objects.
+    """
+    all_results = []
+    foof_by_config = {}
+
+    # Build full parameter grid
+    param_grid = []
+    for wl, method, tb, fooof_params in product(window_lengths, methods, time_bandwidths, fooof_param_grid):
+        config = {
+            "window_length_sec": wl,
+            "step_size_sec": wl * step_ratio,
+            "method": method,
+            "time_bandwidth": tb,
+            **fooof_params
+        }
+        config["config_id"] = make_config_id(config)
+        param_grid.append(config)
+
+    for config in tqdm(param_grid, desc="Param combos"):
+        try:
+            # Compute LFP windows and obtain FOOOF results
+            _, _, foof_results, summary_df = compute_lfp_windows(
+                lfp_signal=lfp_signal,
+                fs=fs,
+                method=config["method"],
+                window_length_sec=config["window_length_sec"],
+                step_size_sec=config["step_size_sec"],
+                freq_range=freq_range,
+                fooof_params={k: config[k] for k in fooof_param_grid[0].keys()},
+                plot=False,
+                n_freqs=n_freqs,
+                time_bandwidth=config["time_bandwidth"]
+            )
+
+            # Apply filtering
+            mask = summary_df["r_squared"] >= 0.8
+            if config["aperiodic_mode"] == "knee":
+                mask &= (
+                    (summary_df["aperiodic_offset"] >= freq_range[0]) &
+                    (summary_df["aperiodic_offset"] <= freq_range[1])
+                )
+
+            # Apply mask to summary_df and foof_results
+            summary_df = summary_df[mask].reset_index(drop=True)
+            foof_results = [f for f, keep in zip(foof_results, mask) if keep]
+
+            # Add config info to summary_df
+            summary_df["config_id"] = config["config_id"]
+            for key, val in config.items():
+                summary_df[key] = val
+
+            all_results.append(summary_df)
+            foof_by_config[config["config_id"]] = foof_results
+
+        except Exception as e:
+            if verbose:
+                print(f"[SKIPPED] {config['config_id']} due to: {e}")
+
+    if all_results:
+        return pd.concat(all_results, ignore_index=True), foof_by_config
+    else:
+        return pd.DataFrame(), {}
+
+
+
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
