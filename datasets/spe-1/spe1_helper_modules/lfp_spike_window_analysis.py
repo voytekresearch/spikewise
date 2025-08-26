@@ -197,7 +197,12 @@ def compute_lfp_feature_means(
         col = f"lfp_{lfp_type}_{feat}"
         if col in df_out.columns:
             df_out[f"{col}_mean"] = df_out[col].apply(
-                lambda x: np.nanmean([v for v in x if v is not None]) if isinstance(x, list) and x else None
+                # minimal change: guard nanmean so we don't call it on an effectively empty list
+                lambda x: (
+                    np.nanmean([v for v in x if v is not None])
+                    if isinstance(x, list) and x and any(v is not None for v in x)
+                    else (np.nan if isinstance(x, list) else None)
+                )
             )
 
     # Only keep columns that actually exist
@@ -214,6 +219,7 @@ def compute_lfp_feature_means(
         df_out.drop(columns=to_drop, inplace=True, errors="ignore")
 
     return df_out
+
 
 
 
@@ -912,6 +918,34 @@ def combine_spike_lfp_features(
 
     return df
 
+
+def _append_summary_features(df: pd.DataFrame, row_idx: int, row: pd.Series, prefix: str) -> None:
+    base_feat_map = {
+        'offset': 'aperiodic_offset',
+        'exponent': 'aperiodic_exponent',
+        'r_squared': 'r_squared',
+        'error': 'error',
+        'n_peaks': 'n_peaks',
+    }
+
+    bands = ['delta', 'theta', 'alpha', 'beta', 'gamma']
+    band_feats = [f"{band}_{kind}" for band in bands for kind in ['peak_power', 'peak_cf', 'peak_bw']]
+    all_feats = list(base_feat_map.keys()) + band_feats
+
+    for feat in all_feats:
+        col = f"{prefix}_{feat}"
+        if feat in base_feat_map:
+            val = row.get(base_feat_map[feat], None)
+        else:
+            val = row.get(feat, None)
+        df.at[row_idx, col].append(val)
+
+
+def _append_null_features(df: pd.DataFrame, row_idx: int, prefix: str) -> None:
+    base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
+    band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma'] for kind in ['peak_power', 'peak_cf', 'peak_bw']]
+    for f in base_feats + band_feats:
+        df.at[row_idx, f"{prefix}_{f}"].append(None)
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
