@@ -50,6 +50,88 @@ def windows_to_tuples(
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
+    method: Literal["welch", "multitaper"] = "multitaper",
+    # Paper-style defaults:
+    window_length_sec: float = 0.5,             # 500 ms
+    freq_range: Tuple[float, float] = (0.25, 256.0),
+    n_freqs: int = 256,                         # linear freqs
+    time_bandwidth: float = 2.0,                # ~4 Hz half-bandwidth @ 0.5 s (~3 tapers)
+    decim_factor: int = 9,                      # step ≈ decim_factor/fs
+    # Specparam fit controls:
+    progress: bool = True,                      # show Specparam progress bar via tqdm
+    n_jobs: int = 1,                            # parallelism for Specparam fit
+) -> Tuple[SpectralTimeModel, np.ndarray, List[Tuple[int, int]]]:
+    """
+    Build spectra across time using either:
+      - Welch: explicit sliding windows with nperseg=window_length_sec*fs and step=decim_factor samples
+      - Multitaper: tfr_array_multitaper with n_cycles=f*window_length_sec, then one spectrum per time bin
+
+    Returns:
+      model         : SpectralTimeModel fit across time bins
+      freqs         : frequency vector used
+      window_times  : list of (start, end) sample indices per time bin
+    """
+    win_samps  = int(round(window_length_sec * fs))
+    step_samps = max(int(decim_factor), 1)
+
+    if method == "welch":
+        # Sliding windows; step tied to decim_factor for parity with paper bins
+        window_times = [
+            (start, start + win_samps)
+            for start in range(0, max(len(lfp_signal) - win_samps + 1, 0), step_samps)
+        ]
+        psd_list = []
+        freqs = None
+        for (start, end) in window_times:
+            seg = lfp_signal[start:end]
+            fxx, pxx = spectral.compute_spectrum(
+                seg, fs, method="welch",
+                window="hann", nperseg=win_samps
+            )
+            psd_list.append(pxx)
+            if freqs is None:
+                freqs = fxx
+        powers = np.asarray(psd_list)  # (n_windows, n_freqs)
+
+    else:  # multitaper (paper-style TFR → one spectrum per time bin)
+        freqs = np.linspace(freq_range[0], freq_range[1], int(n_freqs))
+        n_cycles = freqs * float(window_length_sec)
+        tb = max(float(time_bandwidth), 2.0)  # ensure ≥ ~3 tapers
+
+        epochs = lfp_signal[np.newaxis, np.newaxis, :]  # (1, 1, n_times)
+        tfr = mne.time_frequency.tfr_array_multitaper(
+            epochs, sfreq=fs, freqs=freqs, n_cycles=n_cycles,
+            time_bandwidth=tb, output="power", decim=decim_factor, verbose=False
+        )                                              # (1, 1, n_freqs, n_bins)
+        spec = np.squeeze(tfr, axis=(0, 1))            # (n_freqs, n_bins)
+        powers = spec.T                                # (n_bins, n_freqs)
+
+        # Window times aligned to TFR bins (step = decim_factor samples)
+        n_bins = powers.shape[0]
+        window_times = [(i * step_samps, i * step_samps + win_samps) for i in range(n_bins)]
+
+    # ---- Specparam fit with built-in progress bar ----
+    powers_T = powers.T  # (n_freqs, n_windows)
+    model = SpectralTimeModel(peak_width_limits=(4, 8), max_n_peaks=4)
+
+    progress_arg = 'tqdm' if progress else None  # requires `tqdm` installed
+    model.fit(
+        freqs=freqs,
+        spectrogram=powers_T,
+        freq_range=freq_range,
+        n_jobs=n_jobs,
+        progress=progress_arg,
+    )
+
+    return model, freqs, window_times
+
+
+
+
+
+def compute_lfp_window_old(
+    lfp_signal: np.ndarray,
+    fs: float,
     method: str = "welch",
     window_length_sec: int = 2,
     step_size_sec: float = 1,
@@ -187,41 +269,39 @@ def compute_lfp_feature_means(
 ) -> pd.DataFrame:
     df_out = df.copy()
 
+    """ # Average list-style LFP features into mean features"""
+
     base_feats = ['offset', 'exponent', 'r_squared', 'error', 'n_peaks']
-    band_feats = [f"{band}_{kind}" for band in ['delta','theta','alpha','beta','gamma']
-                  for kind in ['peak_power','peak_cf','peak_bw']]
+    band_feats = [f"{band}_{kind}" for band in ['delta', 'theta', 'alpha', 'beta', 'gamma']
+                  for kind in ['peak_power', 'peak_cf', 'peak_bw']]
     feats = base_feats + band_feats
 
     for feat in feats:
         col = f"lfp_{lfp_type}_{feat}"
         if col in df_out.columns:
             df_out[f"{col}_mean"] = df_out[col].apply(
-                # CHANGE #1: broader type check + empty-after-cleaning guard
+                # minimal change: guard nanmean so we don't call it on an effectively empty list
                 lambda x: (
-                    np.nanmean([v for v in x if v is not None and not pd.isna(v)])
-                    if isinstance(x, (list, tuple, np.ndarray, pd.Series))
-                       and any(v is not None and not pd.isna(v) for v in x)
-                    else (np.nan if isinstance(x, (list, tuple, np.ndarray, pd.Series)) else None)
+                    np.nanmean([v for v in x if v is not None])
+                    if isinstance(x, list) and x and any(v is not None for v in x)
+                    else (np.nan if isinstance(x, list) else None)
                 )
             )
 
+    # Only keep columns that actually exist
     mean_cols = [f"lfp_{lfp_type}_{feat}_mean" for feat in feats]
-    existing_mean_cols = [c for c in mean_cols if c in df_out.columns]
-
-    # CHANGE #2: only drop rows if we actually created at least one mean col
-    if existing_mean_cols:
-        df_out.dropna(subset=existing_mean_cols, how="all", inplace=True)
+    existing_mean_cols = [col for col in mean_cols if col in df_out.columns]
+    df_out.dropna(subset=existing_mean_cols, how="all", inplace=True)
 
     if drop_original:
         df_out.drop(columns=[f"lfp_{lfp_type}_{feat}" for feat in feats], inplace=True, errors="ignore")
 
     if drop_irrelevant:
         other = "previous" if lfp_type == "current" else "current"
-        to_drop = [c for c in df_out.columns if f"lfp_{other}_" in c]
+        to_drop = [col for col in df_out.columns if f"lfp_{other}_" in col]
         df_out.drop(columns=to_drop, inplace=True, errors="ignore")
 
     return df_out
-
 
 
 
