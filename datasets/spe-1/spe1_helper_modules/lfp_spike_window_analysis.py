@@ -52,11 +52,11 @@ def compute_lfp_windows(
     fs: float,
     method: Literal["welch", "multitaper"] = "multitaper",
     # Paper-style defaults:
-    window_length_sec: float = 0.5,             # 500 ms
-    freq_range: Tuple[float, float] = (5,90),
+    window_length_sec: float = 2,             # 2 sec
+    freq_range: Tuple[float, float] = (1,90),
     n_freqs: int = 256,                         # linear freqs
     time_bandwidth: float = 2.0,                # ~4 Hz half-bandwidth @ 0.5 s (~3 tapers)
-    decim_factor: int = 9,                      # step ≈ decim_factor/fs
+    decim_factor: int = 300,                      # step ≈ decim_factor/fs
     # Specparam fit controls:
     progress: bool = True,                      # show Specparam progress bar via tqdm
     n_jobs: int = 1,                            # parallelism for Specparam fit
@@ -436,7 +436,7 @@ def classify_gamma_windows(
     summary_df: pd.DataFrame,
     window_times: List[Tuple[int, int]],
     gamma_band_name: str = "gamma",
-    high_percentile: float = 75,
+    high_percentile: float = 80,
     low_percentile: float = 25,
 ) -> Tuple[List[int], List[int]]:
     """
@@ -865,11 +865,16 @@ def _map_spikes_to_window_helper(
     return spike_to_window_map
 # -------------------------------------------------------------------
 
+def make_config_id(d: dict) -> str:
+    import hashlib, json
+    s = json.dumps(d, sort_keys=True, default=str)
+    return hashlib.md5(s.encode()).hexdigest()[:8]
+
 def sensitivity_analysis(
     lfp_signal: np.ndarray,
     fs: float,
     freq_range: Tuple[float, float],
-    window_lengths: List[int],
+    window_lengths: List[float],
     methods: List[str],
     time_bandwidths: List[float],
     fooof_param_grid: List[Dict],
@@ -881,60 +886,75 @@ def sensitivity_analysis(
     Perform sensitivity analysis over various parameter combinations.
 
     Returns:
-    - A DataFrame containing the summary of FOOOF fits.
-    - A dictionary mapping config_id to the list of corresponding FOOOF model objects.
+    - A DataFrame containing the summary of Specparam fits (model.to_df()).
+    - A dict mapping config_id -> list of SpectralModel objects (filtered by mask).
     """
-    all_results = []
-    foof_by_config = {}
+    all_results: List[pd.DataFrame] = []
+    foof_by_config: Dict[str, List] = {}
 
-    # Build full parameter grid
+    # Build full parameter grid (flatten fooof params into the config like before)
     param_grid = []
     for wl, method, tb, fooof_params in product(window_lengths, methods, time_bandwidths, fooof_param_grid):
-        config = {
+        cfg = {
             "window_length_sec": wl,
-            "step_size_sec": wl * step_ratio,
             "method": method,
             "time_bandwidth": tb,
-            **fooof_params
+            # decim_factor derived later (depends on fs)
+            **fooof_params,  # keep your fooof settings visible in the config
         }
-        config["config_id"] = make_config_id(config)
-        param_grid.append(config)
+        cfg["config_id"] = make_config_id(cfg)
+        param_grid.append(cfg)
 
     for config in tqdm(param_grid, desc="Param combos"):
         try:
-            # Compute LFP windows and obtain FOOOF results
-            _, _, foof_results, summary_df = compute_lfp_windows(
+            # derive hop from step_ratio (old step_size_sec = wl * step_ratio)
+            decim_factor = max(int(round(config["window_length_sec"] * step_ratio * fs)), 1)
+
+            # compute (model, freqs, window_times) with your existing function
+            model, _, _ = compute_lfp_windows(
                 lfp_signal=lfp_signal,
                 fs=fs,
                 method=config["method"],
                 window_length_sec=config["window_length_sec"],
-                step_size_sec=config["step_size_sec"],
                 freq_range=freq_range,
-                fooof_params={k: config[k] for k in fooof_param_grid[0].keys()},
-                plot=False,
                 n_freqs=n_freqs,
-                time_bandwidth=config["time_bandwidth"]
+                time_bandwidth=config["time_bandwidth"],
+                decim_factor=decim_factor,
+                progress=False,          # suppress per-fit tqdm here; keep outer tqdm clean
             )
 
-            # Apply filtering
-            mask = summary_df["r_squared"] >= 0.8
-            if config["aperiodic_mode"] == "knee":
-                mask &= (
-                    (summary_df["aperiodic_offset"] >= freq_range[0]) &
-                    (summary_df["aperiodic_offset"] <= freq_range[1])
-                )
+            # summarize and collect per-time-bin models
+            summary_df = model.to_df().reset_index(drop=True)
+            fits = [model.get_model(i) for i in range(model.n_time_windows)]
 
-            # Apply mask to summary_df and foof_results
-            summary_df = summary_df[mask].reset_index(drop=True)
-            foof_results = [f for f, keep in zip(foof_results, mask) if keep]
+            # filter like before: r^2 >= 0.8
+            mask = (summary_df["r_squared"] >= 0.8).to_numpy()
 
-            # Add config info to summary_df
+            # if using knee mode, optionally filter knee param if present
+            if config.get("aperiodic_mode") == "knee" and "knee" in summary_df.columns:
+                lo, hi = freq_range
+                knee_ok = summary_df["knee"].between(lo, hi, inclusive="both").fillna(False).to_numpy()
+                mask &= knee_ok
+
+            # apply mask
+            summary_df = summary_df.loc[mask].reset_index(drop=True)
+            fits = [f for f, keep in zip(fits, mask) if keep]
+
+            # stamp config info into the summary rows
             summary_df["config_id"] = config["config_id"]
-            for key, val in config.items():
-                summary_df[key] = val
+            summary_df["method"] = config["method"]
+            summary_df["window_length_sec"] = config["window_length_sec"]
+            summary_df["time_bandwidth"] = config["time_bandwidth"]
+            summary_df["decim_factor"] = decim_factor
+
+            # copy selected fooof/specparam knobs into columns (if present in your grid)
+            for k in ["aperiodic_mode", "max_n_peaks", "peak_width_limits",
+                      "min_peak_height", "peak_threshold", "verbose"]:
+                if k in config:
+                    summary_df[k] = config[k]
 
             all_results.append(summary_df)
-            foof_by_config[config["config_id"]] = foof_results
+            foof_by_config[config["config_id"]] = fits
 
         except Exception as e:
             if verbose:
@@ -944,7 +964,6 @@ def sensitivity_analysis(
         return pd.concat(all_results, ignore_index=True), foof_by_config
     else:
         return pd.DataFrame(), {}
-
 
 
 def combine_spike_lfp_features(
