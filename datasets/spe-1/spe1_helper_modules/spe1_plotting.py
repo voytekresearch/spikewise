@@ -373,3 +373,117 @@ def plot_spike_groups_from_labels(sp, spike_df_labeled, label_column, label_grou
         plot_average=True,
         plot_average_std=True
     )
+
+
+
+def visualize_flat_vs_steep_sanity(
+    spike_df: pd.DataFrame,
+    summary_df_multitaper: pd.DataFrame,
+    flattest_windows: pd.DataFrame,
+    steepest_windows: pd.DataFrame,
+    window_times_mt: List[Tuple[int, int]],
+    lfp_signal: np.ndarray,
+    lfp_fs: float,
+    time_range: Optional[Tuple[float, float]] = None,
+    # viz styling
+    color_flat: str = "#009E73",   # teal
+    color_steep: str = "#CC79A7",  # magenta
+    hatch_flat: Optional[str] = "//",
+    hatch_steep: Optional[str] = "\\\\",
+    plot_waveforms: bool = False,
+    sp: Optional[object] = None,
+    # NEW: which column already holds labels
+    label_column: str = "method_block_label",
+) -> pd.DataFrame:
+    """
+    Sanity-check visualization for flat vs steep windows.
+
+    NOTE: This version does NOT (re)label spikes.
+          It expects `spike_df[label_column]` to already exist.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # --- require precomputed labels ---
+    if label_column not in spike_df.columns:
+        raise ValueError(
+            f"Expected pre-labeled spikes: column '{label_column}' not found in spike_df."
+        )
+
+    # blocks in seconds (for shading & hist bands only)
+    blocks_flat_sec  = [(window_times_mt[i][0]/lfp_fs, window_times_mt[i][1]/lfp_fs)
+                        for i in flattest_windows.index]
+    blocks_steep_sec = [(window_times_mt[i][0]/lfp_fs, window_times_mt[i][1]/lfp_fs)
+                        for i in steepest_windows.index]
+
+    # (1) exponent histogram + cut lines
+    low_cut  = float(flattest_windows["exponent"].max())  if len(flattest_windows)  else np.nan
+    high_cut = float(steepest_windows["exponent"].min())  if len(steepest_windows) else np.nan
+    plt.figure(figsize=(6,3))
+    plt.hist(summary_df_multitaper["exponent"], bins=30, alpha=0.85, color="#666666")
+    if np.isfinite(low_cut):  plt.axvline(low_cut,  linestyle="--", color=color_flat,  label="20% cutoff")
+    if np.isfinite(high_cut): plt.axvline(high_cut, linestyle="--", color=color_steep, label="80% cutoff")
+    plt.title("Exponent distribution with cutoffs")
+    plt.xlabel("exponent"); plt.ylabel("count"); plt.legend(); plt.tight_layout(); plt.show()
+
+    # (2) overlay on LFP (reuses your plotter)
+    plot_gamma_blocks_generic(
+        lfp_signal=lfp_signal,
+        fs=lfp_fs,
+        high_blocks=blocks_steep_sec,    # steep
+        low_blocks=blocks_flat_sec,      # flat
+        title="Sanity: STEEP vs FLAT windows",
+        info_label=None,
+        color_high=color_steep,
+        color_low=color_flat,
+        hatch_high=hatch_steep,
+        hatch_low=hatch_flat,
+        time_range=time_range
+    )
+
+    # (3) spike histogram + FLAT bands
+    flat_window_times  = [window_times_mt[i] for i in flattest_windows.index]
+    plot_spike_time_histogram_with_windows(
+        spk_times_ms=spike_df["spk_times_ms"].to_numpy(),
+        window_times=flat_window_times,
+        lfp_fs=lfp_fs,
+        mode="bands", stride=1,
+        window_color=color_flat, alpha=0.15,
+        title="Spikes with FLAT windows"
+    )
+
+    # (4) spike histogram + STEEP bands
+    steep_window_times = [window_times_mt[i] for i in steepest_windows.index]
+    plot_spike_time_histogram_with_windows(
+        spk_times_ms=spike_df["spk_times_ms"].to_numpy(),
+        window_times=steep_window_times,
+        lfp_fs=lfp_fs,
+        mode="bands", stride=1,
+        window_color=color_steep, alpha=0.15,
+        title="Spikes with STEEP windows"
+    )
+
+    # (5) counts bar from existing labels
+    counts = spike_df[label_column].value_counts()
+    order = [lbl for lbl in ["flat","steep","none"] if lbl in counts.index]
+    color_map = {"flat": color_flat, "steep": color_steep}
+    colors = [color_map.get(lbl, "#9E9E9E") for lbl in order]  # fixed small typo
+
+    plt.figure(figsize=(5,3))
+    plt.bar(order, counts[order].values, color=colors)
+    plt.title("Spike labels (precomputed)"); plt.xlabel("label"); plt.ylabel("n spikes")
+    plt.tight_layout(); plt.show()
+
+    # (6) optional waveforms by label
+    if plot_waveforms and (sp is not None):
+        plot_spike_groups_from_labels(
+            sp=sp,
+            spike_df_labeled=spike_df,
+            label_column=label_column,
+            label_groups=["flat","steep","none"],
+            group_names=["Flat","Steep","None"]
+        )
+
+    # return unchanged df (just for symmetry with old API)
+    return spike_df
+
