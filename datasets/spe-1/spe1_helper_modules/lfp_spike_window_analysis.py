@@ -347,7 +347,6 @@ def save_lfp_blocks_to_bin(lfp_signal, fs, overlap_high, overlap_low, output_dir
 
 
 
-
 def label_spikes(
     spike_df: pd.DataFrame,
     blocks_a: List[Tuple[float, float]],
@@ -356,7 +355,8 @@ def label_spikes(
     label_b: Optional[str] = None,
     default_label: str = "none",
     time_col: str = "spk_times_ms",
-    priority: str = "a"  # {"a","b","first"} — which label wins if a spike is in both
+    priority: str = "a",  # {"a","b","first"} — used only if conflicts="priority"
+    conflicts: Literal["priority", "none"] = "priority",  # <-- NEW
 ) -> pd.DataFrame:
     """
     Label spikes based on time blocks.
@@ -366,29 +366,16 @@ def label_spikes(
     1) Two-label mode:
        - Provide blocks_a + label_a AND blocks_b + label_b.
        - Spikes in A -> label_a; in B -> label_b; in neither -> default_label.
-       - If a spike falls in BOTH, use `priority`.
+       - If a spike falls in BOTH:
+           * conflicts="none"     -> default_label
+           * conflicts="priority" -> resolve by `priority` ("a"/"b"/"first")
 
     2) Label-vs-rest/none mode:
        - Provide only blocks_a + label_a (leave blocks_b=None / label_b=None).
-       - Spikes in A -> label_a; everything else -> default_label (e.g., "rest").
+       - Spikes in A -> label_a; everything else -> default_label.
 
-    Parameters
-    ----------
-    spike_df : DataFrame with spike times column in ms.
-    blocks_a, blocks_b : lists of (start_sec, end_sec).
-    label_a, label_b : labels to assign.
-    default_label : label for spikes in neither (or the 'rest' label for mode 2).
-    time_col : name of spike time column in ms.
-    priority : "a", "b", or "first":
-        - "a": A wins if spike in both A and B
-        - "b": B wins if spike in both
-        - "first": whichever block list hits first in the check order (A then B)
-
-    Returns
-    -------
-    DataFrame with new column 'method_block_label'.
+    Returns a copy of spike_df with new column 'method_block_label'.
     """
-
     def in_block(t: float, blocks: List[Tuple[float, float]]) -> bool:
         # blocks are in SECONDS; t is in SECONDS
         return any(s <= t < e for s, e in blocks)
@@ -411,12 +398,17 @@ def label_spikes(
             in_b = in_block(t, blocks_b)
 
             if in_a and in_b:
-                if priority == "a":
-                    labels[i] = label_a
-                elif priority == "b":
-                    labels[i] = label_b
-                else:  # "first" => A checked first, so label_a if in_a else label_b
-                    labels[i] = label_a
+                if conflicts == "none":
+                    # both -> default_label
+                    labels[i] = default_label
+                else:
+                    # resolve by priority (legacy behavior)
+                    if priority == "a":
+                        labels[i] = label_a
+                    elif priority == "b":
+                        labels[i] = label_b
+                    else:  # "first": A checked first
+                        labels[i] = label_a
             elif in_a:
                 labels[i] = label_a
             elif in_b:
@@ -425,7 +417,6 @@ def label_spikes(
 
     spikes["method_block_label"] = labels
     return spikes
-
 
 
 # ------------------------------------------------------------------------------------------- #
