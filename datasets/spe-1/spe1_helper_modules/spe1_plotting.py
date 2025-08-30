@@ -421,8 +421,8 @@ def visualize_flat_vs_steep_sanity(
     high_cut = float(steepest_windows["exponent"].min())  if len(steepest_windows) else np.nan
     plt.figure(figsize=(6,3))
     plt.hist(summary_df_multitaper["exponent"], bins=30, alpha=0.85, color="#666666")
-    if np.isfinite(low_cut):  plt.axvline(low_cut,  linestyle="--", color=color_flat,  label="20% cutoff")
-    if np.isfinite(high_cut): plt.axvline(high_cut, linestyle="--", color=color_steep, label="80% cutoff")
+    if np.isfinite(low_cut):  plt.axvline(low_cut,  linestyle="--", color=color_flat,  label="low cutoff")
+    if np.isfinite(high_cut): plt.axvline(high_cut, linestyle="--", color=color_steep, label="high cutoff")
     plt.title("Exponent distribution with cutoffs")
     plt.xlabel("exponent"); plt.ylabel("count"); plt.legend(); plt.tight_layout(); plt.show()
 
