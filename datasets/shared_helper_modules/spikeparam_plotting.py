@@ -286,3 +286,5 @@ def plot_fits_near_global_mean_and_outliers(
         fm.plot(plot_peaks="shade", add_legend=True)
         plt.title(f"Outlier {metric} = {val:.2f} (fit #{i})")
         plt.show()
+
+

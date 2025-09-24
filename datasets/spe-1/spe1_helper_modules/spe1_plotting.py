@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import pandas as pd
-from typing import List, Optional, Tuple
+from typing import Sequence, Optional, Tuple, Literal, List
 from spikeparam_plotting import *
 from specparam import SpectralTimeModel
 import matplotlib.patches as mpatches
@@ -238,55 +238,6 @@ def plot_gamma_blocks_generic(
 
 
 
-def plot_param_spectra_high_low(
-    model: SpectralTimeModel,
-    high_windows: List[int],
-    low_windows: List[int],
-    window_times: List[Tuple[int, int]],
-    title: str = "Average Parameterized Spectra High vs Low Gamma"
-):
-    """
-    Plot the average parameterized spectra for high vs low gamma windows.
-
-    Args:
-        model : Fitted SpectralTimeModel.
-        high_windows : Either indices or start sample values for high gamma windows.
-        low_windows : Either indices or start sample values for low gamma windows.
-        window_times : List of (start, end) sample indices for each window.
-        title : Plot title.
-    """
-    # Extract spectrogram: shape (n_windows, n_freqs)
-    spectra = model.spectrogram.T
-    freqs = model.freqs
-
-    # If user passed window start times, convert to indices
-    win_starts = [start for start, _ in window_times]
-    if any(w not in range(len(spectra)) for w in high_windows + low_windows):
-        high_inds = [i for i, s in enumerate(win_starts) if s in high_windows]
-        low_inds = [i for i, s in enumerate(win_starts) if s in low_windows]
-    else:
-        high_inds = high_windows
-        low_inds = low_windows
-
-    # Compute mean and std
-    avg_high, std_high = np.nanmean(spectra[high_inds], axis=0), np.nanstd(spectra[high_inds], axis=0)
-    avg_low, std_low = np.nanmean(spectra[low_inds], axis=0), np.nanstd(spectra[low_inds], axis=0)
-
-    # Plot with shaded error
-    plt.figure(figsize=(10, 5))
-    plt.plot(freqs, avg_high, color="red", label=f"High Gamma (n={len(high_inds)})")
-    plt.fill_between(freqs, avg_high - std_high, avg_high + std_high, color="red", alpha=0.3)
-
-    plt.plot(freqs, avg_low, color="blue", label=f"Low Gamma (n={len(low_inds)})")
-    plt.fill_between(freqs, avg_low - std_low, avg_low + std_low, color="blue", alpha=0.3)
-
-    plt.xlabel("Frequency (Hz)")
-    plt.ylabel("Log Power")
-    plt.title(title)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
 
 
 def plot_patch_lfp_aligned(patch_times, patch_signal, lfp_times, lfp_signal,
@@ -486,4 +437,132 @@ def visualize_flat_vs_steep_sanity(
 
     # return unchanged df (just for symmetry with old API)
     return spike_df
+
+
+
+
+
+def plot_param_spectra_two_groups(
+    model,
+    group_a: Sequence,               # indices OR [(start_sec, end_sec), ...]
+    group_b: Sequence,               # indices OR [(start_sec, end_sec), ...]
+    window_times: List[Tuple[int,int]],
+    *,
+    label_a: str = "Group A",
+    label_b: str = "Group B",
+    component: Literal["full","aperiodic","peak"] = "full",
+    space: Literal["log","linear"] = "log",
+    freq_range: Optional[Tuple[float,float]] = None,
+    ci: Literal["sd","sem", None] = "sd",
+    color_a: str = "#009E73",
+    color_b: str = "#CC79A7",
+    title: Optional[str] = None,
+    lfp_fs: Optional[float] = None,  # required iff groups are blocks in seconds
+):
+    """
+    Plot average Specparam *modeled* spectra for two groups.
+
+    `group_a` / `group_b` may be:
+      - iterable of window indices (ints), OR
+      - iterable of (start_sec, end_sec) blocks (then pass `lfp_fs`)
+
+    Uses per-window Specparam models: model.get_model(i).get_data(component, space)
+    """
+
+    freqs = np.asarray(model.freqs)
+    nwin  = int(model.n_time_windows)
+
+    # --- map group (indices or seconds-blocks) -> window indices
+    starts = np.array([s for s, _ in window_times], dtype=int)
+    start_to_idx = {int(s): i for i, s in enumerate(starts)}
+
+    def to_indices(group):
+        if len(group) == 0:
+            return np.array([], dtype=int)
+        first = group[0]
+        # seconds-blocks
+        if isinstance(first, (tuple, list)) and len(first) == 2 and not isinstance(first, (int, np.integer)):
+            if lfp_fs is None:
+                raise ValueError("lfp_fs is required when groups are blocks in seconds.")
+            idxs = []
+            for (s_sec, _e_sec) in group:
+                s_idx = int(round(float(s_sec) * float(lfp_fs)))
+                if s_idx in start_to_idx:
+                    idxs.append(start_to_idx[s_idx])
+            return np.unique(np.array(idxs, dtype=int))
+        # indices
+        return np.unique(np.array(group, dtype=int))
+
+    idx_a = to_indices(group_a)
+    idx_b = to_indices(group_b)
+
+    # keep only valid
+    idx_a = idx_a[(idx_a >= 0) & (idx_a < nwin)]
+    idx_b = idx_b[(idx_b >= 0) & (idx_b < nwin)]
+
+    if len(idx_a) == 0 or len(idx_b) == 0:
+        print(f"[plot] nothing to plot: {label_a} n={len(idx_a)}, {label_b} n={len(idx_b)}")
+        return
+
+    # --- collect modeled spectra per window (rows = windows)
+    def stack_group(indices):
+        rows = []
+        for i in indices:
+            m = model.get_model(int(i))
+            if m is None:
+                continue
+            y = m.get_data(component=component, space=space)
+            if y is None:
+                continue
+            rows.append(np.asarray(y))
+        return np.vstack(rows) if rows else np.empty((0, len(freqs)))
+
+    A = stack_group(idx_a)   # shape: (nA, n_freqs)
+    B = stack_group(idx_b)   # shape: (nB, n_freqs)
+
+    if A.shape[0] == 0 or B.shape[0] == 0:
+        print(f"[plot] nothing to plot after stacking: {label_a} n={A.shape[0]}, {label_b} n={B.shape[0]}")
+        return
+
+    # optional freq crop
+    if freq_range is not None:
+        lo, hi = freq_range
+        sel = (freqs >= lo) & (freqs <= hi)
+        if not np.any(sel):
+            print("[plot] freq_range produced empty selection.")
+            return
+        freqs = freqs[sel]
+        A, B = A[:, sel], B[:, sel]
+
+    # averages & error
+    mean_a = np.nanmean(A, axis=0)
+    mean_b = np.nanmean(B, axis=0)
+
+    err_a = err_b = None
+    if ci == "sd":
+        err_a, err_b = np.nanstd(A, axis=0), np.nanstd(B, axis=0)
+    elif ci == "sem":
+        err_a = np.nanstd(A, axis=0) / np.sqrt(max(A.shape[0], 1))
+        err_b = np.nanstd(B, axis=0) / np.sqrt(max(B.shape[0], 1))
+    elif ci is not None:
+        raise ValueError("ci must be 'sd', 'sem', or None")
+
+    # --- plot
+    plt.figure(figsize=(10,5))
+    plt.plot(freqs, mean_a, color=color_a, label=f"{label_a} (n={A.shape[0]})")
+    if err_a is not None:
+        plt.fill_between(freqs, mean_a - err_a, mean_a + err_a, color=color_a, alpha=0.25)
+
+    plt.plot(freqs, mean_b, color=color_b, label=f"{label_b} (n={B.shape[0]})")
+    if err_b is not None:
+        plt.fill_between(freqs, mean_b - err_b, mean_b + err_b, color=color_b, alpha=0.25)
+
+    plt.xlabel("Frequency (Hz)")
+    plt.ylabel(("Log Power" if space == "log" else "Power") + f" — {component}")
+    plt.title(title or f"Average Parameterized Spectra ({component}, {space})")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
 
