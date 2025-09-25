@@ -16,6 +16,11 @@ from tqdm.notebook import tqdm
 import hashlib
 from itertools import product
 from scipy.stats import ttest_ind
+
+import statsmodels.api as sm
+from sklearn.model_selection import KFold, cross_val_score
+from sklearn.linear_model import LinearRegression
+
 from spe1_plotting import *
 
 # ------------------------------------------------------------------------------------------- #
@@ -1360,6 +1365,108 @@ def make_spike_waveform_error_and_auc_df(
     return out
 
 
+def fit_linear_regression(
+    df: pd.DataFrame,
+    y_col: Optional[str] = None,
+    x_cols: Optional[Union[List[str], Tuple[str, ...]]] = None,
+    *,
+    formula: Optional[str] = None,                 # e.g. "wf_error ~ gamma_auc_log1p + aperiodic_exponent"
+    standardize: bool = False,                     # z-score X (not y)
+    interactions: Union[bool, List[Tuple[str, str]]] = False,  # True = all pairwise among X
+    robust_se: bool = True,                        # HC3 robust SEs
+    do_cv: bool = True,                            # sklearn KFold CV
+    cv_splits: int = 5,
+    random_state: int = 0,
+    plot: bool = True,
+):
+    """
+    Flexible OLS: choose any target (y) and predictors (X) from df, or pass a tiny formula.
+    Returns: dict with statsmodels results, coef table, R², CV R², and a DF with preds/residuals.
+    """
+    # Parse formula if provided
+    if formula is not None:
+        lhs, rhs = formula.split("~", 1)
+        y_col = lhs.strip()
+        x_cols = [c.strip() for c in rhs.split("+") if c.strip()]
+    if y_col is None or x_cols is None:
+        raise ValueError("Specify (y_col and x_cols) or formula='y ~ x1 + x2 + ...'")
+
+    # Subset & drop NaNs
+    cols = [y_col, *x_cols]
+    d = df.loc[:, cols].dropna().copy()
+    if d.empty:
+        raise ValueError("No rows left after dropping NaNs in target/predictors.")
+
+    # Design matrix
+    X = d.loc[:, list(x_cols)].astype(float)
+
+    # Interactions
+    if interactions:
+        if interactions is True:
+            pairs = [(a, b) for i, a in enumerate(x_cols) for b in x_cols[i+1:]]
+        else:
+            pairs = list(interactions)
+        for a, b in pairs:
+            name = f"{a}:{b}"
+            X[name] = d[a].astype(float) * d[b].astype(float)
+
+    # Standardize predictors if requested
+    if standardize:
+        X = (X - X.mean()) / X.std(ddof=0)
+
+    X = sm.add_constant(X)  # intercept
+    y = d[y_col].astype(float)
+
+    # Fit OLS (robust SEs by default)
+    model = sm.OLS(y, X).fit(cov_type="HC3" if robust_se else "nonrobust")
+
+    # Coef table
+    coefs = model.summary2().tables[1].rename(
+        columns={"Coef.":"coef","Std.Err.":"se","P>|t|":"p","[0.025":"ci_lo","0.975]":"ci_hi"}
+    )
+
+    # Predictions & residuals
+    y_pred = model.predict(X)
+    d_out = d.copy()
+    d_out["y_pred"] = y_pred
+    d_out["resid"]  = d_out[y_col] - d_out["y_pred"]
+
+    # Cross-validated R²
+    cv_mean = cv_std = None
+    if do_cv:
+        X_cv = X.drop(columns="const").to_numpy()
+        y_cv = y.to_numpy()
+        kf = KFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
+        cv_scores = cross_val_score(LinearRegression(), X_cv, y_cv, cv=kf, scoring="r2")
+        cv_mean, cv_std = float(cv_scores.mean()), float(cv_scores.std(ddof=0))
+
+    # Quick plots
+    if plot:
+        plt.figure(figsize=(5.5,4.5))
+        plt.scatter(d_out[y_col], d_out["y_pred"], s=14)
+        lims = [min(d_out[y_col].min(), d_out["y_pred"].min()),
+                max(d_out[y_col].max(), d_out["y_pred"].max())]
+        plt.plot(lims, lims)
+        plt.xlabel(f"Actual {y_col}"); plt.ylabel("Predicted")
+        plt.title(f"Pred vs Actual (R²={model.rsquared:.3f})")
+        plt.tight_layout(); plt.show()
+
+        plt.figure(figsize=(5.5,4.0))
+        plt.scatter(d_out["y_pred"], d_out["resid"], s=12)
+        plt.axhline(0)
+        plt.xlabel("Fitted"); plt.ylabel("Residual")
+        plt.title("Residuals vs Fitted")
+        plt.tight_layout(); plt.show()
+
+    return {
+        "model": model,
+        "coefs": coefs,
+        "r2": float(model.rsquared),
+        "r2_adj": float(model.rsquared_adj),
+        "cv_r2_mean": cv_mean,
+        "cv_r2_std": cv_std,
+        "df": d_out,
+    }
 
 
 
