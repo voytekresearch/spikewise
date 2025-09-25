@@ -56,7 +56,7 @@ def compute_lfp_windows(
     freq_range: Tuple[float, float] = (1,90),
     n_freqs: int = 256,                         # linear freqs
     time_bandwidth: float = 2.0,                # ~4 Hz half-bandwidth @ 0.5 s (~3 tapers)
-    decim_factor: int = 300,                      # step ≈ decim_factor/fs
+    decim_factor: int = 10,                      # step ≈ decim_factor/fs
     # Specparam fit controls:
     progress: bool = True,                      # show Specparam progress bar via tqdm
     n_jobs: int = 1,                            # parallelism for Specparam fit
