@@ -550,3 +550,52 @@ def plot_param_spectra_two_groups(
 
 
 
+def plot_spectra_and_auc(
+    model,
+    win_idx: int,
+    band: Tuple[float, float] = (30.0, 90.0),
+    freq_range: Optional[Tuple[float, float]] = None,  # display zoom only
+    title: Optional[str] = None,
+):
+    """
+    Plot full vs aperiodic *log* spectra for one window, and annotate AUC computed from
+    (full_linear − aperiodic_linear) within `band` using trapezoid rule.
+    """
+    m = model.get_model(int(win_idx))
+    freqs = np.asarray(model.freqs)
+    sel = (freqs >= band[0]) & (freqs <= band[1])
+
+    full = m.get_model(component="full",      space="log")
+    ap   = m.get_model(component="aperiodic", space="log")
+    
+
+    resid = full - ap  # aperiodic-adjusted spectrum; can be negative 
+
+    
+
+    auc = np.trapz(resid[sel], freqs[sel])
+
+    # --- plot: full vs aperiodic in LOG space, band highlighted, AUC annotated ---
+    plt.figure(figsize=(9, 4.8))
+    plt.plot(freqs, full,  lw=1.8, color="#333333", label="Full (log)")
+    plt.plot(freqs, ap,    lw=1.8, color="#ff7f0e", label="Aperiodic (log)")
+    plt.axvspan(band[0], band[1], color="#4c72b0", alpha=0.12, lw=0)
+
+    plt.xlabel("Frequency (Hz)")
+    plt.ylabel("Log Power")
+    plt.title(title or f"Window {win_idx}: full vs aperiodic (log); AUC in {int(band[0])}–{int(band[1])} Hz")
+    plt.legend(loc="best")
+
+    # neat AUC annotation
+    plt.text(
+        0.98, 0.04,
+        f"AUC (linear residual) = {auc:.4g}\nBand = {int(band[0])}–{int(band[1])} Hz",
+        transform=plt.gca().transAxes,
+        ha="right", va="bottom",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8, lw=0.5)
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+    return auc 

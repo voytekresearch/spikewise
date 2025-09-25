@@ -1210,7 +1210,60 @@ def sensitivity_analysis(
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------- #
+# ------------------4) CODE FOR AUC + AVG SPIKE WAVEFORM METHOD  ----------------------
+# ------------------------------------------------------------------------------------------- #
 
+
+def gamma_auc_and_exponent_per_window(
+    model,
+    band: Tuple[float, float] = (30, 90),
+    space: str = "linear",  
+    show_progress = True,
+) -> pd.DataFrame:
+    """
+    Returns DataFrame with columns: ['win_idx', 'gamma_auc', 'aperiodic_exponent'].
+    AUC is computed on (full - aperiodic) within `band`, using trapezoid rule.
+    """
+    freqs = np.asarray(model.freqs)
+    sel = (freqs >= band[0]) & (freqs <= band[1])
+    if sel.sum() == 0:
+        raise ValueError("gamma band selection is empty for your model.freqs")
+
+    out = []
+    n = int(model.n_time_windows)
+    iterator = tqdm(range(n), desc="Computing gamma AUC + exponent") if show_progress else range(n)
+    
+    for i in iterator: 
+        m = model.get_model(i)
+        if m is None:
+            out.append((i, np.nan, np.nan)); continue
+
+        full = m.get_model(component="full",      space=space)
+        ap   = m.get_model(component="aperiodic", space=space)
+        if full is None or ap is None:
+            out.append((i, np.nan, np.nan)); continue
+
+        resid = full - ap  # aperiodic-adjusted spectrum; can be negative 
+
+        # exponent from aperiodic params
+        ap_params = getattr(m, "aperiodic_params_", None)
+        if ap_params is None:
+            # fallback via get_params
+            try:
+                ap_params = m.get_params("aperiodic_params")
+            except Exception:
+                ap_params = None
+        if ap_params is None:
+            exponent = np.nan
+        else:
+            # fixed: [offset, exponent]; knee: [offset, knee, exponent]
+            exponent = ap_params[1] if len(ap_params) == 2 else ap_params[2]
+
+        auc = np.trapz(resid[sel], freqs[sel])
+        out.append((i, float(auc), float(exponent)))
+
+    return pd.DataFrame(out, columns=["win_idx", "gamma_auc", "aperiodic_exponent"])
 
 
 
