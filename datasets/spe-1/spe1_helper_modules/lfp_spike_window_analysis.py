@@ -1267,7 +1267,7 @@ def gamma_auc_and_exponent_per_window(
 
 
 
-def spike_waveform_errors(sp, metric: str = "rmse", normalize: str = None) -> np.ndarray:
+def spike_waveform_errors(sp, metric: str = "rmse") -> np.ndarray:
     """
     Return per-spike error vs the average waveform as a 1D array (n_spikes,).
 
@@ -1277,10 +1277,7 @@ def spike_waveform_errors(sp, metric: str = "rmse", normalize: str = None) -> np
         Has sp.spikes of shape (n_spikes, n_samples), already peak-centered.
     metric : {"rmse","mae"}
         Error type (default "rmse").
-    normalize : {None,"avg","per_spike"}
-        None = raw errors;
-        "avg" = divide by peak-to-peak of the average waveform;
-        "per_spike" = divide by each spike's own peak-to-peak.
+    
 
     Returns
     -------
@@ -1298,19 +1295,10 @@ def spike_waveform_errors(sp, metric: str = "rmse", normalize: str = None) -> np
     else:
         raise ValueError("metric must be 'rmse' or 'mae'")
 
-    if normalize is None:
-        return e
+  
+    return e
 
-    eps = 1e-12
-    if normalize == "avg":
-        scale = np.ptp(avg) + eps
-        return e / scale
-    elif normalize == "per_spike":
-        scale = np.ptp(W, axis=1) + eps
-        return e / scale
-    else:
-        raise ValueError("normalize must be None, 'avg', or 'per_spike'")
-
+    
 
 
 

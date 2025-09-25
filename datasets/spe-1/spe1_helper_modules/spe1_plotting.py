@@ -599,3 +599,54 @@ def plot_spectra_and_auc(
     plt.show()
 
     return auc 
+
+
+
+def visualize_spike_error(sp, spike_idx: int, metric: str = "rmse", show_residual: bool = True) -> float:
+    """
+    Plot a spike vs the average waveform and return the raw error (no normalization, no saving).
+    metric: "rmse" or "mae"
+    """
+    W = np.asarray(sp.spikes, float)          # (n_spikes, n_samples), already peak-centered
+    t_ms = np.asarray(sp.times, float) * 1e3  # (n_samples,)
+    n_spk, L = W.shape
+    if not (0 <= spike_idx < n_spk):
+        raise IndexError(f"spike_idx {spike_idx} out of range [0, {n_spk-1}]")
+
+    avg = W.mean(axis=0)
+    w   = W[spike_idx]
+    diff = w - avg
+
+    if metric.lower() == "rmse":
+        e = float(np.sqrt(np.mean(diff**2)))
+        contrib = diff**2
+        ylabel = "Squared error per sample"
+        title_metric = "RMSE"
+    elif metric.lower() == "mae":
+        e = float(np.mean(np.abs(diff)))
+        contrib = np.abs(diff)
+        ylabel = "Absolute error per sample"
+        title_metric = "MAE"
+    else:
+        raise ValueError("metric must be 'rmse' or 'mae'")
+
+    # --- plotting ---
+    
+    fig, ax1 = plt.subplots(1, 1, figsize=(7, 3.5))
+
+    
+
+    ax1.plot(t_ms, avg, lw=2, label="Average")
+    ax1.plot(t_ms, w,   lw=1.5, label=f"Spike {spike_idx}")
+    ax1.fill_between(t_ms, w, avg, alpha=0.25, label="|Spike - Avg|")
+    ax1.axvline(0, ls="--", lw=1)
+    ax1.set_title(f"{title_metric} (raw) = {e:.4g}")
+    ax1.set_ylabel("Voltage")
+    ax1.legend(loc="best")
+
+  
+    ax1.set_xlabel("Time (ms)")
+
+    plt.tight_layout()
+    plt.show()
+    return e
