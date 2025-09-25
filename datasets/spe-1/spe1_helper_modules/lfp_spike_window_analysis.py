@@ -1298,7 +1298,67 @@ def spike_waveform_errors(sp, metric: str = "rmse") -> np.ndarray:
   
     return e
 
-    
+    eps = 1e-12
+    if normalize == "avg":
+        scale = np.ptp(avg) + eps
+        return e / scale
+    elif normalize == "per_spike":
+        scale = np.ptp(W, axis=1) + eps
+        return e / scale
+    else:
+        raise ValueError("normalize must be None, 'avg', or 'per_spike'")
+
+
+
+def make_spike_waveform_error_and_auc_df(
+    errs: np.ndarray,
+    df_features: pd.DataFrame,             # must have ['spk_id','spk_times_ms']
+    window_times_mt: list[tuple[int,int]], # [(start_sample, end_sample)] per LFP window
+    lfp_fs: float,                          # Hz
+    specp_auc_df: pd.DataFrame,             # has ['win_idx','gamma_auc','aperiodic_exponent']
+    time_col: str = "spk_times_ms",
+    id_col: str = "spk_id",
+    end_inclusive: bool = True,             # True if end sample is inclusive
+) -> pd.DataFrame:
+    """
+    Return one row per spike with:
+      [spk_id, spk_times_ms, wf_error, win_idx, gamma_auc, aperiodic_exponent]
+    """
+    if len(errs) != len(df_features):
+        raise ValueError("errs length must match number of spikes in df_features")
+
+    # window start/end in seconds (half-open [start, end))
+    starts = np.array([s for s, _ in window_times_mt], dtype=float)
+    ends   = np.array([e for _, e in window_times_mt], dtype=float)
+    if end_inclusive:
+        ends = ends + 1  # convert inclusive end-sample to half-open
+    starts_sec = starts / lfp_fs
+    ends_sec   = ends   / lfp_fs
+
+    # ensure sorted by start
+    order = np.argsort(starts_sec)
+    starts_sec = starts_sec[order]
+    ends_sec   = ends_sec[order]
+
+    # map spike times -> window index
+    t_sec = df_features[time_col].to_numpy(float) / 1000.0
+    j = np.searchsorted(starts_sec, t_sec, side="right") - 1
+    valid = (j >= 0) & (j < len(ends_sec)) & (t_sec < ends_sec[j])
+
+    win_idx = np.full(t_sec.shape, np.nan, dtype=float)
+    win_idx[valid] = j[valid].astype(float)
+
+    # assemble & merge LFP metrics
+    out = df_features[[id_col, time_col]].copy()
+    out["wf_error"] = np.asarray(errs, float)
+    out["win_idx"] = win_idx
+
+    specp_slim = specp_auc_df[["win_idx", "gamma_auc", "aperiodic_exponent"]].copy()
+    specp_slim["win_idx"] = specp_slim["win_idx"].astype(float)
+
+    out = out.merge(specp_slim, on="win_idx", how="left")
+    return out
+
 
 
 
