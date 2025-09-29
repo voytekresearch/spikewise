@@ -134,25 +134,6 @@ def plot_lfp_spk_correlation_heatmap(
     )
 
 
-def plot_avg_spectra(model: SpectralTimeModel, freqs: np.ndarray, high_inds: List[int], low_inds: List[int]):
-    spectra = model.spectrogram.T  # shape: (n_windows, n_freqs)
-    avg_high = np.nanmean(spectra[high_inds], axis=0)
-    avg_low = np.nanmean(spectra[low_inds], axis=0)
-    std_high = np.nanstd(spectra[high_inds], axis=0)
-    std_low = np.nanstd(spectra[low_inds], axis=0)
-
-    plt.figure(figsize=(10, 5))
-    plt.plot(freqs, avg_high, label=f"High Gamma (n={len(high_inds)})", color='red')
-    plt.fill_between(freqs, avg_high - std_high, avg_high + std_high, color='red', alpha=0.3)
-    plt.plot(freqs, avg_low, label=f"Low Gamma (n={len(low_inds)})", color='blue')
-    plt.fill_between(freqs, avg_low - std_low, avg_low + std_low, color='blue', alpha=0.3)
-    plt.xlabel('Frequency (Hz)')
-    plt.ylabel('Power (log10)')
-    plt.title('Average Spectra: High vs Low Gamma Windows')
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
 
 
 def plot_gamma_blocks_generic(
