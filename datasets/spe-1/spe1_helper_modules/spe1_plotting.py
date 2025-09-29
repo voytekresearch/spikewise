@@ -631,3 +631,5 @@ def visualize_spike_error(sp, spike_idx: int, metric: str = "rmse", show_residua
     plt.tight_layout()
     plt.show()
     return e
+
+def plot_avg_spectra():
