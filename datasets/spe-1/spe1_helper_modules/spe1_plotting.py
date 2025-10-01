@@ -632,4 +632,154 @@ def visualize_spike_error(sp, spike_idx: int, metric: str = "rmse", show_residua
     plt.show()
     return e
 
-def plot_avg_spectra():
+def plot_mean_spectra_fast(
+    model,
+    freq_range: Optional[Tuple[float, float]] = None,     # display zoom only
+    windows: Optional[Sequence[int]] = None,              # subset of window indices
+    show_sem: bool = True,
+    show_residual: bool = False,                          # plot mean (full_log - aperiodic_log)
+    band: Optional[Tuple[float, float]] = None,           # purely visual highlight
+    title: Optional[str] = None,
+    progress: bool = True,                                # show tqdm progress
+    display_step: int = 1,                                # plot every Nth point to speed draw
+    max_windows: Optional[int] = None,                    # cap how many windows to aggregate
+    every: int = 1,                                       # sample every k-th window (k>1 speeds up)
+):
+    """
+    Faster version: streams per-window stats to avoid storing big matrices,
+    shows a progress bar (tqdm), and can thin plotted points.
+
+    Notes
+    -----
+    - Still computes means/SEMs in LOG space to match Specparam outputs.
+    - `every > 1` lets you subsample windows for speed (e.g., every=5).
+    - `display_step > 1` thins the *plotted* points only (keeps stats exact).
+    """
+    # -- progress bar helper (lazy import so it's optional) --
+    pbar = None
+    def _tqdm(iterable, total=None, desc=""):
+        nonlocal pbar
+        if not progress:
+            return iterable
+        try:
+            from tqdm.auto import tqdm
+            pbar = tqdm(iterable, total=total, desc=desc, leave=False)
+            return pbar
+        except Exception:
+            return iterable
+
+    freqs = np.asarray(model.freqs)
+
+    # which windows?
+    if windows is None:
+        n_models = getattr(model, "n_models_", None)
+        if n_models is None:
+            try:
+                n_models = len(model)
+            except TypeError:
+                # last resort: probe until failure
+                n_models = 0
+                while True:
+                    try:
+                        model.get_model(n_models)
+                        n_models += 1
+                    except Exception:
+                        break
+        windows = range(int(n_models))
+
+    # apply subsampling / cap
+    idxs = list(windows)[::max(1, int(every))]
+    if max_windows is not None:
+        idxs = idxs[:int(max_windows)]
+
+    # online stats containers (Welford)
+    n_used = 0
+    mu_full = np.zeros_like(freqs, dtype=float)
+    mu_ap   = np.zeros_like(freqs, dtype=float)
+    M2_full = np.zeros_like(freqs, dtype=float)  # sum of squared diffs
+    M2_ap   = np.zeros_like(freqs, dtype=float)
+
+    iterable = _tqdm(idxs, total=len(idxs), desc="Aggregating spectra")
+
+    for wi in iterable:
+        m = model.get_model(int(wi))
+        full_log = m.get_model(component="full",      space="log")
+        ap_log   = m.get_model(component="aperiodic", space="log")
+
+        # Update means and M2 (vectorized Welford)
+        n_used += 1
+        delta_f = full_log - mu_full
+        delta_a = ap_log   - mu_ap
+
+        mu_full += delta_f / n_used
+        mu_ap   += delta_a / n_used
+
+        M2_full += delta_f * (full_log - mu_full)
+        M2_ap   += delta_a * (ap_log   - mu_ap)
+
+    if pbar is not None:
+        pbar.close()
+
+    # finalize means and SEMs
+    full_mean = mu_full
+    ap_mean   = mu_ap
+
+    if show_sem and n_used > 1:
+        full_sem = np.sqrt(M2_full / (n_used - 1)) / np.sqrt(n_used)
+        ap_sem   = np.sqrt(M2_ap   / (n_used - 1)) / np.sqrt(n_used)
+    else:
+        full_sem = ap_sem = None
+
+    resid_mean = full_mean - ap_mean
+    if show_sem and n_used > 1:
+        # SEM of residual via variance sum (assumes approx independence across windows’ measurement noise;
+        # exact residual SEM would require per-window residuals, which we avoided storing for speed).
+        resid_sem = np.sqrt((M2_full + M2_ap) / (n_used - 1)) / np.sqrt(n_used)
+    else:
+        resid_sem = None
+
+    # display selection
+    if freq_range is not None:
+        lo, hi = freq_range
+        sel = (freqs >= lo) & (freqs <= hi)
+    else:
+        sel = np.ones_like(freqs, dtype=bool)
+
+ # thin plotted points for speed (does not affect computed stats)
+    plot_sel = np.where(sel)[0][::max(1, int(display_step))]
+
+    # plot
+    plt.figure(figsize=(9.6, 5.0))
+    plt.plot(freqs[plot_sel], full_mean[plot_sel], lw=1.8, label="Full (mean, log)")
+    plt.plot(freqs[plot_sel], ap_mean[plot_sel],   lw=1.8, label="Aperiodic (mean, log)")
+
+    if show_sem and (full_sem is not None):
+        plt.fill_between(freqs[plot_sel],
+                         (full_mean-full_sem)[plot_sel],
+                         (full_mean+full_sem)[plot_sel],
+                         alpha=0.18, linewidth=0)
+        plt.fill_between(freqs[plot_sel],
+                         (ap_mean-ap_sem)[plot_sel],
+                         (ap_mean+ap_sem)[plot_sel],
+                         alpha=0.18, linewidth=0)
+
+    if show_residual:
+        plt.plot(freqs[plot_sel], resid_mean[plot_sel], lw=1.6, linestyle="--", label="Residual (mean, log)")
+        if show_sem and (resid_sem is not None):
+            plt.fill_between(freqs[plot_sel],
+                             (resid_mean-resid_sem)[plot_sel],
+                             (resid_mean+resid_sem)[plot_sel],
+                             alpha=0.15, linewidth=0)
+
+    if band is not None:
+        plt.axvspan(band[0], band[1], alpha=0.12, lw=0)
+
+    plt.xlabel("Frequency (Hz)")
+    plt.ylabel("Log Power")
+    plt.title(title or f"Mean Specparam spectra across {n_used} windows (log space)")
+    plt.legend(loc="best")
+    plt.tight_layout()
+    plt.show()
+
+
+
