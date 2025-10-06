@@ -82,7 +82,8 @@ def load_spe1_data(data_path: str, out_lfp_path: str, out_npx_path: str, out_pat
             data = np.memmap(file_path, dtype=np.int16, mode='r')
             data = data.reshape((-1, NPX_CHANNELS), order='F')[:, channel]
             times = np.arange(len(data)) / (fs / 1000)
-            filtered = butter_bandpass(data, fs, FILTER_SETTINGS['lfp'])
+            #filtered = butter_bandpass(data, fs, FILTER_SETTINGS['lfp'])
+            filtered = data
             np.save(os.path.join(out_lfp_path, f'c{cell_num}_lfp.npy'), filtered)
             lfp_data.append(filtered)
             lfp_times.append(times)
