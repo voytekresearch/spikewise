@@ -1470,6 +1470,62 @@ def fit_linear_regression(
 
 
 
+def gamma_auc_and_exponent_per_window(
+    model,
+    band: Tuple[float, float] = (30, 90),
+    space: str = "linear",           # 'log' or 'linear' per specparam API
+    show_progress: bool = True,
+    min_rsq: Optional[float] = 0.8,  # set None to disable skipping
+) -> pd.DataFrame:
+    """
+    Compute aperiodic-adjusted gamma AUC and aperiodic exponent per time window.
+    Skips windows with r^2 < min_rsq (or NaN) using SpectralModel.get_params('r_squared').
+
+    Returns: DataFrame ['win_idx', 'gamma_auc', 'aperiodic_exponent', 'r_squared']
+    """
+    freqs = np.asarray(model.freqs)
+    sel = (freqs >= band[0]) & (freqs <= band[1])
+    if sel.sum() == 0:
+        raise ValueError("gamma band selection is empty for your model.freqs")
+
+    # number of time windows
+    n = int(getattr(model, "n_time_windows", model.spectrogram.shape[1]))
+
+    iterator = tqdm(range(n), desc="Computing gamma AUC + exponent") if show_progress else range(n)
+
+    out = []
+    for i in iterator:
+        m = model.get_model(i)  # <- per-window SpectralModel
+        if m is None:
+            continue
+
+        # r^2 filter (straight from API)
+        try:
+            r2 = float(m.get_params("r_squared"))
+        except Exception:
+            r2 = np.nan
+
+        if (min_rsq is not None) and (not np.isfinite(r2) or r2 < min_rsq):
+            continue
+
+        # get full & aperiodic modeled spectra in desired space
+        full = m.get_model(component="full",      space=space)
+        ap   = m.get_model(component="aperiodic", space=space)
+        if full is None or ap is None:
+            continue
+
+        resid = full - ap
+
+        # exponent directly from API (handles fixed vs knee internally)
+        try:
+            exponent = float(m.get_params("aperiodic_params", "exponent"))
+        except Exception:
+            exponent = np.nan
+
+        auc = float(np.trapz(resid[sel], freqs[sel]))
+        out.append((i, auc, exponent, r2))
+
+    return pd.DataFrame(out, columns=["win_idx", "gamma_auc", "aperiodic_exponent", "r_squared"])
 
 
 
