@@ -35,6 +35,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Optional, List, Tuple, Dict, Any
+from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot
 
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Cluster features that show grouped data --------------------- #
@@ -678,3 +679,160 @@ def plot_long_to_short_isi_onsets(
 
     plt.tight_layout()
     plt.show()
+
+
+def compare_transition_features(
+    df,
+    features,
+    flag_col="is_long_to_short_isi_onset",
+    show_plots=True,
+    alpha_normality=0.05,
+    alpha_var=0.05,
+):
+    """
+    Compare waveform features between transition and non-transition spikes with
+    assumption diagnostics and automatic test selection.
+
+    For each feature:
+      • Runs normality tests (Shapiro–Wilk) on each group (subsampled to ≤5000 for stability).
+      • Runs Levene’s test for equal variances.
+      • Chooses test by rules:
+          - If both groups look roughly normal (Shapiro p > alpha_normality OR n > 30)
+            and variances are equal (Levene p > alpha_var) → independent t-test.
+          - If both groups look roughly normal but variances differ → Welch’s t-test.
+          - Otherwise → Mann–Whitney U (nonparametric).
+      • Optionally renders three assumption plots per feature:
+          (1) histogram + KDE per group, (2) QQ-plot overlay, (3) side-by-side boxplot.
+      • Prints a concise decision line per feature (which test and why).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing the feature columns and a boolean flag column identifying
+        transition spikes (e.g., from `mark_high_burst_onsets`).
+    features : list of str
+        Numeric feature column names to compare.
+    flag_col : str, default='is_long_to_short_isi_onset'
+        Boolean column marking transition spikes (True = transition / onset).
+    show_plots : bool, default=True
+        If True, shows diagnostic plots (distribution, QQ, boxplot) per feature.
+    alpha_normality : float, default=0.05
+        Significance threshold for Shapiro–Wilk normality test.
+    alpha_var : float, default=0.05
+        Significance threshold for Levene’s equal-variance test.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per feature with:
+          - n_transition, n_nontransition
+          - median_transition, median_nontransition, (implicit difference via medians)
+          - shapiro_p_transition, shapiro_p_nontransition
+          - levene_p
+          - normal_a, normal_b (boolean: Shapiro p > alpha OR n > 30)
+          - equal_var (boolean: Levene p > alpha_var)
+          - test ({"t-test", "Welch t-test", "Mann–Whitney"})
+          - p_value (from the chosen test)
+        The table is sorted by ascending p_value.
+
+    Notes
+    -----
+    • Normality decision is *size-aware*: groups with n > 30 are treated as “roughly normal”
+      for t-test purposes even if Shapiro rejects (CLT heuristics).
+    • If variances are unequal but both groups are roughly normal, Welch’s t-test is used.
+    • If either group is not roughly normal, Mann–Whitney U is used.
+    • Features with < 5 valid values in either group are skipped.
+    • Plots require seaborn/matplotlib; statistics require scipy.
+
+    Example
+    -------
+    >>> feats = ["ramp_amp", "peak_width", "peak_sharpness", "inflection_amp", "exp_lambda"]
+    >>> results = compare_transition_features(df_marked, feats)
+    >>> results.head()
+    """   
+
+    results = []
+
+    for feat in features:
+        a = pd.to_numeric(df.loc[df[flag_col]==True, feat], errors="coerce").dropna()
+        b = pd.to_numeric(df.loc[df[flag_col]==False, feat], errors="coerce").dropna()
+        if len(a) < 5 or len(b) < 5:
+            print(f"⚠️  Skipping {feat}: too few values.")
+            continue
+
+        # --- Shapiro–Wilk normality
+        shapiro_a = shapiro(a.sample(min(len(a), 5000), random_state=0))[1]
+        shapiro_b = shapiro(b.sample(min(len(b), 5000), random_state=0))[1]
+        normal_a = shapiro_a > alpha_normality or len(a) > 30
+        normal_b = shapiro_b > alpha_normality or len(b) > 30
+
+        # --- Levene for equal variances
+        levene_p = levene(a, b)[1]
+        equal_var = levene_p > alpha_var
+
+        # --- Choose test intelligently
+        if normal_a and normal_b and equal_var:
+            test_name = "t-test"
+            stat, p = ttest_ind(a, b, equal_var=True)
+            decision = "normal or large n → t-test used"
+        elif normal_a and normal_b and not equal_var:
+            test_name = "Welch t-test"
+            stat, p = ttest_ind(a, b, equal_var=False)
+            decision = "unequal variance → Welch t-test used"
+        else:
+            test_name = "Mann–Whitney"
+            stat, p = mannwhitneyu(a, b, alternative="two-sided")
+            decision = "non-normal → Mann–Whitney used"
+
+        print(f"{feat:20s}: {test_name:13s} (p={p:.3})  "
+              f"| normal_a={normal_a}, normal_b={normal_b}, equal_var={equal_var} → {decision}")
+
+        # --- Visualization
+        if show_plots:
+            fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
+            fig.suptitle(f"{feat} ({test_name})", fontsize=12, weight="bold")
+
+            # Distribution (histogram + KDE)
+            sns.histplot(a, ax=axes[0], kde=True, color="#ff7f0e", label="Transition",
+                         stat="density", alpha=0.5)
+            sns.histplot(b, ax=axes[0], kde=True, color="#1f77b4", label="Non-transition",
+                         stat="density", alpha=0.5)
+            axes[0].set_title("Distribution")
+            axes[0].legend()
+
+            # QQ plot
+            probplot(a, dist="norm", plot=axes[1])
+            probplot(b, dist="norm", plot=axes[1])
+            axes[1].set_title("QQ plot")
+
+            # Boxplot
+            sns.boxplot(data=pd.DataFrame({
+                "Transition": a,
+                "Non-transition": b
+            }), ax=axes[2], palette=["#ff7f0e","#1f77b4"])
+            axes[2].set_title("Variance")
+
+            plt.tight_layout()
+            plt.show()
+
+        # --- store results
+        results.append({
+            "feature": feat,
+            "n_transition": len(a),
+            "n_nontransition": len(b),
+            "median_transition": np.median(a),
+            "median_nontransition": np.median(b),
+            "shapiro_p_transition": shapiro_a,
+            "shapiro_p_nontransition": shapiro_b,
+            "levene_p": levene_p,
+            "normal_a": normal_a,
+            "normal_b": normal_b,
+            "equal_var": equal_var,
+            "test": test_name,
+            "p_value": p
+        })
+
+    return pd.DataFrame(results).sort_values("p_value")
+
+
+
