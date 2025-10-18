@@ -34,6 +34,7 @@ Typical workflow
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import seaborn as sns
 from typing import Optional, List, Tuple, Dict, Any
 from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot
@@ -837,3 +838,268 @@ def compare_transition_features(
 
 
 
+
+# ------------------------------------------------------------------------------------------- #
+# -------------------- Get LFP windows around/pre/post transition spikes--------------------- #
+# ------------------------------------------------------------------------------------------- #
+
+
+
+
+# Find the ISI from each transition spike to the next spike
+
+def transition_next_isi_windows(
+    df: pd.DataFrame,
+    time_col: str = "spk_times_ms",              # milliseconds
+    onset_col: str = "is_long_to_short_isi_onset"
+) -> pd.DataFrame:
+    """
+    For each transition spike (onset == True), compute the ISI to the very next spike.
+    Returns a table with one row per transition:
+      - onset_index
+      - onset_time_s
+      - next_spike_time_s
+      - next_isi_s
+      - has_next (False if the transition is the last spike in the recording)
+    """
+    d = df.sort_values(time_col).reset_index(drop=True)
+    t_ms = pd.to_numeric(d[time_col], errors="coerce").to_numpy(float)
+    onset_mask = d[onset_col].astype(bool).to_numpy()
+
+    rows = []
+    n = len(d)
+    for i in np.where(onset_mask)[0]:
+        onset_t = t_ms[i] / 1000.0
+        if i+1 < n and np.isfinite(t_ms[i+1]):
+            nxt_t = t_ms[i+1] / 1000.0
+            rows.append({
+                "onset_index": int(i),
+                "onset_time_s": float(onset_t),
+                "next_spike_time_s": float(nxt_t),
+                "next_isi_s": float(max(0.0, nxt_t - onset_t)),
+                "has_next": True
+            })
+        else:
+            rows.append({
+                "onset_index": int(i),
+                "onset_time_s": float(onset_t),
+                "next_spike_time_s": np.nan,
+                "next_isi_s": np.nan,
+                "has_next": False
+            })
+    return pd.DataFrame(rows)
+
+
+# Choose a single fixed post window = smallest next_isi_s
+#    (optionally allow a floor to avoid crazy-small windows)
+
+def fixed_post_window_from_min_isi(
+    isi_table: pd.DataFrame,
+    min_floor_s: float = 0.050  # e.g., don’t go below 50 ms
+) -> float:
+    """
+    Returns the fixed post window length (seconds) as:
+      post_fixed_s = max(min(next_isi_s over transitions), min_floor_s)
+    Ignores NaNs / transitions without a next spike.
+    """
+    vals = pd.to_numeric(isi_table["next_isi_s"], errors="coerce").to_numpy(float)
+    vals = vals[np.isfinite(vals) & (vals >= 0)]
+    if vals.size == 0:
+        return min_floor_s
+    return float(max(np.min(vals), min_floor_s))
+
+
+
+
+# 3) Epoch extraction around transitions (two flavors)
+#    A) variable per-event post window = next_isi_s (padded to the max)
+#    B) fixed post window = global minimum next_isi_s (strict comparability)
+
+def _windows_to_samples(pre_s: float, post_s: float, fs: float) -> Tuple[int, int, int]:
+    n_pre = int(round(pre_s * fs))
+    n_post = int(round(post_s * fs))
+    return n_pre, n_post, n_pre + 1 + n_post
+
+def extract_epochs_variable_post(
+    lfp: np.ndarray,
+    fs: float,
+    onsets_s: np.ndarray,
+    next_post_s_each: np.ndarray,
+    pre_s: float
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Variable-length post window per event (post = next_isi_s for that onset).
+    Returns epochs padded with NaN to the longest window:
+      epochs shape = (n_events, n_pre + 1 + max(n_post_i))
+      t_rel         = time axis (s) for the padded matrix
+      used_post_s   = the per-event post windows actually used (s)
+    """
+    lfp = np.asarray(lfp, float)
+    fs = float(fs)
+    n = lfp.size
+    n_events = len(onsets_s)
+
+    # sample counts
+    n_pre = int(round(pre_s * fs))
+    n_post_each = np.maximum(0, np.round(next_post_s_each * fs).astype(int))
+    max_post = int(n_post_each.max()) if n_post_each.size else 0
+    win = n_pre + 1 + max_post
+    t_rel = (np.arange(win) - n_pre) / fs
+
+    epochs = np.full((n_events, win), np.nan, float)
+    used_post_s = np.zeros(n_events, float)
+
+    for k, (t0, n_post) in enumerate(zip(onsets_s, n_post_each)):
+        center = int(round(t0 * fs))
+        start = center - n_pre
+        end   = center + n_post + 1
+        if start < 0 or end > n:
+            continue  # drop events that would clip; you can pad instead if you prefer
+        seg = lfp[start:end]
+        # place into padded array
+        epochs[k, :seg.size] = seg
+        used_post_s[k] = n_post / fs
+
+    return epochs, t_rel, used_post_s
+
+def extract_epochs_fixed_post(
+    lfp: np.ndarray,
+    fs: float,
+    onsets_s: np.ndarray,
+    pre_s: float,
+    post_s_fixed: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Fixed post window for *all* events (post = global minimum next_isi_s).
+      epochs shape = (n_events, n_pre + 1 + n_post_fixed)
+    """
+    lfp = np.asarray(lfp, float)
+    fs = float(fs)
+    n = lfp.size
+
+    n_pre, n_post, win = _windows_to_samples(pre_s, post_s_fixed, fs)
+    t_rel = (np.arange(win) - n_pre) / fs
+
+    # keep only windows fully inside the recording
+    starts = (np.round(onsets_s * fs).astype(int) - n_pre)
+    ends   = starts + win
+    keep   = (starts >= 0) & (ends <= n)
+
+    if not np.any(keep):
+        return np.empty((0, win), float), t_rel
+
+    epochs = np.stack([lfp[s:e] for s, e in zip(starts[keep], ends[keep])], axis=0)
+    return epochs, t_rel
+
+
+# Heatmap visualization for LFP windows 
+
+
+def shared_vlim(*arrays, pct=(5, 95)):
+    """Compute shared vmin/vmax from percentiles of multiple arrays."""
+    vals = np.concatenate([np.asarray(a, float).ravel() for a in arrays])
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return None, None
+    vmin, vmax = np.percentile(vals, pct)
+    if np.isclose(vmin, vmax):
+        pad = 1e-6 if vmax == 0 else 0.05 * abs(vmax)
+        vmin, vmax = vmin - pad, vmax + pad
+    return float(vmin), float(vmax)
+
+
+def plot_lfp_epoch_heatmap(
+    epochs,
+    t,
+    title="LFP epochs (µV)",
+    vmin=None,
+    vmax=None,
+    n_grid=1200,
+    sort_by_dur=True,
+):
+    """
+    Unified heatmap plotter for fixed or variable-length LFP epochs (in µV).
+
+    Automatically detects if input is:
+      • fixed  (2D array: events × time)
+      • variable/unpadded (list of arrays)
+
+    Parameters
+    ----------
+    epochs : array-like
+        - 2D np.ndarray (fixed): shape (n_events, n_time)
+        - list of 1D arrays (variable-length)
+    t : array-like or list of arrays
+        - For fixed: 1D array of time points (s)
+        - For variable: list of 1D arrays matching each epoch
+    title : str
+        Figure title.
+    vmin, vmax : float
+        Color scale limits (if None, computed from 5–95% percentile).
+    n_grid : int
+        Resolution of time interpolation grid (variable mode only).
+    sort_by_dur : bool
+        Sort events from shortest to longest duration (variable mode only).
+    """
+
+    # --- Detect mode
+    is_variable = isinstance(epochs, (list, tuple)) and isinstance(epochs[0], (list, np.ndarray))
+    fig, ax = plt.subplots(figsize=(9, 4))
+
+    if not is_variable:
+        # ---------------- Fixed window case ----------------
+        epochs = np.asarray(epochs, float)
+        if vmin is None or vmax is None:
+            vmin, vmax = shared_vlim(epochs)
+
+        im = ax.imshow(
+            epochs,
+            aspect="auto", origin="lower", cmap="viridis",
+            extent=[t[0], t[-1], 0, epochs.shape[0]],
+            vmin=vmin, vmax=vmax
+        )
+        ax.set_ylabel("Events")
+        ax.set_xlabel("Time (s)")
+        ax.set_title(title)
+        ax.axvline(0, color="w", lw=1.2, ls="--", label="Transition onset")
+
+    else:
+        # ---------------- Variable/unpadded case ----------------
+        epochs_each = list(epochs)
+        t_each = list(t)
+        if sort_by_dur:
+            durs = [ti[-1] - ti[0] for ti in t_each]
+            order = np.argsort(durs)
+            epochs_each = [epochs_each[i] for i in order]
+            t_each = [t_each[i] for i in order]
+
+        # Build interpolation grid
+        tmin = min(ti[0] for ti in t_each)
+        tmax = max(ti[-1] for ti in t_each)
+        grid = np.linspace(tmin, tmax, n_grid)
+        M = np.full((len(epochs_each), n_grid), np.nan)
+        for i, (ti, yi) in enumerate(zip(t_each, epochs_each)):
+            valid = (grid >= ti[0]) & (grid <= ti[-1])
+            M[i, valid] = np.interp(grid[valid], ti, yi)
+
+        if vmin is None or vmax is None:
+            vmin, vmax = shared_vlim(M)
+
+        im = ax.imshow(
+            M,
+            aspect="auto", origin="lower", cmap="viridis",
+            extent=[grid[0], grid[-1], 0, M.shape[0]],
+            vmin=vmin, vmax=vmax
+        )
+        ax.axvline(0, color="w", lw=1.2, ls="--", label="Transition onset")
+        ax.set_ylabel("Events (sorted by duration)")
+        ax.set_xlabel("Time (s)")
+        ax.set_title(title)
+
+    # --- Colorbar & final touches
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("LFP (µV)")
+    cbar.ax.yaxis.set_major_formatter(mpl.ticker.ScalarFormatter(useMathText=True))
+    ax.legend(loc="upper right", fontsize=8)
+    plt.tight_layout()
+    plt.show()
