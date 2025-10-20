@@ -1107,90 +1107,93 @@ def plot_lfp_epoch_heatmap(
     vmax=None,
     n_grid=1200,
     sort_by_dur=True,
+    markers: Dict[str, np.ndarray] = None,      # NEW
+    marker_style: Dict[str, Any] = None,        # NEW
 ):
     """
-    Unified heatmap plotter for fixed or variable-length LFP epochs (in µV).
-
-    Automatically detects if input is:
-      • fixed  (2D array: events × time)
-      • variable/unpadded (list of arrays)
-
-    Parameters
-    ----------
-    epochs : array-like
-        - 2D np.ndarray (fixed): shape (n_events, n_time)
-        - list of 1D arrays (variable-length)
-    t : array-like or list of arrays
-        - For fixed: 1D array of time points (s)
-        - For variable: list of 1D arrays matching each epoch
-    title : str
-        Figure title.
-    vmin, vmax : float
-        Color scale limits (if None, computed from 5–95% percentile).
-    n_grid : int
-        Resolution of time interpolation grid (variable mode only).
-    sort_by_dur : bool
-        Sort events from shortest to longest duration (variable mode only).
+    Unified heatmap for fixed or variable-length epochs (µV).
+    Draws a dashed line at t=0 and (optionally) per-event markers (e.g., next-spike times).
+    ...
+    markers : dict[str, np.ndarray], optional
+        Mapping of label → per-event relative time (seconds). Length must match #events
+        (after sorting, if sort_by_dur=True in variable mode).
+    marker_style : dict, optional
+        Matplotlib scatter kwargs (e.g., {'s':18,'facecolors':'none','edgecolors':'w','linewidths':1.1}).
     """
+    if marker_style is None:
+        marker_style = dict(s=18, facecolors="none", edgecolors="w", linewidths=1.1)
 
     # --- Detect mode
     is_variable = isinstance(epochs, (list, tuple)) and isinstance(epochs[0], (list, np.ndarray))
     fig, ax = plt.subplots(figsize=(9, 4))
 
     if not is_variable:
-        # ---------------- Fixed window case ----------------
+        # fixed window case
         epochs = np.asarray(epochs, float)
         if vmin is None or vmax is None:
             vmin, vmax = shared_vlim(epochs)
-
         im = ax.imshow(
-            epochs,
-            aspect="auto", origin="lower", cmap="viridis",
-            extent=[t[0], t[-1], 0, epochs.shape[0]],
-            vmin=vmin, vmax=vmax
+            epochs, aspect="auto", origin="lower", cmap="viridis",
+            extent=[t[0], t[-1], 0, epochs.shape[0]], vmin=vmin, vmax=vmax
         )
-        ax.set_ylabel("Events")
-        ax.set_xlabel("Time (s)")
-        ax.set_title(title)
+        ax.set_ylabel("Events"); ax.set_xlabel("Time (s)"); ax.set_title(title)
         ax.axvline(0, color="w", lw=1.2, ls="--", label="Transition onset")
 
+        # ---- draw markers (fixed)  ------------------  NEW
+        if markers:
+            y_rows = np.arange(epochs.shape[0]) + 0.5
+            for name, times in markers.items():
+                times = np.asarray(times, float)
+                finite = np.isfinite(times) & (times >= t[0]) & (times <= t[-1])
+                ax.scatter(times[finite], y_rows[finite], label=name, **marker_style)
+
     else:
-        # ---------------- Variable/unpadded case ----------------
-        epochs_each = list(epochs)
-        t_each = list(t)
+        # variable/unpadded case
+        epochs_each = list(epochs); t_each = list(t)
+        order = np.arange(len(epochs_each))
         if sort_by_dur:
             durs = [ti[-1] - ti[0] for ti in t_each]
             order = np.argsort(durs)
             epochs_each = [epochs_each[i] for i in order]
-            t_each = [t_each[i] for i in order]
+            t_each      = [t_each[i] for i in order]
+            if markers:
+                markers = {k: np.asarray(v)[order] for k, v in markers.items()}   # NEW: keep alignment
 
-        # Build interpolation grid
-        tmin = min(ti[0] for ti in t_each)
-        tmax = max(ti[-1] for ti in t_each)
+        tmin = min(ti[0] for ti in t_each); tmax = max(ti[-1] for ti in t_each)
         grid = np.linspace(tmin, tmax, n_grid)
         M = np.full((len(epochs_each), n_grid), np.nan)
         for i, (ti, yi) in enumerate(zip(t_each, epochs_each)):
-            valid = (grid >= ti[0]) & (grid <= ti[-1])
-            M[i, valid] = np.interp(grid[valid], ti, yi)
+            mask = (grid >= ti[0]) & (grid <= ti[-1])
+            M[i, mask] = np.interp(grid[mask], ti, yi)
 
         if vmin is None or vmax is None:
             vmin, vmax = shared_vlim(M)
-
         im = ax.imshow(
-            M,
-            aspect="auto", origin="lower", cmap="viridis",
-            extent=[grid[0], grid[-1], 0, M.shape[0]],
-            vmin=vmin, vmax=vmax
+            M, aspect="auto", origin="lower", cmap="viridis",
+            extent=[grid[0], grid[-1], 0, M.shape[0]], vmin=vmin, vmax=vmax
         )
         ax.axvline(0, color="w", lw=1.2, ls="--", label="Transition onset")
-        ax.set_ylabel("Events (sorted by duration)")
-        ax.set_xlabel("Time (s)")
-        ax.set_title(title)
+        ax.set_ylabel("Events (sorted by duration)"); ax.set_xlabel("Time (s)"); ax.set_title(title)
 
-    # --- Colorbar & final touches
-    cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("LFP (µV)")
+        # ---- draw markers (variable)  ---------------- NEW
+        if markers:
+            y_rows = np.arange(len(epochs_each)) + 0.5
+            for name, times in markers.items():
+                times = np.asarray(times, float)
+                finite = np.isfinite(times) & (times >= grid[0]) & (times <= grid[-1])
+                ax.scatter(times[finite], y_rows[finite], label=name, **marker_style)
+
+    cbar = fig.colorbar(im, ax=ax); cbar.set_label("LFP (µV)")
     cbar.ax.yaxis.set_major_formatter(mpl.ticker.ScalarFormatter(useMathText=True))
     ax.legend(loc="upper right", fontsize=8)
-    plt.tight_layout()
-    plt.show()
+    leg = ax.legend(
+    loc="upper right",
+    fontsize=8,
+    facecolor="black",      # 🖤 dark background
+    edgecolor="white",      # optional — clean white border
+    framealpha=0.8          # a bit of transparency
+    )
+    for text in leg.get_texts():
+        text.set_color("white")  # make legend text visible on black
+
+    plt.tight_layout(); plt.show()
