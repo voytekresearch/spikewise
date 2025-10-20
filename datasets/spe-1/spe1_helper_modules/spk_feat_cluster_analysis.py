@@ -759,7 +759,7 @@ def compare_transition_features(
         a = pd.to_numeric(df.loc[df[flag_col]==True, feat], errors="coerce").dropna()
         b = pd.to_numeric(df.loc[df[flag_col]==False, feat], errors="coerce").dropna()
         if len(a) < 5 or len(b) < 5:
-            print(f"⚠️  Skipping {feat}: too few values.")
+            print(f"  Skipping {feat}: too few values.")
             continue
 
         # --- Shapiro–Wilk normality
