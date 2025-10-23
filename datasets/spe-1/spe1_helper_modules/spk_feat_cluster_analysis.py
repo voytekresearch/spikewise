@@ -845,3 +845,246 @@ def compare_transition_features(
 
 
 
+
+def make_transition_table(
+    df_marked: pd.DataFrame,
+    time_col: str = "spk_times_ms",
+    onset_col: str = "is_long_to_short_isi_onset",
+) -> pd.DataFrame:
+    """
+    One row per transition with the immediate next spike.
+    Columns: onset_index, onset_time_s, next_time_s, has_next
+    """
+    d = df_marked.sort_values(time_col).reset_index(drop=True)
+    t_ms = pd.to_numeric(d[time_col], errors="coerce").to_numpy(float)
+    onset_mask = d[onset_col].astype(bool).to_numpy()
+
+    rows = []
+    n = len(d)
+    for i in np.where(onset_mask)[0]:
+        onset_s = t_ms[i] / 1000.0
+        if i + 1 < n and np.isfinite(t_ms[i + 1]):
+            next_s = t_ms[i + 1] / 1000.0
+            has_next = True
+        else:
+            next_s = np.nan
+            has_next = False
+        rows.append({
+            "onset_index": int(i),
+            "onset_time_s": float(onset_s),
+            "next_time_s": float(next_s) if has_next else np.nan,
+            "has_next": bool(has_next),
+        })
+    return pd.DataFrame(rows)
+
+
+def extract_transition_windows_dynamic(
+    lfp_uv: np.ndarray,
+    fs: float,
+    transitions_df: pd.DataFrame,
+    pre_s: float,                  # time BEFORE transition (s)
+    post_after_next_s: float,      # time AFTER NEXT spike (s)
+) -> tuple[pd.DataFrame, list[np.ndarray], list[np.ndarray]]:
+    """
+    For each transition with a next spike, build a window:
+      [onset_time - pre_s,  next_time + post_after_next_s]
+    No padding: windows that fall outside the LFP bounds are skipped.
+
+    Returns
+    -------
+    dyn_df : DataFrame with columns:
+        onset_index, onset_time_s, next_time_s, t_start_s, t_end_s, duration_s, kept=True
+    windows_uv : list of 1D arrays (µV), one per kept transition
+    times_rel_s : list of 1D arrays (seconds), same length as windows; 0 at transition
+    """
+    lfp = np.asarray(lfp_uv, float)
+    n = lfp.size
+    fs = float(fs)
+
+    base = transitions_df.copy()
+    base = base[base["has_next"]].reset_index(drop=True)
+    if base.empty:
+        return base.assign(kept=False), [], []
+
+    # accept either column name from upstream code
+    next_col = "next_time_s" if "next_time_s" in base.columns else "next_spike_time_s"
+    if next_col not in base.columns:
+        raise KeyError("transitions_df must contain 'next_time_s' or 'next_spike_time_s'.")
+
+    out_rows, win_list, t_list = [], [], []
+
+    for _, r in base.iterrows():
+        t0 = float(r["onset_time_s"])
+        tn = float(r[next_col])   # unify downstream as next_time_s
+
+        t_start = t0 - pre_s
+        t_end   = tn + post_after_next_s
+
+        i0 = int(round(t_start * fs))
+        i1 = int(round(t_end   * fs))
+
+        # keep only fully inside the recording
+        if i0 < 0 or i1 > n or i1 <= i0:
+            continue
+
+        seg = lfp[i0:i1]
+        t_rel = (np.arange(i0, i1) / fs) - t0
+
+        win_list.append(seg)
+        t_list.append(t_rel)
+        out_rows.append({
+            "onset_index": int(r["onset_index"]),
+            "onset_time_s": t0,
+            "next_time_s": tn,          # standardized name
+            "t_start_s": float(t_start),
+            "t_end_s": float(t_end),
+            "duration_s": float(t_end - t_start),
+            "kept": True,
+        })
+
+    dyn_df = pd.DataFrame(out_rows)
+    return dyn_df, win_list, t_list
+
+def plot_transition_heatmap(
+    windows: List[np.ndarray],
+    times:   List[np.ndarray],
+    title: str = "Transition windows (µV)",
+    # pass per-event times (s, relative to transition) to mark on each row
+    markers: Optional[Dict[str, np.ndarray]] = None,
+    # per-marker style dictionaries
+    marker_style: Optional[Dict[str, dict]] = None,
+    n_grid: int = 1200,
+    cmap: str = "viridis",
+):
+    """
+    Heatmap for variable-length, transition-centered LFP windows (µV).
+    Each window has its own timebase (seconds), with 0 at transition.
+
+    Always draws a vertical dashed line at t=0 (transition). You can add a
+    'Next spike' marker vector of the same length as the number of events.
+    """
+    if not isinstance(windows, (list, tuple)) or not isinstance(times, (list, tuple)):
+        raise ValueError("Provide windows and times as lists (variable-length mode).")
+    if len(windows) == 0 or len(windows) != len(times):
+        raise ValueError("windows and times must be non-empty and same length.")
+
+    # sort by duration to make the heatmap easier to read
+    durs = np.array([tt[-1] - tt[0] if len(tt) else 0.0 for tt in times], float)
+    order = np.argsort(durs)
+    win_list = [np.asarray(windows[i], float) for i in order]
+    t_list   = [np.asarray(times[i],   float) for i in order]
+
+    # common grid for display only (no padding of data)
+    tmin = min(tt[0] for tt in t_list)
+    tmax = max(tt[-1] for tt in t_list)
+    grid = np.linspace(tmin, tmax, int(n_grid))
+
+    M = np.full((len(win_list), grid.size), np.nan, float)
+    for r, (sig, tt) in enumerate(zip(win_list, t_list)):
+        if sig.size == 0 or tt.size == 0:
+            continue
+        m = (grid >= tt[0]) & (grid <= tt[-1])
+        M[r, m] = np.interp(grid[m], tt, sig)
+
+    # robust color limits from 5–95%
+    finite_vals = M[np.isfinite(M)]
+    if finite_vals.size:
+        vmin = np.percentile(finite_vals, 5)
+        vmax = np.percentile(finite_vals, 95)
+        if np.isclose(vmin, vmax):
+            pad = 1e-6 if vmax == 0 else 0.05 * abs(vmax)
+            vmin, vmax = vmin - pad, vmax + pad
+    else:
+        vmin, vmax = -1, 1
+
+    fig, ax = plt.subplots(figsize=(9.5, 4.2))
+    im = ax.imshow(
+        M, aspect="auto", origin="lower", cmap=cmap,
+        extent=[grid[0], grid[-1], 0, M.shape[0]],
+        vmin=vmin, vmax=vmax
+    )
+
+    # vertical line at transition (t=0)
+    ax.axvline(0, color="w", lw=1.2, ls="--", label="Transition")
+
+    # markers (e.g., next spike)
+    default_styles = {
+        "Transition": {"s": 28, "facecolors": "white",  "edgecolors": "black", "lw": 0.9, "zorder": 6},
+        "Next spike": {"s": 28, "facecolors": "#ff7f0e","edgecolors": "black", "lw": 0.9, "zorder": 6},
+    }
+    marker_style = {} if marker_style is None else {**default_styles, **marker_style}
+
+    if markers:
+        y_rows = np.arange(M.shape[0]) + 0.5
+        for name, arr in markers.items():
+            arr = np.asarray(arr, float)
+            if arr.size != len(windows):
+                raise ValueError(f"Marker '{name}' length ({arr.size}) must equal number of events ({len(windows)})")
+            # reorder to current (sorted) display order
+            arr_sorted = arr[order]
+            finite = np.isfinite(arr_sorted) & (arr_sorted >= grid[0]) & (arr_sorted <= grid[-1])
+            ax.scatter(arr_sorted[finite], y_rows[finite], label=name, **marker_style.get(name, {}))
+
+    ax.set_ylabel("Events (sorted by duration)")
+    ax.set_xlabel("Time (s)")
+    ax.set_title(title)
+
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("LFP (µV)")
+    cbar.ax.yaxis.set_major_formatter(mpl.ticker.ScalarFormatter(useMathText=True))
+
+    # make legend frame slightly dark so white markers are visible
+    leg = ax.legend(loc="upper right", fontsize=8,frameon=True)
+    if leg:
+        leg.get_frame().set_facecolor((0, 0, 0, 0.25))
+        leg.get_frame().set_edgecolor("black")
+
+    for text in leg.get_texts():
+        text.set_color("white")
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+def make_random_control_table(
+    df_marked: pd.DataFrame,
+    time_col: str = "spk_times_ms",
+    onset_col: str = "is_long_to_short_isi_onset",
+    n_controls: int = 50,
+    random_state: int = 0,
+) -> pd.DataFrame:
+    """
+    Sample random non-transition spikes that have a valid next spike.
+    Returns a DataFrame with the same columns as transition_next_isi_windows:
+      onset_index, onset_time_s, next_spike_time_s, next_isi_s, has_next
+    """
+    d = df_marked.sort_values(time_col).reset_index(drop=True).copy()
+    t_ms = pd.to_numeric(d[time_col], errors="coerce").to_numpy(float)
+
+    # candidates: NOT transitions, and have a next spike
+    is_onset = d[onset_col].astype(bool).to_numpy()
+    has_next = np.r_[np.ones(len(d)-1, dtype=bool), False] & np.isfinite(t_ms)
+    cand_idx = np.where((~is_onset) & has_next)[0]
+
+    if cand_idx.size == 0:
+        return pd.DataFrame(columns=["onset_index","onset_time_s","next_spike_time_s","next_isi_s","has_next"])
+
+    rng = np.random.default_rng(random_state)
+    pick = cand_idx if cand_idx.size <= n_controls else rng.choice(cand_idx, size=n_controls, replace=False)
+
+    rows = []
+    for i in np.sort(pick):
+        t0 = t_ms[i] / 1000.0
+        tn = t_ms[i+1] / 1000.0
+        if not np.isfinite(t0) or not np.isfinite(tn): 
+            continue
+        rows.append({
+            "onset_index": int(i),
+            "onset_time_s": float(t0),
+            "next_spike_time_s": float(tn),
+            "next_isi_s": float(max(0.0, tn - t0)),
+            "has_next": True
+        })
+    return pd.DataFrame(rows)
+
