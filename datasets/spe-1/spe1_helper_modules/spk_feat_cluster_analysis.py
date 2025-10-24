@@ -846,6 +846,47 @@ def compare_transition_features(
 
 
 
+def transition_next_isi_windows(
+    df: pd.DataFrame,
+    time_col: str = "spk_times_ms",              # spike times in ms
+    onset_col: str = "is_long_to_short_isi_onset"
+) -> pd.DataFrame:
+    """
+    For each transition spike (onset_col == True), compute the ISI to the very next spike.
+    Returns one row per transition with:
+      onset_index, onset_time_s, next_spike_time_s, next_isi_s, has_next
+    """
+    d = df.sort_values(time_col).reset_index(drop=True).copy()
+    t_ms = pd.to_numeric(d[time_col], errors="coerce").to_numpy(float)
+    is_onset = d[onset_col].astype(bool).to_numpy()
+
+    rows = []
+    n = len(d)
+    for i in np.where(is_onset)[0]:
+        t0_s = t_ms[i] / 1000.0 if np.isfinite(t_ms[i]) else np.nan
+        if i + 1 < n and np.isfinite(t_ms[i+1]):
+            tn_s = t_ms[i+1] / 1000.0
+            next_isi_s = max(0.0, tn_s - t0_s) if np.isfinite(t0_s) else np.nan
+            rows.append({
+                "onset_index": int(i),
+                "onset_time_s": float(t0_s),
+                "next_spike_time_s": float(tn_s),
+                "next_isi_s": float(next_isi_s),
+                "has_next": True,
+            })
+        else:
+            rows.append({
+                "onset_index": int(i),
+                "onset_time_s": float(t0_s),
+                "next_spike_time_s": np.nan,
+                "next_isi_s": np.nan,
+                "has_next": False,
+            })
+
+    return pd.DataFrame(rows)
+
+
+
 def make_transition_table(
     df_marked: pd.DataFrame,
     time_col: str = "spk_times_ms",
