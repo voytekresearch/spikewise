@@ -36,7 +36,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, Literal
 from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot
 
 # ------------------------------------------------------------------------------------------- #
@@ -1129,3 +1129,340 @@ def make_random_control_table(
         })
     return pd.DataFrame(rows)
 
+
+# ------------------------------------------------------------------------------------------- #
+
+#LFP specparma time resolved analysis
+# ------------------------------------------------------------------------------------------- #
+def compute_lfp_windows(
+    lfp_signal: np.ndarray,
+    fs: float,
+    # Multitaper only
+    window_length_sec: float = 2.0,
+    freq_range: Tuple[float, float] = (1, 90),
+    n_freqs: int = 256,
+    time_bandwidth: float = 2.0,
+    decim_factor: int = 10,
+    # Specparam fit controls:
+    progress: bool = True,          # show SpectralTimeModel tqdm if True
+    n_jobs: int = 1,
+    # Specparam modes & peak settings:
+    aperiodic_mode: Literal["fixed", "knee"] = "fixed",
+    periodic_mode: Literal["gaussian", "skewed_gaussian", "cauchy"] = "gaussian",
+    peak_width_limits: Tuple[float, float] = (4.0, 8.0),
+    max_n_peaks: int = 4,
+    min_peak_height: float = 0.0,
+    peak_threshold: float = 2.0,
+    verbose: bool = False,
+    # NEW: optionally return the spectrogram (linear power)
+    return_powers: bool = False,
+):
+    """
+    Build multitaper spectra across time for a 1D LFP trace and fit Specparam across bins.
+
+    Returns:
+      (model, freqs, window_times)                  if return_powers=False
+      (model, freqs, window_times, powers)          if return_powers=True
+        - model: SpectralTimeModel (already fit)
+        - freqs: (n_freqs,) linear Hz
+        - window_times: list[(start_idx, end_idx)] per time bin (samples)
+        - powers: (n_bins, n_freqs) linear power
+    """
+    lfp = np.asarray(lfp_signal, float)
+    win_samps  = int(round(window_length_sec * fs))
+    step_samps = max(int(decim_factor), 1)
+
+    # Frequency grid & multitaper TFR → spectrogram
+    freqs = np.linspace(freq_range[0], freq_range[1], int(n_freqs))
+    n_cycles = freqs * float(window_length_sec)
+    tb = max(float(time_bandwidth), 2.0)  # keep ≥ ~3 tapers
+
+    epochs = lfp[np.newaxis, np.newaxis, :]  # (1, 1, n_times)
+    tfr = mne.time_frequency.tfr_array_multitaper(
+        epochs, sfreq=fs, freqs=freqs, n_cycles=n_cycles,
+        time_bandwidth=tb, output="power", decim=decim_factor, verbose=False
+    )  # (1,1,n_freqs,n_bins)
+    spec = np.squeeze(tfr, axis=(0, 1))      # (n_freqs, n_bins)
+    powers = spec.T                           # (n_bins, n_freqs)
+
+    # Map each TFR bin back to a (start,end) sample window of length win_samps
+    n_bins = powers.shape[0]
+    window_times = [(i * step_samps, i * step_samps + win_samps) for i in range(n_bins)]
+
+    # Fit Specparam across time
+    model = SpectralTimeModel(
+        aperiodic_mode=aperiodic_mode,
+        periodic_mode=periodic_mode,
+        peak_width_limits=peak_width_limits,
+        max_n_peaks=max_n_peaks,
+        min_peak_height=min_peak_height,
+        peak_threshold=peak_threshold,
+        verbose=verbose,
+    )
+    sp_progress = "tqdm" if progress else None
+    model.fit(
+        freqs=freqs,
+        spectrogram=powers.T,   # (n_freqs, n_bins)
+        freq_range=freq_range,
+        n_jobs=n_jobs,
+        progress=sp_progress,
+    )
+
+    if return_powers:
+        return model, freqs, window_times, powers
+    else:
+        return model, freqs, window_times
+
+# -γ-AUC helper (also returns aperiodic offset & exponent & knee) ---
+
+
+
+def _parse_aperiodic_params(ap_params):
+    """
+    Accepts:
+      - array-like [offset, exponent]  (fixed)
+      - array-like [offset, knee, exponent] (knee)
+      - None  -> (nan, nan, nan)
+    Returns: (offset, exponent, knee) with knee=np.nan if fixed.
+    """
+    if ap_params is None:
+        return (np.nan, np.nan, np.nan)
+    arr = np.asarray(ap_params, dtype=float).ravel()
+    if arr.size >= 3:          # knee mode
+        off, knee, exp = arr[:3]
+        return (off, exp, knee)
+    elif arr.size >= 2:        # fixed mode
+        off, exp = arr[:2]
+        return (off, exp, np.nan)
+    else:
+        return (np.nan, np.nan, np.nan)
+
+def gamma_auc_and_params_per_window(
+    model,
+    band: tuple[float, float] = (30, 90),
+    space: str = "linear",          # 'linear' or 'log' per your downstream choice
+    show_progress: bool = True,
+) -> pd.DataFrame:
+    """
+    Returns a DataFrame with columns:
+      ['win_idx', 'gamma_auc', 'aperiodic_offset', 'aperiodic_exponent', 'aperiodic_knee']
+
+    AUC is computed on (full - aperiodic) within `band` using trapezoid rule,
+    where `full` & `aperiodic` are fetched via model.get_model(..., space=<space>).
+
+    Works with aperiodic_mode='fixed' (knee=NaN) and 'knee' (offset, exponent, knee filled).
+    """
+    freqs = np.asarray(model.freqs)
+    sel = (freqs >= band[0]) & (freqs <= band[1])
+    if sel.sum() == 0:
+        raise ValueError("gamma band selection is empty for model.freqs")
+
+    n = int(model.n_time_windows)
+    iterator = tqdm(range(n), desc="Computing gamma AUC + aperiodic params") if show_progress else range(n)
+
+    out = []
+    for i in iterator:
+        m = model.get_model(i)
+        if m is None:
+            out.append((i, np.nan, np.nan, np.nan, np.nan))
+            continue
+
+        # components in requested space
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            warnings.simplefilter("ignore", message="invalid value encountered in log10")
+            warnings.simplefilter("ignore", message="Covariance of the parameters could not be estimated")
+    
+            full = m.get_model(component="full",      space=space)
+            ap   = m.get_model(component="aperiodic", space=space)
+    
+
+        if full is None or ap is None:
+            out.append((i, np.nan, np.nan, np.nan, np.nan))
+            continue
+
+        resid = full - ap
+
+        # robust aperiodic extraction
+        ap_params = getattr(m, "aperiodic_params_", None)
+        if ap_params is None:
+            try:
+                ap_params = m.get_params("aperiodic_params")
+            except Exception:
+                ap_params = None
+
+        off, exp, knee = _parse_aperiodic_params(ap_params)
+
+        auc = np.trapz(resid[sel], freqs[sel])
+        out.append((i, float(auc), float(off), float(exp), float(knee)))
+
+    return pd.DataFrame(out, columns=[
+        "win_idx", "gamma_auc", "aperiodic_offset", "aperiodic_exponent", "aperiodic_knee"
+    ])
+
+# --- Main runner: apply your existing `compute_lfp_windows` per transition window 
+def run_specparam_on_transition_windows(
+    windows: List[np.ndarray],          # µV
+    times_rel: List[np.ndarray],        # s (0 at transition)
+    fs: float,
+    inner_window_sec: float = 0.500,
+    freq_range: Tuple[float, float] = (1, 90),
+    n_freqs: int = 256,
+    time_bandwidth: float = 2.0,
+    decim_factor: int = 9,
+    progress: bool = True,              # outer loop progress
+    n_jobs: int = 1,
+
+    # Specparam controls
+    peak_width_limits: Tuple[float, float] = (4, 8),
+    max_n_peaks: int = 2,
+    min_peak_height: float = 0.0,
+    peak_threshold: float = 2.0,
+    aperiodic_mode: str = "fixed",      # or "knee"
+    periodic_mode: str = "gaussian",
+    verbose: bool = False,
+
+    # AUC config (now computed *inside* this function)
+    gamma_band: Tuple[float, float] = (30, 55),
+    gamma_space: str = "log",           # {"log","linear"} – must match how you want residuals combined
+    compute_gamma_auc: bool = True,
+
+    # Collection toggles
+    collect_spectra: bool = False,      # return raw spectra per bin (in-memory)
+    inner_specparam_progress: bool = False,  # hard-disable Specparam’s internal tqdm
+):
+    """
+    Apply your existing `compute_lfp_windows` per transition window, extract Specparam
+    parameters per inner bin, and (optionally) compute gamma AUC inside this function.
+
+    Returns:
+      spec_df  : tidy DataFrame with one row per (epoch, bin)
+                 columns include:
+                   epoch_id, bin_id, time_rel_s,
+                   aperiodic_offset, aperiodic_exponent, aperiodic_knee,
+                   n_peaks, peak_cf, peak_amp, peak_bw,
+                   (and gamma_auc if compute_gamma_auc=True)
+      spectra  : list of (n_bins, n_freqs) arrays if collect_spectra=True, else None
+    """
+    rows = []
+    spectra_all = [] if collect_spectra else None
+
+    epoch_iter = tqdm(range(len(windows)), desc="Specparam per epoch") if progress else range(len(windows))
+
+    for eid in epoch_iter:
+        sig = np.asarray(windows[eid], float)
+        t_rel = np.asarray(times_rel[eid], float)
+        if sig.size == 0 or t_rel.size == 0 or sig.size != t_rel.size:
+            continue
+
+        # ---- Compute time-binned spectra (multitaper) with NO internal Specparam bars
+        model, freqs, win_times, powers = compute_lfp_windows(
+            lfp_signal=sig,
+            fs=fs,
+            window_length_sec=inner_window_sec,
+            freq_range=freq_range,
+            n_freqs=n_freqs,
+            time_bandwidth=time_bandwidth,
+            decim_factor=decim_factor,
+            progress=False if not inner_specparam_progress else True,  # default: no inner bars
+            n_jobs=n_jobs,
+            aperiodic_mode=aperiodic_mode,
+            periodic_mode=periodic_mode,
+            peak_width_limits=peak_width_limits,
+            max_n_peaks=max_n_peaks,
+            min_peak_height=min_peak_height,
+            peak_threshold=peak_threshold,
+            verbose=verbose,
+            return_powers=True,   # needed if you also want spectra back
+        )
+
+        if collect_spectra:
+            spectra_all.append(powers.copy())  # (n_bins, n_freqs), linear
+
+        # ---- bin-center times (relative to transition)
+        bin_centers_rel = []
+        for (s0, s1) in win_times:
+            c = int(round((s0 + s1 - 1) / 2.0))
+            c = int(np.clip(c, 0, sig.size - 1))
+            bin_centers_rel.append(float(t_rel[c]))
+        bin_centers_rel = np.asarray(bin_centers_rel, float)
+
+        # ---- aperiodic params
+        ap = model.get_params('aperiodic_params')
+        if ap is None or len(ap) == 0:
+            continue
+        ap = np.asarray(ap, float)
+        if ap.ndim == 1:
+            ap = ap[None, :]
+
+        # fixed: [offset, exponent]; knee: [offset, knee, exponent]
+        offs = ap[:, 0]
+        if aperiodic_mode == "knee" and ap.shape[1] >= 3:
+            knees = ap[:, 1]
+            exps  = ap[:, 2]
+        else:
+            knees = np.full(offs.shape, np.nan)
+            exps  = ap[:, 1]
+
+        # ---- peaks list (robust parsing)
+        peaks_list = model.get_params('peak_params')
+        n_bins = len(offs)
+
+        # ---- gamma AUC prep
+        if compute_gamma_auc:
+            freqs_arr = np.asarray(model.freqs)
+            sel = (freqs_arr >= gamma_band[0]) & (freqs_arr <= gamma_band[1])
+            if sel.sum() == 0:
+                raise ValueError("gamma band selection is empty for model.freqs; adjust gamma_band.")
+
+        for b in range(n_bins):
+            # default peak fields
+            pk_cf = pk_amp = pk_bw = np.nan
+            n_peaks_here = 0
+
+            if peaks_list is not None and b < len(peaks_list):
+                peaks_raw = peaks_list[b]
+                if peaks_raw is not None:
+                    arr = np.asarray(peaks_raw, dtype=float)
+                    if arr.ndim == 2 and arr.shape[0] > 0:
+                        n_peaks_here = int(arr.shape[0])
+                        take = min(arr.shape[1], 3)
+                        first = arr[0, :take]
+                        if first.size >= 3:
+                            pk_cf, pk_amp, pk_bw = first[:3]
+                    elif arr.ndim == 1 and arr.size >= 3:
+                        if arr.size % 3 == 0:
+                            n_peaks_here = int(arr.size // 3)
+                            pk_cf, pk_amp, pk_bw = arr[:3]
+                        else:
+                            n_peaks_here = 1
+                            pk_cf, pk_amp, pk_bw = arr[:3]
+
+            # ---- gamma AUC inside (like we used to)
+            gamma_auc = np.nan
+            if compute_gamma_auc:
+                m_bin = model.get_model(b)
+                if m_bin is not None:
+                    full = m_bin.get_model(component="full",      space=gamma_space)
+                    ap_c  = m_bin.get_model(component="aperiodic", space=gamma_space)
+                    if full is not None and ap_c is not None:
+                        resid = full - ap_c  # aperiodic-adjusted spectrum
+                        gamma_auc = float(np.trapz(resid[sel], freqs_arr[sel]))
+
+            rows.append({
+                "epoch_id": int(eid),
+                "bin_id": int(b),
+                "time_rel_s": float(bin_centers_rel[b]) if b < bin_centers_rel.size else np.nan,
+                "aperiodic_offset": float(offs[b]),
+                "aperiodic_exponent": float(exps[b]),
+                "aperiodic_knee": float(knees[b]),
+                "n_peaks": int(n_peaks_here),
+                "peak_cf": float(pk_cf),
+                "peak_amp": float(pk_amp),
+                "peak_bw": float(pk_bw),
+                **({"gamma_auc": gamma_auc} if compute_gamma_auc else {}),
+            })
+
+    spec_df = pd.DataFrame(rows)
+    return spec_df, (spectra_all if collect_spectra else None)
