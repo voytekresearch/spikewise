@@ -36,6 +36,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
+from tqdm import tqdm
+import mne
+from specparam import SpectralTimeModel
 from typing import Optional, List, Tuple, Dict, Any, Literal
 from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot
 
