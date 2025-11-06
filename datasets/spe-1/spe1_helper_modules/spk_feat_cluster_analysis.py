@@ -1304,7 +1304,7 @@ def gamma_auc_and_params_per_window(
         "win_idx", "gamma_auc", "aperiodic_offset", "aperiodic_exponent", "aperiodic_knee"
     ])
 
-# --- Main runner: apply your existing `compute_lfp_windows` per transition window 
+
 def run_specparam_on_transition_windows(
     windows: List[np.ndarray],          # µV
     times_rel: List[np.ndarray],        # s (0 at transition)
@@ -1326,9 +1326,9 @@ def run_specparam_on_transition_windows(
     periodic_mode: str = "gaussian",
     verbose: bool = False,
 
-    # AUC config (now computed *inside* this function)
+    # AUC config 
     gamma_band: Tuple[float, float] = (30, 55),
-    gamma_space: str = "log",           # {"log","linear"} – must match how you want residuals combined
+    gamma_space: str = "log",           # {"log","linear"}
     compute_gamma_auc: bool = True,
 
     # Collection toggles
@@ -1339,19 +1339,24 @@ def run_specparam_on_transition_windows(
     Apply your existing `compute_lfp_windows` per transition window, extract Specparam
     parameters per inner bin, and (optionally) compute gamma AUC inside this function.
 
-    Returns:
-      spec_df  : tidy DataFrame with one row per (epoch, bin)
-                 columns include:
-                   epoch_id, bin_id, time_rel_s,
-                   aperiodic_offset, aperiodic_exponent, aperiodic_knee,
-                   n_peaks, peak_cf, peak_amp, peak_bw,
-                   (and gamma_auc if compute_gamma_auc=True)
-      spectra  : list of (n_bins, n_freqs) arrays if collect_spectra=True, else None
+    Returns
+    -------
+    spec_df : pd.DataFrame
+        Tidy table with one row per (epoch, bin):
+        epoch_id, bin_id, time_rel_s,
+        aperiodic_offset, aperiodic_exponent, aperiodic_knee,
+        n_peaks, peak_cf, peak_amp, peak_bw, (gamma_auc if requested)
+    spectra : list[np.ndarray] or None
+        If collect_spectra=True, list of arrays (n_bins, n_freqs) in linear power.
+    models  : list[Specparam.SpectralTimeModel]
+        One fitted SpectralTimeModel per epoch (same settings you passed).
     """
     rows = []
     spectra_all = [] if collect_spectra else None
+    models_all: List = []
 
-    epoch_iter = tqdm(range(len(windows)), desc="Specparam per epoch") if progress else range(len(windows))
+    epoch_iter = tqdm(range(len(windows)), desc="Specparam per epoch") if progress \
+                 else range(len(windows))
 
     for eid in epoch_iter:
         sig = np.asarray(windows[eid], float)
@@ -1368,7 +1373,7 @@ def run_specparam_on_transition_windows(
             n_freqs=n_freqs,
             time_bandwidth=time_bandwidth,
             decim_factor=decim_factor,
-            progress=False if not inner_specparam_progress else True,  # default: no inner bars
+            progress=False if not inner_specparam_progress else True,
             n_jobs=n_jobs,
             aperiodic_mode=aperiodic_mode,
             periodic_mode=periodic_mode,
@@ -1377,9 +1382,9 @@ def run_specparam_on_transition_windows(
             min_peak_height=min_peak_height,
             peak_threshold=peak_threshold,
             verbose=verbose,
-            return_powers=True,   # needed if you also want spectra back
+            return_powers=True,
         )
-
+        models_all.append(model)
         if collect_spectra:
             spectra_all.append(powers.copy())  # (n_bins, n_freqs), linear
 
@@ -1420,7 +1425,6 @@ def run_specparam_on_transition_windows(
                 raise ValueError("gamma band selection is empty for model.freqs; adjust gamma_band.")
 
         for b in range(n_bins):
-            # default peak fields
             pk_cf = pk_amp = pk_bw = np.nan
             n_peaks_here = 0
 
@@ -1442,15 +1446,14 @@ def run_specparam_on_transition_windows(
                             n_peaks_here = 1
                             pk_cf, pk_amp, pk_bw = arr[:3]
 
-            # ---- gamma AUC inside (like we used to)
             gamma_auc = np.nan
             if compute_gamma_auc:
                 m_bin = model.get_model(b)
                 if m_bin is not None:
                     full = m_bin.get_model(component="full",      space=gamma_space)
-                    ap_c  = m_bin.get_model(component="aperiodic", space=gamma_space)
+                    ap_c = m_bin.get_model(component="aperiodic", space=gamma_space)
                     if full is not None and ap_c is not None:
-                        resid = full - ap_c  # aperiodic-adjusted spectrum
+                        resid = full - ap_c
                         gamma_auc = float(np.trapz(resid[sel], freqs_arr[sel]))
 
             rows.append({
@@ -1468,7 +1471,8 @@ def run_specparam_on_transition_windows(
             })
 
     spec_df = pd.DataFrame(rows)
-    return spec_df, (spectra_all if collect_spectra else None)
+    return spec_df, (spectra_all if collect_spectra else None), models_all
+
 
 
 #plot heatmap for specparam results in transitions
