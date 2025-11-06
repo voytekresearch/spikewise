@@ -1469,3 +1469,146 @@ def run_specparam_on_transition_windows(
 
     spec_df = pd.DataFrame(rows)
     return spec_df, (spectra_all if collect_spectra else None)
+
+
+#plot heatmap for specparam results in transitions
+def plot_specparam_transition_heatmap(
+    spec_df: pd.DataFrame,
+    param: str = "aperiodic_exponent",
+    title: str = "Specparam around transitions",
+    # optional per-epoch markers in SECONDS (relative to transition)
+    markers: Optional[Dict[str, np.ndarray]] = None,   # e.g., {"Transition": np.zeros(n_epochs)}
+    marker_style: Optional[Dict[str, dict]] = None,
+    n_grid: int = 1200,
+    cmap: str = "viridis",
+):
+    """
+    Make a heatmap like your transition LFP heatmap, but for Specparam outputs.
+
+    Expects a tidy DataFrame with columns at least:
+      epoch_id, bin_id, time_rel_s, <param>
+
+    Each epoch can have different time coverage (variable-length). We regrid each
+    epoch's (time_rel_s, param) onto a common time axis with NaNs outside coverage.
+    """
+    need_cols = {"epoch_id", "bin_id", "time_rel_s", param}
+    missing = need_cols - set(spec_df.columns)
+    if missing:
+        raise ValueError(f"spec_df is missing required columns: {sorted(missing)}")
+
+    # build epoch-wise lists like your windows/times
+    groups = []
+    for eid, df_e in spec_df.groupby("epoch_id"):
+        df_e = df_e.sort_values("time_rel_s")
+        t = df_e["time_rel_s"].to_numpy(dtype=float)
+        y = df_e[param].to_numpy(dtype=float)
+        # keep only finite & strictly increasing time to avoid interp issues
+        finite = np.isfinite(t) & np.isfinite(y)
+        t = t[finite]; y = y[finite]
+        if t.size >= 2:
+            # enforce monotonic increasing times
+            order = np.argsort(t)
+            t = t[order]; y = y[order]
+        groups.append((int(eid), t, y))
+
+    if not groups:
+        raise ValueError("No valid epochs to plot.")
+
+    # sort epochs by duration, like your original function
+    durations = []
+    for eid, t, _ in groups:
+        d = (t[-1] - t[0]) if t.size else 0.0
+        durations.append((eid, d))
+    order_ids = [eid for eid, _ in sorted(durations, key=lambda x: x[1])]
+
+    # map id -> (t, y)
+    epoch_map = {eid: (t, y) for (eid, t, y) in groups}
+    # global grid
+    tmins = [t[0] for (_, t, _) in groups if t.size]
+    tmaxs = [t[-1] for (_, t, _) in groups if t.size]
+    if not tmins or not tmaxs:
+        raise ValueError("No finite time values found to build the grid.")
+    tmin, tmax = float(np.min(tmins)), float(np.max(tmaxs))
+    grid = np.linspace(tmin, tmax, int(n_grid))
+
+    # fill matrix (epochs x grid) by interpolation within each epoch's support
+    M = np.full((len(order_ids), grid.size), np.nan, dtype=float)
+    for r, eid in enumerate(order_ids):
+        t, y = epoch_map[eid]
+        if t.size == 0:
+            continue
+        inside = (grid >= t[0]) & (grid <= t[-1])
+        if inside.any():
+            M[r, inside] = np.interp(grid[inside], t, y)
+
+    # robust color scaling
+    finite_vals = M[np.isfinite(M)]
+    if finite_vals.size:
+        vmin = np.percentile(finite_vals, 5)
+        vmax = np.percentile(finite_vals, 95)
+        if np.isclose(vmin, vmax):
+            pad = 1e-6 if vmax == 0 else 0.05 * abs(vmax)
+            vmin, vmax = vmin - pad, vmax + pad
+    else:
+        vmin, vmax = -1, 1
+
+    fig, ax = plt.subplots(figsize=(9.5, 4.2))
+    im = ax.imshow(
+        M, aspect="auto", origin="lower", cmap=cmap,
+        extent=[grid[0], grid[-1], 0, M.shape[0]],
+        vmin=vmin, vmax=vmax
+    )
+
+    # vertical line at transition (t=0)
+    ax.axvline(0, color="w", lw=1.2, ls="--", label="Transition")
+
+    # marker styles (same vibe as your LFP plot)
+    default_styles = {
+        "Transition": {"s": 28, "facecolors": "white",  "edgecolors": "black", "lw": 0.9, "zorder": 6},
+        "Next spike": {"s": 28, "facecolors": "#ff7f0e","edgecolors": "black", "lw": 0.9, "zorder": 6},
+    }
+    style = {**default_styles, **(marker_style or {})}
+
+    # markers are per-epoch scalar times in seconds; reorder them to match display order
+    if markers:
+        y_rows = np.arange(M.shape[0]) + 0.5
+        # we need a vector aligned to epochs in the order we’re plotting
+        # If user passes arrays aligned to unique epoch_id order in spec_df, remap.
+        # Build mapping from display row -> original epoch_id index within spec_df
+        unique_ids_in_df = np.array(sorted(spec_df["epoch_id"].unique()))
+        id_to_pos = {eid: i for i, eid in enumerate(unique_ids_in_df)}
+        for name, arr in markers.items():
+            arr = np.asarray(arr, float)
+            # If arr length equals number of unique epochs, assume aligned to unique_ids_in_df order
+            if arr.size == unique_ids_in_df.size:
+                # reorder to display order_ids
+                arr_sorted = np.array([arr[id_to_pos[eid]] if eid in id_to_pos else np.nan for eid in order_ids], float)
+            # Otherwise, assume it's already in display order length
+            elif arr.size == len(order_ids):
+                arr_sorted = arr
+            else:
+                raise ValueError(
+                    f"Marker '{name}' length ({arr.size}) must equal number of epochs "
+                    f"({unique_ids_in_df.size}) or current display rows ({len(order_ids)})."
+                )
+            finite = np.isfinite(arr_sorted) & (arr_sorted >= grid[0]) & (arr_sorted <= grid[-1])
+            ax.scatter(arr_sorted[finite], y_rows[finite], label=name, **style.get(name, {}))
+
+    ax.set_ylabel("Events (sorted by duration)")
+    ax.set_xlabel("Time (s, relative to transition)")
+    ax.set_title(title)
+
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label(param)
+    cbar.ax.yaxis.set_major_formatter(mpl.ticker.ScalarFormatter(useMathText=True))
+
+    # darker legend bg so white markers are visible
+    leg = ax.legend(loc="upper right", fontsize=8, frameon=True)
+    if leg:
+        leg.get_frame().set_facecolor((0, 0, 0, 0.25))
+        leg.get_frame().set_edgecolor("black")
+        for txt in leg.get_texts():
+            txt.set_color("white")
+
+    plt.tight_layout()
+    plt.show()
