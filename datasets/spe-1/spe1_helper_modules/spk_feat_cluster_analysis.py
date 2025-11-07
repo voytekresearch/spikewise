@@ -1616,3 +1616,174 @@ def plot_specparam_transition_heatmap(
 
     plt.tight_layout()
     plt.show()
+
+
+
+#TIME RESOLVED SPECTOGRAM 
+
+def mean_spectrogram_across_epochs(
+    spectra_fixed,        # list of arrays, each (n_bins, n_freqs) in *linear* power
+    spec_df_fixed,        # long DF with columns: epoch_id, bin_id, time_rel_s (one row per bin)
+    freq_range=(1, 60),   # Hz (must match how spectra were computed)
+    n_freqs=None,         # infer from first spectrum if None
+    n_time=220,           # number of time bins in the common grid
+    use_log=True,         # average log10(power); more stable than linear
+    eps=1e-12
+):
+    """Return (Tgrid, F, mean_spec) where mean_spec has shape (n_time, n_freqs)."""
+    if n_freqs is None:
+        n_freqs = int(spectra_fixed[0].shape[1])
+    F = np.linspace(freq_range[0], freq_range[1], n_freqs)
+
+    tmin = float(spec_df_fixed["time_rel_s"].min())
+    tmax = float(spec_df_fixed["time_rel_s"].max())
+    Tgrid = np.linspace(tmin, tmax, int(n_time))
+
+    # accumulate per-epoch spectrograms resampled onto the common grid
+    stack = []
+    for eid, S_lin in enumerate(spectra_fixed):
+        sub = (spec_df_fixed[spec_df_fixed["epoch_id"] == eid]
+                            .sort_values("bin_id"))
+        if sub.empty:
+            continue
+        t_e = sub["time_rel_s"].to_numpy()
+        if S_lin.shape[0] != t_e.size or t_e.size < 3:
+            continue
+
+        # choose space for averaging
+        S = np.log10(S_lin + eps) if use_log else S_lin
+
+        # interpolate each frequency column onto Tgrid
+        Zi = np.empty((Tgrid.size, n_freqs))
+        for fi in range(n_freqs):
+            Zi[:, fi] = np.interp(Tgrid, t_e, S[:, fi], left=np.nan, right=np.nan)
+
+        stack.append(Zi)
+
+    if len(stack) == 0:
+        raise ValueError("No valid epochs to average.")
+
+    M = np.nanmean(np.stack(stack, axis=0), axis=0)  # (n_time, n_freqs)
+
+    # if we averaged in log, keep it in log for display (typical for PSDs)
+    return Tgrid, F, M
+
+def plot_mean_spectrogram(
+    Tgrid, F, mean_spec,
+    vmin=None, vmax=None,
+    mean_next_isi=None,   # seconds; draw vertical line if provided
+    cmap="inferno"
+):
+    fig, ax = plt.subplots(figsize=(7,5))
+    im = ax.imshow(
+        mean_spec.T, origin="lower", aspect="auto",
+        extent=[Tgrid[0], Tgrid[-1], F[0], F[-1]],
+        vmin=vmin, vmax=vmax, cmap=cmap
+    )
+    # transition at t=0
+    ax.axvline(0.0, color="k", lw=2, ls="--", label="transition")
+
+    # optional mean next-ISI line
+    if mean_next_isi is not None and np.isfinite(mean_next_isi):
+        ax.axvline(float(mean_next_isi), color="w", lw=2, ls="--", label="mean next ISI")
+
+    # minor styling
+    for y in [20, 40, 60, 80]:
+        if F[0] <= y <= F[-1]:
+            ax.axhline(y, color="k", lw=1, ls="--", alpha=0.25)
+    c = fig.colorbar(im, ax=ax)
+    c.set_label("log10 power (µV²/Hz)" if mean_spec.min()<0 else "power (µV²/Hz)")
+
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel("frequency (Hz)")
+    ax.set_title("Average spectrogram across epochs")
+    ax.legend(loc="upper right", fontsize=9)
+    plt.tight_layout()
+    plt.show()
+
+## time resolved parameters - Time plots 
+
+
+# ---------- helpers ----------
+
+def _zscore_1d(x):
+    x = np.asarray(x, float)
+    m  = np.nanmean(x)
+    sd = np.nanstd(x)
+    return (x - m) / (sd if sd > 0 else np.nan)
+
+def aggregate_param_zscore_over_epochs(
+    spec_df: pd.DataFrame,
+    param: str,                 # 'aperiodic_exponent' or 'gamma_auc'
+    n_time: int = 220
+):
+    """
+    Returns (Tgrid, mean_trace, std_trace, n_used)
+    All traces are z-scored across time *within each epoch* before averaging.
+    """
+    # common time grid across all epochs
+    tmin = float(spec_df["time_rel_s"].min())
+    tmax = float(spec_df["time_rel_s"].max())
+    Tgrid = np.linspace(tmin, tmax, int(n_time))
+
+    per_epoch = []
+    for eid, sub in spec_df.groupby("epoch_id"):
+        sub = sub.sort_values("time_rel_s")
+        t   = sub["time_rel_s"].to_numpy(float)
+        y   = sub[param].to_numpy(float)
+
+        if t.size < 3 or np.all(~np.isfinite(y)):
+            continue
+
+        # z-score across time within this epoch
+        yz = _zscore_1d(y)
+
+        # interpolate onto common grid
+        yi = np.interp(Tgrid, t, yz, left=np.nan, right=np.nan)
+        per_epoch.append(yi)
+
+    if len(per_epoch) == 0:
+        raise ValueError(f"No valid epochs for param '{param}'.")
+
+    A = np.stack(per_epoch, axis=0)                    # (n_epochs, n_time)
+    mean_trace = np.nanmean(A, axis=0)
+    std_trace  = np.nanstd(A, axis=0)
+    return Tgrid, mean_trace, std_trace, A.shape[0]
+
+
+
+def plot_exponent_and_gamma(
+    spec_df: pd.DataFrame,
+    n_time: int = 220,
+    mean_next_isi: Optional[float] = None,
+    title: str = "Spectral parameters (z across time)"
+):
+    # exponent
+    T, exp_mean, exp_std, n1 = aggregate_param_zscore_over_epochs(spec_df, "aperiodic_exponent", n_time=n_time)
+    # adjusted gamma (AUC)
+    _, gam_mean, gam_std, n2 = aggregate_param_zscore_over_epochs(spec_df, "gamma_auc", n_time=n_time)
+
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+
+    # gamma (green)
+    ax.plot(T, gam_mean, lw=2.2, color="#2ca02c", label="adjusted gamma")
+    ax.fill_between(T, gam_mean - gam_std, gam_mean + gam_std, color="#2ca02c", alpha=0.20)
+
+    # exponent (orange)
+    ax.plot(T, exp_mean, lw=2.2, color="#ff7f0e", label="exponent")
+    ax.fill_between(T, exp_mean - exp_std, exp_mean + exp_std, color="#ff7f0e", alpha=0.20)
+
+    # reference lines
+    ax.axhline(0, color="k", ls="--", lw=1.2)        # z=0
+    ax.axvline(0, color="k", ls="--", lw=2)          # transition
+
+    if mean_next_isi is not None and np.isfinite(mean_next_isi):
+        ax.axvline(float(mean_next_isi), color="0.25", ls=":", lw=2, label="mean next spike")
+
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel("z-score")
+    ax.set_title(title)
+    ax.set_xlim(T[0], T[-1])
+    ax.legend(frameon=True, loc="best")
+    plt.tight_layout()
+    plt.show()
