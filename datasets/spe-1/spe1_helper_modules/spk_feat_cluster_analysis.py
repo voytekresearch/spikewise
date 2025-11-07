@@ -507,11 +507,7 @@ def plot_clusters_over_time_min(
     ax_rate.legend(loc="upper right", fontsize=9)
     ax_rate.set_xlim(edges[0], edges[-1])
 
-    ttl = f"ISI clusters over time (bin={bin_size_ms} ms"
-    if sigma_bins:
-        ttl += f", σ={sigma_bins} bins"
-    ttl += ")"
-    fig.suptitle(ttl, y=0.98)
+   
     plt.tight_layout()
     plt.show()
 
