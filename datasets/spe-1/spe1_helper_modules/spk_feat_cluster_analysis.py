@@ -1704,7 +1704,9 @@ def aggregate_param_zscore_over_epochs(
     A = np.stack(per_epoch, axis=0)                    # (n_epochs, n_time)
     mean_trace = np.nanmean(A, axis=0)
     std_trace  = np.nanstd(A, axis=0)
-    return Tgrid, mean_trace, std_trace, A.shape[0]
+    n_eff = np.sum(np.isfinite(A), axis=0).astype(float)
+    spread_trace = std_trace / np.sqrt(np.maximum(n_eff, 1.0))
+    return Tgrid, mean_trace,  spread_trace, A.shape[0]
 
 
 
@@ -1743,3 +1745,4 @@ def plot_exponent_and_gamma(
     ax.legend(frameon=True, loc="best")
     plt.tight_layout()
     plt.show()
+    return T, exp_mean,exp_std, gam_mean, gam_std
