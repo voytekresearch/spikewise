@@ -782,72 +782,126 @@ def plot_long_to_short_isi_onsets(
 # --------------------  Extract LFP windows --------------------- #
 # ------------------------------------------------------------------------------------------- #
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def make_random_control_table(
-    df_marked: pd.DataFrame,
-    time_col: str = "spk_times_ms",
-    onset_col: str = "is_long_to_short_isi_onset",
-    n_controls: int = 50,
-    random_state: int = 0,
-) -> pd.DataFrame:
+def extract_lfp_windows(
+    spk_df: pd.DataFrame,
+    lfp_times_ms: np.ndarray,
+    lfp_signal: np.ndarray,
+    pre_s: float = 1.0,
+    post_s: float = 1.5,
+    condition: Optional[str] = None
+):
     """
-    Sample random non-transition spikes that have a valid next spike.
-    Returns a DataFrame with the same columns as transition_next_isi_windows:
-      onset_index, onset_time_s, next_spike_time_s, next_isi_s, has_next
+    Extract LFP windows around spikes, optionally filtered by a condition.
+
+    Returns dict with:
+      windows: list of arrays (lfp µV)
+      times_rel_ms: list of arrays (ms, spike = 0)
+      spike_times_ms: list of spike times (ms)
+      next_spike_times_ms: list of next spike times (ms)
+      meta_df: Dataframe describing each window
     """
-    d = df_marked.sort_values(time_col).reset_index(drop=True).copy()
-    t_ms = pd.to_numeric(d[time_col], errors="coerce").to_numpy(float)
 
-    # candidates: NOT transitions, and have a next spike
-    is_onset = d[onset_col].astype(bool).to_numpy()
-    has_next = np.r_[np.ones(len(d)-1, dtype=bool), False] & np.isfinite(t_ms)
-    cand_idx = np.where((~is_onset) & has_next)[0]
+    df = spk_df.copy()
 
-    if cand_idx.size == 0:
-        return pd.DataFrame(columns=["onset_index","onset_time_s","next_spike_time_s","next_isi_s","has_next"])
+    # Apply condition if provided
+    if condition is not None:
+        df = df.query(condition)
 
-    rng = np.random.default_rng(random_state)
-    pick = cand_idx if cand_idx.size <= n_controls else rng.choice(cand_idx, size=n_controls, replace=False)
+    if df.empty:
+        print("No spikes matched the condition — returning empty output.")
+        return {
+            "windows": [],
+            "times_rel_ms": [],
+            "spike_times_ms": [],
+            "next_spike_times_ms": [],
+            "meta_df": pd.DataFrame()
+        }
 
-    rows = []
-    for i in np.sort(pick):
-        t0 = t_ms[i] / 1000.0
-        tn = t_ms[i+1] / 1000.0
-        if not np.isfinite(t0) or not np.isfinite(tn): 
+    # Convert pre/post from s → ms
+    pre_ms = pre_s * 1000.0
+    post_ms = post_s * 1000.0
+
+    # Build helper for spike→next spike lookup
+    df_sorted = spk_df.sort_values("spk_id").set_index("spk_id")
+
+    windows = []
+    times_rel_ms = []
+    spike_times = []
+    next_spike_times = []
+    meta_rows = []
+
+    for _, row in df.iterrows():
+
+        sid = int(row["spk_id"])
+        t0 = float(row["spk_times_ms"])
+
+        # Lookup next spike
+        if sid + 1 not in df_sorted.index:
+            continue  # skip last spike (no next spike)
+        t_next = float(df_sorted.loc[sid + 1, "spk_times_ms"])
+
+        # Window boundaries
+        t_start = t0 - pre_ms
+        t_end = t0 + post_ms
+
+        # Clip windows to LFP range
+        if t_start < lfp_times_ms[0] or t_end > lfp_times_ms[-1]:
             continue
-        rows.append({
-            "onset_index": int(i),
-            "onset_time_s": float(t0),
-            "next_spike_time_s": float(tn),
-            "next_isi_s": float(max(0.0, tn - t0)),
-            "has_next": True
+
+        # Index into LFP vector
+        idx0 = np.searchsorted(lfp_times_ms, t_start)
+        idx1 = np.searchsorted(lfp_times_ms, t_end)
+
+        seg = lfp_signal[idx0:idx1]
+        t_seg = lfp_times_ms[idx0:idx1]
+
+        # build relative time (spike = 0)
+        t_rel = t_seg - t0
+
+        windows.append(seg)
+        times_rel_ms.append(t_rel)
+        spike_times.append(t0)
+        next_spike_times.append(t_next)
+
+        meta_rows.append({
+            "spk_id": sid,
+            "spike_time_ms": t0,
+            "next_spike_time_ms": t_next,
+            "t_start_ms": t_start,
+            "t_end_ms": t_end
         })
-    return pd.DataFrame(rows)
+
+    return {
+        "windows": windows,
+        "times_rel_ms": times_rel_ms,
+        "spike_times_ms": spike_times,
+        "next_spike_times_ms": next_spike_times,
+        "meta_df": pd.DataFrame(meta_rows)
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
