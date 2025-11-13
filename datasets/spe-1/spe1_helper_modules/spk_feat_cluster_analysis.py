@@ -1249,397 +1249,183 @@ def run_specparam_on_transition_windows(
 
 
 # ------------------------------------------------------------------------------------------- #
-# --------------------  Time-resolved visualziations  --------------------- #
+# --------------------  Time-resolved and window visualziations  --------------------- #
 # ------------------------------------------------------------------------------------------- #
 
-#plot heatmap for specparam results in transitions
-def plot_specparam_transition_heatmap(
-    spec_df: pd.DataFrame,
-    param: str = "aperiodic_exponent",
-    title: str = "Specparam around transitions",
-    # optional per-epoch markers in SECONDS (relative to transition)
-    markers: Optional[Dict[str, np.ndarray]] = None,   # e.g., {"Transition": np.zeros(n_epochs)}
-    marker_style: Optional[Dict[str, dict]] = None,
-    n_grid: int = 1200,
+def plot_window_feature_groups_heatmap(
+    groups: Dict[str, Dict[str, np.ndarray]],
+    *,
+    feature_label: str = "value",
     cmap: str = "viridis",
+    n_grid: int = 800,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    time_unit: str = "s",
+    xlim: Optional[Tuple[float, float]] = None,
 ):
     """
-    Make a heatmap like your transition LFP heatmap, but for Specparam outputs.
+    Plot heatmaps for one or more groups of spike-centred windows, for ANY
+    time-series feature aligned to those windows.
 
-    Expects a tidy DataFrame with columns at least:
-      epoch_id, bin_id, time_rel_s, <param>
+    Parameters
+    ----------
+    groups : dict
+        {
+          "Group name": {
+              "windows":   list of 1D arrays (feature traces),
+              "times_rel": list of 1D arrays (same length as windows, time rel. to spike),
+              "next_rel":  1D array (len = n_windows) with next-spike time (same units),
+          },
+          ...
+        }
+    feature_label : str
+        Label for colorbar (e.g. "LFP (µV)", "gamma AUC").
+    cmap : str
+        Matplotlib colormap name.
+    n_grid : int
+        Number of time bins in common grid for display.
+    vmin, vmax : float or None
+        Color scale limits. If None, computed from all groups together (5–95%).
+    time_unit : {"s","ms"}
+        Units of the times in `times_rel` and `next_rel` (for axis label only).
+    xlim : (float, float) or None
+        Optional x-axis limits (in the same units as times_rel). If None, use
+        the full grid across all groups.
 
-    Each epoch can have different time coverage (variable-length). We regrid each
-    epoch's (time_rel_s, param) onto a common time axis with NaNs outside coverage.
+    Returns
+    -------
+    fig : Figure
+    axes : list[Axes]
+    out  : dict
+        {"Group name": {"grid_t": 1D grid, "matrix": 2D (events × time)}}
     """
-    need_cols = {"epoch_id", "bin_id", "time_rel_s", param}
-    missing = need_cols - set(spec_df.columns)
-    if missing:
-        raise ValueError(f"spec_df is missing required columns: {sorted(missing)}")
+    # ---------- collect all times to build global grid ----------
+    all_tmins, all_tmaxs = [], []
+    for gname, gdict in groups.items():
+        times_list = gdict["times_rel"]
+        for t in times_list:
+            t = np.asarray(t, float)
+            if t.size == 0 or not np.any(np.isfinite(t)):
+                continue
+            all_tmins.append(np.nanmin(t))
+            all_tmaxs.append(np.nanmax(t))
 
-    # build epoch-wise lists like your windows/times
-    groups = []
-    for eid, df_e in spec_df.groupby("epoch_id"):
-        df_e = df_e.sort_values("time_rel_s")
-        t = df_e["time_rel_s"].to_numpy(dtype=float)
-        y = df_e[param].to_numpy(dtype=float)
-        # keep only finite & strictly increasing time to avoid interp issues
-        finite = np.isfinite(t) & np.isfinite(y)
-        t = t[finite]; y = y[finite]
-        if t.size >= 2:
-            # enforce monotonic increasing times
-            order = np.argsort(t)
-            t = t[order]; y = y[order]
-        groups.append((int(eid), t, y))
+    if not all_tmins or not all_tmaxs:
+        raise ValueError("No finite times found in any group.")
 
-    if not groups:
-        raise ValueError("No valid epochs to plot.")
+    g_tmin = float(np.min(all_tmins))
+    g_tmax = float(np.max(all_tmaxs))
+    grid_t = np.linspace(g_tmin, g_tmax, int(n_grid))
 
-    # sort epochs by duration, like your original function
-    durations = []
-    for eid, t, _ in groups:
-        d = (t[-1] - t[0]) if t.size else 0.0
-        durations.append((eid, d))
-    order_ids = [eid for eid, _ in sorted(durations, key=lambda x: x[1])]
+    # ---------- first pass: build matrices & gather global feature range ----------
+    matrices = {}
+    all_vals = []
 
-    # map id -> (t, y)
-    epoch_map = {eid: (t, y) for (eid, t, y) in groups}
-    # global grid
-    tmins = [t[0] for (_, t, _) in groups if t.size]
-    tmaxs = [t[-1] for (_, t, _) in groups if t.size]
-    if not tmins or not tmaxs:
-        raise ValueError("No finite time values found to build the grid.")
-    tmin, tmax = float(np.min(tmins)), float(np.max(tmaxs))
-    grid = np.linspace(tmin, tmax, int(n_grid))
+    for gname, gdict in groups.items():
+        windows   = gdict["windows"]
+        times_rel = gdict["times_rel"]
 
-    # fill matrix (epochs x grid) by interpolation within each epoch's support
-    M = np.full((len(order_ids), grid.size), np.nan, dtype=float)
-    for r, eid in enumerate(order_ids):
-        t, y = epoch_map[eid]
-        if t.size == 0:
-            continue
-        inside = (grid >= t[0]) & (grid <= t[-1])
-        if inside.any():
-            M[r, inside] = np.interp(grid[inside], t, y)
+        n_ev = len(windows)
+        M = np.full((n_ev, grid_t.size), np.nan, float)
 
-    # robust color scaling
-    finite_vals = M[np.isfinite(M)]
-    if finite_vals.size:
-        vmin = np.percentile(finite_vals, 5)
-        vmax = np.percentile(finite_vals, 95)
-        if np.isclose(vmin, vmax):
-            pad = 1e-6 if vmax == 0 else 0.05 * abs(vmax)
-            vmin, vmax = vmin - pad, vmax + pad
-    else:
-        vmin, vmax = -1, 1
+        for i, (w, t) in enumerate(zip(windows, times_rel)):
+            w = np.asarray(w, float)
+            t = np.asarray(t, float)
+            if w.size == 0 or t.size == 0 or w.size != t.size:
+                continue
+            inside = (grid_t >= t[0]) & (grid_t <= t[-1])
+            if not inside.any():
+                continue
+            M[i, inside] = np.interp(grid_t[inside], t, w)
 
-    fig, ax = plt.subplots(figsize=(9.5, 4.2))
-    im = ax.imshow(
-        M, aspect="auto", origin="lower", cmap=cmap,
-        extent=[grid[0], grid[-1], 0, M.shape[0]],
-        vmin=vmin, vmax=vmax
+        matrices[gname] = M
+        all_vals.append(M[np.isfinite(M)])
+
+    # global color limits if not provided
+    if all_vals:
+        all_vals = np.concatenate(all_vals)
+        if vmin is None or vmax is None:
+            vmin_q = np.percentile(all_vals, 5)
+            vmax_q = np.percentile(all_vals, 95)
+            if vmin is None:
+                vmin = vmin_q
+            if vmax is None:
+                vmax = vmax_q
+
+    # ---------- plotting ----------
+    n_groups = len(groups)
+    fig, axes = plt.subplots(
+        n_groups, 1,
+        figsize=(9.0, 2.8 * n_groups),
+        sharex=True,
+        constrained_layout=True,   # nicer than tight_layout with colorbar
     )
 
-    # vertical line at transition (t=0)
-    ax.axvline(0, color="w", lw=1.2, ls="--", label="Transition")
+    if n_groups == 1:
+        axes = [axes]
 
-    # marker styles (same vibe as your LFP plot)
-    default_styles = {
-        "Transition": {"s": 28, "facecolors": "white",  "edgecolors": "black", "lw": 0.9, "zorder": 6},
-        "Next spike": {"s": 28, "facecolors": "#ff7f0e","edgecolors": "black", "lw": 0.9, "zorder": 6},
-    }
-    style = {**default_styles, **(marker_style or {})}
+    out = {}
+    group_names = list(groups.keys())
 
-    # markers are per-epoch scalar times in seconds; reorder them to match display order
-    if markers:
-        y_rows = np.arange(M.shape[0]) + 0.5
-        # we need a vector aligned to epochs in the order we’re plotting
-        # If user passes arrays aligned to unique epoch_id order in spec_df, remap.
-        # Build mapping from display row -> original epoch_id index within spec_df
-        unique_ids_in_df = np.array(sorted(spec_df["epoch_id"].unique()))
-        id_to_pos = {eid: i for i, eid in enumerate(unique_ids_in_df)}
-        for name, arr in markers.items():
-            arr = np.asarray(arr, float)
-            # If arr length equals number of unique epochs, assume aligned to unique_ids_in_df order
-            if arr.size == unique_ids_in_df.size:
-                # reorder to display order_ids
-                arr_sorted = np.array([arr[id_to_pos[eid]] if eid in id_to_pos else np.nan for eid in order_ids], float)
-            # Otherwise, assume it's already in display order length
-            elif arr.size == len(order_ids):
-                arr_sorted = arr
-            else:
-                raise ValueError(
-                    f"Marker '{name}' length ({arr.size}) must equal number of epochs "
-                    f"({unique_ids_in_df.size}) or current display rows ({len(order_ids)})."
-                )
-            finite = np.isfinite(arr_sorted) & (arr_sorted >= grid[0]) & (arr_sorted <= grid[-1])
-            ax.scatter(arr_sorted[finite], y_rows[finite], label=name, **style.get(name, {}))
+    # main heatmaps
+    im = None
+    for ax, gname in zip(axes, group_names):
+        M = matrices[gname]
+        out[gname] = {"grid_t": grid_t, "matrix": M}
 
-    ax.set_ylabel("Events (sorted by duration)")
-    ax.set_xlabel("Time (s, relative to transition)")
-    ax.set_title(title)
+        im = ax.imshow(
+            M,
+            aspect="auto",
+            origin="lower",
+            cmap=cmap,
+            extent=[grid_t[0], grid_t[-1], 0, M.shape[0]],
+            vmin=vmin,
+            vmax=vmax,
+        )
 
-    cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label(param)
+        # vertical dashed line at the spike (t=0)
+        ax.axvline(0, color="w", ls="--", lw=1.5, label="Spike")
+
+        # next-spike markers (if provided)
+        next_rel = groups[gname].get("next_rel", None)
+        if next_rel is not None:
+            next_rel = np.asarray(next_rel, float)
+            # we assume 1 value per event
+            y = np.arange(M.shape[0]) + 0.5
+            valid = np.isfinite(next_rel) & (next_rel >= grid_t[0]) & (next_rel <= grid_t[-1])
+            ax.scatter(
+                next_rel[valid],
+                y[valid],
+                s=16,
+                facecolors="none",
+                edgecolors="pink",
+                linewidths=1.0,
+                label="Next spike",
+            )
+
+        ax.set_ylabel("Events")
+        ax.set_title(gname)
+
+        # small legend (only spike & next spike)
+        leg = ax.legend(loc="upper left", fontsize=8, frameon=True)
+        if leg is not None:
+            leg.get_frame().set_facecolor((0, 0, 0, 0.25))
+            leg.get_frame().set_edgecolor("black")
+            for txt in leg.get_texts():
+                txt.set_color("white")
+
+    # x-axis label on the last subplot
+    unit_str = "s" if time_unit == "s" else "ms"
+    axes[-1].set_xlabel(f"Time ({unit_str}, relative to spike)")
+
+    # optional x-limits (useful to cut off empty white space)
+    if xlim is not None:
+        for ax in axes:
+            ax.set_xlim(*xlim)
+
+    # one shared colorbar
+    cbar = fig.colorbar(im, ax=axes, shrink=0.9, pad=0.02)
+    cbar.set_label(feature_label)
     cbar.ax.yaxis.set_major_formatter(mpl.ticker.ScalarFormatter(useMathText=True))
 
-    # darker legend bg so white markers are visible
-    leg = ax.legend(loc="upper right", fontsize=8, frameon=True)
-    if leg:
-        leg.get_frame().set_facecolor((0, 0, 0, 0.25))
-        leg.get_frame().set_edgecolor("black")
-        for txt in leg.get_texts():
-            txt.set_color("white")
-
-    plt.tight_layout()
-    plt.show()
-
-#TIME RESOLVED SPECTOGRAM 
-
-def mean_spectrogram_across_epochs(
-    spectra_fixed,        # list of arrays, each (n_bins, n_freqs) in *linear* power
-    spec_df_fixed,        # long DF with columns: epoch_id, bin_id, time_rel_s (one row per bin)
-    freq_range=(1, 60),   # Hz (must match how spectra were computed)
-    n_freqs=None,         # infer from first spectrum if None
-    n_time=220,           # number of time bins in the common grid
-    use_log=True,         # average log10(power); more stable than linear
-    eps=1e-12
-):
-    """Return (Tgrid, F, mean_spec) where mean_spec has shape (n_time, n_freqs)."""
-    if n_freqs is None:
-        n_freqs = int(spectra_fixed[0].shape[1])
-    F = np.linspace(freq_range[0], freq_range[1], n_freqs)
-
-    tmin = float(spec_df_fixed["time_rel_s"].min())
-    tmax = float(spec_df_fixed["time_rel_s"].max())
-    Tgrid = np.linspace(tmin, tmax, int(n_time))
-
-    # accumulate per-epoch spectrograms resampled onto the common grid
-    stack = []
-    for eid, S_lin in enumerate(spectra_fixed):
-        sub = (spec_df_fixed[spec_df_fixed["epoch_id"] == eid]
-                            .sort_values("bin_id"))
-        if sub.empty:
-            continue
-        t_e = sub["time_rel_s"].to_numpy()
-        if S_lin.shape[0] != t_e.size or t_e.size < 3:
-            continue
-
-        # choose space for averaging
-        S = np.log10(S_lin + eps) if use_log else S_lin
-
-        # interpolate each frequency column onto Tgrid
-        Zi = np.empty((Tgrid.size, n_freqs))
-        for fi in range(n_freqs):
-            Zi[:, fi] = np.interp(Tgrid, t_e, S[:, fi], left=np.nan, right=np.nan)
-
-        stack.append(Zi)
-
-    if len(stack) == 0:
-        raise ValueError("No valid epochs to average.")
-
-    M = np.nanmean(np.stack(stack, axis=0), axis=0)  # (n_time, n_freqs)
-
-    # if we averaged in log, keep it in log for display (typical for PSDs)
-    return Tgrid, F, M
-
-def plot_mean_spectrogram(
-    Tgrid, F, mean_spec,
-    vmin=None, vmax=None,
-    mean_next_isi=None,   # seconds; draw vertical line if provided
-    cmap="inferno"
-):
-    fig, ax = plt.subplots(figsize=(7,5))
-    im = ax.imshow(
-        mean_spec.T, origin="lower", aspect="auto",
-        extent=[Tgrid[0], Tgrid[-1], F[0], F[-1]],
-        vmin=vmin, vmax=vmax, cmap=cmap
-    )
-    # transition at t=0
-    ax.axvline(0.0, color="k", lw=2, ls="--", label="transition")
-
-    # optional mean next-ISI line
-    if mean_next_isi is not None and np.isfinite(mean_next_isi):
-        ax.axvline(float(mean_next_isi), color="w", lw=2, ls="--", label="mean next ISI")
-
-    # minor styling
-    for y in [20, 40, 60, 80]:
-        if F[0] <= y <= F[-1]:
-            ax.axhline(y, color="k", lw=1, ls="--", alpha=0.25)
-    c = fig.colorbar(im, ax=ax)
-    c.set_label("log10 power (µV²/Hz)" if mean_spec.min()<0 else "power (µV²/Hz)")
-
-    ax.set_xlabel("time (s)")
-    ax.set_ylabel("frequency (Hz)")
-    ax.set_title("Average spectrogram across epochs")
-    ax.legend(loc="upper right", fontsize=9)
-    plt.tight_layout()
-    plt.show()
-
-## time resolved parameters - Time plots 
-
-
-# ---------- helpers ----------
-
-def _zscore_1d(x):
-    x = np.asarray(x, float)
-    m  = np.nanmean(x)
-    sd = np.nanstd(x)
-    return (x - m) / (sd if sd > 0 else np.nan)
-
-def aggregate_param_zscore_over_epochs(
-    spec_df: pd.DataFrame,
-    param: str,                 # 'aperiodic_exponent' or 'gamma_auc'
-    n_time: int = 220
-):
-    """
-    Returns (Tgrid, mean_trace, std_trace, n_used)
-    All traces are z-scored across time *within each epoch* before averaging.
-    """
-    # common time grid across all epochs
-    tmin = float(spec_df["time_rel_s"].min())
-    tmax = float(spec_df["time_rel_s"].max())
-    Tgrid = np.linspace(tmin, tmax, int(n_time))
-
-    per_epoch = []
-    for eid, sub in spec_df.groupby("epoch_id"):
-        sub = sub.sort_values("time_rel_s")
-        t   = sub["time_rel_s"].to_numpy(float)
-        y   = sub[param].to_numpy(float)
-
-        if t.size < 3 or np.all(~np.isfinite(y)):
-            continue
-
-        # z-score across time within this epoch
-        yz = _zscore_1d(y)
-
-        # interpolate onto common grid
-        yi = np.interp(Tgrid, t, yz, left=np.nan, right=np.nan)
-        per_epoch.append(yi)
-
-    if len(per_epoch) == 0:
-        raise ValueError(f"No valid epochs for param '{param}'.")
-
-    A = np.stack(per_epoch, axis=0)                    # (n_epochs, n_time)
-    mean_trace = np.nanmean(A, axis=0)
-    std_trace  = np.nanstd(A, axis=0)
-    n_eff = np.sum(np.isfinite(A), axis=0).astype(float)
-    spread_trace = std_trace / np.sqrt(np.maximum(n_eff, 1.0))
-    return Tgrid, mean_trace,  spread_trace, A.shape[0]
-
-
-
-def plot_exponent_and_gamma(
-    spec_df: pd.DataFrame,
-    n_time: int = 220,
-    mean_next_isi: Optional[float] = None,
-    title: str = "Spectral parameters (z across time)"
-):
-    # exponent
-    T, exp_mean, exp_std, n1 = aggregate_param_zscore_over_epochs(spec_df, "aperiodic_exponent", n_time=n_time)
-    # adjusted gamma (AUC)
-    _, gam_mean, gam_std, n2 = aggregate_param_zscore_over_epochs(spec_df, "gamma_auc", n_time=n_time)
-
-    fig, ax = plt.subplots(figsize=(7.5, 4.5))
-
-    # gamma (green)
-    ax.plot(T, gam_mean, lw=2.2, color="#2ca02c", label="adjusted gamma")
-    ax.fill_between(T, gam_mean - gam_std, gam_mean + gam_std, color="#2ca02c", alpha=0.20)
-
-    # exponent (orange)
-    ax.plot(T, exp_mean, lw=2.2, color="#ff7f0e", label="exponent")
-    ax.fill_between(T, exp_mean - exp_std, exp_mean + exp_std, color="#ff7f0e", alpha=0.20)
-
-    # reference lines
-    ax.axhline(0, color="k", ls="--", lw=1.2)        # z=0
-    ax.axvline(0, color="k", ls="--", lw=2)          # transition
-
-    if mean_next_isi is not None and np.isfinite(mean_next_isi):
-        ax.axvline(float(mean_next_isi), color="0.25", ls=":", lw=2, label="mean next spike")
-
-    ax.set_xlabel("time (s)")
-    ax.set_ylabel("z-score")
-    ax.set_title(title)
-    ax.set_xlim(T[0], T[-1])
-    ax.legend(frameon=True, loc="best")
-    plt.tight_layout()
-    plt.show()
-    return T, exp_mean,exp_std, gam_mean, gam_std
-
-
-
-
-def plot_traces_with_bands(
-    time: np.ndarray,
-    traces: List[np.ndarray],
-    stds: Optional[List[np.ndarray]] = None,
-    labels: Optional[List[str]] = None,
-    colors: Optional[List[str]] = None,
-    line_styles: Optional[List[str]] = None,   # <–– NEW
-    *,
-    xlim: Optional[Tuple[float, float]] = None,
-    ylim: Optional[Tuple[float, float]] = None,
-    ylabel: str = "z-score",
-    title: Optional[str] = None,
-    legend_loc: str = "best",
-    lw: float = 2.0,
-    band_alpha: float = 0.22,
-    band_k: float = 1.0,
-    vlines: Optional[List[Tuple[float, str, float, str]]] = None,
-    hlines: Optional[List[Tuple[float, str, float, str]]] = None,
-) -> Tuple[plt.Figure, plt.Axes, Dict[str, Dict[str, np.ndarray]]]:
-
-    time = np.asarray(time, float)
-    n = len(traces)
-
-    if labels is None:
-        labels = [f"trace {i}" for i in range(n)]
-    if colors is None:
-        colors = [None] * n
-    if stds is None:
-        stds = [None] * n
-    if line_styles is None:                 # default all solid
-        line_styles = ["-"] * n             # <–– NEW default
-
-    # checks
-    assert len(labels) == n
-    assert len(colors) == n
-    assert len(stds) == n
-    assert len(line_styles) == n            # <–– NEW check
-
-    fig, ax = plt.subplots(figsize=(8, 4.6))
-    data_dict: Dict[str, Dict[str, np.ndarray]] = {}
-
-    for mean_arr, std_arr, lab, col, ls in zip(traces, stds, labels, colors, line_styles):
-        mean_arr = np.asarray(mean_arr, float)
-
-        # main line
-        line, = ax.plot(time, mean_arr, lw=lw, ls=ls, label=lab, color=col)
-
-        # error band
-        if std_arr is not None:
-            std_arr = np.asarray(std_arr, float)
-            upper = mean_arr + band_k * std_arr
-            lower = mean_arr - band_k * std_arr
-            ax.fill_between(time, lower, upper, alpha=band_alpha, color=line.get_color(), linewidth=0)
-
-        data_dict[lab] = {"mean": mean_arr, "std": (std_arr if std_arr is not None else None)}
-
-    # reference lines
-    if vlines:
-        for x, ls, lwv, c in vlines:
-            ax.axvline(float(x), ls=ls, lw=lwv, color=c)
-
-    if hlines:
-        for y, ls, lwh, c in hlines:
-            ax.axhline(float(y), ls=ls, lw=lwh, color=c)
-
-    if xlim: ax.set_xlim(*xlim)
-    if ylim: ax.set_ylim(*ylim)
-    ax.set_xlabel("time (s)")
-    ax.set_ylabel(ylabel)
-    if title: ax.set_title(title)
-    ax.legend(loc=legend_loc, frameon=True)
-    plt.tight_layout()
-
-    return fig, ax, data_dict
+    return fig, axes, out
