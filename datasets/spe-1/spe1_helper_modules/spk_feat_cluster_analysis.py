@@ -4,31 +4,6 @@ skp_feat_cluster_analysis.py
 Analysis utilities for identifying and visualizing spike feature clustering patterns
 and their temporal dynamics.
 
-This module provides:
-  • Automated detection of multimodal (clustered) spike feature distributions.
-  • Lightweight, dependency-free 1D K-means clustering for separating spike features
-    into groups (e.g., "low" / "high").
-  • Visualizations of cluster evolution over recording time.
-  • ISI-based transition analysis and detection of "burst onsets" defined as
-    long-ISI (high) spikes followed by runs of short-ISI (low) spikes.
-
-Assumptions
------------
-• Spike timestamps in the dataset are stored in **milliseconds** (ms).
-• All plotting functions display time on the x-axis in **seconds** (s).
-• Any `time_range` parameters are specified in **seconds**.
-
-Typical workflow
-----------------
-1) Detect and cluster features that look multimodal:
-     df_clustered, report = cluster_multimodal_features(df, max_k=3)
-2) (Optional) Visualize cluster presence over time:
-     plot_clusters_over_time_min(df_clustered, "spk_times_ms", "log_isi_cluster", time_unit="ms")
-3) Inspect ISI cluster transitions:
-     trans = isi_transition_matrix(df_clustered, "log_isi_cluster")
-4) Identify and plot burst onsets (long→short ISI):
-     df_marked = mark_high_burst_onsets(df_clustered, "log_isi_cluster", "spk_times_ms", min_low_run=2)
-     plot_long_to_short_isi_onsets(df_marked, "spk_times_ms", "log_isi_cluster", time_range=(200, 400))
 """
 
 import numpy as np
@@ -404,6 +379,120 @@ def cluster_multimodal_features(
 
     return df_out, report
 
+def compare_feature_groups(
+    df,
+    features,
+    group_col,                          # <-- flexible group column
+    groups=None,                         # e.g., ("high","low") or ("cluster1","cluster2")
+    group_names=None,                    # plot names, e.g., ("High PW","Low PW")
+    show_plots=True,
+    alpha_normality=0.05,
+    alpha_var=0.05,
+):
+    """
+    Compare numerical features across two groups (flexible group column).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+    features : list of str
+        The feature names to compare.
+    group_col : str
+        Column in `df` that defines the two groups.
+    groups : tuple(str,str) or None
+        Which two group labels to compare. If None, detects the first two unique values.
+    group_names : tuple(str,str) or None
+        Optional pretty names for plots. If None, uses values directly.
+    """
+
+    import numpy as np
+    import pandas as pd
+    from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    results = []
+
+    # Determine groups automatically if not provided
+    vals = df[group_col].dropna().unique()
+    if groups is None:
+        assert len(vals) >= 2, f"Need ≥2 groups in {group_col}, found: {vals}"
+        groups = (vals[0], vals[1])
+    if group_names is None:
+        group_names = groups
+
+    g1, g2 = groups
+    name1, name2 = group_names
+
+    print(f"\nComparing groups: {g1} ({name1}) vs {g2} ({name2}) using column '{group_col}'\n")
+
+    for feat in features:
+        a = pd.to_numeric(df.loc[df[group_col] == g1, feat], errors="coerce").dropna()
+        b = pd.to_numeric(df.loc[df[group_col] == g2, feat], errors="coerce").dropna()
+        if len(a) < 5 or len(b) < 5:
+            print(f"  Skipping {feat}: too few values.")
+            continue
+
+        # --- Shapiro for normality
+        shapiro_a = shapiro(a.sample(min(len(a), 5000), random_state=0))[1]
+        shapiro_b = shapiro(b.sample(min(len(b), 5000), random_state=0))[1]
+        normal_a = shapiro_a > alpha_normality or len(a) > 30
+        normal_b = shapiro_b > alpha_normality or len(b) > 30
+
+        # --- Levene for equal variance
+        levene_p = levene(a, b)[1]
+        equal_var = levene_p > alpha_var
+
+        # --- Choose statistical test
+        if normal_a and normal_b and equal_var:
+            test_name = "t-test"
+            stat, p = ttest_ind(a, b, equal_var=True)
+        elif normal_a and normal_b and not equal_var:
+            test_name = "Welch t-test"
+            stat, p = ttest_ind(a, b, equal_var=False)
+        else:
+            test_name = "Mann–Whitney"
+            stat, p = mannwhitneyu(a, b, alternative="two-sided")
+
+        print(f"{feat:20s}: {test_name:13s} (p={p:.4f})")
+
+        # --- Visualization
+        if show_plots:
+            fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
+            fig.suptitle(f"{feat} ({test_name})", fontsize=12, weight="bold")
+
+            # Histogram
+            sns.histplot(a, ax=axes[0], kde=True, color="#ff7f0e", label=name1, stat="density", alpha=0.5)
+            sns.histplot(b, ax=axes[0], kde=True, color="#1f77b4", label=name2, stat="density", alpha=0.5)
+            axes[0].set_title("Distribution")
+            axes[0].legend()
+
+            # QQ plot
+            probplot(a, dist="norm", plot=axes[1])
+            probplot(b, dist="norm", plot=axes[1])
+            axes[1].set_title("QQ plot")
+
+            # Boxplot
+            sns.boxplot(data=pd.DataFrame({name1: a, name2: b}), ax=axes[2], palette=["#ff7f0e","#1f77b4"])
+            axes[2].set_title("Variance")
+
+            plt.tight_layout()
+            plt.show()
+
+        results.append({
+            "feature": feat,
+            "group1": g1, "group2": g2,
+            "median_group1": np.median(a),
+            "median_group2": np.median(b),
+            "shapiro_p_g1": shapiro_a,
+            "shapiro_p_g2": shapiro_b,
+            "levene_p": levene_p,
+            "test": test_name,
+            "p_value": p
+        })
+
+    return pd.DataFrame(results).sort_values("p_value")
+
 
 def plot_clusters_over_time_min(
     df: pd.DataFrame,
@@ -512,7 +601,7 @@ def plot_clusters_over_time_min(
     plt.show()
 
 
-def isi_transition_matrix(df: pd.DataFrame, cluster_col: str = "log_isi_cluster") -> pd.DataFrame:
+def cluster_transition_matrix(df: pd.DataFrame, cluster_col: str = "log_isi_cluster") -> pd.DataFrame:
     """
     Compute the one-step transition probability matrix between ISI cluster labels.
 
@@ -538,6 +627,12 @@ def isi_transition_matrix(df: pd.DataFrame, cluster_col: str = "log_isi_cluster"
         mat[i, j] += 1
     mat = mat / mat.sum(axis=1, keepdims=True)
     return pd.DataFrame(mat, index=clusters, columns=clusters)
+
+
+
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ ISI transition functions --------------------- #
+# ------------------------------------------------------------------------------------------- #
 
 
 def mark_high_burst_onsets(
@@ -682,367 +777,33 @@ def plot_long_to_short_isi_onsets(
     plt.show()
 
 
-def compare_feature_groups(
-    df,
-    features,
-    group_col,                          # <-- flexible group column
-    groups=None,                         # e.g., ("high","low") or ("cluster1","cluster2")
-    group_names=None,                    # plot names, e.g., ("High PW","Low PW")
-    show_plots=True,
-    alpha_normality=0.05,
-    alpha_var=0.05,
-):
-    """
-    Compare numerical features across two groups (flexible group column).
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-    features : list of str
-        The feature names to compare.
-    group_col : str
-        Column in `df` that defines the two groups.
-    groups : tuple(str,str) or None
-        Which two group labels to compare. If None, detects the first two unique values.
-    group_names : tuple(str,str) or None
-        Optional pretty names for plots. If None, uses values directly.
-    """
-
-    import numpy as np
-    import pandas as pd
-    from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot
-    import seaborn as sns
-    import matplotlib.pyplot as plt
-
-    results = []
-
-    # Determine groups automatically if not provided
-    vals = df[group_col].dropna().unique()
-    if groups is None:
-        assert len(vals) >= 2, f"Need ≥2 groups in {group_col}, found: {vals}"
-        groups = (vals[0], vals[1])
-    if group_names is None:
-        group_names = groups
-
-    g1, g2 = groups
-    name1, name2 = group_names
-
-    print(f"\nComparing groups: {g1} ({name1}) vs {g2} ({name2}) using column '{group_col}'\n")
-
-    for feat in features:
-        a = pd.to_numeric(df.loc[df[group_col] == g1, feat], errors="coerce").dropna()
-        b = pd.to_numeric(df.loc[df[group_col] == g2, feat], errors="coerce").dropna()
-        if len(a) < 5 or len(b) < 5:
-            print(f"  Skipping {feat}: too few values.")
-            continue
-
-        # --- Shapiro for normality
-        shapiro_a = shapiro(a.sample(min(len(a), 5000), random_state=0))[1]
-        shapiro_b = shapiro(b.sample(min(len(b), 5000), random_state=0))[1]
-        normal_a = shapiro_a > alpha_normality or len(a) > 30
-        normal_b = shapiro_b > alpha_normality or len(b) > 30
-
-        # --- Levene for equal variance
-        levene_p = levene(a, b)[1]
-        equal_var = levene_p > alpha_var
-
-        # --- Choose statistical test
-        if normal_a and normal_b and equal_var:
-            test_name = "t-test"
-            stat, p = ttest_ind(a, b, equal_var=True)
-        elif normal_a and normal_b and not equal_var:
-            test_name = "Welch t-test"
-            stat, p = ttest_ind(a, b, equal_var=False)
-        else:
-            test_name = "Mann–Whitney"
-            stat, p = mannwhitneyu(a, b, alternative="two-sided")
-
-        print(f"{feat:20s}: {test_name:13s} (p={p:.4f})")
-
-        # --- Visualization
-        if show_plots:
-            fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
-            fig.suptitle(f"{feat} ({test_name})", fontsize=12, weight="bold")
-
-            # Histogram
-            sns.histplot(a, ax=axes[0], kde=True, color="#ff7f0e", label=name1, stat="density", alpha=0.5)
-            sns.histplot(b, ax=axes[0], kde=True, color="#1f77b4", label=name2, stat="density", alpha=0.5)
-            axes[0].set_title("Distribution")
-            axes[0].legend()
-
-            # QQ plot
-            probplot(a, dist="norm", plot=axes[1])
-            probplot(b, dist="norm", plot=axes[1])
-            axes[1].set_title("QQ plot")
-
-            # Boxplot
-            sns.boxplot(data=pd.DataFrame({name1: a, name2: b}), ax=axes[2], palette=["#ff7f0e","#1f77b4"])
-            axes[2].set_title("Variance")
-
-            plt.tight_layout()
-            plt.show()
-
-        results.append({
-            "feature": feat,
-            "group1": g1, "group2": g2,
-            "median_group1": np.median(a),
-            "median_group2": np.median(b),
-            "shapiro_p_g1": shapiro_a,
-            "shapiro_p_g2": shapiro_b,
-            "levene_p": levene_p,
-            "test": test_name,
-            "p_value": p
-        })
-
-    return pd.DataFrame(results).sort_values("p_value")
-
-
 
 # ------------------------------------------------------------------------------------------- #
-# -------------------- Get LFP windows around/pre/post transition spikes--------------------- #
+# --------------------  Extract LFP windows --------------------- #
 # ------------------------------------------------------------------------------------------- #
 
 
 
 
-def transition_next_isi_windows(
-    df: pd.DataFrame,
-    time_col: str = "spk_times_ms",              # spike times in ms
-    onset_col: str = "is_long_to_short_isi_onset"
-) -> pd.DataFrame:
-    """
-    For each transition spike (onset_col == True), compute the ISI to the very next spike.
-    Returns one row per transition with:
-      onset_index, onset_time_s, next_spike_time_s, next_isi_s, has_next
-    """
-    d = df.sort_values(time_col).reset_index(drop=True).copy()
-    t_ms = pd.to_numeric(d[time_col], errors="coerce").to_numpy(float)
-    is_onset = d[onset_col].astype(bool).to_numpy()
-
-    rows = []
-    n = len(d)
-    for i in np.where(is_onset)[0]:
-        t0_s = t_ms[i] / 1000.0 if np.isfinite(t_ms[i]) else np.nan
-        if i + 1 < n and np.isfinite(t_ms[i+1]):
-            tn_s = t_ms[i+1] / 1000.0
-            next_isi_s = max(0.0, tn_s - t0_s) if np.isfinite(t0_s) else np.nan
-            rows.append({
-                "onset_index": int(i),
-                "onset_time_s": float(t0_s),
-                "next_spike_time_s": float(tn_s),
-                "next_isi_s": float(next_isi_s),
-                "has_next": True,
-            })
-        else:
-            rows.append({
-                "onset_index": int(i),
-                "onset_time_s": float(t0_s),
-                "next_spike_time_s": np.nan,
-                "next_isi_s": np.nan,
-                "has_next": False,
-            })
-
-    return pd.DataFrame(rows)
 
 
 
-def make_transition_table(
-    df_marked: pd.DataFrame,
-    time_col: str = "spk_times_ms",
-    onset_col: str = "is_long_to_short_isi_onset",
-) -> pd.DataFrame:
-    """
-    One row per transition with the immediate next spike.
-    Columns: onset_index, onset_time_s, next_time_s, has_next
-    """
-    d = df_marked.sort_values(time_col).reset_index(drop=True)
-    t_ms = pd.to_numeric(d[time_col], errors="coerce").to_numpy(float)
-    onset_mask = d[onset_col].astype(bool).to_numpy()
-
-    rows = []
-    n = len(d)
-    for i in np.where(onset_mask)[0]:
-        onset_s = t_ms[i] / 1000.0
-        if i + 1 < n and np.isfinite(t_ms[i + 1]):
-            next_s = t_ms[i + 1] / 1000.0
-            has_next = True
-        else:
-            next_s = np.nan
-            has_next = False
-        rows.append({
-            "onset_index": int(i),
-            "onset_time_s": float(onset_s),
-            "next_time_s": float(next_s) if has_next else np.nan,
-            "has_next": bool(has_next),
-        })
-    return pd.DataFrame(rows)
 
 
-def extract_transition_windows_dynamic(
-    lfp_uv: np.ndarray,
-    fs: float,
-    transitions_df: pd.DataFrame,
-    pre_s: float,                  # time BEFORE transition (s)
-    post_after_next_s: float,      # time AFTER NEXT spike (s)
-) -> tuple[pd.DataFrame, list[np.ndarray], list[np.ndarray]]:
-    """
-    For each transition with a next spike, build a window:
-      [onset_time - pre_s,  next_time + post_after_next_s]
-    No padding: windows that fall outside the LFP bounds are skipped.
 
-    Returns
-    -------
-    dyn_df : DataFrame with columns:
-        onset_index, onset_time_s, next_time_s, t_start_s, t_end_s, duration_s, kept=True
-    windows_uv : list of 1D arrays (µV), one per kept transition
-    times_rel_s : list of 1D arrays (seconds), same length as windows; 0 at transition
-    """
-    lfp = np.asarray(lfp_uv, float)
-    n = lfp.size
-    fs = float(fs)
 
-    base = transitions_df.copy()
-    base = base[base["has_next"]].reset_index(drop=True)
-    if base.empty:
-        return base.assign(kept=False), [], []
 
-    # accept either column name from upstream code
-    next_col = "next_time_s" if "next_time_s" in base.columns else "next_spike_time_s"
-    if next_col not in base.columns:
-        raise KeyError("transitions_df must contain 'next_time_s' or 'next_spike_time_s'.")
 
-    out_rows, win_list, t_list = [], [], []
 
-    for _, r in base.iterrows():
-        t0 = float(r["onset_time_s"])
-        tn = float(r[next_col])   # unify downstream as next_time_s
 
-        t_start = t0 - pre_s
-        t_end   = tn + post_after_next_s
 
-        i0 = int(round(t_start * fs))
-        i1 = int(round(t_end   * fs))
 
-        # keep only fully inside the recording
-        if i0 < 0 or i1 > n or i1 <= i0:
-            continue
 
-        seg = lfp[i0:i1]
-        t_rel = (np.arange(i0, i1) / fs) - t0
 
-        win_list.append(seg)
-        t_list.append(t_rel)
-        out_rows.append({
-            "onset_index": int(r["onset_index"]),
-            "onset_time_s": t0,
-            "next_time_s": tn,          # standardized name
-            "t_start_s": float(t_start),
-            "t_end_s": float(t_end),
-            "duration_s": float(t_end - t_start),
-            "kept": True,
-        })
 
-    dyn_df = pd.DataFrame(out_rows)
-    return dyn_df, win_list, t_list
 
-def plot_transition_heatmap(
-    windows: List[np.ndarray],
-    times:   List[np.ndarray],
-    title: str = "Transition windows (µV)",
-    # pass per-event times (s, relative to transition) to mark on each row
-    markers: Optional[Dict[str, np.ndarray]] = None,
-    # per-marker style dictionaries
-    marker_style: Optional[Dict[str, dict]] = None,
-    n_grid: int = 1200,
-    cmap: str = "viridis",
-):
-    """
-    Heatmap for variable-length, transition-centered LFP windows (µV).
-    Each window has its own timebase (seconds), with 0 at transition.
 
-    Always draws a vertical dashed line at t=0 (transition). You can add a
-    'Next spike' marker vector of the same length as the number of events.
-    """
-    if not isinstance(windows, (list, tuple)) or not isinstance(times, (list, tuple)):
-        raise ValueError("Provide windows and times as lists (variable-length mode).")
-    if len(windows) == 0 or len(windows) != len(times):
-        raise ValueError("windows and times must be non-empty and same length.")
 
-    # sort by duration to make the heatmap easier to read
-    durs = np.array([tt[-1] - tt[0] if len(tt) else 0.0 for tt in times], float)
-    order = np.argsort(durs)
-    win_list = [np.asarray(windows[i], float) for i in order]
-    t_list   = [np.asarray(times[i],   float) for i in order]
-
-    # common grid for display only (no padding of data)
-    tmin = min(tt[0] for tt in t_list)
-    tmax = max(tt[-1] for tt in t_list)
-    grid = np.linspace(tmin, tmax, int(n_grid))
-
-    M = np.full((len(win_list), grid.size), np.nan, float)
-    for r, (sig, tt) in enumerate(zip(win_list, t_list)):
-        if sig.size == 0 or tt.size == 0:
-            continue
-        m = (grid >= tt[0]) & (grid <= tt[-1])
-        M[r, m] = np.interp(grid[m], tt, sig)
-
-    # robust color limits from 5–95%
-    finite_vals = M[np.isfinite(M)]
-    if finite_vals.size:
-        vmin = np.percentile(finite_vals, 5)
-        vmax = np.percentile(finite_vals, 95)
-        if np.isclose(vmin, vmax):
-            pad = 1e-6 if vmax == 0 else 0.05 * abs(vmax)
-            vmin, vmax = vmin - pad, vmax + pad
-    else:
-        vmin, vmax = -1, 1
-
-    fig, ax = plt.subplots(figsize=(9.5, 4.2))
-    im = ax.imshow(
-        M, aspect="auto", origin="lower", cmap=cmap,
-        extent=[grid[0], grid[-1], 0, M.shape[0]],
-        vmin=vmin, vmax=vmax
-    )
-
-    # vertical line at transition (t=0)
-    ax.axvline(0, color="w", lw=1.2, ls="--", label="Transition")
-
-    # markers (e.g., next spike)
-    default_styles = {
-        "Transition": {"s": 28, "facecolors": "white",  "edgecolors": "black", "lw": 0.9, "zorder": 6},
-        "Next spike": {"s": 28, "facecolors": "#ff7f0e","edgecolors": "black", "lw": 0.9, "zorder": 6},
-    }
-    marker_style = {} if marker_style is None else {**default_styles, **marker_style}
-
-    if markers:
-        y_rows = np.arange(M.shape[0]) + 0.5
-        for name, arr in markers.items():
-            arr = np.asarray(arr, float)
-            if arr.size != len(windows):
-                raise ValueError(f"Marker '{name}' length ({arr.size}) must equal number of events ({len(windows)})")
-            # reorder to current (sorted) display order
-            arr_sorted = arr[order]
-            finite = np.isfinite(arr_sorted) & (arr_sorted >= grid[0]) & (arr_sorted <= grid[-1])
-            ax.scatter(arr_sorted[finite], y_rows[finite], label=name, **marker_style.get(name, {}))
-
-    ax.set_ylabel("Events (sorted by duration)")
-    ax.set_xlabel("Time (s)")
-    ax.set_title(title)
-
-    cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("LFP (µV)")
-    cbar.ax.yaxis.set_major_formatter(mpl.ticker.ScalarFormatter(useMathText=True))
-
-    # make legend frame slightly dark so white markers are visible
-    leg = ax.legend(loc="upper right", fontsize=8,frameon=True)
-    if leg:
-        leg.get_frame().set_facecolor((0, 0, 0, 0.25))
-        leg.get_frame().set_edgecolor("black")
-
-    for text in leg.get_texts():
-        text.set_color("white")
-    plt.tight_layout()
-    plt.show()
 
 
 
@@ -1089,10 +850,11 @@ def make_random_control_table(
     return pd.DataFrame(rows)
 
 
+
+# ------------------------------------------------------------------------------------------- #
+# --------------------  LFP time resolved analysis --------------------- #
 # ------------------------------------------------------------------------------------------- #
 
-#LFP specparma time resolved analysis
-# ------------------------------------------------------------------------------------------- #
 def compute_lfp_windows(
     lfp_signal: np.ndarray,
     fs: float,
@@ -1431,6 +1193,11 @@ def run_specparam_on_transition_windows(
 
 
 
+
+# ------------------------------------------------------------------------------------------- #
+# --------------------  Time-resolved visualziations  --------------------- #
+# ------------------------------------------------------------------------------------------- #
+
 #plot heatmap for specparam results in transitions
 def plot_specparam_transition_heatmap(
     spec_df: pd.DataFrame,
@@ -1572,8 +1339,6 @@ def plot_specparam_transition_heatmap(
 
     plt.tight_layout()
     plt.show()
-
-
 
 #TIME RESOLVED SPECTOGRAM 
 
