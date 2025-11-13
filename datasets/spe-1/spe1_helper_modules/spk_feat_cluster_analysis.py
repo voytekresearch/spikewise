@@ -1746,3 +1746,81 @@ def plot_exponent_and_gamma(
     plt.tight_layout()
     plt.show()
     return T, exp_mean,exp_std, gam_mean, gam_std
+
+
+
+
+def plot_traces_with_bands(
+    time: np.ndarray,
+    traces: List[np.ndarray],
+    stds: Optional[List[np.ndarray]] = None,
+    labels: Optional[List[str]] = None,
+    colors: Optional[List[str]] = None,
+    line_styles: Optional[List[str]] = None,   # <–– NEW
+    *,
+    xlim: Optional[Tuple[float, float]] = None,
+    ylim: Optional[Tuple[float, float]] = None,
+    ylabel: str = "z-score",
+    title: Optional[str] = None,
+    legend_loc: str = "best",
+    lw: float = 2.0,
+    band_alpha: float = 0.22,
+    band_k: float = 1.0,
+    vlines: Optional[List[Tuple[float, str, float, str]]] = None,
+    hlines: Optional[List[Tuple[float, str, float, str]]] = None,
+) -> Tuple[plt.Figure, plt.Axes, Dict[str, Dict[str, np.ndarray]]]:
+
+    time = np.asarray(time, float)
+    n = len(traces)
+
+    if labels is None:
+        labels = [f"trace {i}" for i in range(n)]
+    if colors is None:
+        colors = [None] * n
+    if stds is None:
+        stds = [None] * n
+    if line_styles is None:                 # default all solid
+        line_styles = ["-"] * n             # <–– NEW default
+
+    # checks
+    assert len(labels) == n
+    assert len(colors) == n
+    assert len(stds) == n
+    assert len(line_styles) == n            # <–– NEW check
+
+    fig, ax = plt.subplots(figsize=(8, 4.6))
+    data_dict: Dict[str, Dict[str, np.ndarray]] = {}
+
+    for mean_arr, std_arr, lab, col, ls in zip(traces, stds, labels, colors, line_styles):
+        mean_arr = np.asarray(mean_arr, float)
+
+        # main line
+        line, = ax.plot(time, mean_arr, lw=lw, ls=ls, label=lab, color=col)
+
+        # error band
+        if std_arr is not None:
+            std_arr = np.asarray(std_arr, float)
+            upper = mean_arr + band_k * std_arr
+            lower = mean_arr - band_k * std_arr
+            ax.fill_between(time, lower, upper, alpha=band_alpha, color=line.get_color(), linewidth=0)
+
+        data_dict[lab] = {"mean": mean_arr, "std": (std_arr if std_arr is not None else None)}
+
+    # reference lines
+    if vlines:
+        for x, ls, lwv, c in vlines:
+            ax.axvline(float(x), ls=ls, lw=lwv, color=c)
+
+    if hlines:
+        for y, ls, lwh, c in hlines:
+            ax.axhline(float(y), ls=ls, lw=lwh, color=c)
+
+    if xlim: ax.set_xlim(*xlim)
+    if ylim: ax.set_ylim(*ylim)
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel(ylabel)
+    if title: ax.set_title(title)
+    ax.legend(loc=legend_loc, frameon=True)
+    plt.tight_layout()
+
+    return fig, ax, data_dict
