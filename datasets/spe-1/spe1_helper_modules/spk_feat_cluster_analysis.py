@@ -1429,3 +1429,149 @@ def plot_window_feature_groups_heatmap(
     cbar.ax.yaxis.set_major_formatter(mpl.ticker.ScalarFormatter(useMathText=True))
 
     return fig, axes, out
+
+
+
+
+def plot_window_feature_group_traces(
+    groups: Dict[str, Dict[str, Any]],
+    *,
+    time_unit: str = "ms",          # "ms" or "s" for the values in times_rel & next_rel
+    ylabel: str = "value",
+    title: str = "Average feature around spikes",
+    band_k: float = 1.0,            # how many SDs for the shaded band
+    band_alpha: float = 0.22,
+    colors: Optional[Dict[str, str]] = None,   # optional: {"Group name": "#hex"}
+) -> Tuple[plt.Figure, plt.Axes, Dict[str, Dict[str, np.ndarray]]]:
+    """
+    Plot average ± SD traces for one or more groups of spike–centered windows.
+
+    Parameters
+    ----------
+    groups : dict
+        {"Group name": {"windows": [...], "times_rel": [...], "next_rel": [...]} }
+        - windows   : list of 1D arrays (feature values per window)
+        - times_rel : list of 1D arrays (same length as each window)
+        - next_rel  : 1D array/list of scalar next-spike times (same length as windows)
+    time_unit : {"ms","s"}
+        Unit of times_rel and next_rel.
+    band_k : float
+        Multiplier for SD (1.0 = 1×SD band).
+    """
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    if time_unit not in ("ms", "s"):
+        raise ValueError("time_unit must be 'ms' or 's'.")
+
+    # ---------- build a common time grid from the first non-empty group ----------
+    base_T = None
+    for g in groups.values():
+        t_list = g.get("times_rel", [])
+        if t_list and len(t_list[0]) > 1:
+            base_T = np.asarray(t_list[0], float)
+            break
+
+    if base_T is None:
+        raise ValueError("No non-empty times_rel found in any group.")
+
+    # convert to seconds if needed
+    if time_unit == "ms":
+        Tgrid = base_T / 1000.0
+    else:
+        Tgrid = base_T.copy()
+
+    # ---------- set up plotting ----------
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    out: Dict[str, Dict[str, np.ndarray]] = {}
+
+    # color cycle
+    default_colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    def _get_color(i, name):
+        if colors and name in colors:
+            return colors[name]
+        if default_colors:
+            return default_colors[i % len(default_colors)]
+        return None  # let matplotlib choose
+
+    # ---------- process each group ----------
+    for gi, (name, info) in enumerate(groups.items()):
+        windows   = info.get("windows", [])
+        times_rel = info.get("times_rel", [])
+        next_rel  = np.asarray(info.get("next_rel", []), float)
+
+        if len(windows) == 0 or len(times_rel) == 0:
+            print(f"Group '{name}': empty; skipping.")
+            continue
+
+        if len(windows) != len(times_rel):
+            raise ValueError(
+                f"Group '{name}': len(windows) ({len(windows)}) "
+                f"!= len(times_rel) ({len(times_rel)})."
+            )
+
+        # Interpolate each window onto Tgrid
+        mats = []
+        for w, t in zip(windows, times_rel):
+            w = np.asarray(w, float)
+            t = np.asarray(t, float)
+            if w.size != t.size or w.size < 2:
+                continue
+
+            # convert this window's timebase to seconds
+            if time_unit == "ms":
+                t_sec = t / 1000.0
+            else:
+                t_sec = t
+
+            # only interpolate where this window actually has support
+            yi = np.full_like(Tgrid, np.nan, dtype=float)
+            inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
+            if inside.any():
+                yi[inside] = np.interp(Tgrid[inside], t_sec, w)
+                mats.append(yi)
+
+        if len(mats) == 0:
+            print(f"Group '{name}': no windows overlapped the common time grid; skipping.")
+            continue
+
+        A = np.stack(mats, axis=0)          # (n_windows, n_time)
+        mean = np.nanmean(A, axis=0)
+        sd   = np.nanstd(A, axis=0)
+
+        col = _get_color(gi, name)
+        ax.plot(Tgrid, mean, lw=2.0, color=col, label=name)
+        ax.fill_between(
+            Tgrid, mean - band_k * sd, mean + band_k * sd,
+            color=col, alpha=band_alpha, linewidth=0
+        )
+
+        # mean next-spike time for this group
+        mean_next_s = np.nan
+        if next_rel.size:
+            if time_unit == "ms":
+                next_s = next_rel / 1000.0
+            else:
+                next_s = next_rel
+            mean_next_s = float(np.nanmean(next_s))
+            ax.axvline(mean_next_s, color=col, ls=":", lw=1.7)
+
+        out[name] = {
+            "time_s": Tgrid,
+            "mean": mean,
+            "std": sd,
+            "mean_next_rel_s": mean_next_s,
+            "n_windows": A.shape[0],
+        }
+
+    # spike at 0
+    ax.axvline(0.0, color="k", ls="--", lw=2.0, label="spike")
+
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend(frameon=True, loc="best")
+    plt.tight_layout()
+
+    return fig, ax, out
