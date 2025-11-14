@@ -883,28 +883,6 @@ def extract_lfp_windows(
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ------------------------------------------------------------------------------------------- #
 # --------------------  LFP time resolved analysis --------------------- #
 # ------------------------------------------------------------------------------------------- #
@@ -988,7 +966,7 @@ def compute_lfp_windows(
     else:
         return model, freqs, window_times
 
-# -γ-AUC helper (also returns aperiodic offset & exponent & knee) ---
+
 
 
 
@@ -1459,8 +1437,7 @@ def plot_window_feature_group_traces(
         Multiplier for SD (1.0 = 1×SD band).
     """
 
-    import numpy as np
-    import matplotlib.pyplot as plt
+ 
 
     if time_unit not in ("ms", "s"):
         raise ValueError("time_unit must be 'ms' or 's'.")
@@ -1527,9 +1504,14 @@ def plot_window_feature_group_traces(
 
             # only interpolate where this window actually has support
             yi = np.full_like(Tgrid, np.nan, dtype=float)
-            inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
-            if inside.any():
-                yi[inside] = np.interp(Tgrid[inside], t_sec, w)
+
+            # find overlapping region between the Tgrid and this window
+            left  = max(Tgrid[0], t_sec[0])
+            right = min(Tgrid[-1], t_sec[-1])
+            
+            if right > left:
+                mask = (Tgrid >= left) & (Tgrid <= right)
+                yi[mask] = np.interp(Tgrid[mask], t_sec, w)
                 mats.append(yi)
 
         if len(mats) == 0:
