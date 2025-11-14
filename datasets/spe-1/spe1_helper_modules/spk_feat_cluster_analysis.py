@@ -11,7 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import mne
 from specparam import SpectralTimeModel
 from typing import Optional, List, Tuple, Dict, Any, Literal
@@ -1666,6 +1666,119 @@ def plot_aperiodic_fit_with_band_auc(
     plt.tight_layout()
 
     return fig, ax, auc
+
+
+def boxplot_feature_window_stats(
+    feat_groups: Dict[str, Dict[str, Any]],
+    window: Tuple[float, float],
+    *,
+    reducer: str = "mean",
+    min_points: int = 1,
+    group_order: Optional[list] = None,
+    feature_label: str = "feature value",
+    time_unit: str = "s",
+    figsize: Tuple[float, float] = (7.5, 5.5),
+    p_round: int = 4,
+):
+    """
+    Clean, consistent-color boxplots for a feature extracted from a time window.
+    No grid. Colors align perfectly with trace-plotting color cycle.
+    """
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy import stats
+
+    # ==============================
+    # Extract values
+    # ==============================
+    summary = summarize_feature_in_window(
+        feat_groups,
+        window=window,
+        reducer=reducer,
+        min_points=min_points,
+    )
+
+    summary = {g: v for g, v in summary.items() if v.size > 0}
+    if len(summary) == 0:
+        raise ValueError("No groups have valid events in the requested window.")
+
+    if group_order is None:
+        group_order = list(summary.keys())
+    else:
+        group_order = [g for g in group_order if g in summary]
+
+    data_arrays = [summary[g] for g in group_order]
+    n_groups = len(group_order)
+
+    # ==============================
+    # Stats
+    # ==============================
+    stats_res = {"n_groups": n_groups,
+                 "groups": group_order,
+                 "window": window,
+                 "n_per_group": {g: len(summary[g]) for g in group_order}}
+
+    if n_groups == 1:
+        test_str = "Only 1 group — no stats"
+        stats_res.update(test=None, stat=np.nan, p=np.nan)
+
+    elif n_groups == 2:
+        t, p = stats.ttest_ind(data_arrays[0], data_arrays[1],
+                               equal_var=False, nan_policy="omit")
+        stats_res.update(test="ttest", stat=float(t), p=float(p))
+        test_str = f"t = {t:.3f}, p = {p:.{p_round}f}"
+
+    else:
+        F, p = stats.f_oneway(*data_arrays)
+        stats_res.update(test="anova", stat=float(F), p=float(p))
+        test_str = f"F = {F:.3f}, p = {p:.{p_round}f}"
+
+    # force long-format if p is super small
+    if stats_res["p"] is not None and stats_res["p"] < 10**(-p_round):
+        test_str = f"{stats_res['test'].upper()}: p < 1e-{p_round}"
+
+    # ==============================
+    # Plotting
+    # ==============================
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Use the SAME default color cycle as your trace plotting
+    default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    colors = default_colors[:n_groups]
+
+    box = ax.boxplot(
+        data_arrays,
+        labels=group_order,
+        patch_artist=True,
+        showfliers=True,
+        boxprops=dict(linewidth=1.5),
+        medianprops=dict(color="black", linewidth=2),
+        whiskerprops=dict(linewidth=1.4),
+        capprops=dict(linewidth=1.4),
+    )
+
+    for patch, color in zip(box["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.55)
+        patch.set_edgecolor("black")
+
+    # no grid
+    ax.grid(False)
+
+    ax.set_ylabel(feature_label, fontsize=14)
+    t0, t1 = window
+    ax.set_title(
+        f"{feature_label} in window [{t0:.3f}, {t1:.3f}] {time_unit}\n{test_str}",
+        fontsize=15,
+        pad=18,
+    )
+
+    ax.tick_params(axis="x", labelrotation=20, labelsize=11)
+    ax.tick_params(axis="y", labelsize=12)
+
+    fig.tight_layout()
+    return fig, ax, stats_res
 # ------------------------------------------------------------------------------------------- #
 # --------------------  Time-resolved post specparam analysis  --------------------- #
 # ------------------------------------------------------------------------------------------- #
@@ -1784,3 +1897,83 @@ def make_feature_groups(time_res_results, feature, band=None):
         }
 
     return feat_groups
+
+
+
+
+def summarize_feature_in_window(
+    feat_groups: Dict[str, Dict[str, Any]],
+    window: Tuple[float, float],
+    reducer: str = "mean",
+    min_points: int = 1,
+) -> Dict[str, np.ndarray]:
+    """
+    For each group, summarize the feature within a given time window around the spike.
+
+    Parameters
+    ----------
+    feat_groups : dict
+        Output of make_feature_groups, e.g.:
+        {
+          "Transition spikes (LFP)": {
+              "windows": [array(n_t), array(n_t), ...],
+              "times_rel": [array(n_t), array(n_t), ...],  # same length as windows
+              "next_rel": array(n_events),
+          },
+          ...
+        }
+        The 'times_rel' are in whatever units you used when building feat_groups
+        (in your current pipeline: seconds).
+    window : (float, float)
+        Time window (t_min, t_max) in *same units as times_rel*.
+        Example: (-0.2, 0.0) for [-200 ms, spike] if times_rel is in seconds.
+    reducer : {"mean", "median", "max", "min"}
+        How to collapse multiple samples within the window into a single scalar
+        per event.
+    min_points : int
+        Minimum number of samples inside the window for an event to be kept.
+        If fewer, that event is dropped.
+
+    Returns
+    -------
+    out : dict
+        { group_name: 1D np.ndarray of per-event feature values }
+        Only events with >= min_points samples inside the window are included.
+    """
+
+    t_min, t_max = window
+    out: Dict[str, np.ndarray] = {}
+
+    if reducer not in ("mean", "median", "max", "min"):
+        raise ValueError("reducer must be one of: 'mean', 'median', 'max', 'min'.")
+
+    for gname, gdict in feat_groups.items():
+        win_list   = gdict.get("windows", [])
+        times_list = gdict.get("times_rel", [])
+
+        vals = []
+
+        for w, t in zip(win_list, times_list):
+            w = np.asarray(w, float)
+            t = np.asarray(t, float)
+            if w.size == 0 or t.size == 0 or w.size != t.size:
+                continue
+
+            mask = (t >= t_min) & (t <= t_max)
+            if np.count_nonzero(mask) < min_points:
+                continue
+
+            segment = w[mask]
+            if reducer == "mean":
+                v = float(np.nanmean(segment))
+            elif reducer == "median":
+                v = float(np.nanmedian(segment))
+            elif reducer == "max":
+                v = float(np.nanmax(segment))
+            else:  # "min"
+                v = float(np.nanmin(segment))
+
+            if np.isfinite(v):
+                vals.append(v)
+
+        out[gname] = np.asarray(vals, float)
