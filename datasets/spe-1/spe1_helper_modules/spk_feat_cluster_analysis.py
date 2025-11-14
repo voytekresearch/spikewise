@@ -1877,7 +1877,7 @@ def make_feature_groups(time_res_results, feature, band=None):
                 continue
 
             windows_feat.append(arr)
-            windows_times.append(t_bins)
+            windows_times.append(t_bins*1000)
             windows_next.append(next_rel)
 
             # optional: keep epoch indices if present
