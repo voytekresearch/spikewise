@@ -14,7 +14,7 @@ import seaborn as sns
 from tqdm.auto import tqdm
 import mne
 from specparam import SpectralTimeModel
-from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union
+from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union, Sequence
 from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway
 
 
@@ -32,6 +32,7 @@ def kmeans_1d_cluster(
     tol: float = 1e-6,
     plot: bool = False,
     bins: int = 40,
+    cluster_colors: Optional[Sequence[str]] = None,  # NEW
 ):
     """
     Perform simple 1D K-means clustering on a given numeric feature.
@@ -56,6 +57,9 @@ def kmeans_1d_cluster(
         If True, plots a histogram colored by cluster with vertical cutoff lines.
     bins : int, default=40
         Number of histogram bins when `plot=True`.
+    cluster_colors : sequence of str, optional
+        Optional list/tuple of colors, one per cluster. If None, uses
+        Matplotlib's default color cycle.
 
     Returns
     -------
@@ -65,11 +69,6 @@ def kmeans_1d_cluster(
         Cluster centers (sorted ascending).
     cutoffs : np.ndarray
         Midpoints between adjacent sorted centers (length k-1).
-
-    Notes
-    -----
-    • Non-finite values (NaN/±inf) are ignored for fitting and remain NaN in the label column.
-    • Initialization uses quantiles for stability; falls back to linear spacing if needed.
     """
     if feature not in df.columns:
         raise KeyError(f"Column '{feature}' not found in DataFrame.")
@@ -134,14 +133,38 @@ def kmeans_1d_cluster(
         label_array[full_idx] = labels[i]
     df_out[out_col] = label_array
 
+    # ---------------- PLOT (optional) ----------------
     if plot:
         plt.figure(figsize=(7.5, 4.2))
+
+        # Decide colors
+        if cluster_colors is None:
+            base_colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+        else:
+            base_colors = list(cluster_colors)
+
         for i in range(k):
-            plt.hist(data[assign_sorted == i], bins=bins, alpha=0.6, label=labels[i])
+            if base_colors:
+                col = base_colors[i % len(base_colors)]
+            else:
+                col = None  # let Matplotlib decide
+
+            plt.hist(
+                data[assign_sorted == i],
+                bins=bins,
+                alpha=0.7,
+                label=labels[i],
+                color=col,
+                edgecolor="black",
+                linewidth=0.6,
+            )
+
+        # Cutoff lines (neutral color)
         for c in cutoffs:
-            plt.axvline(c, linestyle="--", linewidth=2)
+            plt.axvline(c, linestyle="--", linewidth=2, color="gray")
+
         plt.xlabel(feature)
-        plt.ylabel("count")
+        plt.ylabel("Count")
         plt.title(f"{feature} clusters (k={k})")
         if k <= 10:
             plt.legend()
@@ -149,6 +172,7 @@ def kmeans_1d_cluster(
         plt.show()
 
     return df_out, centers, cutoffs
+
 
 
 def _fd_bins(data: np.ndarray) -> int:
@@ -366,7 +390,7 @@ def cluster_multimodal_features(
         # cluster
         new_col = f"{feat}{suffix}"
         df_out, centers, cutoffs = kmeans_1d_cluster(
-            df_out, feature=feat, k=k_suggest, labels=labels, new_col=new_col, plot=plot_each
+            df_out, feature=feat, k=k_suggest, labels=labels, new_col=new_col, plot=plot_each, cluster_colors = [ 'darkgreen', 'brown','blue']
         )
 
         report[feat] = {
@@ -463,8 +487,8 @@ def compare_feature_groups(
             fig.suptitle(f"{feat} ({test_name})", fontsize=12, weight="bold")
 
             # Histogram
-            sns.histplot(a, ax=axes[0], kde=True, color="#ff7f0e", label=name1, stat="density", alpha=0.5)
-            sns.histplot(b, ax=axes[0], kde=True, color="#1f77b4", label=name2, stat="density", alpha=0.5)
+            sns.histplot(a, ax=axes[0], kde=True, color="brown", label=name1, stat="density", alpha=0.5)
+            sns.histplot(b, ax=axes[0], kde=True, color="darkgreen", label=name2, stat="density", alpha=0.5)
             axes[0].set_title("Distribution")
             axes[0].legend()
 
@@ -1222,10 +1246,164 @@ def run_time_resolved_specparam_for_groups(
 # ------------------------------------------------------------------------------------------- #
 # --------------------  Time-resolved and window visualziations  --------------------- #
 # ------------------------------------------------------------------------------------------- #
+def plot_window_feature_group_traces(
+    groups: Dict[str, Dict[str, Any]],
+    time_unit: str = "ms",          # "ms" or "s" for values in times_rel & next_rel
+    ylabel: str = "value",
+    title: str = "Average feature around spikes",
+    band_k: float = 1.0,            # SD multiplier for shaded band
+    band_alpha: float = 0.22,
+    colors: Optional[Dict[str, str]] = None,   # {"Group name": "#hex"}
+    tmin: Optional[float] = None,   # time crop (same units as *seconds* axis)
+    tmax: Optional[float] = None,   # time crop (same units as seconds axis)
+) -> Tuple[plt.Figure, plt.Axes, Dict[str, Dict[str, np.ndarray]]]:
+    """
+    Plot average ± SD traces for one or more groups of spike–centered windows.
+
+    groups : {
+        "Group name": {
+            "windows":   [1D feature arrays],
+            "times_rel": [1D time arrays, same length as each window],
+            "next_rel":  1D array/list of scalar next-spike times,
+        },
+        ...
+    }
+
+    NOTE: `tmin` and `tmax` are interpreted in **seconds**, i.e. after converting
+    from ms if `time_unit == "ms"`.
+    """
+
+    if time_unit not in ("ms", "s"):
+        raise ValueError("time_unit must be 'ms' or 's'.")
+
+    # ---------- Build a common time grid from the first non-empty group ----------
+    base_T = None
+    for g in groups.values():
+        t_list = g.get("times_rel", [])
+        if t_list and len(t_list[0]) > 1:
+            base_T = np.asarray(t_list[0], float)
+            break
+
+    if base_T is None:
+        raise ValueError("No non-empty times_rel found in any group.")
+
+    # Convert grid to seconds
+    if time_unit == "ms":
+        Tgrid = base_T / 1000.0
+    else:
+        Tgrid = base_T.copy()
+
+    # Optional time cropping on the grid (in seconds)
+    if (tmin is not None) or (tmax is not None):
+        mask = np.ones_like(Tgrid, dtype=bool)
+        if tmin is not None:
+            mask &= (Tgrid >= tmin)
+        if tmax is not None:
+            mask &= (Tgrid <= tmax)
+
+        if not np.any(mask):
+            raise ValueError("tmin/tmax crop removed all time points.")
+
+        Tgrid = Tgrid[mask]
+
+    # ---------- set up plotting ----------
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    out: Dict[str, Dict[str, np.ndarray]] = {}
+
+    default_colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+
+    def _get_color(i, name):
+        if colors is not None and name in colors:
+            return colors[name]
+        if default_colors:
+            return default_colors[i % len(default_colors)]
+        return None  # let matplotlib choose
+
+    # ---------- process each group ----------
+    for gi, (name, info) in enumerate(groups.items()):
+        windows   = info.get("windows", [])
+        times_rel = info.get("times_rel", [])
+        next_rel  = np.asarray(info.get("next_rel", []), float)
+
+        if len(windows) == 0 or len(times_rel) == 0:
+            print(f"Group '{name}': empty; skipping.")
+            continue
+
+        if len(windows) != len(times_rel):
+            raise ValueError(
+                f"Group '{name}': len(windows) ({len(windows)}) "
+                f"!= len(times_rel) ({len(times_rel)})."
+            )
+
+        mats = []
+        for w, t in zip(windows, times_rel):
+            w = np.asarray(w, float)
+            t = np.asarray(t, float)
+            if w.size != t.size or w.size < 2:
+                continue
+
+            # convert this window's timebase to seconds
+            if time_unit == "ms":
+                t_sec = t / 1000.0
+            else:
+                t_sec = t
+
+            yi = np.full_like(Tgrid, np.nan, dtype=float)
+            inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
+            if inside.any():
+                yi[inside] = np.interp(Tgrid[inside], t_sec, w)
+                mats.append(yi)
+
+        if len(mats) == 0:
+            print(f"Group '{name}': no windows overlapped the common time grid; skipping.")
+            continue
+
+        A = np.stack(mats, axis=0)          # (n_windows, n_time)
+        mean = np.nanmean(A, axis=0)
+        sd   = np.nanstd(A, axis=0)
+
+        col = _get_color(gi, name)
+        ax.plot(Tgrid, mean, lw=2.0, color=col, label=name)
+        ax.fill_between(
+            Tgrid, mean - band_k * sd, mean + band_k * sd,
+            color=col, alpha=band_alpha, linewidth=0
+        )
+
+        # mean next-spike time for this group (in seconds)
+        mean_next_s = np.nan
+        if next_rel.size:
+            if time_unit == "ms":
+                next_s = next_rel / 1000.0
+            else:
+                next_s = next_rel
+            mean_next_s = float(np.nanmean(next_s))
+            # Only draw if inside current crop
+            if ((tmin is None or mean_next_s >= tmin) and
+                (tmax is None or mean_next_s <= tmax)):
+                ax.axvline(mean_next_s, color=col, ls=":", lw=1.7)
+
+        out[name] = {
+            "time_s": Tgrid,
+            "mean": mean,
+            "std": sd,
+            "mean_next_rel_s": mean_next_s,
+            "n_windows": A.shape[0],
+        }
+
+    # spike at 0
+    ax.axvline(0.0, color="k", ls="--", lw=2.0, label="spike")
+
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend(frameon=True, loc="best")
+    plt.tight_layout()
+
+    return fig, ax, out
+
 
 def plot_window_feature_groups_heatmap(
     groups: Dict[str, Dict[str, np.ndarray]],
-    *,
     feature_label: str = "value",
     cmap: str = "viridis",
     n_grid: int = 800,
@@ -1233,6 +1411,8 @@ def plot_window_feature_groups_heatmap(
     vmax: Optional[float] = None,
     time_unit: str = "s",
     xlim: Optional[Tuple[float, float]] = None,
+    tmin: Optional[float] = None,   # NEW: optional crop (same units as times_rel)
+    tmax: Optional[float] = None,   # NEW: optional crop
 ):
     """
     Plot heatmaps for one or more groups of spike-centred windows, for ANY
@@ -1261,14 +1441,9 @@ def plot_window_feature_groups_heatmap(
         Units of the times in `times_rel` and `next_rel` (for axis label only).
     xlim : (float, float) or None
         Optional x-axis limits (in the same units as times_rel). If None, use
-        the full grid across all groups.
-
-    Returns
-    -------
-    fig : Figure
-    axes : list[Axes]
-    out  : dict
-        {"Group name": {"grid_t": 1D grid, "matrix": 2D (events × time)}}
+        the full grid across all groups (or tmin/tmax if provided).
+    tmin, tmax : float or None
+        Optional crop of the time axis (same units as times_rel).
     """
     # ---------- collect all times to build global grid ----------
     all_tmins, all_tmaxs = [], []
@@ -1288,6 +1463,19 @@ def plot_window_feature_groups_heatmap(
     g_tmax = float(np.max(all_tmaxs))
     grid_t = np.linspace(g_tmin, g_tmax, int(n_grid))
 
+    # ---------- optional crop of grid_t by tmin/tmax ----------
+    if (tmin is not None) or (tmax is not None):
+        mask = np.ones_like(grid_t, dtype=bool)
+        if tmin is not None:
+            mask &= (grid_t >= tmin)
+        if tmax is not None:
+            mask &= (grid_t <= tmax)
+
+        if not np.any(mask):
+            raise ValueError("tmin/tmax crop removed all time points.")
+
+        grid_t = grid_t[mask]
+
     # ---------- first pass: build matrices & gather global feature range ----------
     matrices = {}
     all_vals = []
@@ -1304,9 +1492,11 @@ def plot_window_feature_groups_heatmap(
             t = np.asarray(t, float)
             if w.size == 0 or t.size == 0 or w.size != t.size:
                 continue
+
             inside = (grid_t >= t[0]) & (grid_t <= t[-1])
             if not inside.any():
                 continue
+
             M[i, inside] = np.interp(grid_t[inside], t, w)
 
         matrices[gname] = M
@@ -1329,7 +1519,7 @@ def plot_window_feature_groups_heatmap(
         n_groups, 1,
         figsize=(9.0, 2.8 * n_groups),
         sharex=True,
-        constrained_layout=True,   # nicer than tight_layout with colorbar
+        constrained_layout=True,
     )
 
     if n_groups == 1:
@@ -1337,9 +1527,8 @@ def plot_window_feature_groups_heatmap(
 
     out = {}
     group_names = list(groups.keys())
-
-    # main heatmaps
     im = None
+
     for ax, gname in zip(axes, group_names):
         M = matrices[gname]
         out[gname] = {"grid_t": grid_t, "matrix": M}
@@ -1361,9 +1550,13 @@ def plot_window_feature_groups_heatmap(
         next_rel = groups[gname].get("next_rel", None)
         if next_rel is not None:
             next_rel = np.asarray(next_rel, float)
-            # we assume 1 value per event
+            # one value per event
             y = np.arange(M.shape[0]) + 0.5
-            valid = np.isfinite(next_rel) & (next_rel >= grid_t[0]) & (next_rel <= grid_t[-1])
+            valid = (
+                np.isfinite(next_rel)
+                & (next_rel >= grid_t[0])
+                & (next_rel <= grid_t[-1])
+            )
             ax.scatter(
                 next_rel[valid],
                 y[valid],
@@ -1377,7 +1570,6 @@ def plot_window_feature_groups_heatmap(
         ax.set_ylabel("Events")
         ax.set_title(gname)
 
-        # small legend (only spike & next spike)
         leg = ax.legend(loc="upper left", fontsize=8, frameon=True)
         if leg is not None:
             leg.get_frame().set_facecolor((0, 0, 0, 0.25))
@@ -1386,13 +1578,16 @@ def plot_window_feature_groups_heatmap(
                 txt.set_color("white")
 
     # x-axis label on the last subplot
-    unit_str = "s" if time_unit == "s" else "ms"
+    unit_str = time_unit
     axes[-1].set_xlabel(f"Time ({unit_str}, relative to spike)")
 
-    # optional x-limits (useful to cut off empty white space)
+    # x-limits: if explicit xlim is passed, use that; else use grid_t (which may be cropped)
     if xlim is not None:
         for ax in axes:
             ax.set_xlim(*xlim)
+    else:
+        for ax in axes:
+            ax.set_xlim(grid_t[0], grid_t[-1])
 
     # one shared colorbar
     cbar = fig.colorbar(im, ax=axes, shrink=0.9, pad=0.02)
@@ -1402,154 +1597,6 @@ def plot_window_feature_groups_heatmap(
     return fig, axes, out
 
 
-
-
-def plot_window_feature_group_traces(
-    groups: Dict[str, Dict[str, Any]],
-    *,
-    time_unit: str = "ms",          # "ms" or "s" for the values in times_rel & next_rel
-    ylabel: str = "value",
-    title: str = "Average feature around spikes",
-    band_k: float = 1.0,            # how many SDs for the shaded band
-    band_alpha: float = 0.22,
-    colors: Optional[Dict[str, str]] = None,   # optional: {"Group name": "#hex"}
-) -> Tuple[plt.Figure, plt.Axes, Dict[str, Dict[str, np.ndarray]]]:
-    """
-    Plot average ± SD traces for one or more groups of spike–centered windows.
-
-    Parameters
-    ----------
-    groups : dict
-        {"Group name": {"windows": [...], "times_rel": [...], "next_rel": [...]} }
-        - windows   : list of 1D arrays (feature values per window)
-        - times_rel : list of 1D arrays (same length as each window)
-        - next_rel  : 1D array/list of scalar next-spike times (same length as windows)
-    time_unit : {"ms","s"}
-        Unit of times_rel and next_rel.
-    band_k : float
-        Multiplier for SD (1.0 = 1×SD band).
-    """
-
- 
-
-    if time_unit not in ("ms", "s"):
-        raise ValueError("time_unit must be 'ms' or 's'.")
-
-    # ---------- build a common time grid from the first non-empty group ----------
-    base_T = None
-    for g in groups.values():
-        t_list = g.get("times_rel", [])
-        if t_list and len(t_list[0]) > 1:
-            base_T = np.asarray(t_list[0], float)
-            break
-
-    if base_T is None:
-        raise ValueError("No non-empty times_rel found in any group.")
-
-    # convert to seconds if needed
-    if time_unit == "ms":
-        Tgrid = base_T / 1000.0
-    else:
-        Tgrid = base_T.copy()
-
-    # ---------- set up plotting ----------
-    fig, ax = plt.subplots(figsize=(7.5, 4.5))
-    out: Dict[str, Dict[str, np.ndarray]] = {}
-
-    # color cycle
-    default_colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
-    def _get_color(i, name):
-        if colors and name in colors:
-            return colors[name]
-        if default_colors:
-            return default_colors[i % len(default_colors)]
-        return None  # let matplotlib choose
-
-    # ---------- process each group ----------
-    for gi, (name, info) in enumerate(groups.items()):
-        windows   = info.get("windows", [])
-        times_rel = info.get("times_rel", [])
-        next_rel  = np.asarray(info.get("next_rel", []), float)
-
-        if len(windows) == 0 or len(times_rel) == 0:
-            print(f"Group '{name}': empty; skipping.")
-            continue
-
-        if len(windows) != len(times_rel):
-            raise ValueError(
-                f"Group '{name}': len(windows) ({len(windows)}) "
-                f"!= len(times_rel) ({len(times_rel)})."
-            )
-
-        # Interpolate each window onto Tgrid
-        mats = []
-        for w, t in zip(windows, times_rel):
-            w = np.asarray(w, float)
-            t = np.asarray(t, float)
-            if w.size != t.size or w.size < 2:
-                continue
-
-            # convert this window's timebase to seconds
-            if time_unit == "ms":
-                t_sec = t / 1000.0
-            else:
-                t_sec = t
-
-            # only interpolate where this window actually has support
-            yi = np.full_like(Tgrid, np.nan, dtype=float)
-
-            # find overlapping region between the Tgrid and this window
-            left  = max(Tgrid[0], t_sec[0])
-            right = min(Tgrid[-1], t_sec[-1])
-            
-            if right > left:
-                mask = (Tgrid >= left) & (Tgrid <= right)
-                yi[mask] = np.interp(Tgrid[mask], t_sec, w)
-                mats.append(yi)
-
-        if len(mats) == 0:
-            print(f"Group '{name}': no windows overlapped the common time grid; skipping.")
-            continue
-
-        A = np.stack(mats, axis=0)          # (n_windows, n_time)
-        mean = np.nanmean(A, axis=0)
-        sd   = np.nanstd(A, axis=0)
-
-        col = _get_color(gi, name)
-        ax.plot(Tgrid, mean, lw=2.0, color=col, label=name)
-        ax.fill_between(
-            Tgrid, mean - band_k * sd, mean + band_k * sd,
-            color=col, alpha=band_alpha, linewidth=0
-        )
-
-        # mean next-spike time for this group
-        mean_next_s = np.nan
-        if next_rel.size:
-            if time_unit == "ms":
-                next_s = next_rel / 1000.0
-            else:
-                next_s = next_rel
-            mean_next_s = float(np.nanmean(next_s))
-            ax.axvline(mean_next_s, color=col, ls=":", lw=1.7)
-
-        out[name] = {
-            "time_s": Tgrid,
-            "mean": mean,
-            "std": sd,
-            "mean_next_rel_s": mean_next_s,
-            "n_windows": A.shape[0],
-        }
-
-    # spike at 0
-    ax.axvline(0.0, color="k", ls="--", lw=2.0, label="spike")
-
-    ax.set_xlabel("time (s)")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.legend(frameon=True, loc="best")
-    plt.tight_layout()
-
-    return fig, ax, out
 
 
 def plot_aperiodic_fit_with_band_auc(
@@ -1669,117 +1716,6 @@ def plot_aperiodic_fit_with_band_auc(
     return fig, ax, auc
 
 
-def boxplot_feature_window_stats(
-    feat_groups: Dict[str, Dict[str, Any]],
-    window: Tuple[float, float],
-    *,
-    reducer: str = "mean",
-    min_points: int = 1,
-    group_order: Optional[list] = None,
-    feature_label: str = "feature value",
-    time_unit: str = "s",
-    figsize: Tuple[float, float] = (7.5, 5.5),
-    p_round: int = 4,
-):
-    """
-    Clean, consistent-color boxplots for a feature extracted from a time window.
-    No grid. Colors align perfectly with trace-plotting color cycle.
-    """
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from scipy import stats
-
-    # ==============================
-    # Extract values
-    # ==============================
-    summary = summarize_feature_in_window(
-        feat_groups,
-        window=window,
-        reducer=reducer,
-        min_points=min_points,
-    )
-
-    summary = {g: v for g, v in summary.items() if v.size > 0}
-    if len(summary) == 0:
-        raise ValueError("No groups have valid events in the requested window.")
-
-    if group_order is None:
-        group_order = list(summary.keys())
-    else:
-        group_order = [g for g in group_order if g in summary]
-
-    data_arrays = [summary[g] for g in group_order]
-    n_groups = len(group_order)
-
-    # ==============================
-    # Stats
-    # ==============================
-    stats_res = {"n_groups": n_groups,
-                 "groups": group_order,
-                 "window": window,
-                 "n_per_group": {g: len(summary[g]) for g in group_order}}
-
-    if n_groups == 1:
-        test_str = "Only 1 group — no stats"
-        stats_res.update(test=None, stat=np.nan, p=np.nan)
-
-    elif n_groups == 2:
-        t, p = stats.ttest_ind(data_arrays[0], data_arrays[1],
-                               equal_var=False, nan_policy="omit")
-        stats_res.update(test="ttest", stat=float(t), p=float(p))
-        test_str = f"t = {t:.3f}, p = {p:.{p_round}f}"
-
-    else:
-        F, p = stats.f_oneway(*data_arrays)
-        stats_res.update(test="anova", stat=float(F), p=float(p))
-        test_str = f"F = {F:.3f}, p = {p:.{p_round}f}"
-
-    # force long-format if p is super small
-    if stats_res["p"] is not None and stats_res["p"] < 10**(-p_round):
-        test_str = f"{stats_res['test'].upper()}: p < 1e-{p_round}"
-
-    # ==============================
-    # Plotting
-    # ==============================
-    fig, ax = plt.subplots(figsize=figsize)
-
-    # Use the SAME default color cycle as your trace plotting
-    default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    colors = default_colors[:n_groups]
-
-    box = ax.boxplot(
-        data_arrays,
-        labels=group_order,
-        patch_artist=True,
-        showfliers=True,
-        boxprops=dict(linewidth=1.5),
-        medianprops=dict(color="black", linewidth=2),
-        whiskerprops=dict(linewidth=1.4),
-        capprops=dict(linewidth=1.4),
-    )
-
-    for patch, color in zip(box["boxes"], colors):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.55)
-        patch.set_edgecolor("black")
-
-    # no grid
-    ax.grid(False)
-
-    ax.set_ylabel(feature_label, fontsize=14)
-    t0, t1 = window
-    ax.set_title(
-        f"{feature_label} in window [{t0:.3f}, {t1:.3f}] {time_unit}\n{test_str}",
-        fontsize=15,
-        pad=18,
-    )
-
-    ax.tick_params(axis="x", labelrotation=20, labelsize=11)
-    ax.tick_params(axis="y", labelsize=12)
-
-    fig.tight_layout()
-    return fig, ax, stats_res
 # ------------------------------------------------------------------------------------------- #
 # --------------------  Time-resolved post specparam analysis  --------------------- #
 # ------------------------------------------------------------------------------------------- #
@@ -1877,7 +1813,7 @@ def make_feature_groups(time_res_results, feature, band=None):
                 continue
 
             windows_feat.append(arr)
-            windows_times.append(t_bins*1000)
+            windows_times.append(t_bins)
             windows_next.append(next_rel)
 
             # optional: keep epoch indices if present
