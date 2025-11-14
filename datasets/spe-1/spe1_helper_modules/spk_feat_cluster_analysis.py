@@ -14,8 +14,9 @@ import seaborn as sns
 from tqdm.auto import tqdm
 import mne
 from specparam import SpectralTimeModel
-from typing import Optional, List, Tuple, Dict, Any, Literal
-from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot
+from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union
+from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway
+
 
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Cluster features that show grouped data --------------------- #
@@ -1901,59 +1902,71 @@ def make_feature_groups(time_res_results, feature, band=None):
 
 
 
+ReducerType = Union[str, Callable[[np.ndarray], float]]
+
 def summarize_feature_in_window(
-    feat_groups: Dict[str, Dict[str, Any]],
+    feat_groups: Dict[str, Dict[str, np.ndarray]],
     window: Tuple[float, float],
-    reducer: str = "mean",
+    reducer: ReducerType = "mean",
     min_points: int = 1,
 ) -> Dict[str, np.ndarray]:
     """
-    For each group, summarize the feature within a given time window around the spike.
+    For each group, summarize feature values within a given time window per event.
 
     Parameters
     ----------
     feat_groups : dict
-        Output of make_feature_groups, e.g.:
         {
-          "Transition spikes (LFP)": {
-              "windows": [array(n_t), array(n_t), ...],
-              "times_rel": [array(n_t), array(n_t), ...],  # same length as windows
-              "next_rel": array(n_events),
+          group_name: {
+              "windows":   list of 1D arrays (feature traces),
+              "times_rel": list of 1D arrays (same length as windows),
           },
           ...
         }
-        The 'times_rel' are in whatever units you used when building feat_groups
-        (in your current pipeline: seconds).
     window : (float, float)
-        Time window (t_min, t_max) in *same units as times_rel*.
-        Example: (-0.2, 0.0) for [-200 ms, spike] if times_rel is in seconds.
-    reducer : {"mean", "median", "max", "min"}
-        How to collapse multiple samples within the window into a single scalar
-        per event.
+        (t_min, t_max) in the same time units as times_rel (usually seconds).
+    reducer : {"mean", "median", "max", "min"} or callable
+        How to collapse samples within the window for each event.
     min_points : int
-        Minimum number of samples inside the window for an event to be kept.
-        If fewer, that event is dropped.
+        Minimum number of samples that must fall into the window
+        for that event to be considered.
 
     Returns
     -------
-    out : dict
-        { group_name: 1D np.ndarray of per-event feature values }
-        Only events with >= min_points samples inside the window are included.
+    summary : dict
+        {group_name: 1D np.ndarray of summary values per event}
+        Groups with no valid events are omitted.
     """
-
     t_min, t_max = window
+
+    # set up reduction function
+    if isinstance(reducer, str):
+        if reducer == "mean":
+            red_fn = np.nanmean
+        elif reducer == "median":
+            red_fn = np.nanmedian
+        elif reducer == "max":
+            red_fn = np.nanmax
+        elif reducer == "min":
+            red_fn = np.nanmin
+        else:
+            raise ValueError(f"Unknown reducer string '{reducer}'.")
+    elif callable(reducer):
+        red_fn = reducer
+    else:
+        raise ValueError("reducer must be a string or a callable.")
+
     out: Dict[str, np.ndarray] = {}
 
-    if reducer not in ("mean", "median", "max", "min"):
-        raise ValueError("reducer must be one of: 'mean', 'median', 'max', 'min'.")
-
     for gname, gdict in feat_groups.items():
-        win_list   = gdict.get("windows", [])
-        times_list = gdict.get("times_rel", [])
+        windows   = gdict.get("windows", [])
+        times_rel = gdict.get("times_rel", [])
+
+        if len(windows) == 0 or len(times_rel) == 0:
+            continue
 
         vals = []
-
-        for w, t in zip(win_list, times_list):
+        for w, t in zip(windows, times_rel):
             w = np.asarray(w, float)
             t = np.asarray(t, float)
             if w.size == 0 or t.size == 0 or w.size != t.size:
@@ -1963,17 +1976,115 @@ def summarize_feature_in_window(
             if np.count_nonzero(mask) < min_points:
                 continue
 
-            segment = w[mask]
-            if reducer == "mean":
-                v = float(np.nanmean(segment))
-            elif reducer == "median":
-                v = float(np.nanmedian(segment))
-            elif reducer == "max":
-                v = float(np.nanmax(segment))
-            else:  # "min"
-                v = float(np.nanmin(segment))
+            seg = w[mask]
+            if seg.size == 0 or not np.any(np.isfinite(seg)):
+                continue
 
-            if np.isfinite(v):
-                vals.append(v)
+            val = red_fn(seg)
+            if np.isfinite(val):
+                vals.append(float(val))
 
-        out[gname] = np.asarray(vals, float)
+        if len(vals) > 0:
+            out[gname] = np.asarray(vals, float)
+
+    return out
+
+
+
+
+def format_p_plain(p: float) -> str:
+    """Format p-value without scientific notation."""
+    if p < 0.0001:
+        return "< 0.0001"
+    else:
+        return f"{p:.4f}"
+
+def boxplot_feature_window_stats(
+    feat_groups: Dict[str, Dict[str, np.ndarray]],
+    window: Tuple[float, float],
+    reducer: str = "mean",
+    min_points: int = 1,
+    group_order: Optional[List[str]] = None,
+    feature_label: str = "Value",
+    time_unit: str = "s",
+    figsize: Tuple[float, float] = (10, 5),
+):
+    """
+    Clean boxplot with ANOVA/t-test.
+    Does NOT return the figure (prevents Jupyter from double-rendering).
+    Returns ONLY the stats dict.
+    """
+
+    summary = summarize_feature_in_window(
+        feat_groups, window=window, reducer=reducer, min_points=min_points
+    )
+    summary = {g: v for g, v in summary.items() if v.size > 0}
+
+    if not summary:
+        raise ValueError("No groups contain data in that window.")
+
+    if group_order is None:
+        group_order = list(summary.keys())
+
+    data = [summary[g] for g in group_order]
+
+    # === stats ===
+    if len(data) == 2:
+        from scipy.stats import ttest_ind
+        t, p = ttest_ind(data[0], data[1], equal_var=False)
+        stat_label = f"t = {t:.2f}, p = {format_p_plain(p)}"
+        stats_res = {"test": "t-test", "t": t, "p": p}
+    else:
+        from scipy.stats import f_oneway
+        F, p = f_oneway(*data)
+        df1 = len(data) - 1
+        df2 = sum(len(d) for d in data) - len(data)
+        stat_label = f"F({df1}, {df2}) = {F:.2f}, p = {format_p_plain(p)}"
+        stats_res = {"test": "anova", "F": F, "p": p, "df1": df1, "df2": df2}
+
+    # === plot ===
+    fig, ax = plt.subplots(figsize=figsize)
+
+    colors = [feat_groups[g].get("color", "#4c72b0") for g in group_order]
+
+    bp = ax.boxplot(
+        data,
+        labels=group_order,
+        patch_artist=True,
+        medianprops={"color": "black", "linewidth": 2},
+        boxprops={"linewidth": 1.4},
+    )
+
+    for patch, col in zip(bp["boxes"], colors):
+        patch.set_facecolor(col)
+        patch.set_alpha(0.6)
+
+    ax.grid(False)
+
+    tmin, tmax = window
+    # title
+    ax.set_title(
+        f"{feature_label} in window [{tmin:.3f}, {tmax:.3f}] {time_unit}",
+        pad=30
+    )
+    
+    # stats text WELL ABOVE title
+    ax.text(
+        0.5, 1.,
+        stat_label,
+        transform=ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=12,
+        fontweight="bold"
+    )
+
+
+    ax.set_ylabel(feature_label)
+    plt.xticks(rotation=25, ha="right")
+
+    plt.show()  # ONLY display once
+
+    return stats_res   # DOES NOT trigger auto-display
+
+
