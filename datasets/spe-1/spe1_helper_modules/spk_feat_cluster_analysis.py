@@ -967,264 +967,256 @@ def compute_lfp_windows(
         return model, freqs, window_times
 
 
-
-
-
-def _parse_aperiodic_params(ap_params):
-    """
-    Accepts:
-      - array-like [offset, exponent]  (fixed)
-      - array-like [offset, knee, exponent] (knee)
-      - None  -> (nan, nan, nan)
-    Returns: (offset, exponent, knee) with knee=np.nan if fixed.
-    """
-    if ap_params is None:
-        return (np.nan, np.nan, np.nan)
-    arr = np.asarray(ap_params, dtype=float).ravel()
-    if arr.size >= 3:          # knee mode
-        off, knee, exp = arr[:3]
-        return (off, exp, knee)
-    elif arr.size >= 2:        # fixed mode
-        off, exp = arr[:2]
-        return (off, exp, np.nan)
-    else:
-        return (np.nan, np.nan, np.nan)
-
-def gamma_auc_and_params_per_window(
-    model,
-    band: tuple[float, float] = (30, 90),
-    space: str = "linear",          # 'linear' or 'log' per your downstream choice
-    show_progress: bool = True,
-) -> pd.DataFrame:
-    """
-    Returns a DataFrame with columns:
-      ['win_idx', 'gamma_auc', 'aperiodic_offset', 'aperiodic_exponent', 'aperiodic_knee']
-
-    AUC is computed on (full - aperiodic) within `band` using trapezoid rule,
-    where `full` & `aperiodic` are fetched via model.get_model(..., space=<space>).
-
-    Works with aperiodic_mode='fixed' (knee=NaN) and 'knee' (offset, exponent, knee filled).
-    """
-    freqs = np.asarray(model.freqs)
-    sel = (freqs >= band[0]) & (freqs <= band[1])
-    if sel.sum() == 0:
-        raise ValueError("gamma band selection is empty for model.freqs")
-
-    n = int(model.n_time_windows)
-    iterator = tqdm(range(n), desc="Computing gamma AUC + aperiodic params") if show_progress else range(n)
-
-    out = []
-    for i in iterator:
-        m = model.get_model(i)
-        if m is None:
-            out.append((i, np.nan, np.nan, np.nan, np.nan))
-            continue
-
-        # components in requested space
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            warnings.simplefilter("ignore", message="invalid value encountered in log10")
-            warnings.simplefilter("ignore", message="Covariance of the parameters could not be estimated")
-    
-            full = m.get_model(component="full",      space=space)
-            ap   = m.get_model(component="aperiodic", space=space)
-    
-
-        if full is None or ap is None:
-            out.append((i, np.nan, np.nan, np.nan, np.nan))
-            continue
-
-        resid = full - ap
-
-        # robust aperiodic extraction
-        ap_params = getattr(m, "aperiodic_params_", None)
-        if ap_params is None:
-            try:
-                ap_params = m.get_params("aperiodic_params")
-            except Exception:
-                ap_params = None
-
-        off, exp, knee = _parse_aperiodic_params(ap_params)
-
-        auc = np.trapz(resid[sel], freqs[sel])
-        out.append((i, float(auc), float(off), float(exp), float(knee)))
-
-    return pd.DataFrame(out, columns=[
-        "win_idx", "gamma_auc", "aperiodic_offset", "aperiodic_exponent", "aperiodic_knee"
-    ])
-
-
-def run_specparam_on_transition_windows(
-    windows: List[np.ndarray],          # µV
-    times_rel: List[np.ndarray],        # s (0 at transition)
-    fs: float,
-    inner_window_sec: float = 0.500,
-    freq_range: Tuple[float, float] = (1, 90),
-    n_freqs: int = 256,
-    time_bandwidth: float = 2.0,
-    decim_factor: int = 9,
-    progress: bool = True,              # outer loop progress
-    n_jobs: int = 1,
-
-    # Specparam controls
-    peak_width_limits: Tuple[float, float] = (4, 8),
-    max_n_peaks: int = 2,
-    min_peak_height: float = 0.0,
-    peak_threshold: float = 2.0,
-    aperiodic_mode: str = "fixed",      # or "knee"
-    periodic_mode: str = "gaussian",
-    verbose: bool = False,
-
-    # AUC config 
-    gamma_band: Tuple[float, float] = (30, 55),
-    gamma_space: str = "log",           # {"log","linear"}
-    compute_gamma_auc: bool = True,
-
-    # Collection toggles
-    collect_spectra: bool = False,      # return raw spectra per bin (in-memory)
-    inner_specparam_progress: bool = False,  # hard-disable Specparam’s internal tqdm
+def run_time_resolved_specparam_on_window(
+    lfp_window,
+    times_rel,
+    fs,
+    inner_window_sec=0.5,
+    freq_range=(1, 90),
+    n_freqs=256,
+    time_bandwidth=2.0,
+    decim_factor=10,
+    band_dict=None,
+    aperiodic_mode="fixed",
+    periodic_mode="gaussian",
+    peak_width_limits=(4.0, 8.0),
+    max_n_peaks=4,
+    min_peak_height=0.0,
+    peak_threshold=2.0,
+    verbose=False,
+    next_spike_rel=None,
 ):
     """
-    Apply your existing `compute_lfp_windows` per transition window, extract Specparam
-    parameters per inner bin, and (optionally) compute gamma AUC inside this function.
+    Time-resolved Specparam on a single spike-centered LFP window.
+
+    Parameters
+    ----------
+    lfp_window : 1D array
+        LFP samples for one spike-centered window.
+    times_rel : 1D array
+        Time axis for lfp_window, typically spike-centered.
+        Can be in ms or s; this function auto-detects and converts to seconds.
+    fs : float
+        Sampling rate of the LFP (Hz).
+    next_spike_rel : float, optional
+        Relative time to the next spike for this window (from your groups dict).
+        Returned as-is under key 'next_spike_rel'.
 
     Returns
     -------
-    spec_df : pd.DataFrame
-        Tidy table with one row per (epoch, bin):
-        epoch_id, bin_id, time_rel_s,
-        aperiodic_offset, aperiodic_exponent, aperiodic_knee,
-        n_peaks, peak_cf, peak_amp, peak_bw, (gamma_auc if requested)
-    spectra : list[np.ndarray] or None
-        If collect_spectra=True, list of arrays (n_bins, n_freqs) in linear power.
-    models  : list[Specparam.SpectralTimeModel]
-        One fitted SpectralTimeModel per epoch (same settings you passed).
+    out : dict
+        {
+            "t_bins_s": epoch_times_s,      # (n_epochs,)
+            "epoch_idx": epoch_idx,         # (n_epochs,)
+            "freqs": freqs,                 # (n_freqs,)
+            "powers": powers,               # (n_epochs, n_freqs), linear space
+            "offset": offset,               # (n_epochs,)
+            "exponent": exponent,           # (n_epochs,)
+            "knee": knee or None,           # (n_epochs,) or None
+            "r_squared": r_squared,         # (n_epochs,)
+            "band_aucs": band_aucs,         # dict[band] -> (n_epochs,)
+            "next_spike_rel": next_spike_rel,
+            "model": time_model,            # SpectralTimeModel
+        }
     """
-    rows = []
-    spectra_all = [] if collect_spectra else None
-    models_all: List = []
 
-    epoch_iter = tqdm(range(len(windows)), desc="Specparam per epoch") if progress \
-                 else range(len(windows))
+    if band_dict is None:
+        band_dict = {
+            "delta": (1, 4),
+            "theta": (4, 8),
+            "alpha": (8, 13),
+            "gamma": (30, 80),
+        }
 
-    for eid in epoch_iter:
-        sig = np.asarray(windows[eid], float)
-        t_rel = np.asarray(times_rel[eid], float)
-        if sig.size == 0 or t_rel.size == 0 or sig.size != t_rel.size:
+    # ---------------------------------------------------------
+    # 1) Run multitaper + Specparam time model
+    # ---------------------------------------------------------
+    time_model, freqs, window_times, powers = compute_lfp_windows(
+        lfp_signal=np.asarray(lfp_window, float),
+        fs=fs,
+        window_length_sec=inner_window_sec,
+        freq_range=freq_range,
+        n_freqs=n_freqs,
+        time_bandwidth=time_bandwidth,
+        decim_factor=decim_factor,
+        progress=False,               # no Specparam tqdm
+        aperiodic_mode=aperiodic_mode,
+        periodic_mode=periodic_mode,
+        peak_width_limits=peak_width_limits,
+        max_n_peaks=max_n_peaks,
+        min_peak_height=min_peak_height,
+        peak_threshold=peak_threshold,
+        verbose=verbose,
+        return_powers=True,
+    )
+
+    powers = np.asarray(powers, float)          # (n_epochs, n_freqs)
+    n_epochs, n_freqs_actual = powers.shape
+    freqs = np.asarray(freqs, float)
+
+    # ---------------------------------------------------------
+    # 2) Build epoch time axis in *seconds*, using your times_rel
+    #    - times_rel is sample-wise time for the raw window (ms or s)
+    #    - window_times are (start_idx, end_idx) in samples
+    # ---------------------------------------------------------
+    times_rel = np.asarray(times_rel, float)
+
+    # crude but robust: if range is big, assume ms and convert
+    if np.nanmax(np.abs(times_rel)) > 20.0:
+        times_rel_s = times_rel / 1000.0
+    else:
+        times_rel_s = times_rel
+
+    sample_idx = np.arange(times_rel_s.size)
+    epoch_centers = np.array([0.5 * (s + e) for (s, e) in window_times])
+    epoch_times_s = np.interp(epoch_centers, sample_idx, times_rel_s)
+
+    epoch_idx = np.arange(n_epochs, dtype=int)
+
+    # ---------------------------------------------------------
+    # 3) Extract aperiodic params & r_squared from the time model
+    # ---------------------------------------------------------
+    aperiodic_params = np.asarray(time_model.get_params("aperiodic_params"))
+
+    if aperiodic_params.shape[1] == 2:
+        offset = aperiodic_params[:, 0]
+        exponent = aperiodic_params[:, 1]
+        knee = None
+    else:
+        offset = aperiodic_params[:, 0]
+        knee = aperiodic_params[:, 1]
+        exponent = aperiodic_params[:, 2]
+
+    try:
+        r_squared = np.asarray(time_model.get_params("r_squared")).ravel()
+    except Exception:
+        r_squared = np.full(n_epochs, np.nan, dtype=float)
+
+    # ---------------------------------------------------------
+    # 4) Band AUCs: area between full & aperiodic (log10 space)
+    #    For each epoch:
+    #       - get child SpectralModel via get_model(ind=epoch_i)
+    #       - get_data('full', 'log') & get_data('aperiodic', 'log')
+    #       - AUC = ∫(full_log - ape_log) df over the band
+    # ---------------------------------------------------------
+    band_aucs = {bname: np.full(n_epochs, np.nan, dtype=float)
+                 for bname in band_dict.keys()}
+   
+
+    for ei in range(n_epochs):
+        
+        try:
+            full_log = time_model.get_model(ind = ei).get_model(component="full",      space="log")
+            ape_log  = time_model.get_model(ind = ei).get_model(component="aperiodic", space="log")
+            
+           
+        except Exception:
             continue
 
-        # ---- Compute time-binned spectra (multitaper) with NO internal Specparam bars
-        model, freqs, win_times, powers = compute_lfp_windows(
-            lfp_signal=sig,
-            fs=fs,
-            window_length_sec=inner_window_sec,
-            freq_range=freq_range,
-            n_freqs=n_freqs,
-            time_bandwidth=time_bandwidth,
-            decim_factor=decim_factor,
-            progress=False if not inner_specparam_progress else True,
-            n_jobs=n_jobs,
-            aperiodic_mode=aperiodic_mode,
-            periodic_mode=periodic_mode,
-            peak_width_limits=peak_width_limits,
-            max_n_peaks=max_n_peaks,
-            min_peak_height=min_peak_height,
-            peak_threshold=peak_threshold,
-            verbose=verbose,
-            return_powers=True,
-        )
-        models_all.append(model)
-        if collect_spectra:
-            spectra_all.append(powers.copy())  # (n_bins, n_freqs), linear
-
-        # ---- bin-center times (relative to transition)
-        bin_centers_rel = []
-        for (s0, s1) in win_times:
-            c = int(round((s0 + s1 - 1) / 2.0))
-            c = int(np.clip(c, 0, sig.size - 1))
-            bin_centers_rel.append(float(t_rel[c]))
-        bin_centers_rel = np.asarray(bin_centers_rel, float)
-
-        # ---- aperiodic params
-        ap = model.get_params('aperiodic_params')
-        if ap is None or len(ap) == 0:
+        if full_log is None or ape_log is None:
             continue
-        ap = np.asarray(ap, float)
-        if ap.ndim == 1:
-            ap = ap[None, :]
 
-        # fixed: [offset, exponent]; knee: [offset, knee, exponent]
-        offs = ap[:, 0]
-        if aperiodic_mode == "knee" and ap.shape[1] >= 3:
-            knees = ap[:, 1]
-            exps  = ap[:, 2]
-        else:
-            knees = np.full(offs.shape, np.nan)
-            exps  = ap[:, 1]
+        full_log = np.asarray(full_log, float)
+        ape_log  = np.asarray(ape_log, float)
+        
 
-        # ---- peaks list (robust parsing)
-        peaks_list = model.get_params('peak_params')
-        n_bins = len(offs)
+        # Specparam SpectralModel get_data should return 1D arrays
+        if full_log.shape != freqs.shape or ape_log.shape != freqs.shape:
+            # Something is inconsistent; skip this epoch
+            continue
 
-        # ---- gamma AUC prep
-        if compute_gamma_auc:
-            freqs_arr = np.asarray(model.freqs)
-            sel = (freqs_arr >= gamma_band[0]) & (freqs_arr <= gamma_band[1])
-            if sel.sum() == 0:
-                raise ValueError("gamma band selection is empty for model.freqs; adjust gamma_band.")
+        for bname, (f_lo, f_hi) in band_dict.items():
+            mask = (freqs >= f_lo) & (freqs <= f_hi)
+            if not np.any(mask):
+                continue
 
-        for b in range(n_bins):
-            pk_cf = pk_amp = pk_bw = np.nan
-            n_peaks_here = 0
+            diff = full_log[mask] - ape_log[mask]
+            auc = np.trapz(diff, freqs[mask])
+            band_aucs[bname][ei] = float(auc)
 
-            if peaks_list is not None and b < len(peaks_list):
-                peaks_raw = peaks_list[b]
-                if peaks_raw is not None:
-                    arr = np.asarray(peaks_raw, dtype=float)
-                    if arr.ndim == 2 and arr.shape[0] > 0:
-                        n_peaks_here = int(arr.shape[0])
-                        take = min(arr.shape[1], 3)
-                        first = arr[0, :take]
-                        if first.size >= 3:
-                            pk_cf, pk_amp, pk_bw = first[:3]
-                    elif arr.ndim == 1 and arr.size >= 3:
-                        if arr.size % 3 == 0:
-                            n_peaks_here = int(arr.size // 3)
-                            pk_cf, pk_amp, pk_bw = arr[:3]
-                        else:
-                            n_peaks_here = 1
-                            pk_cf, pk_amp, pk_bw = arr[:3]
-
-            gamma_auc = np.nan
-            if compute_gamma_auc:
-                m_bin = model.get_model(b)
-                if m_bin is not None:
-                    full = m_bin.get_model(component="full",      space=gamma_space)
-                    ap_c = m_bin.get_model(component="aperiodic", space=gamma_space)
-                    if full is not None and ap_c is not None:
-                        resid = full - ap_c
-                        gamma_auc = float(np.trapz(resid[sel], freqs_arr[sel]))
-
-            rows.append({
-                "epoch_id": int(eid),
-                "bin_id": int(b),
-                "time_rel_s": float(bin_centers_rel[b]) if b < bin_centers_rel.size else np.nan,
-                "aperiodic_offset": float(offs[b]),
-                "aperiodic_exponent": float(exps[b]),
-                "aperiodic_knee": float(knees[b]),
-                "n_peaks": int(n_peaks_here),
-                "peak_cf": float(pk_cf),
-                "peak_amp": float(pk_amp),
-                "peak_bw": float(pk_bw),
-                **({"gamma_auc": gamma_auc} if compute_gamma_auc else {}),
-            })
-
-    spec_df = pd.DataFrame(rows)
-    return spec_df, (spectra_all if collect_spectra else None), models_all
+    # ---------------------------------------------------------
+    # 5) Pack and return
+    # ---------------------------------------------------------
+    return {
+        "t_bins_s": epoch_times_s,          # (n_epochs,)
+        "epoch_idx": epoch_idx,            # (n_epochs,)
+        "freqs": freqs,                    # (n_freqs,)
+        "powers": powers,                  # (n_epochs, n_freqs), linear
+        "offset": offset,                  # (n_epochs,)
+        "exponent": exponent,              # (n_epochs,)
+        "knee": knee,                      # (n_epochs,) or None
+        "r_squared": r_squared,            # (n_epochs,)
+        "band_aucs": band_aucs,            # dict[band] -> (n_epochs,)
+        "next_spike_rel": next_spike_rel,  # scalar from groups (ms or s, your choice)
+        "model": time_model,               # SpectralTimeModel
+    }
 
 
+def run_time_resolved_specparam_for_groups(
+    groups,
+    fs,
+    inner_window_sec=0.5,
+    freq_range=(1, 90),
+    n_freqs=256,
+    time_bandwidth=2.0,
+    decim_factor=10,
+    band_dict=None,
+    aperiodic_mode="fixed",
+    periodic_mode="gaussian",
+    peak_width_limits=(4.0, 8.0),
+    max_n_peaks=4,
+    min_peak_height=0.0,
+    peak_threshold=2.0,
+    verbose=False,
+    max_windows_per_group=None,
+):
+    results = {}
 
+    for group_name in tqdm(groups.keys(), desc="Groups"):
+        group = groups[group_name]
+
+        windows        = list(group["windows"])
+        times_rel_list = list(group["times_rel"])
+        next_rel_list  = list(group["next_rel"])   # for heatmaps / summaries
+
+        if max_windows_per_group is not None:
+            windows        = windows[:max_windows_per_group]
+            times_rel_list = times_rel_list[:max_windows_per_group]
+            next_rel_list  = next_rel_list[:max_windows_per_group]
+
+        if len(windows) == 0:
+            results[group_name] = []
+            continue
+
+        group_out = []
+
+        for w_i, win in enumerate(tqdm(windows, desc=f"{group_name} windows", leave=False)):
+
+            out_w = run_time_resolved_specparam_on_window(
+                lfp_window=win,
+                times_rel=times_rel_list[w_i],
+                fs=fs,
+                inner_window_sec=inner_window_sec,
+                freq_range=freq_range,
+                n_freqs=n_freqs,
+                time_bandwidth=time_bandwidth,
+                decim_factor=decim_factor,
+                band_dict=band_dict,
+                aperiodic_mode=aperiodic_mode,
+                periodic_mode=periodic_mode,
+                peak_width_limits=peak_width_limits,
+                max_n_peaks=max_n_peaks,
+                min_peak_height=min_peak_height,
+                peak_threshold=peak_threshold,
+                verbose=verbose,
+                next_spike_rel=next_rel_list[w_i],   # stored inside out_w
+            )
+
+            group_out.append(out_w)
+
+        results[group_name] = group_out
+
+    return results
 
 # ------------------------------------------------------------------------------------------- #
 # --------------------  Time-resolved and window visualziations  --------------------- #
@@ -1557,3 +1549,238 @@ def plot_window_feature_group_traces(
     plt.tight_layout()
 
     return fig, ax, out
+
+
+def plot_aperiodic_fit_with_band_auc(
+    freqs,
+    powers,
+    time_model,
+    epoch_i: int = 0,
+    band_range=(30.0, 80.0),
+    title: str = None,
+    log_freq: bool = False,
+    ax=None,
+):
+    """
+    Plot raw PSD, Specparam full fit, aperiodic fit, and shade the band AUC
+    (area between full and aperiodic in log10 power) for a single epoch.
+
+    Parameters
+    ----------
+    freqs : 1D array
+        Frequency grid (Hz), in linear space. Shape (n_freqs,).
+    powers : 2D array
+        Linear power spectrogram, shape (n_epochs, n_freqs).
+    time_model : SpectralTimeModel
+        The fitted SpectralTimeModel from compute_lfp_windows.
+    epoch_i : int
+        Index of the time bin / epoch to plot.
+    band_range : (float, float)
+        Frequency band over which to compute & shade AUC (Hz).
+    title : str or None
+        Figure title.
+    log_freq : bool
+        If True, plot x-axis in log scale.
+    ax : matplotlib Axes or None
+        Optional axis to draw on. If None, creates a new figure & axis.
+
+    Returns
+    -------
+    fig, ax, auc
+        fig : Figure
+        ax  : Axes
+        auc : float, band AUC (log10 space) between full & aperiodic in band_range
+    """
+
+    freqs = np.asarray(freqs, float)
+    P_lin = np.asarray(powers[epoch_i], float)
+
+    # ---------- grab the child SpectralModel for this epoch ----------
+    # This gives you a 'group' object containing just this one time point
+    child_time = time_model.get_group([epoch_i], output_type="group")
+    child_model = child_time.get_model(ind=0, regenerate=False)  # SpectralModel
+
+    # full & aperiodic components in log10 power
+    full_log = time_model.get_model(epoch_i).get_model(component="full",      space="log")
+    ape_log  = time_model.get_model(epoch_i).get_model(component="aperiodic", space="log")
+
+    if full_log is None or ape_log is None:
+        raise RuntimeError(
+            f"No full / aperiodic data available for epoch {epoch_i}. "
+            "Check that the model fit completed successfully."
+        )
+
+    full_log = np.asarray(full_log, float)
+    ape_log  = np.asarray(ape_log,  float)
+
+    if full_log.shape != freqs.shape or ape_log.shape != freqs.shape:
+        raise ValueError(
+            f"Shape mismatch:\n"
+            f"  freqs:    {freqs.shape}\n"
+            f"  full_log: {full_log.shape}\n"
+            f"  ape_log:  {ape_log.shape}"
+        )
+
+    # ---------- compute band AUC in log space ----------
+    f_lo, f_hi = band_range
+    band_mask = (freqs >= f_lo) & (freqs <= f_hi)
+
+    if not np.any(band_mask):
+        raise ValueError(f"No frequencies within band {band_range} Hz")
+
+    diff = full_log[band_mask] - ape_log[band_mask]
+    auc = np.trapz(diff, freqs[band_mask])   # log10-power area
+
+    # ---------- plotting ----------
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 4))
+    else:
+        fig = ax.figure
+
+    # raw multitaper (just to check it's consistent)
+    raw_log = np.log10(P_lin)
+    ax.plot(freqs, raw_log, lw=1.5, alpha=0.4, label="Raw multitaper")
+
+    # specparam full & aperiodic
+    ax.plot(freqs, full_log, lw=2.0, label="Specparam full")
+    ax.plot(freqs, ape_log,  lw=2.0, ls="--", label="Aperiodic fit")
+
+    # shaded band area
+    ax.fill_between(
+        freqs[band_mask],
+        full_log[band_mask],
+        ape_log[band_mask],
+        alpha=0.3,
+        label=f"{f_lo:.0f}–{f_hi:.0f} Hz AUC\n= {auc:.3f}",
+    )
+
+    if log_freq:
+        ax.set_xscale("log")
+
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Power (log10)")
+    if title is None:
+        title = f"Epoch {epoch_i} | AUC {f_lo:.0f}–{f_hi:.0f} Hz = {auc:.3f}"
+    ax.set_title(title)
+    ax.legend(frameon=True, fontsize=8)
+    plt.tight_layout()
+
+    return fig, ax, auc
+# ------------------------------------------------------------------------------------------- #
+# --------------------  Time-resolved post specparam analysis  --------------------- #
+# ------------------------------------------------------------------------------------------- #
+
+
+
+
+def make_feature_groups(time_res_results, feature, band=None):
+    """
+    Convert time_res_results (from run_time_resolved_specparam_for_groups)
+    into a groups-style dict for heatmap / trace plotting.
+
+    Parameters
+    ----------
+    time_res_results : dict
+        {
+            group_name: [
+                {
+                    "t_bins_s": ...,
+                    "offset": ...,
+                    "exponent": ...,
+                    "r_squared": ...,
+                    "knee": ...,
+                    "band_aucs": {...},
+                    "next_spike_rel": float,
+                    "epoch_idx": np.ndarray,
+                    ...
+                },
+                ...
+            ],
+            ...
+        }
+
+    feature : str
+        One of:
+            "offset"
+            "exponent"
+            "r_squared"
+            "knee"
+            "band"   (requires band="gamma"/"alpha"/etc.)
+
+    band : str or None
+        Only used if feature == "band".
+
+    Returns
+    -------
+    feat_groups : dict
+        {
+            group_name: {
+                "windows":    [ feature-trace for each window (1D array) ],
+                "times_rel":  [ corresponding t_bins_s arrays (1D) ],
+                "next_rel":   [ next_spike_rel scalar per window ] (np.array)
+                "epoch_idx":  [ epoch_idx per window ] (optional, if present)
+            }
+        }
+    """
+
+    feat_groups = {}
+
+    for group_name, win_list in time_res_results.items():
+        if win_list is None or len(win_list) == 0:
+            continue
+
+        windows_feat  = []
+        windows_times = []
+        windows_next  = []
+        windows_epoch_idx = []
+
+        for w in win_list:
+
+            t_bins   = np.asarray(w["t_bins_s"])
+            next_rel = w["next_spike_rel"]/1000
+
+            # ---------- PICK FEATURE ----------
+            if feature in ["offset", "exponent", "r_squared", "knee"]:
+                arr = w.get(feature, None)
+                if arr is None:
+                    continue
+
+            elif feature == "band":
+                if band is None:
+                    raise ValueError("If feature=='band', you must pass band='gamma'/'theta'/etc.")
+                arr = w["band_aucs"].get(band, None)
+                if arr is None:
+                    continue
+
+            else:
+                raise ValueError(f"Unknown feature '{feature}'.")
+
+            arr = np.asarray(arr)
+
+            # safety: ensure array and time lengths match
+            if arr.shape[0] != t_bins.shape[0]:
+                # skip weird cases
+                continue
+
+            windows_feat.append(arr)
+            windows_times.append(t_bins)
+            windows_next.append(next_rel)
+
+            # optional: keep epoch indices if present
+            if "epoch_idx" in w:
+                windows_epoch_idx.append(np.asarray(w["epoch_idx"]))
+            else:
+                windows_epoch_idx.append(None)
+
+        if len(windows_feat) == 0:
+            # no valid windows for this group
+            continue
+
+        feat_groups[group_name] = {
+            "windows":   windows_feat,
+            "times_rel": windows_times,
+            "next_rel":  np.asarray(windows_next, float),
+            "epoch_idx": windows_epoch_idx,     # you can ignore this if you don't care
+        }
+
+    return feat_groups
