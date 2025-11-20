@@ -1289,7 +1289,6 @@ def plot_window_feature_group_traces(
     def _get_color(i, name):
         # if per-group color is stored in the dict, use it
         if colors and name in colors:
-            print("here")
             return colors[name]
         if "color" in groups[name]:
             return groups[name]["color"]
@@ -1343,7 +1342,7 @@ def plot_window_feature_group_traces(
         sd   = np.nanstd(A, axis=0)
 
         col = _get_color(gi, name)
-        print(col)
+        
         ax.plot(Tgrid, mean, lw=2.0, color=col, label=name)
         ax.fill_between(
             Tgrid, mean - band_k * sd, mean + band_k * sd,
