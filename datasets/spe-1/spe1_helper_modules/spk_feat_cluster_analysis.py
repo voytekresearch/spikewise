@@ -14,7 +14,7 @@ import seaborn as sns
 from tqdm.auto import tqdm
 import mne
 from specparam import SpectralTimeModel
-from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union
+from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union, Sequence
 from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway
 
 
@@ -1225,7 +1225,7 @@ def run_time_resolved_specparam_for_groups(
 def plot_window_feature_group_traces(
     groups: Dict[str, Dict[str, Any]],
     *,
-    time_unit: str = "ms",          
+    time_unit: str = "ms",
     ylabel: str = "value",
     title: str = "Average feature around spikes",
     band_k: float = 1.0,
@@ -1233,20 +1233,26 @@ def plot_window_feature_group_traces(
     colors: Optional[Dict[str, str]] = None,
     tmin: Optional[float] = None,
     tmax: Optional[float] = None,
-    baseline: str = "none",    # <<< NEW: "none" or "epoch_mean"
+
+    baseline: str = "none",              # {"none", "epoch_mean", "pre_window"}
+    baseline_window: Tuple[float, float] = (-0.3, -0.05),  # seconds
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Dict[str, np.ndarray]]]:
-
     """
-    Plot average ± SD traces for groups of spike-centered windows.
-    If baseline == "epoch_mean", subtract the window's mean before interpolation.
+    Plot average ± SD traces for groups of windowed features.
+
+    baseline options:
+    - "none":         use raw window values
+    - "epoch_mean":   subtract full-epoch mean
+    - "pre_window":   subtract mean(w[t in baseline_window]), aligning all epochs
+                      so their PRE-SPIKE baseline is at y=0
     """
 
-    if time_unit not in ("ms", "s"):
-        raise ValueError("time_unit must be 'ms' or 's'.")
-    if baseline not in ("none", "epoch_mean"):
-        raise ValueError("baseline must be 'none' or 'epoch_mean'.")
+    if baseline not in ("none", "epoch_mean", "pre_window"):
+        raise ValueError("baseline must be one of: none, epoch_mean, pre_window.")
 
-    # ---------- build a common time grid ----------
+    # ---------------------------------------------------------------------
+    # COMMON TIME GRID
+    # ---------------------------------------------------------------------
     base_T = None
     for g in groups.values():
         t_list = g.get("times_rel", [])
@@ -1255,107 +1261,112 @@ def plot_window_feature_group_traces(
             break
 
     if base_T is None:
-        raise ValueError("No non-empty times_rel found in any group.")
+        raise ValueError("No valid times_rel in groups.")
 
-    if time_unit == "ms":
-        Tgrid = base_T / 1000.0
-    else:
-        Tgrid = base_T.copy()
+    # convert to seconds
+    Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
 
-    # ----- crop range by tmin/tmax -----
+    # crop plotting window
     if (tmin is not None) or (tmax is not None):
-        mask = np.ones_like(Tgrid, bool)
-        if tmin is not None:
-            mask &= (Tgrid >= tmin)
-        if tmax is not None:
-            mask &= (Tgrid <= tmax)
-        Tgrid = Tgrid[mask]
+        m = np.ones_like(Tgrid, bool)
+        if tmin is not None: m &= (Tgrid >= tmin)
+        if tmax is not None: m &= (Tgrid <= tmax)
+        Tgrid = Tgrid[m]
         if Tgrid.size == 0:
-            raise ValueError("tmin/tmax leave an empty time range.")
+            raise ValueError("No time left after tmin/tmax crop.")
 
-    # ---------- plotting ----------
+    # ---------------------------------------------------------------------
+    # SETUP PLOT
+    # ---------------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
     out = {}
     default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    def _get_color(i, name):
+    def get_color(i, name):
         if colors and name in colors:
             return colors[name]
-        if "color" in groups[name]:
-            return groups[name]["color"]
         return default_colors[i % len(default_colors)]
 
-    # ---------- groups ----------
+    # ---------------------------------------------------------------------
+    # GROUP LOOP
+    # ---------------------------------------------------------------------
     for gi, (name, info) in enumerate(groups.items()):
 
-        windows   = info.get("windows", [])
-        times_rel = info.get("times_rel", [])
+        windows   = info["windows"]
+        times_rel = info["times_rel"]
         next_rel  = np.asarray(info.get("next_rel", []), float)
-
-        if len(windows) == 0 or len(times_rel) == 0:
-            print(f"Group '{name}': empty; skipping.")
-            continue
-
-        if len(windows) != len(times_rel):
-            raise ValueError(f"Group '{name}': len mismatch between windows and times_rel")
 
         mats = []
 
-        # ---------- interpolate each window ----------
+        # -----------------------------------------------------------------
+        # WINDOW LOOP
+        # -----------------------------------------------------------------
         for w, t in zip(windows, times_rel):
 
             w = np.asarray(w, float)
             t = np.asarray(t, float)
-            if w.size != t.size or w.size < 2:
+            if w.size < 2 or w.size != t.size:
                 continue
 
-            # convert window times to seconds
-            t_sec = t / 1000.0 if time_unit == "ms" else t
+            # convert to seconds
+            t_sec = t / 1000.0 if time_unit == "ms" else t.copy()
 
-            # ---------- NEW: baseline subtract BEFORE interpolation ----------
-            if baseline == "epoch_mean":
+            # -----------------------------------------------------------------
+            # BASELINE: pre_window (THIS is the one you want)
+            # -----------------------------------------------------------------
+            if baseline == "pre_window":
+                b0, b1 = baseline_window
+                bmask = (t_sec >= b0) & (t_sec <= b1)
+
+                if np.any(bmask):
+                    base_val = np.nanmean(w[bmask])
+                else:
+                    # fallback: use first sample
+                    base_val = w[0]
+
+                w = w - base_val
+
+            # -----------------------------------------------------------------
+            # BASELINE: full epoch mean
+            # -----------------------------------------------------------------
+            elif baseline == "epoch_mean":
                 w = w - np.nanmean(w)
 
-            # interpolate where this window is valid
-            yi = np.full_like(Tgrid, np.nan, float)
+            # baseline == none → do nothing
+
+            # -----------------------------------------------------------------
+            # Interpolate the baseline-corrected epoch onto Tgrid
+            # -----------------------------------------------------------------
+            yi = np.full_like(Tgrid, np.nan)
             inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
+
             if inside.any():
                 yi[inside] = np.interp(Tgrid[inside], t_sec, w)
                 mats.append(yi)
 
         if len(mats) == 0:
-            print(f"Group '{name}': no windows overlapped grid; skipping.")
             continue
 
-        A = np.stack(mats, axis=0)   # (n_windows, n_time)
+        A = np.vstack(mats)
         mean = np.nanmean(A, axis=0)
         sd   = np.nanstd(A, axis=0)
 
-        col = _get_color(gi, name)
+        col = get_color(gi, name)
 
-        ax.plot(Tgrid, mean, color=col, lw=2.0, label=name)
+        ax.plot(Tgrid, mean, lw=2, color=col, label=name)
         ax.fill_between(Tgrid, mean - band_k*sd, mean + band_k*sd,
                         color=col, alpha=band_alpha)
-
-        # mean next-spike marker
-        mean_next_s = np.nan
-        if next_rel.size:
-            next_s = next_rel / 1000.0 if time_unit == "ms" else next_rel
-            mean_next_s = float(np.nanmean(next_s))
-            if Tgrid[0] <= mean_next_s <= Tgrid[-1]:
-                ax.axvline(mean_next_s, color=col, ls=":", lw=1.7)
 
         out[name] = {
             "time_s": Tgrid,
             "mean": mean,
             "std": sd,
-            "mean_next_rel_s": mean_next_s,
-            "n_windows": A.shape[0]
+            "n_windows": A.shape[0],
         }
 
     # spike at 0
-    if Tgrid[0] <= 0.0 <= Tgrid[-1]:
-        ax.axvline(0.0, color="k", ls="--", lw=2.0)
+    if Tgrid[0] <= 0 <= Tgrid[-1]:
+        ax.axvline(0, color="black", lw=2, ls="--")
 
     ax.set_xlabel("time (s)")
     ax.set_ylabel(ylabel)
@@ -1364,6 +1375,8 @@ def plot_window_feature_group_traces(
     fig.tight_layout()
 
     return fig, ax, out
+
+
 
 
 def plot_aperiodic_fit_with_band_auc(
