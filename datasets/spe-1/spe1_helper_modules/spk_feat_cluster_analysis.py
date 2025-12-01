@@ -1465,9 +1465,7 @@ def plot_aperiodic_fit_with_band_auc(
     else:
         fig = ax.figure
 
-    # raw multitaper (just to check it's consistent)
-    raw_log = np.log10(P_lin)
-    ax.plot(freqs, raw_log, lw=1.5, alpha=0.4, label="Raw multitaper")
+   
 
     # specparam full & aperiodic
     ax.plot(freqs, full_log, lw=2.0, label="Specparam full")
