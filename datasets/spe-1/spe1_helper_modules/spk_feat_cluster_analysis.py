@@ -1026,7 +1026,7 @@ def run_time_resolved_specparam_on_window(
             "delta": (1, 4),
             "theta": (4, 8),
             "alpha": (8, 13),
-            "gamma": (30, 80),
+            "gamma": (30, 55),
         }
 
     # ---------------------------------------------------------
