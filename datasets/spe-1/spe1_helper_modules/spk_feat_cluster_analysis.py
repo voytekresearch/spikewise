@@ -280,7 +280,6 @@ def _looks_clustered_1d(
         "valley_ratio": float(valley_ratio)
     }
 
-
 def cluster_multimodal_features(
     df: pd.DataFrame,
     features: Optional[List[str]] = None,
@@ -291,49 +290,24 @@ def cluster_multimodal_features(
     peak_ratio: float = 0.10,
     valley_ratio: float = 0.70,
     unique_min: int = 8,
+    manual_thresholds: Optional[Dict[str, float]] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, Any]]]:
     """
-    Detect features with clustered (multi-peak) distributions and cluster them via 1D K-means.
+    Detect multi-peak features and cluster them using 1D K-means,
+    with optional manual override thresholds for specific features.
 
-    For each numeric feature in `features` (or all numeric columns if None):
-      • Detects multimodality via smoothed histogram peaks.
-      • If clustered, applies 1D K-means (k=2 or 3 capped by `max_k`).
-      • Adds a new label column named f"{feature}{suffix}".
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input dataframe with spike features.
-    features : list of str, optional
-        Which columns to consider; defaults to all numeric columns.
-    max_k : int, default=3
-        Maximum clusters to consider (suggested: 2 or 3).
-    labels_map : dict[str, list[str]], optional
-        Optional mapping {feature: [labels]} to override default labels.
-    suffix : str, default="_cluster"
-        Suffix used to name the new label columns.
-    plot_each : bool, default=False
-        If True, show per-feature histogram plots after clustering.
-    peak_ratio : float, default=0.10
-        Minimum acceptable relative height for secondary peaks.
-    valley_ratio : float, default=0.70
-        Maximum acceptable valley/peak ratio between the two tallest peaks.
-    unique_min : int, default=8
-        Skip features with fewer than this many unique valid values.
-
-    Returns
-    -------
-    df_out : pd.DataFrame
-        Copy of df with new cluster label columns for detected features.
-    report : dict
-        Per-feature metadata: `k`, `centers`, `cutoffs`, `diagnostics`, label `column`, and `labels`.
-
-    Notes
-    -----
-    • Rows with non-finite feature values are ignored for fitting and remain NaN in the label column.
-    • If labels_map[feature] length mismatches the chosen k, generic labels are used.
+    New parameter:
+    -------------
+    manual_thresholds : dict or None
+        Mapping {feature_name: threshold_value}.
+        If provided for a feature, K-means is skipped and the split is:
+            value <= threshold -> low
+            value >  threshold -> high
     """
     df_out = df.copy()
+
+    if manual_thresholds is None:
+        manual_thresholds = {}
 
     # choose features
     if features is None:
@@ -345,26 +319,86 @@ def cluster_multimodal_features(
         x = pd.to_numeric(df[feat], errors="coerce").to_numpy(dtype=float)
         valid = np.isfinite(x)
         data = x[valid]
-        if np.unique(data).size < unique_min:
-            continue  # too few unique values to meaningfully cluster
 
-        # detect modality
+        if np.unique(data).size < unique_min:
+            continue
+
+        # ------------------------------------------------------------------
+        # 1. CHECK FOR MANUAL THRESHOLD — overrides everything else
+        # ------------------------------------------------------------------
+                # ------------------------------------------------------------------
+        # 1. MANUAL THRESHOLD OVERRIDE
+        # ------------------------------------------------------------------
+        if feat in manual_thresholds:
+            thr = manual_thresholds[feat]
+            new_col = f"{feat}{suffix}"
+
+            # Assign cluster labels
+            labels = ["low", "high"]
+            cluster_assign = np.where(data <= thr, labels[0], labels[1])
+
+            # Fill in df_out
+            df_out.loc[valid, new_col] = cluster_assign
+            df_out.loc[~valid, new_col] = np.nan
+
+            # Prepare report (mimicking auto version format)
+            report[feat] = {
+                "k": 2,
+                "centers": [np.nan, np.nan],     # not meaningful for manual threshold
+                "cutoffs": [thr],                # THE threshold
+                "diagnostics": {"manual_threshold": thr},
+                "column": new_col,
+                "labels": labels,
+            }
+
+            # --------------------------------------------------------------
+            # OPTIONAL PLOT: reproduce K-means-style colored histogram
+            # --------------------------------------------------------------
+            if plot_each:
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(7,4))
+
+                # Plot each cluster separately with consistent colors
+                low_vals = data[data <= thr]
+                high_vals = data[data > thr]
+
+                ax.hist(low_vals, bins=40, alpha=0.7, color="#1f77b4", label="low")   # blue
+                ax.hist(high_vals, bins=40, alpha=0.7, color="#ff7f0e", label="high") # orange
+
+                # Threshold line
+                ax.axvline(thr, color="k", linestyle="--", linewidth=2)
+
+                ax.set_title(f"{feat} (manual threshold = {thr})")
+                ax.set_xlabel(feat)
+                ax.set_ylabel("count")
+                ax.legend()
+
+                plt.show()
+
+            
+
+
+            continue   # skip multimodal detection + K-means
+
+        # ------------------------------------------------------------------
+        # 2. AUTO-MODE if no manual threshold
+        # ------------------------------------------------------------------
         k_suggest, diag = _looks_clustered_1d(
             data, min_peak_ratio=peak_ratio, max_valley_ratio=valley_ratio, max_k=max_k
         )
         if k_suggest < 2:
-            continue  # unimodal; skip
+            continue
 
-        # decide labels
+        # labels
         if labels_map and feat in labels_map:
             labels = labels_map[feat]
             if len(labels) != k_suggest:
-                labels = (['low', 'high'] if k_suggest == 2 else ['low', 'mid', 'high'][:k_suggest])
+                labels = (['low','high'] if k_suggest == 2 else ['low','mid','high'][:k_suggest])
         else:
-            labels = ['low', 'high'] if k_suggest == 2 else ['low', 'mid', 'high'][:k_suggest]
+            labels = ['low','high'] if k_suggest == 2 else ['low','mid','high'][:k_suggest]
 
-        # cluster
         new_col = f"{feat}{suffix}"
+
         df_out, centers, cutoffs = kmeans_1d_cluster(
             df_out, feature=feat, k=k_suggest, labels=labels, new_col=new_col, plot=plot_each
         )
@@ -379,6 +413,7 @@ def cluster_multimodal_features(
         }
 
     return df_out, report
+
 
 def compare_feature_groups(
     df,
