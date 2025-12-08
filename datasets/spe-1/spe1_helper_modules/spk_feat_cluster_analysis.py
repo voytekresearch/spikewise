@@ -2137,3 +2137,81 @@ def trim_edges(results, edge_sec=0.5):
         trimmed[group_name] = trimmed_group
     return trimmed
 
+
+def plot_spike_clusters_from_df(
+    df,
+    sp,
+    cluster_col,
+    mode="full",
+    plot_average=True,
+    plot_average_std=True,
+    colors=None,
+    title=None,
+    figsize=(14, 4),
+):
+    """
+    Plot spike waveforms grouped by clusters using df['spk_id'] to index spikes.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain:
+            cluster_col : cluster labels (e.g. 'peak_width_cluster')
+            'spk_id'    : the true spike index into sp.spikes
+    sp : Spike
+        The Spike object containing the actual waveforms
+    cluster_col : str
+        Cluster feature column name
+    """
+
+    # Extract cluster labels
+    labels = df[cluster_col].dropna().unique()
+
+    # Default color scheme
+    if colors is None:
+        base = {
+            "low":  "#1f77b4",
+            "mid":  "#2ca02c",
+            "high": "#ff7f0e",
+        }
+        colors = {lab: base.get(lab, "black") for lab in labels}
+
+    # Build index groups based on df['spk_id']
+    ind_groups = []
+    group_names = []
+
+    for lab in labels:
+        # THIS IS THE KEY: use df["spk_id"], NOT df.index
+        inds = df.loc[df[cluster_col] == lab, "spk_id"].astype(int).tolist()
+        if len(inds) > 0:
+            ind_groups.append(inds)
+            group_names.append(str(lab))
+
+    # Create plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Use the Spike class’ existing plotting engine
+    sp.plot(
+        inds=None,                   # we supply groups below
+        mode=mode,
+        in_ms=True,
+        show_points=False,
+        ax=ax,
+        groups=True,                 # activates group overlays
+        ind_groups=ind_groups,       # list of lists of spike indices
+        group_names=group_names,
+        plot_average=plot_average,
+        plot_average_std=plot_average_std,
+    )
+
+    # Update average line colors based on cluster colors
+    for line in ax.lines:
+        lab = line.get_label()
+        for cluster_label in labels:
+            if cluster_label in lab:
+                line.set_color(colors[cluster_label])
+
+    ax.set_title(title or f"Spike waveforms grouped by {cluster_col}")
+    plt.tight_layout()
+
+    return fig, ax
