@@ -2165,7 +2165,8 @@ def plot_spike_clusters_from_df(
     """
 
     # Extract cluster labels
-    labels = df[cluster_col].dropna().unique()
+    labels = sorted(df[cluster_col].dropna().unique().tolist())
+
 
     # Default color scheme
     if colors is None:
