@@ -1268,8 +1268,7 @@ def plot_window_feature_group_traces(
     colors: Optional[Dict[str, str]] = None,
     tmin: Optional[float] = None,
     tmax: Optional[float] = None,
-
-    baseline: str = "none",              # {"none", "epoch_mean", "pre_window"}
+    baseline: str = "none",              # {"none", "epoch_mean", "pre_window", "change"}
     baseline_window: Tuple[float, float] = (-0.3, -0.05),  # seconds
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Dict[str, np.ndarray]]]:
     """
@@ -1278,15 +1277,15 @@ def plot_window_feature_group_traces(
     baseline options:
     - "none":         use raw window values
     - "epoch_mean":   subtract full-epoch mean
-    - "pre_window":   subtract mean(w[t in baseline_window]), aligning all epochs
-                      so their PRE-SPIKE baseline is at y=0
+    - "pre_window":   subtract mean(w[t in baseline_window]) → baseline shift only
+    - "change":       compute per-window Δvalue(t) relative to its own baseline mean
     """
 
-    if baseline not in ("none", "epoch_mean", "pre_window"):
-        raise ValueError("baseline must be one of: none, epoch_mean, pre_window.")
+    if baseline not in ("none", "epoch_mean", "pre_window", "change"):
+        raise ValueError("baseline must be one of: none, epoch_mean, pre_window, change")
 
     # ---------------------------------------------------------------------
-    # COMMON TIME GRID
+    # FIND A COMMON TIME GRID (from first valid times_rel)
     # ---------------------------------------------------------------------
     base_T = None
     for g in groups.values():
@@ -1301,17 +1300,19 @@ def plot_window_feature_group_traces(
     # convert to seconds
     Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
 
-    # crop plotting window
+    # crop time window
     if (tmin is not None) or (tmax is not None):
         m = np.ones_like(Tgrid, bool)
-        if tmin is not None: m &= (Tgrid >= tmin)
-        if tmax is not None: m &= (Tgrid <= tmax)
+        if tmin is not None:
+            m &= (Tgrid >= tmin)
+        if tmax is not None:
+            m &= (Tgrid <= tmax)
         Tgrid = Tgrid[m]
         if Tgrid.size == 0:
             raise ValueError("No time left after tmin/tmax crop.")
 
     # ---------------------------------------------------------------------
-    # SETUP PLOT
+    # PLOT SETUP
     # ---------------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
     out = {}
@@ -1329,7 +1330,6 @@ def plot_window_feature_group_traces(
 
         windows   = info["windows"]
         times_rel = info["times_rel"]
-        next_rel  = np.asarray(info.get("next_rel", []), float)
 
         mats = []
 
@@ -1346,32 +1346,37 @@ def plot_window_feature_group_traces(
             # convert to seconds
             t_sec = t / 1000.0 if time_unit == "ms" else t.copy()
 
-            # -----------------------------------------------------------------
-            # BASELINE: pre_window (THIS is the one you want)
-            # -----------------------------------------------------------------
-            if baseline == "pre_window":
+            # -------------------------------------------------------------
+            # BASELINE CALCULATION
+            # -------------------------------------------------------------
+            if baseline in ("pre_window", "change"):
                 b0, b1 = baseline_window
                 bmask = (t_sec >= b0) & (t_sec <= b1)
-
                 if np.any(bmask):
                     base_val = np.nanmean(w[bmask])
                 else:
-                    # fallback: use first sample
-                    base_val = w[0]
+                    base_val = w[0]  # fallback
 
-                w = w - base_val
+            # -------------------------------------------------------------
+            # APPLY BASELINE MODE
+            # -------------------------------------------------------------
+            if baseline == "none":
+                pass
 
-            # -----------------------------------------------------------------
-            # BASELINE: full epoch mean
-            # -----------------------------------------------------------------
             elif baseline == "epoch_mean":
                 w = w - np.nanmean(w)
 
-            # baseline == none → do nothing
+            elif baseline == "pre_window":
+                # shift window so baseline zone is at y=0
+                w = w - base_val
 
-            # -----------------------------------------------------------------
-            # Interpolate the baseline-corrected epoch onto Tgrid
-            # -----------------------------------------------------------------
+            elif baseline == "change":
+                # explicitly compute Δfeature for each window
+                w = w - base_val
+
+            # -------------------------------------------------------------
+            # INTERPOLATION ONTO COMMON GRID
+            # -------------------------------------------------------------
             yi = np.full_like(Tgrid, np.nan)
             inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
 
@@ -1399,7 +1404,7 @@ def plot_window_feature_group_traces(
             "n_windows": A.shape[0],
         }
 
-    # spike at 0
+    # spike time marker
     if Tgrid[0] <= 0 <= Tgrid[-1]:
         ax.axvline(0, color="black", lw=2, ls="--")
 
@@ -1410,6 +1415,7 @@ def plot_window_feature_group_traces(
     fig.tight_layout()
 
     return fig, ax, out
+
 
 
 
@@ -1752,7 +1758,7 @@ def format_p_plain(p: float) -> str:
         return f"{p:.4f}"
 
 def boxplot_feature_window_stats(
-    feat_groups: Dict[str, Dict[str, np.ndarray]],
+    feat_groups: Dict[str, Dict[str, Any]],
     window: Tuple[float, float],
     reducer: str = "mean",
     min_points: int = 1,
@@ -1760,27 +1766,120 @@ def boxplot_feature_window_stats(
     feature_label: str = "Value",
     time_unit: str = "s",
     figsize: Tuple[float, float] = (10, 5),
+    use_change: bool = True,
+    baseline_window: Tuple[float, float] = (-0.3, -0.05),
 ):
     """
-    Clean boxplot with ANOVA/t-test.
-    Does NOT return the figure (prevents Jupyter from double-rendering).
-    Returns ONLY the stats dict.
+    Computes boxplot statistics from baseline-corrected traces.
+    Reconstructs traces internally from feat_groups['windows'] + ['times_rel'],
+    applies baseline subtraction per window if use_change=True,
+    then computes window averages and performs t-test / ANOVA.
     """
 
-    summary = summarize_feature_in_window(
-        feat_groups, window=window, reducer=reducer, min_points=min_points
-    )
+    # ---------------------------------------------------------------------
+    # 1) DETERMINE COMMON TIME GRID (same as trace plotting)
+    # ---------------------------------------------------------------------
+    base_T = None
+    for g in feat_groups.values():
+        tlist = g.get("times_rel", [])
+        if tlist and len(tlist[0]) > 1:
+            base_T = np.asarray(tlist[0], float)
+            break
+    if base_T is None:
+        raise ValueError("No valid times_rel found in groups.")
+
+    # convert ms → s if needed
+    Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
+
+    # ---------------------------------------------------------------------
+    # 2) BUILD TRACES OR CHANGE-TRACES
+    # ---------------------------------------------------------------------
+    summary = {}
+    tmin, tmax = window
+
+    for gname, ginfo in feat_groups.items():
+
+        windows   = ginfo["windows"]
+        times_rel = ginfo["times_rel"]
+
+        mats = []  # reconstructed traces for this group
+
+        for w, t in zip(windows, times_rel):
+
+            w = np.asarray(w, float)
+            t = np.asarray(t, float)
+
+            if w.size < 2 or w.size != t.size:
+                continue
+
+            # convert ms → s if needed
+            t_sec = t / 1000.0 if time_unit == "ms" else t.copy()
+
+            # -----------------------------------------
+            # BASELINE-SUBTRACTION (change traces)
+            # -----------------------------------------
+            if use_change:
+                b0, b1 = baseline_window
+                bmask = (t_sec >= b0) & (t_sec <= b1)
+
+                if np.any(bmask):
+                    base_val = np.nanmean(w[bmask])
+                else:
+                    base_val = w[0]  # fallback
+
+                w = w - base_val
+
+            # -----------------------------------------
+            # INTERPOLATE ONTO COMMON TIME GRID
+            # -----------------------------------------
+            yi = np.full_like(Tgrid, np.nan, dtype=float)
+            inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
+
+            if inside.any():
+                yi[inside] = np.interp(Tgrid[inside], t_sec, w)
+                mats.append(yi)
+
+        if len(mats) == 0:
+            continue
+
+        A = np.vstack(mats)  # (n_epochs, n_times)
+
+        # -----------------------------------------
+        # 3) WINDOW AVERAGES
+        # -----------------------------------------
+        mask = (Tgrid >= tmin) & (Tgrid <= tmax)
+        vals = []
+
+        for row in A:
+            seg = row[mask]
+            seg = seg[np.isfinite(seg)]
+            if len(seg) < min_points:
+                continue
+
+            if reducer == "mean":
+                vals.append(np.nanmean(seg))
+            elif reducer == "median":
+                vals.append(np.nanmedian(seg))
+            elif reducer == "max":
+                vals.append(np.nanmax(seg))
+            else:
+                raise ValueError("reducer must be 'mean', 'median', or 'max'.")
+
+        summary[gname] = np.array(vals)
+
+    # drop empty groups
     summary = {g: v for g, v in summary.items() if v.size > 0}
-
     if not summary:
-        raise ValueError("No groups contain data in that window.")
+        raise ValueError("No groups contain usable data in this window.")
 
+    # ---------------------------------------------------------------------
+    # 4) STATS
+    # ---------------------------------------------------------------------
     if group_order is None:
         group_order = list(summary.keys())
 
     data = [summary[g] for g in group_order]
 
-    # === stats ===
     if len(data) == 2:
         from scipy.stats import ttest_ind
         t, p = ttest_ind(data[0], data[1], equal_var=False)
@@ -1790,13 +1889,14 @@ def boxplot_feature_window_stats(
         from scipy.stats import f_oneway
         F, p = f_oneway(*data)
         df1 = len(data) - 1
-        df2 = sum(len(d) for d in data) - len(data)
-        stat_label = f"F({df1}, {df2}) = {F:.2f}, p = {format_p_plain(p)}"
+        df2 = sum(len(v) for v in data) - len(data)
+        stat_label = f"F({df1},{df2}) = {F:.2f}, p = {format_p_plain(p)}"
         stats_res = {"test": "anova", "F": F, "p": p, "df1": df1, "df2": df2}
 
-    # === plot ===
+    # ---------------------------------------------------------------------
+    # 5) BOXPLOT
+    # ---------------------------------------------------------------------
     fig, ax = plt.subplots(figsize=figsize)
-
     colors = [feat_groups[g].get("color", "#4c72b0") for g in group_order]
 
     bp = ax.boxplot(
@@ -1811,33 +1911,24 @@ def boxplot_feature_window_stats(
         patch.set_facecolor(col)
         patch.set_alpha(0.6)
 
-    ax.grid(False)
+    tag = "Δ " if use_change else ""
+    ax.set_title(f"{tag}{feature_label} in window [{tmin},{tmax}] {time_unit}", pad=30)
 
-    tmin, tmax = window
-    # title
-    ax.set_title(
-        f"{feature_label} in window [{tmin:.3f}, {tmax:.3f}] {time_unit}",
-        pad=30
-    )
-    
-    # stats text WELL ABOVE title
     ax.text(
-        0.5, 1.,
-        stat_label,
+        0.5, 1.02, stat_label,
         transform=ax.transAxes,
-        ha="center",
-        va="bottom",
-        fontsize=12,
-        fontweight="bold"
+        ha="center", va="bottom",
+        fontsize=12, fontweight="bold"
     )
 
-
-    ax.set_ylabel(feature_label)
+    ax.set_ylabel(tag + feature_label)
     plt.xticks(rotation=25, ha="right")
+    plt.show()
 
-    plt.show()  # ONLY display once
+    return stats_res
 
-    return stats_res   # DOES NOT trigger auto-display
+
+
 
 def plot_window_feature_groups_heatmap(
     groups: Dict[str, Dict[str, Any]],
