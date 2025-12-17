@@ -289,22 +289,10 @@ def cluster_multimodal_features(
     valley_ratio: float = 0.70,
     unique_min: int = 8,
     manual_thresholds: Optional[Dict[str, float]] = None,
-) -> Tuple[pd.DataFrame, Dict[str, Dict[str, Any]]]:
-    """
-    Detect multi-peak features and cluster them using 1D K-means.
-
-    Enhancement:
-    - If multimodality detection fails, we still TRY k=2 and keep it
-      only if separation is meaningful.
-    """
+):
     df_out = df.copy()
     if manual_thresholds is None:
         manual_thresholds = {}
-
-    # Internal acceptance thresholds 
-    FORCE_TRY_K2 = True
-    MIN_EFFECT_SIZE = 0.5
-    MIN_CLUSTER_FRAC = 0.10
 
     if features is None:
         features = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
@@ -315,15 +303,11 @@ def cluster_multimodal_features(
         x = pd.to_numeric(df[feat], errors="coerce").to_numpy(dtype=float)
         valid = np.isfinite(x)
         data = x[valid]
-
-        if np.unique(data).size < unique_min:
-            continue
-
         new_col = f"{feat}{suffix}"
 
-        # --------------------------------------------------------------
-        # 1) MANUAL THRESHOLD OVERRIDE
-        # --------------------------------------------------------------
+        # ==========================================================
+        # 1️⃣ MANUAL THRESHOLD — ALWAYS RUN FIRST
+        # ==========================================================
         if feat in manual_thresholds:
             thr = manual_thresholds[feat]
             labels = ["low", "high"]
@@ -342,35 +326,31 @@ def cluster_multimodal_features(
             }
 
             if plot_each:
-                plt.figure(figsize=(7, 4))
-                plt.hist(data[data <= thr], bins=40, alpha=0.7, label="low")
-                plt.hist(data[data > thr], bins=40, alpha=0.7, label="high")
+                plt.figure(figsize=(6, 4))
+                plt.hist(data[data <= thr], bins=10, alpha=0.7, label="low")
+                plt.hist(data[data > thr], bins=10, alpha=0.7, label="high")
                 plt.axvline(thr, color="k", linestyle="--", linewidth=2)
                 plt.title(f"{feat} (manual threshold)")
                 plt.legend()
                 plt.show()
 
+            continue  # 
+
+        # ==========================================================
+        # 2️⃣ HEURISTIC GATES (ONLY FOR AUTO MODE)
+        # ==========================================================
+        if np.unique(data).size < unique_min:
             continue
 
-        # --------------------------------------------------------------
-        # 2) AUTO DETECTION
-        # --------------------------------------------------------------
         k_suggest, diag = _looks_clustered_1d(
             data,
             min_peak_ratio=peak_ratio,
             max_valley_ratio=valley_ratio,
             max_k=max_k,
         )
-
-        use_fallback_k2 = False
-        if k_suggest < 2 and FORCE_TRY_K2:
-            k_suggest = 2
-            use_fallback_k2 = True
-
         if k_suggest < 2:
             continue
 
-        # labels
         if labels_map and feat in labels_map:
             labels = labels_map[feat]
             if len(labels) != k_suggest:
@@ -378,9 +358,6 @@ def cluster_multimodal_features(
         else:
             labels = ["low", "high"] if k_suggest == 2 else ["low", "mid", "high"][:k_suggest]
 
-        # --------------------------------------------------------------
-        # 3) RUN K-MEANS
-        # --------------------------------------------------------------
         df_out, centers, cutoffs = kmeans_1d_cluster(
             df_out,
             feature=feat,
@@ -390,38 +367,6 @@ def cluster_multimodal_features(
             plot=plot_each,
         )
 
-        # --------------------------------------------------------------
-        # 4) VALIDATE FORCED K=2 SPLIT
-        # --------------------------------------------------------------
-        if use_fallback_k2:
-            vals0 = df_out.loc[df_out[new_col] == labels[0], feat].values
-            vals1 = df_out.loc[df_out[new_col] == labels[1], feat].values
-
-            if len(vals0) < 2 or len(vals1) < 2:
-                df_out.drop(columns=[new_col], inplace=True)
-                continue
-
-            mu0, mu1 = np.mean(vals0), np.mean(vals1)
-            s0, s1 = np.std(vals0), np.std(vals1)
-            pooled_std = np.sqrt((s0**2 + s1**2) / 2)
-
-            effect_size = abs(mu1 - mu0) / pooled_std if pooled_std > 0 else 0.0
-            frac_small = min(len(vals0), len(vals1)) / (len(vals0) + len(vals1))
-
-            if effect_size < MIN_EFFECT_SIZE or frac_small < MIN_CLUSTER_FRAC:
-                df_out.drop(columns=[new_col], inplace=True)
-                continue
-
-            diag = {
-                **diag,
-                "forced_k2": True,
-                "effect_size": float(effect_size),
-                "min_cluster_frac": float(frac_small),
-            }
-
-        # --------------------------------------------------------------
-        # 5) REPORT
-        # --------------------------------------------------------------
         report[feat] = {
             "k": int(k_suggest),
             "centers": centers,
@@ -432,6 +377,7 @@ def cluster_multimodal_features(
         }
 
     return df_out, report
+
 
 
 
