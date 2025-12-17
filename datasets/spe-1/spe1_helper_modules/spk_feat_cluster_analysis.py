@@ -230,9 +230,7 @@ def _looks_clustered_1d(
     diagnostics : dict
         Histogram/peaks diagnostics, including `valley_ratio` and approximate peak locations.
 
-    Notes
-    -----
-    • This is a fast heuristic; it won’t replace formal tests (e.g., Hartigan’s dip test).
+   
     """
     if data.size < 50:
         # Small samples can be noisy; leave thresholds as-is but keep this in mind.
@@ -293,23 +291,21 @@ def cluster_multimodal_features(
     manual_thresholds: Optional[Dict[str, float]] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, Any]]]:
     """
-    Detect multi-peak features and cluster them using 1D K-means,
-    with optional manual override thresholds for specific features.
+    Detect multi-peak features and cluster them using 1D K-means.
 
-    New parameter:
-    -------------
-    manual_thresholds : dict or None
-        Mapping {feature_name: threshold_value}.
-        If provided for a feature, K-means is skipped and the split is:
-            value <= threshold -> low
-            value >  threshold -> high
+    Enhancement:
+    - If multimodality detection fails, we still TRY k=2 and keep it
+      only if separation is meaningful.
     """
     df_out = df.copy()
-
     if manual_thresholds is None:
         manual_thresholds = {}
 
-    # choose features
+    # Internal acceptance thresholds 
+    FORCE_TRY_K2 = True
+    MIN_EFFECT_SIZE = 0.5
+    MIN_CLUSTER_FRAC = 0.10
+
     if features is None:
         features = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
@@ -323,69 +319,54 @@ def cluster_multimodal_features(
         if np.unique(data).size < unique_min:
             continue
 
-        # ------------------------------------------------------------------
-        # 1. CHECK FOR MANUAL THRESHOLD — overrides everything else
-        # ------------------------------------------------------------------
-                # ------------------------------------------------------------------
-        # 1. MANUAL THRESHOLD OVERRIDE
-        # ------------------------------------------------------------------
+        new_col = f"{feat}{suffix}"
+
+        # --------------------------------------------------------------
+        # 1) MANUAL THRESHOLD OVERRIDE
+        # --------------------------------------------------------------
         if feat in manual_thresholds:
             thr = manual_thresholds[feat]
-            new_col = f"{feat}{suffix}"
-
-            # Assign cluster labels
             labels = ["low", "high"]
-            cluster_assign = np.where(data <= thr, labels[0], labels[1])
 
-            # Fill in df_out
+            cluster_assign = np.where(data <= thr, labels[0], labels[1])
             df_out.loc[valid, new_col] = cluster_assign
             df_out.loc[~valid, new_col] = np.nan
 
-            # Prepare report (mimicking auto version format)
             report[feat] = {
                 "k": 2,
-                "centers": [np.nan, np.nan],     # not meaningful for manual threshold
-                "cutoffs": [thr],                # THE threshold
+                "centers": [np.nan, np.nan],
+                "cutoffs": [thr],
                 "diagnostics": {"manual_threshold": thr},
                 "column": new_col,
                 "labels": labels,
             }
 
-            # --------------------------------------------------------------
-            # OPTIONAL PLOT: reproduce K-means-style colored histogram
-            # --------------------------------------------------------------
             if plot_each:
-                import matplotlib.pyplot as plt
-                fig, ax = plt.subplots(figsize=(7,4))
-
-                # Plot each cluster separately with consistent colors
-                low_vals = data[data <= thr]
-                high_vals = data[data > thr]
-
-                ax.hist(low_vals, bins=40, alpha=0.7, color="#1f77b4", label="low")   # blue
-                ax.hist(high_vals, bins=40, alpha=0.7, color="#ff7f0e", label="high") # orange
-
-                # Threshold line
-                ax.axvline(thr, color="k", linestyle="--", linewidth=2)
-
-                ax.set_title(f"{feat} (manual threshold = {thr})")
-                ax.set_xlabel(feat)
-                ax.set_ylabel("count")
-                ax.legend()
-
+                plt.figure(figsize=(7, 4))
+                plt.hist(data[data <= thr], bins=40, alpha=0.7, label="low")
+                plt.hist(data[data > thr], bins=40, alpha=0.7, label="high")
+                plt.axvline(thr, color="k", linestyle="--", linewidth=2)
+                plt.title(f"{feat} (manual threshold)")
+                plt.legend()
                 plt.show()
 
-            
+            continue
 
-
-            continue   # skip multimodal detection + K-means
-
-        # ------------------------------------------------------------------
-        # 2. AUTO-MODE if no manual threshold
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 2) AUTO DETECTION
+        # --------------------------------------------------------------
         k_suggest, diag = _looks_clustered_1d(
-            data, min_peak_ratio=peak_ratio, max_valley_ratio=valley_ratio, max_k=max_k
+            data,
+            min_peak_ratio=peak_ratio,
+            max_valley_ratio=valley_ratio,
+            max_k=max_k,
         )
+
+        use_fallback_k2 = False
+        if k_suggest < 2 and FORCE_TRY_K2:
+            k_suggest = 2
+            use_fallback_k2 = True
+
         if k_suggest < 2:
             continue
 
@@ -393,16 +374,54 @@ def cluster_multimodal_features(
         if labels_map and feat in labels_map:
             labels = labels_map[feat]
             if len(labels) != k_suggest:
-                labels = (['low','high'] if k_suggest == 2 else ['low','mid','high'][:k_suggest])
+                labels = ["low", "high"] if k_suggest == 2 else ["low", "mid", "high"][:k_suggest]
         else:
-            labels = ['low','high'] if k_suggest == 2 else ['low','mid','high'][:k_suggest]
+            labels = ["low", "high"] if k_suggest == 2 else ["low", "mid", "high"][:k_suggest]
 
-        new_col = f"{feat}{suffix}"
-
+        # --------------------------------------------------------------
+        # 3) RUN K-MEANS
+        # --------------------------------------------------------------
         df_out, centers, cutoffs = kmeans_1d_cluster(
-            df_out, feature=feat, k=k_suggest, labels=labels, new_col=new_col, plot=plot_each
+            df_out,
+            feature=feat,
+            k=k_suggest,
+            labels=labels,
+            new_col=new_col,
+            plot=plot_each,
         )
 
+        # --------------------------------------------------------------
+        # 4) VALIDATE FORCED K=2 SPLIT
+        # --------------------------------------------------------------
+        if use_fallback_k2:
+            vals0 = df_out.loc[df_out[new_col] == labels[0], feat].values
+            vals1 = df_out.loc[df_out[new_col] == labels[1], feat].values
+
+            if len(vals0) < 2 or len(vals1) < 2:
+                df_out.drop(columns=[new_col], inplace=True)
+                continue
+
+            mu0, mu1 = np.mean(vals0), np.mean(vals1)
+            s0, s1 = np.std(vals0), np.std(vals1)
+            pooled_std = np.sqrt((s0**2 + s1**2) / 2)
+
+            effect_size = abs(mu1 - mu0) / pooled_std if pooled_std > 0 else 0.0
+            frac_small = min(len(vals0), len(vals1)) / (len(vals0) + len(vals1))
+
+            if effect_size < MIN_EFFECT_SIZE or frac_small < MIN_CLUSTER_FRAC:
+                df_out.drop(columns=[new_col], inplace=True)
+                continue
+
+            diag = {
+                **diag,
+                "forced_k2": True,
+                "effect_size": float(effect_size),
+                "min_cluster_frac": float(frac_small),
+            }
+
+        # --------------------------------------------------------------
+        # 5) REPORT
+        # --------------------------------------------------------------
         report[feat] = {
             "k": int(k_suggest),
             "centers": centers,
@@ -413,6 +432,7 @@ def cluster_multimodal_features(
         }
 
     return df_out, report
+
 
 
 def compare_feature_groups(
