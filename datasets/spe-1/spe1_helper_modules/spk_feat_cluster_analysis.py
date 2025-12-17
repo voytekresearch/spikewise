@@ -18,6 +18,22 @@ from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union, S
 from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway
 
 
+
+
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ Global cluster color registry ------------------------------ #
+# ------------------------------------------------------------------------------------------- #
+
+CLUSTER_COLORS = {
+    "low":  "#1f77b4",   # blue
+    "mid":  "#2ca02c",   # green
+    "high": "#ff7f0e",   # orange
+}
+
+def get_cluster_color(label: str, fallback: str = "black") -> str:
+    """Return consistent color for a cluster label."""
+    return CLUSTER_COLORS.get(str(label), fallback)
+
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Cluster features that show grouped data --------------------- #
 # ------------------------------------------------------------------------------------------- #
@@ -133,7 +149,7 @@ def kmeans_1d_cluster(
         full_idx = idx_valid[assign_sorted == i]
         label_array[full_idx] = labels[i]
     df_out[out_col] = label_array
-    colors = ["#1f77b4","#ff7f0e", "red", "yellow"]
+    colors = [get_cluster_color(lab) for lab in labels]
     if plot:
         plt.figure(figsize=(7.5, 4.2))
         for i in range(k):
@@ -581,7 +597,14 @@ def plot_clusters_over_time_min(
         if m.sum() == 0:
             continue
         y = np.full(m.sum(), i + 1, float) + (np.random.rand(m.sum()) - 0.5) * 0.03
-        ax_raster.scatter(t_sec[m], y, s=4, alpha=0.8, label=str(cl))
+        ax_raster.scatter(
+    t_sec[m], y,
+    s=4,
+    alpha=0.8,
+    color=get_cluster_color(cl),
+    label=str(cl)
+)
+
     ax_raster.set_yticks(range(1, len(clusters) + 1))
     ax_raster.set_yticklabels(clusters)
     ax_raster.set_ylabel("cluster (raster)")
@@ -592,7 +615,12 @@ def plot_clusters_over_time_min(
         m = (labels == cl)
         counts, _ = np.histogram(t_sec[m], bins=edges)
         rate = _smooth(counts / bin_w, sigma_bins)
-        ax_rate.plot(centers, rate, label=str(cl))
+        ax_rate.plot(
+    centers, rate,
+    label=str(cl),
+    color=get_cluster_color(cl)
+)
+
     ax_rate.set_ylabel("rate (spikes/s)")
     ax_rate.set_xlabel("time (s)")
     ax_rate.legend(loc="upper right", fontsize=9)
@@ -2226,13 +2254,8 @@ def plot_spike_clusters_from_df(
 
 
     # Default color scheme
-    if colors is None:
-        base = {
-            "low":  "#1f77b4",
-            "mid":  "#2ca02c",
-            "high": "#ff7f0e",
-        }
-        colors = {lab: base.get(lab, "black") for lab in labels}
+    colors = {lab: get_cluster_color(lab) for lab in labels}
+
 
     # Build index groups based on df['spk_id']
     ind_groups = []
@@ -2340,13 +2363,14 @@ def plot_full_cluster_report(
     trans_mat = cluster_transition_matrix(df, cluster_col)
 
     plt.figure(figsize=(5.5, 4.5))
+    order = list(trans_mat.index)
     sns.heatmap(
-        trans_mat,
-        annot=True,
-        fmt=".2f",
-        cmap=heatmap_cmap,
-        cbar=False,
-    )
+    trans_mat.loc[order, order],
+    annot=True,
+    cmap="magma",
+    cbar=False
+)
+
     plt.title(f"{cluster_col} transition probabilities")
     plt.xlabel("Next spike cluster")
     plt.ylabel("Current spike cluster")
