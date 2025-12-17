@@ -2273,3 +2273,108 @@ def plot_spike_clusters_from_df(
     plt.tight_layout()
 
     return fig, ax
+
+
+def plot_full_cluster_report(
+    df: pd.DataFrame,
+    sp,
+    cluster_col: str,
+    *,
+    time_col: str = "spk_times_ms",
+    time_unit: str = "ms",
+    bin_size_ms: int = 1000,
+    sigma_bins: int = 2,
+    compare_features: Optional[list] = None,
+    compare_groups: tuple = ("high", "low"),
+    compare_group_names: Optional[tuple] = None,
+    heatmap_cmap: str = "magma",
+):
+    """
+    Run a full diagnostic plotting + stats report for a given cluster column.
+
+    Steps:
+    ------
+    A) Plot spike waveforms by cluster
+    B) Plot cluster proportions over time
+    C) Plot cluster transition matrix
+    D) Compare feature distributions between two cluster groups
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Feature dataframe containing cluster labels.
+    sp : Spike
+        Spike object used for waveform plotting.
+    cluster_col : str
+        Column name for cluster labels (e.g. "ramp_amp_cluster").
+    """
+
+    if cluster_col not in df.columns:
+        raise KeyError(f"{cluster_col} not found in dataframe")
+
+    print(f"\n===== CLUSTER REPORT: {cluster_col} =====")
+
+    # --------------------------------------------------
+    # A) Spike waveform plots
+    # --------------------------------------------------
+    print("→ Plotting spike waveforms by cluster")
+    plot_spike_clusters_from_df(df, sp, cluster_col)
+
+    # --------------------------------------------------
+    # B) Cluster proportions over time
+    # --------------------------------------------------
+    print("→ Plotting cluster proportions over time")
+    plot_clusters_over_time_min(
+        df,
+        time_col=time_col,
+        label_col=cluster_col,
+        time_unit=time_unit,
+        bin_size_ms=bin_size_ms,
+        sigma_bins=sigma_bins,
+    )
+
+    # --------------------------------------------------
+    # C) Transition matrix + heatmap
+    # --------------------------------------------------
+    print("→ Computing cluster transition matrix")
+    trans_mat = cluster_transition_matrix(df, cluster_col)
+
+    plt.figure(figsize=(5.5, 4.5))
+    sns.heatmap(
+        trans_mat,
+        annot=True,
+        fmt=".2f",
+        cmap=heatmap_cmap,
+        cbar=False,
+    )
+    plt.title(f"{cluster_col} transition probabilities")
+    plt.xlabel("Next spike cluster")
+    plt.ylabel("Current spike cluster")
+    plt.tight_layout()
+    plt.show()
+
+    # --------------------------------------------------
+    # D) Feature comparisons (optional)
+    # --------------------------------------------------
+    compare_results = None
+    if compare_features is not None:
+        print("→ Comparing feature distributions between clusters")
+
+        if compare_group_names is None:
+            compare_group_names = compare_groups
+
+        compare_results = compare_feature_groups(
+            df,
+            features=compare_features,
+            group_col=cluster_col,
+            groups=compare_groups,
+            group_names=compare_group_names,
+            show_plots=True,
+        )
+
+    print("===== DONE =====\n")
+
+    return {
+        "transition_matrix": trans_mat,
+        "feature_comparisons": compare_results,
+    }
