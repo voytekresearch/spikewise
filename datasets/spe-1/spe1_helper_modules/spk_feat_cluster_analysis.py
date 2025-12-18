@@ -1033,11 +1033,14 @@ def extract_lfp_windows(
       windows: list of arrays (lfp µV)
       times_rel_ms: list of arrays (ms, spike = 0)
       spike_times_ms: list of spike times (ms)
-      next_spike_times_ms: list of next spike times (ms)
+      next_spike_times_ms: list of next spike times (ms or NaN)
       meta_df: Dataframe describing each window
     """
 
     df = spk_df.copy()
+
+    # Detect whether next-spike is required (ISI-based analyses only)
+    requires_next_spike = "log_isi_cluster" in spk_df.columns
 
     # Apply condition if provided
     if condition is not None:
@@ -1072,9 +1075,13 @@ def extract_lfp_windows(
         t0 = float(row["spk_times_ms"])
 
         # Lookup next spike
-        if sid + 1 not in df_sorted.index:
-            continue  # skip last spike (no next spike)
-        t_next = float(df_sorted.loc[sid + 1, "spk_times_ms"])
+        if sid + 1 in df_sorted.index:
+            t_next = float(df_sorted.loc[sid + 1, "spk_times_ms"])
+        else:
+            if requires_next_spike:
+                continue          # ONLY drop for ISI-based analyses
+            else:
+                t_next = np.nan   # keep spike
 
         # Window boundaries
         t_start = t0 - pre_ms
