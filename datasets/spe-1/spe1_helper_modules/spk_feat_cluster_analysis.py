@@ -37,7 +37,213 @@ def get_cluster_color(label: str, fallback: str = "black") -> str:
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Cluster features that show grouped data --------------------- #
 # ------------------------------------------------------------------------------------------- #
+# Post-process: remove first/last 0.5s epochs
+def trim_edges(results, edge_sec=0.5):
+    trimmed = {}
+    for group_name, group_out in results.items():
+        trimmed_group = []
+        for out_w in group_out:
+            t_bins = out_w["t_bins_s"]
+            mask = (t_bins >= (t_bins.min() + edge_sec)) & (t_bins <= (t_bins.max() - edge_sec))
+            
+            # Apply mask to all epoch-wise arrays
+            out_w_trimmed = {
+                **out_w,
+                "t_bins_s": out_w["t_bins_s"][mask],
+                "epoch_idx": out_w["epoch_idx"][mask],
+                "powers": out_w["powers"][mask, :],
+                "offset": out_w["offset"][mask],
+                "exponent": out_w["exponent"][mask],
+                "r_squared": out_w["r_squared"][mask],
+                "band_aucs": {b: vals[mask] for b, vals in out_w["band_aucs"].items()},
+            }
+            # knee may be None or array
+            if out_w["knee"] is not None:
+                out_w_trimmed["knee"] = out_w["knee"][mask]
+            trimmed_group.append(out_w_trimmed)
+        trimmed[group_name] = trimmed_group
+    return trimmed
 
+
+def plot_spike_clusters_from_df(
+    df,
+    sp,
+    cluster_col,
+    mode="full",
+    plot_average=True,
+    plot_average_std=True,
+    colors=None,
+    title=None,
+    figsize=(14, 4),
+):
+    """
+    Plot spike waveforms grouped by clusters using df['spk_id'] to index spikes.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain:
+            cluster_col : cluster labels (e.g. 'peak_width_cluster')
+            'spk_id'    : the true spike index into sp.spikes
+    sp : Spike
+        The Spike object containing the actual waveforms
+    cluster_col : str
+        Cluster feature column name
+    """
+
+    # Extract cluster labels
+    labels = sorted(df[cluster_col].dropna().unique().tolist())
+
+
+    # Default color scheme
+    colors = {lab: get_cluster_color(lab) for lab in labels}
+
+
+    # Build index groups based on df['spk_id']
+    ind_groups = []
+    group_names = []
+
+    for lab in labels:
+        # THIS IS THE KEY: use df["spk_id"], NOT df.index
+        inds = df.loc[df[cluster_col] == lab, "spk_id"].astype(int).tolist()
+        if len(inds) > 0:
+            ind_groups.append(inds)
+            group_names.append(str(lab))
+
+    # Create plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Use the Spike class’ existing plotting engine
+    sp.plot(
+        inds=None,                   # we supply groups below
+        mode=mode,
+        in_ms=True,
+        show_points=False,
+        ax=ax,
+        groups=True,                 # activates group overlays
+        ind_groups=ind_groups,       # list of lists of spike indices
+        group_names=group_names,
+        plot_average=plot_average,
+        plot_average_std=plot_average_std,
+    )
+
+    # Update average line colors based on cluster colors
+    for line in ax.lines:
+        lab = line.get_label()
+        for cluster_label in labels:
+            if cluster_label in lab:
+                line.set_color(colors[cluster_label])
+
+    ax.set_title(title or f"Spike waveforms grouped by {cluster_col}")
+    plt.tight_layout()
+
+    return fig, ax
+
+
+def plot_full_cluster_report(
+    df: pd.DataFrame,
+    sp,
+    cluster_col: str,
+    *,
+    time_col: str = "spk_times_ms",
+    time_unit: str = "ms",
+    bin_size_ms: int = 1000,
+    sigma_bins: int = 2,
+    compare_features: Optional[list] = None,
+    compare_groups: tuple = ("high", "low"),
+    compare_group_names: Optional[tuple] = None,
+    heatmap_cmap: str = "magma",
+):
+    """
+    Run a full diagnostic plotting + stats report for a given cluster column.
+
+    Steps:
+    ------
+    A) Plot spike waveforms by cluster
+    B) Plot cluster proportions over time
+    C) Plot cluster transition matrix
+    D) Compare feature distributions between two cluster groups
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Feature dataframe containing cluster labels.
+    sp : Spike
+        Spike object used for waveform plotting.
+    cluster_col : str
+        Column name for cluster labels (e.g. "ramp_amp_cluster").
+    """
+
+    if cluster_col not in df.columns:
+        raise KeyError(f"{cluster_col} not found in dataframe")
+
+    print(f"\n===== CLUSTER REPORT: {cluster_col} =====")
+
+    # --------------------------------------------------
+    # A) Spike waveform plots
+    # --------------------------------------------------
+    print("→ Plotting spike waveforms by cluster")
+    plot_spike_clusters_from_df(df, sp, cluster_col)
+
+    # --------------------------------------------------
+    # B) Cluster proportions over time
+    # --------------------------------------------------
+    print("→ Plotting cluster proportions over time")
+    plot_clusters_over_time_min(
+        df,
+        time_col=time_col,
+        label_col=cluster_col,
+        time_unit=time_unit,
+        bin_size_ms=bin_size_ms,
+        sigma_bins=sigma_bins,
+    )
+
+    # --------------------------------------------------
+    # C) Transition matrix + heatmap
+    # --------------------------------------------------
+    print("→ Computing cluster transition matrix")
+    trans_mat = cluster_transition_matrix(df, cluster_col)
+
+    plt.figure(figsize=(5.5, 4.5))
+    order = list(trans_mat.index)
+    sns.heatmap(
+    trans_mat.loc[order, order],
+    annot=True,
+    cmap="magma",
+    cbar=False
+)
+
+    plt.title(f"{cluster_col} transition probabilities")
+    plt.xlabel("Next spike cluster")
+    plt.ylabel("Current spike cluster")
+    plt.tight_layout()
+    plt.show()
+
+    # --------------------------------------------------
+    # D) Feature comparisons (optional)
+    # --------------------------------------------------
+    compare_results = None
+    if compare_features is not None:
+        print("→ Comparing feature distributions between clusters")
+
+        if compare_group_names is None:
+            compare_group_names = compare_groups
+
+        compare_results = compare_feature_groups(
+            df,
+            features=compare_features,
+            group_col=cluster_col,
+            groups=compare_groups,
+            group_names=compare_group_names,
+            show_plots=True,
+        )
+
+    print("===== DONE =====\n")
+
+    return {
+        "transition_matrix": trans_mat,
+        "feature_comparisons": compare_results,
+    }
 def kmeans_1d_cluster(
     df: pd.DataFrame,
     feature: str,
@@ -2245,210 +2451,3 @@ def plot_window_feature_group_heatmap_single(
     
 
 
-# Post-process: remove first/last 0.5s epochs
-def trim_edges(results, edge_sec=0.5):
-    trimmed = {}
-    for group_name, group_out in results.items():
-        trimmed_group = []
-        for out_w in group_out:
-            t_bins = out_w["t_bins_s"]
-            mask = (t_bins >= (t_bins.min() + edge_sec)) & (t_bins <= (t_bins.max() - edge_sec))
-            
-            # Apply mask to all epoch-wise arrays
-            out_w_trimmed = {
-                **out_w,
-                "t_bins_s": out_w["t_bins_s"][mask],
-                "epoch_idx": out_w["epoch_idx"][mask],
-                "powers": out_w["powers"][mask, :],
-                "offset": out_w["offset"][mask],
-                "exponent": out_w["exponent"][mask],
-                "r_squared": out_w["r_squared"][mask],
-                "band_aucs": {b: vals[mask] for b, vals in out_w["band_aucs"].items()},
-            }
-            # knee may be None or array
-            if out_w["knee"] is not None:
-                out_w_trimmed["knee"] = out_w["knee"][mask]
-            trimmed_group.append(out_w_trimmed)
-        trimmed[group_name] = trimmed_group
-    return trimmed
-
-
-def plot_spike_clusters_from_df(
-    df,
-    sp,
-    cluster_col,
-    mode="full",
-    plot_average=True,
-    plot_average_std=True,
-    colors=None,
-    title=None,
-    figsize=(14, 4),
-):
-    """
-    Plot spike waveforms grouped by clusters using df['spk_id'] to index spikes.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Must contain:
-            cluster_col : cluster labels (e.g. 'peak_width_cluster')
-            'spk_id'    : the true spike index into sp.spikes
-    sp : Spike
-        The Spike object containing the actual waveforms
-    cluster_col : str
-        Cluster feature column name
-    """
-
-    # Extract cluster labels
-    labels = sorted(df[cluster_col].dropna().unique().tolist())
-
-
-    # Default color scheme
-    colors = {lab: get_cluster_color(lab) for lab in labels}
-
-
-    # Build index groups based on df['spk_id']
-    ind_groups = []
-    group_names = []
-
-    for lab in labels:
-        # THIS IS THE KEY: use df["spk_id"], NOT df.index
-        inds = df.loc[df[cluster_col] == lab, "spk_id"].astype(int).tolist()
-        if len(inds) > 0:
-            ind_groups.append(inds)
-            group_names.append(str(lab))
-
-    # Create plot
-    fig, ax = plt.subplots(figsize=figsize)
-
-    # Use the Spike class’ existing plotting engine
-    sp.plot(
-        inds=None,                   # we supply groups below
-        mode=mode,
-        in_ms=True,
-        show_points=False,
-        ax=ax,
-        groups=True,                 # activates group overlays
-        ind_groups=ind_groups,       # list of lists of spike indices
-        group_names=group_names,
-        plot_average=plot_average,
-        plot_average_std=plot_average_std,
-    )
-
-    # Update average line colors based on cluster colors
-    for line in ax.lines:
-        lab = line.get_label()
-        for cluster_label in labels:
-            if cluster_label in lab:
-                line.set_color(colors[cluster_label])
-
-    ax.set_title(title or f"Spike waveforms grouped by {cluster_col}")
-    plt.tight_layout()
-
-    return fig, ax
-
-
-def plot_full_cluster_report(
-    df: pd.DataFrame,
-    sp,
-    cluster_col: str,
-    *,
-    time_col: str = "spk_times_ms",
-    time_unit: str = "ms",
-    bin_size_ms: int = 1000,
-    sigma_bins: int = 2,
-    compare_features: Optional[list] = None,
-    compare_groups: tuple = ("high", "low"),
-    compare_group_names: Optional[tuple] = None,
-    heatmap_cmap: str = "magma",
-):
-    """
-    Run a full diagnostic plotting + stats report for a given cluster column.
-
-    Steps:
-    ------
-    A) Plot spike waveforms by cluster
-    B) Plot cluster proportions over time
-    C) Plot cluster transition matrix
-    D) Compare feature distributions between two cluster groups
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Feature dataframe containing cluster labels.
-    sp : Spike
-        Spike object used for waveform plotting.
-    cluster_col : str
-        Column name for cluster labels (e.g. "ramp_amp_cluster").
-    """
-
-    if cluster_col not in df.columns:
-        raise KeyError(f"{cluster_col} not found in dataframe")
-
-    print(f"\n===== CLUSTER REPORT: {cluster_col} =====")
-
-    # --------------------------------------------------
-    # A) Spike waveform plots
-    # --------------------------------------------------
-    print("→ Plotting spike waveforms by cluster")
-    plot_spike_clusters_from_df(df, sp, cluster_col)
-
-    # --------------------------------------------------
-    # B) Cluster proportions over time
-    # --------------------------------------------------
-    print("→ Plotting cluster proportions over time")
-    plot_clusters_over_time_min(
-        df,
-        time_col=time_col,
-        label_col=cluster_col,
-        time_unit=time_unit,
-        bin_size_ms=bin_size_ms,
-        sigma_bins=sigma_bins,
-    )
-
-    # --------------------------------------------------
-    # C) Transition matrix + heatmap
-    # --------------------------------------------------
-    print("→ Computing cluster transition matrix")
-    trans_mat = cluster_transition_matrix(df, cluster_col)
-
-    plt.figure(figsize=(5.5, 4.5))
-    order = list(trans_mat.index)
-    sns.heatmap(
-    trans_mat.loc[order, order],
-    annot=True,
-    cmap="magma",
-    cbar=False
-)
-
-    plt.title(f"{cluster_col} transition probabilities")
-    plt.xlabel("Next spike cluster")
-    plt.ylabel("Current spike cluster")
-    plt.tight_layout()
-    plt.show()
-
-    # --------------------------------------------------
-    # D) Feature comparisons (optional)
-    # --------------------------------------------------
-    compare_results = None
-    if compare_features is not None:
-        print("→ Comparing feature distributions between clusters")
-
-        if compare_group_names is None:
-            compare_group_names = compare_groups
-
-        compare_results = compare_feature_groups(
-            df,
-            features=compare_features,
-            group_col=cluster_col,
-            groups=compare_groups,
-            group_names=compare_group_names,
-            show_plots=True,
-        )
-
-    print("===== DONE =====\n")
-
-    return {
-        "transition_matrix": trans_mat,
-        "feature_comparisons": compare_results,
-    }
