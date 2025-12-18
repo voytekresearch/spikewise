@@ -1248,6 +1248,56 @@ def run_time_resolved_specparam_for_groups(
 
     return results
 
+
+
+def run_time_resolved_specparam_per_spike(
+    lfp_windows,        # list of windows, one per spike
+    times_rel_list,     # same length
+    next_rel_list,      # same length
+    fs,
+    **specparam_kwargs
+):
+    """
+    Returns a list where index == spike index
+    """
+    all_results = []
+
+    for i, (win, t_rel, next_rel) in enumerate(
+        tqdm(zip(lfp_windows, times_rel_list, next_rel_list),
+             total=len(lfp_windows),
+             desc="Specparam per spike")
+    ):
+        out = run_time_resolved_specparam_on_window(
+            lfp_window=win,
+            times_rel=t_rel,
+            fs=fs,
+            next_spike_rel=next_rel,
+            **specparam_kwargs
+        )
+        all_results.append(out)
+
+    return all_results
+    
+def build_specparam_groups_from_spike_indices(
+    specparam_by_spike,
+    spike_indices_by_group,
+):
+    """
+    spike_indices_by_group:
+        {
+          "Short ISI": [1, 5, 20, ...],
+          "Long ISI":  [2, 7, 13, ...],
+          ...
+        }
+    """
+    grouped = {}
+
+    for gname, inds in spike_indices_by_group.items():
+        grouped[gname] = [specparam_by_spike[i] for i in inds]
+
+    return grouped
+
+
 # ------------------------------------------------------------------------------------------- #
 # --------------------  Time-resolved and window visualziations  --------------------- #
 # ------------------------------------------------------------------------------------------- #
