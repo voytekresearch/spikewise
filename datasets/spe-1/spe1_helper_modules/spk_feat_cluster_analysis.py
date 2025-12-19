@@ -1974,122 +1974,153 @@ def window_feature_group_traces_ci_delta(
     analysis_window=(-0.2, 0.0),
     alpha_ci=0.25,
     plot=True,
+    plot_mode="all",   # NEW: "all" or "per_cluster"
 ):
     """
     Plot mean ± 95% CI of baseline-corrected (Δ) feature traces.
-    Baseline is computed per epoch.
+
+    - Computation is unchanged
+    - Plotting can be:
+        * "all"         → one figure with all groups
+        * "per_cluster" → one figure per cluster family
 
     Returns
     -------
     window_results : dict
-        {group_name: np.ndarray of per-epoch mean values in analysis_window}
+        {group_name: list of per-epoch analysis-window means}
     """
+
+    # ---------------------------
+    # Organize groups by cluster
+    # ---------------------------
+    cluster_families = {}
+
+    for gname in feat_groups.keys():
+        # infer cluster family from name
+        if ":" in gname:
+            family = gname.split(":")[0]
+        else:
+            family = "all"
+
+        cluster_families.setdefault(family, []).append(gname)
+
+    # Decide which plotting sets to loop over
+    if plot_mode == "all":
+        plot_sets = {"All groups": list(feat_groups.keys())}
+    elif plot_mode == "per_cluster":
+        plot_sets = cluster_families
+    else:
+        raise ValueError("plot_mode must be 'all' or 'per_cluster'")
 
     window_results = {}
 
-    if plot:
-        fig, ax = plt.subplots(figsize=(12, 4))
+    # ==========================================================
+    # LOOP OVER PLOTTING SETS (this is the ONLY new loop)
+    # ==========================================================
+    for set_name, group_names in plot_sets.items():
 
-    for gname, g in feat_groups.items():
-
-        windows   = g["windows"]
-        times_rel = g["times_rel"]
-        color     = g.get("color", None)
-
-        # --------------------------------------------------
-        # Determine common time grid
-        # --------------------------------------------------
-        base_T = None
-        for t in times_rel:
-            if len(t) > 1:
-                base_T = np.asarray(t, float)
-                break
-        if base_T is None:
-            continue
-
-        Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
-
-        mats = []
-        epoch_win_means = []
-
-        # --------------------------------------------------
-        # Loop epochs
-        # --------------------------------------------------
-        for w, t in zip(windows, times_rel):
-            w = np.asarray(w, float)
-            t = np.asarray(t, float)
-
-            if w.size != t.size or w.size < 2:
-                continue
-
-            t_sec = t / 1000.0 if time_unit == "ms" else t
-
-            # ---------------- BASELINE ----------------
-            b0, b1 = baseline_window
-            bmask = (t_sec >= b0) & (t_sec <= b1)
-            if not np.any(bmask):
-                continue
-
-            baseline = np.nanmean(w[bmask])
-            w_delta = w - baseline
-
-            # ---------------- INTERPOLATE ----------------
-            yi = np.full_like(Tgrid, np.nan, dtype=float)
-            inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
-            if inside.any():
-                yi[inside] = np.interp(Tgrid[inside], t_sec, w_delta)
-                mats.append(yi)
-
-            # ---------------- ANALYSIS WINDOW ----------------
-            w0, w1 = analysis_window
-            amask = (t_sec >= w0) & (t_sec <= w1)
-            if np.any(amask):
-                epoch_win_means.append(np.nanmean(w_delta[amask]))
-
-        if len(mats) < 2:
-            continue
-
-        A = np.vstack(mats)              # (n_epochs, n_time)
-        mean = np.nanmean(A, axis=0)
-        std  = np.nanstd(A, axis=0)
-
-        n_epochs = A.shape[0]
-        ci95 = 1.96 * std / np.sqrt(n_epochs)
-
-        window_results[gname] = np.asarray(epoch_win_means)
-
-        # --------------------------------------------------
-        # Plot
-        # --------------------------------------------------
         if plot:
-            ax.plot(Tgrid, mean, label=gname, color=color)
-            ax.fill_between(
-                Tgrid,
-                mean - ci95,
-                mean + ci95,
-                color=color,
-                alpha=alpha_ci,
-                linewidth=0,
+            fig, ax = plt.subplots(figsize=(12, 4))
+
+        # -----------------------------------------
+        # LOOP OVER GROUPS (unchanged computation)
+        # -----------------------------------------
+        for gname in group_names:
+
+            g = feat_groups[gname]
+            windows   = g["windows"]
+            times_rel = g["times_rel"]
+            color     = g.get("color", None)
+
+            # --- determine common time grid ---
+            base_T = None
+            for t in times_rel:
+                if len(t) > 1:
+                    base_T = np.asarray(t, float)
+                    break
+            if base_T is None:
+                continue
+
+            Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
+
+            mats = []
+            epoch_win_means = []
+
+            for w, t in zip(windows, times_rel):
+                w = np.asarray(w, float)
+                t = np.asarray(t, float)
+
+                if w.size != t.size or w.size < 2:
+                    continue
+
+                t_sec = t / 1000.0 if time_unit == "ms" else t
+
+                # ---- BASELINE SUBTRACTION ----
+                b0, b1 = baseline_window
+                bmask = (t_sec >= b0) & (t_sec <= b1)
+                if not np.any(bmask):
+                    continue
+
+                baseline = np.nanmean(w[bmask])
+                w = w - baseline
+
+                # ---- interpolate onto common grid ----
+                yi = np.full_like(Tgrid, np.nan)
+                inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
+                if inside.any():
+                    yi[inside] = np.interp(Tgrid[inside], t_sec, w)
+                    mats.append(yi)
+
+                # ---- ANALYSIS WINDOW ----
+                w0, w1 = analysis_window
+                amask = (t_sec >= w0) & (t_sec <= w1)
+                epoch_win_means.append(np.nanmean(w[amask]))
+
+            if len(mats) < 2:
+                continue
+
+            A = np.vstack(mats)
+            mean = np.nanmean(A, axis=0)
+            std  = np.nanstd(A, axis=0)
+            n    = np.sum(np.isfinite(A), axis=0)
+            ci95 = 1.96 * std / np.sqrt(n)
+
+            window_results[gname] = epoch_win_means
+
+            if plot:
+                ax.plot(Tgrid, mean, label=gname, color=color)
+                ax.fill_between(
+                    Tgrid,
+                    mean - ci95,
+                    mean + ci95,
+                    color=color,
+                    alpha=alpha_ci,
+                    linewidth=0,
+                )
+
+        # ---------------------------
+        # Finalize figure
+        # ---------------------------
+        if plot:
+            ax.axvline(0, color="k", linestyle="--", linewidth=1)
+            ax.set_xlabel("Time (s, relative to spike)")
+            ax.set_ylabel(ylabel)
+
+            if title:
+                ax.set_title(f"{title} — {set_name}")
+            else:
+                ax.set_title(set_name)
+
+            ax.legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                frameon=False,
             )
 
-    # --------------------------------------------------
-    # Final plot cosmetics
-    # --------------------------------------------------
-    if plot:
-        ax.axvline(0, color="k", linestyle="--", linewidth=1)
-        ax.set_xlabel("Time (s, relative to spike)")
-        ax.set_ylabel(ylabel)
+            fig.tight_layout(rect=[0, 0, 0.82, 1])
+            plt.show()
 
-        if title:
-            ax.set_title(title)
-
-        ax.legend(
-            loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
-            frameon=False,
-        )
-
-        fig.tight_layo
+    return window_results
 
 
 
