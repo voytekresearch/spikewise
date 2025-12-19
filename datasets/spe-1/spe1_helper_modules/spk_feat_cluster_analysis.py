@@ -1543,272 +1543,6 @@ def make_feature_groups(time_res_results, feature, band=None):
 
 
 
-ReducerType = Union[str, Callable[[np.ndarray], float]]
-
-def summarize_feature_in_window(
-    feat_groups: Dict[str, Dict[str, np.ndarray]],
-    window: Tuple[float, float],
-    reducer: ReducerType = "mean",
-    min_points: int = 1,
-) -> Dict[str, np.ndarray]:
-    """
-    For each group, summarize feature values within a given time window per event.
-
-    Parameters
-    ----------
-    feat_groups : dict
-        {
-          group_name: {
-              "windows":   list of 1D arrays (feature traces),
-              "times_rel": list of 1D arrays (same length as windows),
-          },
-          ...
-        }
-    window : (float, float)
-        (t_min, t_max) in the same time units as times_rel (usually seconds).
-    reducer : {"mean", "median", "max", "min"} or callable
-        How to collapse samples within the window for each event.
-    min_points : int
-        Minimum number of samples that must fall into the window
-        for that event to be considered.
-
-    Returns
-    -------
-    summary : dict
-        {group_name: 1D np.ndarray of summary values per event}
-        Groups with no valid events are omitted.
-    """
-    t_min, t_max = window
-
-    # set up reduction function
-    if isinstance(reducer, str):
-        if reducer == "mean":
-            red_fn = np.nanmean
-        elif reducer == "median":
-            red_fn = np.nanmedian
-        elif reducer == "max":
-            red_fn = np.nanmax
-        elif reducer == "min":
-            red_fn = np.nanmin
-        else:
-            raise ValueError(f"Unknown reducer string '{reducer}'.")
-    elif callable(reducer):
-        red_fn = reducer
-    else:
-        raise ValueError("reducer must be a string or a callable.")
-
-    out: Dict[str, np.ndarray] = {}
-
-    for gname, gdict in feat_groups.items():
-        windows   = gdict.get("windows", [])
-        times_rel = gdict.get("times_rel", [])
-
-        if len(windows) == 0 or len(times_rel) == 0:
-            continue
-
-        vals = []
-        for w, t in zip(windows, times_rel):
-            w = np.asarray(w, float)
-            t = np.asarray(t, float)
-            if w.size == 0 or t.size == 0 or w.size != t.size:
-                continue
-
-            mask = (t >= t_min) & (t <= t_max)
-            if np.count_nonzero(mask) < min_points:
-                continue
-
-            seg = w[mask]
-            if seg.size == 0 or not np.any(np.isfinite(seg)):
-                continue
-
-            val = red_fn(seg)
-            if np.isfinite(val):
-                vals.append(float(val))
-
-        if len(vals) > 0:
-            out[gname] = np.asarray(vals, float)
-
-    return out
-
-
-
-
-def format_p_plain(p: float) -> str:
-    """Format p-value without scientific notation."""
-    if p < 0.0001:
-        return "< 0.0001"
-    else:
-        return f"{p:.4f}"
-
-def boxplot_feature_window_stats(
-    feat_groups: Dict[str, Dict[str, Any]],
-    window: Tuple[float, float],
-    reducer: str = "mean",
-    min_points: int = 1,
-    group_order: Optional[List[str]] = None,
-    feature_label: str = "Value",
-    time_unit: str = "s",
-    figsize: Tuple[float, float] = (10, 5),
-    use_change: bool = True,
-    baseline_window: Tuple[float, float] = (-0.3, -0.05),
-):
-    """
-    Computes boxplot statistics from baseline-corrected traces.
-    Reconstructs traces internally from feat_groups['windows'] + ['times_rel'],
-    applies baseline subtraction per window if use_change=True,
-    then computes window averages and performs t-test / ANOVA.
-    """
-
-    # ---------------------------------------------------------------------
-    # 1) DETERMINE COMMON TIME GRID (same as trace plotting)
-    # ---------------------------------------------------------------------
-    base_T = None
-    for g in feat_groups.values():
-        tlist = g.get("times_rel", [])
-        if tlist and len(tlist[0]) > 1:
-            base_T = np.asarray(tlist[0], float)
-            break
-    if base_T is None:
-        raise ValueError("No valid times_rel found in groups.")
-
-    # convert ms → s if needed
-    Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
-
-    # ---------------------------------------------------------------------
-    # 2) BUILD TRACES OR CHANGE-TRACES
-    # ---------------------------------------------------------------------
-    summary = {}
-    tmin, tmax = window
-
-    for gname, ginfo in feat_groups.items():
-
-        windows   = ginfo["windows"]
-        times_rel = ginfo["times_rel"]
-
-        mats = []  # reconstructed traces for this group
-
-        for w, t in zip(windows, times_rel):
-
-            w = np.asarray(w, float)
-            t = np.asarray(t, float)
-
-            if w.size < 2 or w.size != t.size:
-                continue
-
-            # convert ms → s if needed
-            t_sec = t / 1000.0 if time_unit == "ms" else t.copy()
-
-            # -----------------------------------------
-            # BASELINE-SUBTRACTION (change traces)
-            # -----------------------------------------
-            if use_change:
-                b0, b1 = baseline_window
-                bmask = (t_sec >= b0) & (t_sec <= b1)
-
-                if np.any(bmask):
-                    base_val = np.nanmean(w[bmask])
-                else:
-                    base_val = w[0]  # fallback
-
-                w = w - base_val
-
-            # -----------------------------------------
-            # INTERPOLATE ONTO COMMON TIME GRID
-            # -----------------------------------------
-            yi = np.full_like(Tgrid, np.nan, dtype=float)
-            inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
-
-            if inside.any():
-                yi[inside] = np.interp(Tgrid[inside], t_sec, w)
-                mats.append(yi)
-
-        if len(mats) == 0:
-            continue
-
-        A = np.vstack(mats)  # (n_epochs, n_times)
-
-        # -----------------------------------------
-        # 3) WINDOW AVERAGES
-        # -----------------------------------------
-        mask = (Tgrid >= tmin) & (Tgrid <= tmax)
-        vals = []
-
-        for row in A:
-            seg = row[mask]
-            seg = seg[np.isfinite(seg)]
-            if len(seg) < min_points:
-                continue
-
-            if reducer == "mean":
-                vals.append(np.nanmean(seg))
-            elif reducer == "median":
-                vals.append(np.nanmedian(seg))
-            elif reducer == "max":
-                vals.append(np.nanmax(seg))
-            else:
-                raise ValueError("reducer must be 'mean', 'median', or 'max'.")
-
-        summary[gname] = np.array(vals)
-
-    # drop empty groups
-    summary = {g: v for g, v in summary.items() if v.size > 0}
-    if not summary:
-        raise ValueError("No groups contain usable data in this window.")
-
-    # ---------------------------------------------------------------------
-    # 4) STATS
-    # ---------------------------------------------------------------------
-    if group_order is None:
-        group_order = list(summary.keys())
-
-    data = [summary[g] for g in group_order]
-
-    if len(data) == 2:
-        from scipy.stats import ttest_ind
-        t, p = ttest_ind(data[0], data[1], equal_var=False)
-        stat_label = f"t = {t:.2f}, p = {format_p_plain(p)}"
-        stats_res = {"test": "t-test", "t": t, "p": p}
-    else:
-        from scipy.stats import f_oneway
-        F, p = f_oneway(*data)
-        df1 = len(data) - 1
-        df2 = sum(len(v) for v in data) - len(data)
-        stat_label = f"F({df1},{df2}) = {F:.2f}, p = {format_p_plain(p)}"
-        stats_res = {"test": "anova", "F": F, "p": p, "df1": df1, "df2": df2}
-
-    # ---------------------------------------------------------------------
-    # 5) BOXPLOT
-    # ---------------------------------------------------------------------
-    fig, ax = plt.subplots(figsize=figsize)
-    colors = [feat_groups[g].get("color", "#4c72b0") for g in group_order]
-
-    bp = ax.boxplot(
-        data,
-        labels=group_order,
-        patch_artist=True,
-        medianprops={"color": "black", "linewidth": 2},
-        boxprops={"linewidth": 1.4},
-    )
-
-    for patch, col in zip(bp["boxes"], colors):
-        patch.set_facecolor(col)
-        patch.set_alpha(0.6)
-
-    tag = "Δ " if use_change else ""
-    ax.set_title(f"{tag}{feature_label} in window [{tmin},{tmax}] {time_unit}", pad=30)
-
-    ax.text(
-        0.5, 1.02, stat_label,
-        transform=ax.transAxes,
-        ha="center", va="bottom",
-        fontsize=12, fontweight="bold"
-    )
-
-    ax.set_ylabel(tag + feature_label)
-    plt.xticks(rotation=25, ha="right")
-    plt.show()
-
-    return stats_res
 
 
 
@@ -2086,3 +1820,399 @@ def plot_window_feature_group_heatmap_single(
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Functions and wrapper functions for post specparam cluster group analysis --------------------- #
 # ------------------------------------------------------------------------------------------- #
+def build_lfp_groups_from_clusters(
+    df_features,
+    all_spike_extractor,
+    cluster_cols=None,
+):
+    """
+    Build LFP groups from cluster columns in df_features.
+
+    Returns:
+        groups : dict
+            groups[group_name] = {
+                "windows":   list[np.ndarray],
+                "times_rel": list[np.ndarray],
+                "next_rel":  np.ndarray,
+                "spk_inds":  np.ndarray,
+            }
+    """
+
+    windows_all     = all_spike_extractor["windows"]
+    t_rel_all       = all_spike_extractor["times_rel_ms"]
+    spike_times_all = np.asarray(all_spike_extractor["spike_times_ms"], float)
+    next_spk_all    = np.asarray(all_spike_extractor["next_spike_times_ms"], float)
+    meta_df_all     = all_spike_extractor["meta_df"]
+
+    # Map spk_id → index in windows_all
+    spk_id_to_win = {
+        sid: i for i, sid in enumerate(meta_df_all["spk_id"].values)
+    }
+
+    if cluster_cols is None:
+        cluster_cols = [c for c in df_features.columns if c.endswith("_cluster")]
+
+    groups = {}
+
+    for col in cluster_cols:
+        for label in df_features[col].dropna().unique():
+
+            # spike IDs belonging to this cluster
+            spk_ids = df_features.loc[df_features[col] == label, "spk_id"].values
+
+            # map to window indices (only keep ones that exist)
+            win_inds = [
+                spk_id_to_win[sid]
+                for sid in spk_ids
+                if sid in spk_id_to_win
+            ]
+
+            if len(win_inds) == 0:
+                continue
+
+            group_name = f"{col}: {label}"
+
+            groups[group_name] = {
+                "windows":   [windows_all[i] for i in win_inds],
+                "times_rel": [t_rel_all[i]   for i in win_inds],
+                "next_rel":  next_spk_all[win_inds] - spike_times_all[win_inds],
+                "spk_inds":  np.asarray(win_inds, dtype=int),
+            }
+
+    return groups
+
+
+def make_specparam_feature_groups(
+    specparam_by_spike,
+    groups,
+    feature: str,
+    band: str = None,
+    next_rel_unit: str = "ms",   # groups['next_rel'] is in ms in your current code
+):
+    """
+    Build a groups-style dict (windows/times_rel/next_rel) for specparam features,
+    using specparam_by_spike (computed once per spike) and groups (which store spk_inds).
+
+    Returns:
+        feat_groups[gname] = {
+            "windows":   list of 1D arrays (feature over epochs),
+            "times_rel": list of 1D arrays (epoch times, seconds),
+            "next_rel":  1D array (seconds),
+            "spk_inds":  np.ndarray,
+        }
+    """
+    out = {}
+
+    for gname, gdict in groups.items():
+        spk_inds = np.asarray(gdict.get("spk_inds", []), dtype=int)
+        if spk_inds.size == 0:
+            continue
+
+        win_list = []
+        t_list   = []
+        next_list = []
+
+        # next_rel for these events (convert to seconds)
+        next_rel = np.asarray(gdict.get("next_rel", np.full(spk_inds.size, np.nan)), float)
+        if next_rel_unit == "ms":
+            next_rel_s = next_rel / 1000.0
+        else:
+            next_rel_s = next_rel
+
+        # collect per-spike traces
+        for k, ind in enumerate(spk_inds):
+            if ind < 0 or ind >= len(specparam_by_spike):
+                continue
+
+            res = specparam_by_spike[ind]
+            if res is None:
+                continue
+
+            t_bins_s = np.asarray(res.get("t_bins_s", []), float)
+            if t_bins_s.size == 0:
+                continue
+
+            if feature in ["offset", "exponent", "r_squared", "knee"]:
+                arr = res.get(feature, None)
+            elif feature == "band":
+                if band is None:
+                    raise ValueError("feature='band' requires band='gamma'/'alpha'/etc.")
+                arr = res.get("band_aucs", {}).get(band, None)
+            else:
+                raise ValueError(f"Unknown feature: {feature}")
+
+            if arr is None:
+                continue
+
+            arr = np.asarray(arr, float)
+            if arr.size != t_bins_s.size:
+                continue
+
+            win_list.append(arr)
+            t_list.append(t_bins_s)
+            next_list.append(next_rel_s[k])
+
+        if len(win_list) == 0:
+            continue
+
+        out[gname] = {
+            "windows":   win_list,
+            "times_rel": t_list,                       # seconds
+            "next_rel":  np.asarray(next_list, float), # seconds
+            "spk_inds":  spk_inds,
+        }
+
+    return out
+
+
+def window_feature_group_traces_ci_delta(
+    feat_groups,
+    time_unit="s",
+    ylabel="Δ Value",
+    title=None,
+    baseline_window=(-0.3, -0.05),
+    analysis_window=(-0.2, 0.0),
+    alpha_ci=0.25,
+    plot=True,
+):
+    """
+    Plot mean ± 95% CI of baseline-corrected (Δ) feature traces.
+    Baseline is computed per epoch.
+
+    Returns
+    -------
+    window_results : dict
+        {group_name: np.ndarray of per-epoch mean values in analysis_window}
+    """
+
+    window_results = {}
+
+    if plot:
+        fig, ax = plt.subplots(figsize=(12, 4))
+
+    for gname, g in feat_groups.items():
+
+        windows   = g["windows"]
+        times_rel = g["times_rel"]
+        color     = g.get("color", None)
+
+        # --------------------------------------------------
+        # Determine common time grid
+        # --------------------------------------------------
+        base_T = None
+        for t in times_rel:
+            if len(t) > 1:
+                base_T = np.asarray(t, float)
+                break
+        if base_T is None:
+            continue
+
+        Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
+
+        mats = []
+        epoch_win_means = []
+
+        # --------------------------------------------------
+        # Loop epochs
+        # --------------------------------------------------
+        for w, t in zip(windows, times_rel):
+            w = np.asarray(w, float)
+            t = np.asarray(t, float)
+
+            if w.size != t.size or w.size < 2:
+                continue
+
+            t_sec = t / 1000.0 if time_unit == "ms" else t
+
+            # ---------------- BASELINE ----------------
+            b0, b1 = baseline_window
+            bmask = (t_sec >= b0) & (t_sec <= b1)
+            if not np.any(bmask):
+                continue
+
+            baseline = np.nanmean(w[bmask])
+            w_delta = w - baseline
+
+            # ---------------- INTERPOLATE ----------------
+            yi = np.full_like(Tgrid, np.nan, dtype=float)
+            inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
+            if inside.any():
+                yi[inside] = np.interp(Tgrid[inside], t_sec, w_delta)
+                mats.append(yi)
+
+            # ---------------- ANALYSIS WINDOW ----------------
+            w0, w1 = analysis_window
+            amask = (t_sec >= w0) & (t_sec <= w1)
+            if np.any(amask):
+                epoch_win_means.append(np.nanmean(w_delta[amask]))
+
+        if len(mats) < 2:
+            continue
+
+        A = np.vstack(mats)              # (n_epochs, n_time)
+        mean = np.nanmean(A, axis=0)
+        std  = np.nanstd(A, axis=0)
+
+        n_epochs = A.shape[0]
+        ci95 = 1.96 * std / np.sqrt(n_epochs)
+
+        window_results[gname] = np.asarray(epoch_win_means)
+
+        # --------------------------------------------------
+        # Plot
+        # --------------------------------------------------
+        if plot:
+            ax.plot(Tgrid, mean, label=gname, color=color)
+            ax.fill_between(
+                Tgrid,
+                mean - ci95,
+                mean + ci95,
+                color=color,
+                alpha=alpha_ci,
+                linewidth=0,
+            )
+
+    # --------------------------------------------------
+    # Final plot cosmetics
+    # --------------------------------------------------
+    if plot:
+        ax.axvline(0, color="k", linestyle="--", linewidth=1)
+        ax.set_xlabel("Time (s, relative to spike)")
+        ax.set_ylabel(ylabel)
+
+        if title:
+            ax.set_title(title)
+
+        ax.legend(
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            frameon=False,
+        )
+
+        fig.tight_layo
+
+
+
+
+def stats_boxplot_from_window_results(
+    window_results: dict,
+    group_colors=None,
+    plot_mode: str = "all",      # "all" or "per_cluster"
+    feature_label: str = "Δ Value",
+    figsize=(10, 5),
+):
+    """
+    Boxplots + stats directly from precomputed per-epoch window values.
+    """
+
+    # -----------------------------
+    # organize by cluster family
+    # -----------------------------
+    families = {}
+    for g in window_results:
+        fam = g.split(":")[0] if ":" in g else "all"
+        families.setdefault(fam, []).append(g)
+
+    if plot_mode == "all":
+        plot_sets = {"All groups": list(window_results.keys())}
+    elif plot_mode == "per_cluster":
+        plot_sets = families
+    else:
+        raise ValueError("plot_mode must be 'all' or 'per_cluster'")
+
+    report = {}
+
+    default_palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    # -----------------------------
+    # plotting + stats
+    # -----------------------------
+    for title, groups in plot_sets.items():
+
+        data = [window_results[g] for g in groups if len(window_results[g]) > 0]
+        labels = [g for g in groups if len(window_results[g]) > 0]
+
+        if len(data) < 2:
+            continue
+
+        fig, ax = plt.subplots(figsize=figsize)
+
+        bp = ax.boxplot(
+            data,
+            labels=labels,
+            patch_artist=True,
+            medianprops=dict(color="black", linewidth=2),
+        )
+
+        # -----------------------------
+        # COLOR LOGIC (ONLY CHANGE)
+        # -----------------------------
+        for i, box in enumerate(bp["boxes"]):
+
+            if plot_mode == "per_cluster":
+                lname = labels[i].lower()
+                if "low" in lname:
+                    col = "#1f77b4"   # blue
+                elif "high" in lname:
+                    col = "#ff7f0e"   # orange
+                else:
+                    col = "#7f7f7f"   # fallback
+            else:
+                # plot_mode == "all"
+                col = default_palette[i % len(default_palette)]
+
+            box.set_facecolor(col)
+            box.set_alpha(0.6)
+
+        # -----------------------------
+        # stats
+        # -----------------------------
+        if len(data) == 2:
+            from scipy.stats import ttest_ind
+            stat, p = ttest_ind(data[0], data[1], equal_var=False)
+            test = "t-test"
+        else:
+            from scipy.stats import f_oneway
+            stat, p = f_oneway(*data)
+            test = "anova"
+
+        stars = p_to_stars(p)
+
+        ax.set_title(f"{feature_label} — {title}")
+        ax.set_ylabel(feature_label)
+
+        ax.text(
+            0.5, 0.92,
+            f"{stars}  (p={p:.3g})",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=14,
+            fontweight="bold",
+        )
+
+        plt.xticks(rotation=25, ha="right")
+        plt.tight_layout()
+        plt.show()
+
+        report[title] = {
+            "groups": labels,
+            "test": test,
+            "p": p,
+            "stars": stars,
+        }
+
+    return report
+
+
+
+
+def p_to_stars(p):
+    if p < 0.001:
+        return "***"
+    elif p < 0.01:
+        return "**"
+    elif p < 0.05:
+        return "*"
+    else:
+        return "n.s."
