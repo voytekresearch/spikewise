@@ -39,29 +39,27 @@ def get_cluster_color(label: str, fallback: str = "black") -> str:
 # ------------------------------------------------------------------------------------------- #
 # Post-process: remove first/last 0.5s epochs
 def trim_edges(results, edge_sec=0.5):
-    trimmed = {}
-    for group_name, group_out in results.items():
-        trimmed_group = []
-        for out_w in group_out:
-            t_bins = out_w["t_bins_s"]
-            mask = (t_bins >= (t_bins.min() + edge_sec)) & (t_bins <= (t_bins.max() - edge_sec))
-            
-            # Apply mask to all epoch-wise arrays
-            out_w_trimmed = {
-                **out_w,
-                "t_bins_s": out_w["t_bins_s"][mask],
-                "epoch_idx": out_w["epoch_idx"][mask],
-                "powers": out_w["powers"][mask, :],
-                "offset": out_w["offset"][mask],
-                "exponent": out_w["exponent"][mask],
-                "r_squared": out_w["r_squared"][mask],
-                "band_aucs": {b: vals[mask] for b, vals in out_w["band_aucs"].items()},
-            }
-            # knee may be None or array
-            if out_w["knee"] is not None:
-                out_w_trimmed["knee"] = out_w["knee"][mask]
-            trimmed_group.append(out_w_trimmed)
-        trimmed[group_name] = trimmed_group
+    trimmed = []
+    
+    for out_w in results:
+        t_bins = out_w["t_bins_s"]
+        mask = (t_bins >= (t_bins.min() + edge_sec)) & (t_bins <= (t_bins.max() - edge_sec))
+        
+        # Apply mask to all epoch-wise arrays
+        out_w_trimmed = {
+            **out_w,
+            "t_bins_s": out_w["t_bins_s"][mask],
+            "epoch_idx": out_w["epoch_idx"][mask],
+            "powers": out_w["powers"][mask, :],
+            "offset": out_w["offset"][mask],
+            "exponent": out_w["exponent"][mask],
+            "r_squared": out_w["r_squared"][mask],
+            "band_aucs": {b: vals[mask] for b, vals in out_w["band_aucs"].items()},
+        }
+        # knee may be None or array
+        if out_w["knee"] is not None:
+            out_w_trimmed["knee"] = out_w["knee"][mask]
+        trimmed.append(out_w_trimmed)
     return trimmed
 
 
@@ -2457,4 +2455,6 @@ def plot_window_feature_group_heatmap_single(
     return fig, ax, out
     
 
-
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ Functions and wrapper functions for post specparam cluster group analysis --------------------- #
+# ------------------------------------------------------------------------------------------- #
