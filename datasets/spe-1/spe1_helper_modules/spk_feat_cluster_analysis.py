@@ -147,30 +147,23 @@ def plot_full_cluster_report(
     time_unit: str = "ms",
     bin_size_ms: int = 1000,
     sigma_bins: int = 2,
-    compare_features: Optional[list] = None,
-    compare_groups: tuple = ("high", "low"),
-    compare_group_names: Optional[tuple] = None,
     heatmap_cmap: str = "magma",
 ):
     """
-    Run a full diagnostic plotting + stats report for a given cluster column.
-
-    Steps:
-    ------
-    A) Plot spike waveforms by cluster
-    B) Plot cluster proportions over time
-    C) Plot cluster transition matrix
-    D) Compare feature distributions between two cluster groups
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Feature dataframe containing cluster labels.
-    sp : Spike
-        Spike object used for waveform plotting.
-    cluster_col : str
-        Column name for cluster labels (e.g. "ramp_amp_cluster").
+    Full diagnostic plotting report for a given cluster column.
     """
+
+    SPIKE_WAVEFORM_FEATURES = [
+        "ramp_amp",
+        "inflection_time",
+        "inflection_amp",
+        "peak_amp",
+        "peak_width",
+        "peak_sharpness",
+        "exp_lambda",
+        "exp_const",
+        "log_isi",
+    ]
 
     if cluster_col not in df.columns:
         raise KeyError(f"{cluster_col} not found in dataframe")
@@ -178,7 +171,7 @@ def plot_full_cluster_report(
     print(f"\n===== CLUSTER REPORT: {cluster_col} =====")
 
     # --------------------------------------------------
-    # A) Spike waveform plots
+    # A) Spike waveforms
     # --------------------------------------------------
     print("→ Plotting spike waveforms by cluster")
     plot_spike_clusters_from_df(df, sp, cluster_col)
@@ -197,7 +190,7 @@ def plot_full_cluster_report(
     )
 
     # --------------------------------------------------
-    # C) Transition matrix + heatmap
+    # C) Transition matrix
     # --------------------------------------------------
     print("→ Computing cluster transition matrix")
     trans_mat = cluster_transition_matrix(df, cluster_col)
@@ -205,43 +198,128 @@ def plot_full_cluster_report(
     plt.figure(figsize=(5.5, 4.5))
     order = list(trans_mat.index)
     sns.heatmap(
-    trans_mat.loc[order, order],
-    annot=True,
-    cmap="magma",
-    cbar=False
-)
-
+        trans_mat.loc[order, order],
+        annot=True,
+        cmap=heatmap_cmap,
+        cbar=False,
+    )
     plt.title(f"{cluster_col} transition probabilities")
     plt.xlabel("Next spike cluster")
     plt.ylabel("Current spike cluster")
     plt.tight_layout()
     plt.show()
 
+    
     # --------------------------------------------------
-    # D) Feature comparisons (optional)
+    # D) High vs Low feature distribution diagnostics
     # --------------------------------------------------
-    compare_results = None
-    if compare_features is not None:
-        print("→ Comparing feature distributions between clusters")
+    print("→ Visualizing high vs low feature distributions")
+    
+    visualize_feature_groups_hist_qq(
+        df,
+        features=SPIKE_WAVEFORM_FEATURES,
+        group_col=cluster_col,
+        groups=("high", "low"),
+        group_names=("High", "Low"),
+    )
 
-        if compare_group_names is None:
-            compare_group_names = compare_groups
-
-        compare_results = compare_feature_groups(
-            df,
-            features=compare_features,
-            group_col=cluster_col,
-            groups=compare_groups,
-            group_names=compare_group_names,
-            show_plots=True,
-        )
 
     print("===== DONE =====\n")
 
     return {
         "transition_matrix": trans_mat,
-        "feature_comparisons": compare_results,
     }
+
+
+def visualize_feature_groups_hist_qq(
+    df: pd.DataFrame,
+    features: list,
+    group_col: str,
+    groups: tuple = ("high", "low"),
+    group_names: Optional[Tuple] = None,
+    bins: int = 40,
+):
+
+    """
+    Visualize feature distributions for two groups using histograms + QQ plots.
+    NO statistics. NO hypothesis testing.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+    features : list[str]
+        Feature names to visualize.
+    group_col : str
+        Column defining the two groups (e.g. cluster column).
+    groups : tuple(str, str)
+        Group labels to compare (default: ("high","low")).
+    group_names : tuple(str, str) or None
+        Pretty names for plotting. Defaults to group labels.
+    """
+
+    g1, g2 = groups
+    if group_names is None:
+        name1, name2 = g1, g2
+    else:
+        name1, name2 = group_names
+
+    for feat in features:
+
+        a = pd.to_numeric(df.loc[df[group_col] == g1, feat], errors="coerce").dropna()
+        b = pd.to_numeric(df.loc[df[group_col] == g2, feat], errors="coerce").dropna()
+
+        if len(a) < 5 or len(b) < 5:
+            continue
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        fig.suptitle(f"{feat}", fontsize=12, weight="bold")
+
+        # -------------------------
+        # Histogram (overlayed)
+        # -------------------------
+        color_map = {
+        "high": "#ff7f0e",  # orange
+        "low":  "#1f77b4",  # blue
+        }
+    
+        c1 = color_map.get(g1, "#4c72b0")
+        c2 = color_map.get(g2, "#4c72b0")
+        
+        sns.histplot(
+            a,
+            ax=axes[0],
+            kde=True,
+            color=c1,
+            label=name1,
+            stat="density",
+            alpha=0.5,
+        )
+        
+        sns.histplot(
+            b,
+            ax=axes[0],
+            kde=True,
+            color=c2,
+            label=name2,
+            stat="density",
+            alpha=0.5,
+        )
+
+        axes[0].set_title("Distribution")
+        axes[0].legend()
+
+        # -------------------------
+        # QQ plot (overlayed)
+        # -------------------------
+        probplot(a, dist="norm", plot=axes[1])
+        probplot(b, dist="norm", plot=axes[1])
+        axes[1].set_title("QQ plot")
+
+        plt.tight_layout()
+        plt.show()
+
+
+
 def kmeans_1d_cluster(
     df: pd.DataFrame,
     feature: str,
