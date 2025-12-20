@@ -215,7 +215,7 @@ def plot_full_cluster_report(
     # --------------------------------------------------
     print("→ Visualizing high vs low feature distributions")
     
-    visualize_feature_groups_hist_qq(
+    visualize_feature_groups_hist(
         df,
         features=SPIKE_WAVEFORM_FEATURES,
         group_col=cluster_col,
@@ -231,7 +231,7 @@ def plot_full_cluster_report(
     }
 
 
-def visualize_feature_groups_hist_qq(
+def visualize_feature_groups_hist(
     df: pd.DataFrame,
     features: list,
     group_col: str,
@@ -242,7 +242,7 @@ def visualize_feature_groups_hist_qq(
 
     """
     Visualize feature distributions for two groups using histograms + QQ plots.
-    NO statistics. NO hypothesis testing.
+
 
     Parameters
     ----------
@@ -271,7 +271,7 @@ def visualize_feature_groups_hist_qq(
         if len(a) < 5 or len(b) < 5:
             continue
 
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        fig, axes = plt.subplots(1, 1, figsize=(10, 4))
         fig.suptitle(f"{feat}", fontsize=12, weight="bold")
 
         # -------------------------
@@ -287,33 +287,29 @@ def visualize_feature_groups_hist_qq(
         
         sns.histplot(
             a,
-            ax=axes[0],
-            kde=True,
+            ax=axes,
             color=c1,
             label=name1,
             stat="density",
             alpha=0.5,
+            kde=False
         )
         
         sns.histplot(
             b,
-            ax=axes[0],
-            kde=True,
+            ax=axes,
             color=c2,
             label=name2,
             stat="density",
             alpha=0.5,
+            kde=False
+        
         )
 
-        axes[0].set_title("Distribution")
-        axes[0].legend()
+        axes.set_title("Distribution")
+        axes.legend()
 
-        # -------------------------
-        # QQ plot (overlayed)
-        # -------------------------
-        probplot(a, dist="norm", plot=axes[1])
-        probplot(b, dist="norm", plot=axes[1])
-        axes[1].set_title("QQ plot")
+       
 
         plt.tight_layout()
         plt.show()
