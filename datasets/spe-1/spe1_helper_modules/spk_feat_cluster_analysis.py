@@ -102,7 +102,6 @@ def plot_spike_clusters_from_df(
     group_names = []
 
     for lab in labels:
-        # THIS IS THE KEY: use df["spk_id"], NOT df.index
         inds = df.loc[df[cluster_col] == lab, "spk_id"].astype(int).tolist()
         if len(inds) > 0:
             ind_groups.append(inds)
@@ -290,7 +289,7 @@ def visualize_feature_groups_hist(
             ax=axes,
             color=c1,
             label=name1,
-            stat="density",
+            stat="count",
             alpha=0.5,
             kde=False
         )
@@ -300,7 +299,7 @@ def visualize_feature_groups_hist(
             ax=axes,
             color=c2,
             label=name2,
-            stat="density",
+            stat="count",
             alpha=0.5,
             kde=False
         
