@@ -289,9 +289,9 @@ def visualize_feature_groups_hist(
             ax=axes,
             color=c1,
             label=name1,
-            stat="count",
+            stat="density",
             alpha=0.5,
-            kde=False
+            kde=False, bins=bins
         )
         
         sns.histplot(
@@ -299,8 +299,8 @@ def visualize_feature_groups_hist(
             ax=axes,
             color=c2,
             label=name2,
-            stat="count",
-            alpha=0.5,
+            stat="density",
+            alpha=0.5,bins =bins, 
             kde=False
         
         )
