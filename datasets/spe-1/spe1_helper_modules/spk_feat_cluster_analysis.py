@@ -229,7 +229,6 @@ def plot_full_cluster_report(
         "transition_matrix": trans_mat,
     }
 
-
 def visualize_feature_groups_hist(
     df: pd.DataFrame,
     features: list,
@@ -237,81 +236,85 @@ def visualize_feature_groups_hist(
     groups: tuple = ("high", "low"),
     group_names: Optional[Tuple] = None,
     bins: int = 40,
+    grid_layout: bool = True,  # NEW: control grid vs individual
+    n_cols: int = 3,           # NEW: control grid columns
 ):
-
     """
-    Visualize feature distributions for two groups using histograms + QQ plots.
-
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-    features : list[str]
-        Feature names to visualize.
-    group_col : str
-        Column defining the two groups (e.g. cluster column).
-    groups : tuple(str, str)
-        Group labels to compare (default: ("high","low")).
-    group_names : tuple(str, str) or None
-        Pretty names for plotting. Defaults to group labels.
+    Visualize feature distributions with option for grid or individual plots.
     """
-
+    
     g1, g2 = groups
     if group_names is None:
         name1, name2 = g1, g2
     else:
         name1, name2 = group_names
-
-    for feat in features:
-
+    
+    color_map = {
+        "high": "#ff7f0e",
+        "low": "#1f77b4",
+    }
+    
+    c1 = color_map.get(g1, "#4c72b0")
+    c2 = color_map.get(g2, "#4c72b0")
+    
+    if not grid_layout:
+        # Original behavior: individual plots
+        for feat in features:
+            a = pd.to_numeric(df.loc[df[group_col] == g1, feat], errors="coerce").dropna()
+            b = pd.to_numeric(df.loc[df[group_col] == g2, feat], errors="coerce").dropna()
+            
+            if len(a) < 5 or len(b) < 5:
+                continue
+            
+            fig, ax = plt.subplots(figsize=(10, 4))
+            fig.suptitle(feat, fontsize=12, weight="bold")
+            
+            sns.histplot(a, ax=ax, color=c1, label=name1, stat="density", 
+                        alpha=0.5, kde=False, bins=bins)
+            sns.histplot(b, ax=ax, color=c2, label=name2, stat="density", 
+                        alpha=0.5, bins=bins, kde=False)
+            
+            ax.set_title("Distribution")
+            ax.legend()
+            plt.tight_layout()
+            plt.show()
+        
+        return
+    
+    # Grid layout
+    n_features = len(features)
+    n_rows = (n_features + n_cols - 1) // n_cols
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+    axes = axes.flatten() if n_rows > 1 or n_cols > 1 else [axes]
+    
+    for idx, feat in enumerate(features):
+        if idx >= len(axes):
+            break
+            
         a = pd.to_numeric(df.loc[df[group_col] == g1, feat], errors="coerce").dropna()
         b = pd.to_numeric(df.loc[df[group_col] == g2, feat], errors="coerce").dropna()
-
+        
         if len(a) < 5 or len(b) < 5:
+            axes[idx].axis('off')
             continue
-
-        fig, axes = plt.subplots(1, 1, figsize=(10, 4))
-        fig.suptitle(f"{feat}", fontsize=12, weight="bold")
-
-        # -------------------------
-        # Histogram (overlayed)
-        # -------------------------
-        color_map = {
-        "high": "#ff7f0e",  # orange
-        "low":  "#1f77b4",  # blue
-        }
+        
+        sns.histplot(a, ax=axes[idx], color=c1, label=name1, stat="density", 
+                    alpha=0.5, kde=False, bins=bins)
+        sns.histplot(b, ax=axes[idx], color=c2, label=name2, stat="density", 
+                    alpha=0.5, bins=bins, kde=False)
+        
+        axes[idx].set_title(feat, fontsize=11)
+        if idx == 0:
+            axes[idx].legend()
     
-        c1 = color_map.get(g1, "#4c72b0")
-        c2 = color_map.get(g2, "#4c72b0")
-        
-        sns.histplot(
-            a,
-            ax=axes,
-            color=c1,
-            label=name1,
-            stat="density",
-            alpha=0.5,
-            kde=False, bins=bins
-        )
-        
-        sns.histplot(
-            b,
-            ax=axes,
-            color=c2,
-            label=name2,
-            stat="density",
-            alpha=0.5,bins =bins, 
-            kde=False
-        
-        )
-
-        axes.set_title("Distribution")
-        axes.legend()
-
-       
-
-        plt.tight_layout()
-        plt.show()
+    # Hide unused axes
+    for idx in range(len(features), len(axes)):
+        axes[idx].set_visible(False)
+    
+    plt.suptitle(f"Feature Distributions: {name1} vs {name2}", fontsize=14)
+    plt.tight_layout()
+    plt.show()
 
 
 
