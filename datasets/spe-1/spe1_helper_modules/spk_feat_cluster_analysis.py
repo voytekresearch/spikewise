@@ -236,11 +236,17 @@ def visualize_feature_groups_hist(
     groups: tuple = ("high", "low"),
     group_names: Optional[Tuple] = None,
     bins: int = 40,
-    grid_layout: bool = True,  # NEW: control grid vs individual
-    n_cols: int = 3,           # NEW: control grid columns
+    winsorize_limits: tuple = (0.01, 0.99),
+    filter_method: str = "remove",  # "remove" or "clip"
 ):
     """
-    Visualize feature distributions with option for grid or individual plots.
+    Winsorization with option to remove or clip outliers.
+    
+    Parameters:
+    -----------
+    filter_method : str
+        "remove" - completely remove outliers (density based on remaining data)
+        "clip" - clip values but include in density calculation (original behavior)
     """
     
     g1, g2 = groups
@@ -257,32 +263,8 @@ def visualize_feature_groups_hist(
     c1 = color_map.get(g1, "#4c72b0")
     c2 = color_map.get(g2, "#4c72b0")
     
-    if not grid_layout:
-        # Original behavior: individual plots
-        for feat in features:
-            a = pd.to_numeric(df.loc[df[group_col] == g1, feat], errors="coerce").dropna()
-            b = pd.to_numeric(df.loc[df[group_col] == g2, feat], errors="coerce").dropna()
-            
-            if len(a) < 5 or len(b) < 5:
-                continue
-            
-            fig, ax = plt.subplots(figsize=(10, 4))
-            fig.suptitle(feat, fontsize=12, weight="bold")
-            
-            sns.histplot(a, ax=ax, color=c1, label=name1, stat="density", 
-                        alpha=0.5, kde=False, bins=bins)
-            sns.histplot(b, ax=ax, color=c2, label=name2, stat="density", 
-                        alpha=0.5, bins=bins, kde=False)
-            
-            ax.set_title("Distribution")
-            ax.legend()
-            plt.tight_layout()
-            plt.show()
-        
-        return
-    
-    # Grid layout
     n_features = len(features)
+    n_cols = 3
     n_rows = (n_features + n_cols - 1) // n_cols
     
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
@@ -292,30 +274,94 @@ def visualize_feature_groups_hist(
         if idx >= len(axes):
             break
             
-        a = pd.to_numeric(df.loc[df[group_col] == g1, feat], errors="coerce").dropna()
-        b = pd.to_numeric(df.loc[df[group_col] == g2, feat], errors="coerce").dropna()
+        # Get data
+        a_raw = pd.to_numeric(df.loc[df[group_col] == g1, feat], errors="coerce").dropna()
+        b_raw = pd.to_numeric(df.loc[df[group_col] == g2, feat], errors="coerce").dropna()
         
-        if len(a) < 5 or len(b) < 5:
-            axes[idx].axis('off')
+        if len(a_raw) < 5 or len(b_raw) < 5:
+            axes[idx].text(0.5, 0.5, f"Insufficient data\nfor {feat}", 
+                          ha='center', va='center', transform=axes[idx].transAxes)
+            axes[idx].set_title(feat)
             continue
         
-        sns.histplot(a, ax=axes[idx], color=c1, label=name1, stat="density", 
-                    alpha=0.5, kde=False, bins=bins)
-        sns.histplot(b, ax=axes[idx], color=c2, label=name2, stat="density", 
-                    alpha=0.5, bins=bins, kde=False)
+        # Calculate global percentiles
+        combined = pd.concat([a_raw, b_raw])
+        lower_limit = combined.quantile(winsorize_limits[0])
+        upper_limit = combined.quantile(winsorize_limits[1])
         
-        axes[idx].set_title(feat, fontsize=11)
-        if idx == 0:
-            axes[idx].legend()
+        # Apply filtering based on method
+        if filter_method == "remove":
+            # Remove outliers completely
+            a_plot = a_raw[(a_raw >= lower_limit) & (a_raw <= upper_limit)].copy()
+            b_plot = b_raw[(b_raw >= lower_limit) & (b_raw <= upper_limit)].copy()
+            
+            n_removed_a = len(a_raw) - len(a_plot)
+            n_removed_b = len(b_raw) - len(b_plot)
+            method_label = "REMOVED"
+            
+        else:  # "clip"
+            # Clip values but keep all data points
+            a_plot = a_raw.clip(lower=lower_limit, upper=upper_limit).copy()
+            b_plot = b_raw.clip(lower=lower_limit, upper=upper_limit).copy()
+            
+            n_removed_a = (a_raw < lower_limit).sum() + (a_raw > upper_limit).sum()
+            n_removed_b = (b_raw < lower_limit).sum() + (b_raw > upper_limit).sum()
+            method_label = "CLIPPED"
+        
+        # Plot
+        sns.histplot(
+            a_plot, 
+            ax=axes[idx], 
+            color=c1, 
+            label=f"{name1}",
+            stat="density", 
+            alpha=0.5, 
+            kde=False, 
+            bins=bins
+        )
+        
+        sns.histplot(
+            b_plot, 
+            ax=axes[idx], 
+            color=c2, 
+            label=f"{name2}",
+            stat="density", 
+            alpha=0.5, 
+            bins=bins, 
+            kde=False
+        )
+        
+        # Add bounds
+        axes[idx].axvline(lower_limit, color='gray', linestyle=':', alpha=0.5, linewidth=1)
+        axes[idx].axvline(upper_limit, color='gray', linestyle=':', alpha=0.5, linewidth=1)
+        
+        # Title
+        if filter_method == "remove":
+            title = f"{feat}\n{method_label} outliers"
+            if n_removed_a > 0 or n_removed_b > 0:
+                title += f"\nRemoved: {n_removed_a}+{n_removed_b} points"
+        else:
+            title = f"{feat}\n{method_label} to bounds"
+            
+        axes[idx].set_title(title, fontsize=9)
+        axes[idx].legend(fontsize=8)
     
-    # Hide unused axes
+    # Hide unused subplots
     for idx in range(len(features), len(axes)):
         axes[idx].set_visible(False)
     
-    plt.suptitle(f"Feature Distributions: {name1} vs {name2}", fontsize=14)
+    method_text = {
+        "remove": "Outliers removed, density calculated on retained data",
+        "clip": "Outliers clipped to bounds, included in density calculation"
+    }
+    
+    plt.suptitle(
+        f"Feature Distributions ({method_text[filter_method]})\n"
+        f"Bounds: {100*winsorize_limits[0]:.0f}%-{100*winsorize_limits[1]:.0f}%",
+        fontsize=12
+    )
     plt.tight_layout()
     plt.show()
-
 
 
 def kmeans_1d_cluster(
