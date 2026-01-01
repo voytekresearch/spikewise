@@ -37,6 +37,233 @@ def get_cluster_color(label: str, fallback: str = "black") -> str:
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Cluster features that show grouped data --------------------- #
 # ------------------------------------------------------------------------------------------- #
+def plot_spike_feature_distributions(
+    df_features: pd.DataFrame,
+    figsize_per_plot: tuple = (5, 4),
+    bins: int = 50,
+    color: str = "steelblue",
+    kde: bool = True,
+    hist: bool = True,
+    remove_outliers: bool = True,  
+    iqr_multiplier: float = 3,   
+):
+    """
+    Plot distributions of all spike waveform features in a grid.
+    Removes extreme outliers using IQR method.
+    
+    Parameters:
+    -----------
+    df_features : pd.DataFrame
+        DataFrame containing spike features
+    figsize_per_plot : tuple
+        Size of each subplot (width, height)
+    bins : int
+        Number of bins for histograms
+    color : str
+        Color for the distributions
+    kde : bool
+        Whether to show KDE curve
+    hist : bool
+        Whether to show histogram bars
+    remove_outliers : bool
+        Whether to remove outliers using IQR method
+    iqr_multiplier : float
+        Multiplier for IQR outlier detection (higher = more inclusive)
+    """
+    
+    SPIKE_FEATURES = [
+        'ramp_amp', 
+        'inflection_time', 
+        'inflection_amp', 
+        'peak_amp',
+        'peak_width', 
+        'peak_sharpness', 
+        'exp_lambda', 
+        'exp_const', 
+        'log_isi'
+    ]
+    
+    # Filter to only include features that exist in the dataframe
+    features_to_plot = [f for f in SPIKE_FEATURES if f in df_features.columns]
+    
+    if not features_to_plot:
+        print("No spike features found in dataframe!")
+        return
+    
+    print(f"Plotting spike features...")
+    if remove_outliers:
+        print(f"Removing outliers using IQR method (multiplier={iqr_multiplier})")
+    
+    # Calculate grid dimensions
+    n_features = len(features_to_plot)
+    n_cols = 3
+    n_rows = (n_features + n_cols - 1) // n_cols
+    
+    # Create figure
+    fig, axes = plt.subplots(
+        n_rows, 
+        n_cols, 
+        figsize=(figsize_per_plot[0] * n_cols, figsize_per_plot[1] * n_rows)
+    )
+    
+    # Flatten axes for easier indexing
+    if n_rows == 1 and n_cols == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+    
+    # Store summary statistics for printing
+    stats_summary = []
+    
+    # Plot each feature
+    for idx, feat in enumerate(features_to_plot[:len(axes)]):
+        ax = axes[idx]
+        
+        # Get raw data, convert to numeric and drop NaN
+        data_raw = pd.to_numeric(df_features[feat], errors='coerce').dropna()
+        
+        if len(data_raw) == 0:
+            ax.text(0.5, 0.5, "No valid data", 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(feat)
+            continue
+        
+        # Remove outliers if requested
+        if remove_outliers:
+            Q1 = data_raw.quantile(0.25)
+            Q3 = data_raw.quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - iqr_multiplier * IQR
+            upper_bound = Q3 + iqr_multiplier * IQR
+            
+            # Filter data
+            data_clean = data_raw[(data_raw >= lower_bound) & (data_raw <= upper_bound)]
+            
+            # Calculate how many outliers removed
+            n_outliers = len(data_raw) - len(data_clean)
+            percent_removed = 100 * n_outliers / len(data_raw)
+            
+            # Store bounds for plotting
+            bounds = (lower_bound, upper_bound)
+        else:
+            data_clean = data_raw
+            n_outliers = 0
+            percent_removed = 0
+            bounds = None
+        
+        # Plot histogram with optional KDE
+        sns.histplot(
+            data_clean,
+            ax=ax,
+            bins=bins,
+            color=color,
+            kde=kde,
+            stat="density",
+            alpha=0.7 if hist else 0,
+            edgecolor='black',
+            linewidth=0.5
+        )
+        
+        # Add summary statistics
+        mean_val = data_clean.mean()
+        median_val = data_clean.median()
+        std_val = data_clean.std()
+        
+        # Add vertical lines for mean and median
+        ax.axvline(mean_val, color='red', linestyle='-', linewidth=1.5, alpha=0.7, label='Mean')
+        ax.axvline(median_val, color='green', linestyle='--', linewidth=1.5, alpha=0.7, label='Median')
+        
+        # Add outlier bounds if outliers were removed
+        if remove_outliers and bounds:
+            ax.axvline(bounds[0], color='orange', linestyle=':', 
+                      linewidth=1, alpha=0.5, label='IQR bound')
+            ax.axvline(bounds[1], color='orange', linestyle=':', 
+                      linewidth=1, alpha=0.5)
+        
+        # Create title with statistics
+        if remove_outliers:
+            title_lines = [
+                f"{feat}",
+                f"n={len(data_clean):,}/{len(data_raw):,} ({n_outliers} outliers removed)",
+                f"μ={mean_val:.3f} | σ={std_val:.3f}"
+            ]
+        else:
+            title_lines = [
+                f"{feat}",
+                f"n={len(data_clean):,}",
+                f"μ={mean_val:.3f} | σ={std_val:.3f}"
+            ]
+        
+        ax.set_title("\n".join(title_lines), fontsize=10)
+        
+        # Only add legend to first plot
+        if idx == 0:
+            legend_items = ['Mean', 'Median']
+            if remove_outliers and bounds:
+                legend_items.append('IQR bound')
+            ax.legend(legend_items, fontsize=8, loc='upper right')
+        
+        # Add grid for readability
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Store statistics for summary
+        stats_summary.append({
+            'feature': feat,
+            'n_total': len(data_raw),
+            'n_clean': len(data_clean),
+            'n_outliers': n_outliers,
+            'percent_outliers': percent_removed,
+            'mean': mean_val,
+            'median': median_val,
+            'std': std_val,
+            'bounds': bounds
+        })
+    
+    # Hide unused subplots
+    for idx in range(len(features_to_plot), len(axes)):
+        axes[idx].set_visible(False)
+    
+    # Add overall title
+    if remove_outliers:
+        plt.suptitle(f"Spike Feature Distributions (IQR×{iqr_multiplier} outlier removal)", 
+                    fontsize=14, y=1.02)
+    else:
+        plt.suptitle("Spike Feature Distributions", fontsize=14, y=1.02)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary statistics table
+    print("\n" + "="*90)
+    print("FEATURE DISTRIBUTION SUMMARY")
+    print("="*90)
+    
+    if remove_outliers:
+        print(f"{'Feature':<20} {'Total N':<10} {'Clean N':<10} {'Outliers':<10} "
+              f"{'% Removed':<10} {'Mean':<10} {'Std':<10}")
+        print("-"*90)
+        
+        for stats in stats_summary:
+            print(f"{stats['feature']:<20} "
+                  f"{stats['n_total']:<10} "
+                  f"{stats['n_clean']:<10} "
+                  f"{stats['n_outliers']:<10} "
+                  f"{stats['percent_outliers']:<10.1f} "
+                  f"{stats['mean']:<10.3f} "
+                  f"{stats['std']:<10.3f}")
+    else:
+        print(f"{'Feature':<20} {'N':<10} {'Mean':<12} {'Std':<12} {'Median':<12}")
+        print("-"*66)
+        
+        for stats in stats_summary:
+            print(f"{stats['feature']:<20} "
+                  f"{stats['n_total']:<10} "
+                  f"{stats['mean']:<12.3f} "
+                  f"{stats['std']:<12.3f} "
+                  f"{stats['median']:<12.3f}")
+    
+    print("="*90)
+    
+   
 # Post-process: remove first/last 0.5s epochs
 def trim_edges(results, edge_sec=0.5):
     trimmed = []
