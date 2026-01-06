@@ -2324,15 +2324,22 @@ def window_feature_group_traces_ci_delta(
             window_results[gname] = epoch_win_means
 
             if plot:
-                ax.plot(Tgrid, mean, label=gname, color=color)
+                if color is not None:
+                    # If color specified, use it for both
+                    line = ax.plot(Tgrid, mean, label=gname, color=color)[0]
+                    fill_color = color
+                else:
+                    # If no color, let matplotlib choose and get it back
+                    line = ax.plot(Tgrid, mean, label=gname)[0]
+                    fill_color = line.get_color()
+                
                 ax.fill_between(
                     Tgrid,
                     mean - ci95,
                     mean + ci95,
-                    color=color,
+                    color=fill_color,  # Use the right color
                     alpha=alpha_ci,
-                    linewidth=0,
-                )
+                    linewidth=0,)
 
         # ---------------------------
         # Finalize figure
