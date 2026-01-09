@@ -19,15 +19,18 @@ def load_spe1_data(data_path: str, out_lfp_path: str, out_npx_path: str, out_pat
 
 
     for filename in tqdm(os.listdir(data_path)):
+
         if not filename.endswith('.bin'):
             continue
 
         try:
+
             # Split filename into parts (e.g., "c6_npx_raw.bin" -> ["c6", "npx", "raw"])
             basename = os.path.splitext(filename)[0]  # Remove ".bin"
             parts = basename.split('_')
             cell_num = int(parts[0][1:])  # Extract number from "c6", "c14", etc.
             file_type = '_'.join(parts[1:])  # "npx_raw", "patch_ch1", etc.
+            print(file_type)
         except (IndexError, ValueError) as e:
             print(f"Skipping {filename}: invalid format ({str(e)})")
             continue
