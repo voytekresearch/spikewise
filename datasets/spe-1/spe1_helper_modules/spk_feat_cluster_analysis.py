@@ -875,7 +875,7 @@ def cluster_multimodal_features(
         new_col = f"{feat}{suffix}"
 
         # ==========================================================
-        # 1️⃣ MANUAL THRESHOLD — ALWAYS RUN FIRST
+        #  MANUAL THRESHOLD — ALWAYS RUN FIRST
         # ==========================================================
         if feat in manual_thresholds:
             thr = manual_thresholds[feat]
@@ -906,8 +906,8 @@ def cluster_multimodal_features(
             continue  # 
 
         # ==========================================================
-        # 2️⃣ HEURISTIC GATES (ONLY FOR AUTO MODE)
-        # ==========================================================
+        #  HEURISTIC GATES (ONLY FOR AUTO MODE)
+        # =========================================================
         if np.unique(data).size < unique_min:
             continue
 
