@@ -73,7 +73,7 @@ class Spike:
         self.queue_group = None
         self._filtered = False  
 
-    def filter_features(self, filter_params = None, inplace=True, **kwargs):
+    def filter_features(self, filter_params = None ,inplace=True, **kwargs):
         """Filter spikes with single-use protection."""
         if self._filtered:
             print("Filtering already applied. Create new instance with inplace=False to re-filter.")
@@ -81,7 +81,7 @@ class Spike:
         
         if filter_params is not None:
             params = {**filter_params, **kwargs}
-            print("tets")
+         
         else:
             params = {**self.default_filter_params, **kwargs}
         
