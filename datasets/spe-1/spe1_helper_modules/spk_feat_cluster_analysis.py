@@ -468,35 +468,18 @@ def visualize_feature_groups_hist(
     iqr_multiplier: float = 3,
     kde: bool = True,
     hist: bool = True,
+    common_norm: bool = True,  # Changed default to True
 ):
     """
     Plot distributions of spike features for two groups using IQR outlier removal.
-    Plots ONE histogram for all data, colors bars by group, then overlays KDEs per group.
+    Fixes both y-axis scaling AND overlapping bin visibility.
     
     Parameters:
     -----------
-    df : pd.DataFrame
-        DataFrame containing spike features
-    features : list
-        List of feature names to plot
-    group_col : str
-        Column name containing group labels
-    groups : tuple
-        Two group labels to compare
-    group_names : Optional[Tuple]
-        Display names for the groups
-    bins : int
-        Number of bins for histograms (default: 50)
-    color_map : Optional[Dict]
-        Custom color map for groups
-    remove_outliers : bool
-        Whether to remove outliers using IQR method (default: True)
-    iqr_multiplier : float
-        Multiplier for IQR outlier detection (higher = more inclusive)
-    kde : bool
-        Whether to show KDE curve (default: True)
-    hist : bool
-        Whether to show histogram bars (default: True)
+    common_norm : bool
+        Whether to normalize both groups together (True) or separately (False)
+        True: Both histograms use same density scale (recommended for comparison)
+        False: Each histogram normalized independently (original behavior)
     """
     
     g1, g2 = groups
@@ -527,26 +510,11 @@ def visualize_feature_groups_hist(
     print(f"Plotting feature distributions by group...")
     if remove_outliers:
         print(f"Removing outliers using IQR method (multiplier={iqr_multiplier})")
+    if common_norm:
+        print(f"Using common normalization for both groups")
+    else:
+        print(f"Using separate normalization for each group")
     print("-" * 60)
-    
-    # Helper function for IQR outlier removal (same as other functions)
-    def clean_data_with_iqr(data):
-        Q1 = data.quantile(0.25)
-        Q3 = data.quantile(0.75)
-        IQR = Q3 - Q1
-        lower_bound = Q1 - iqr_multiplier * IQR
-        upper_bound = Q3 + iqr_multiplier * IQR
-        
-        if remove_outliers:
-            data_clean = data[(data >= lower_bound) & (data <= upper_bound)].copy()
-            n_outliers = len(data) - len(data_clean)
-            bounds = (lower_bound, upper_bound)
-        else:
-            data_clean = data.copy()
-            n_outliers = 0
-            bounds = None
-        
-        return data_clean, n_outliers, bounds
     
     for idx, feat in enumerate(features):
         if idx >= len(axes):
@@ -564,6 +532,25 @@ def visualize_feature_groups_hist(
             ax.set_title(feat)
             continue
         
+        # Function to clean data using IQR method (same as plot_spike_feature_distributions)
+        def clean_data_with_iqr(data):
+            Q1 = data.quantile(0.25)
+            Q3 = data.quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - iqr_multiplier * IQR
+            upper_bound = Q3 + iqr_multiplier * IQR
+            
+            if remove_outliers:
+                data_clean = data[(data >= lower_bound) & (data <= upper_bound)].copy()
+                n_outliers = len(data) - len(data_clean)
+                bounds = (lower_bound, upper_bound)
+            else:
+                data_clean = data.copy()
+                n_outliers = 0
+                bounds = None
+            
+            return data_clean, n_outliers, bounds
+        
         # Clean data for both groups
         a_clean, a_outliers, a_bounds = clean_data_with_iqr(a_raw)
         b_clean, b_outliers, b_bounds = clean_data_with_iqr(b_raw)
@@ -577,44 +564,80 @@ def visualize_feature_groups_hist(
         b_median = b_clean.median()
         b_std = b_clean.std()
         
-        # Combine cleaned data for plotting
+        # Determine global bin edges for consistent comparison
         combined_data = np.concatenate([a_clean.values, b_clean.values])
+        bin_edges = np.histogram_bin_edges(combined_data, bins=bins)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        bin_widths = np.diff(bin_edges)
         
         if hist:
-            # STEP 1: Plot ONE histogram for ALL data (combined from both groups)
-            n, bin_edges, patches = ax.hist(
-                combined_data,
-                bins=bins,
-                color='lightgray',  # Start with all gray
-                edgecolor='black',
-                linewidth=0.5,
-                density=True,
-                label=f"All data (n={len(combined_data):,})"
-            )
-            
-            # STEP 2: Color bars by which group they belong to
-            # For each bar, check which group's points contribute more to that bin
-            for i, (bin_start, bin_end) in enumerate(zip(bin_edges[:-1], bin_edges[1:])):
-                bin_center = (bin_start + bin_end) / 2
+            if common_norm:
+                # Calculate histogram counts for both groups
+                a_counts, _ = np.histogram(a_clean, bins=bin_edges)
+                b_counts, _ = np.histogram(b_clean, bins=bin_edges)
                 
-                # Count points in this bin for each group
-                a_in_bin = np.sum((a_clean >= bin_start) & (a_clean < bin_end))
-                b_in_bin = np.sum((b_clean >= bin_start) & (b_clean < bin_end))
+                # Calculate density with common normalization
+                total_count = len(combined_data)
+                a_density = a_counts / (total_count * bin_widths)
+                b_density = b_counts / (total_count * bin_widths)
                 
-                if a_in_bin > b_in_bin:
-                    # More group 1 points in this bin
-                    patches[i].set_facecolor(c1)
-                    patches[i].set_alpha(0.4)
-                elif b_in_bin > a_in_bin:
-                    # More group 2 points in this bin
-                    patches[i].set_facecolor(c2)
-                    patches[i].set_alpha(0.4)
-                else:
-                    # Equal or no points - keep gray
-                    pass
+                # Plot BOTH histograms OVERLAPPING with semi-transparency
+                # This shows the true overlap with common y-axis
+                ax.bar(
+                    bin_centers, 
+                    a_density, 
+                    width=bin_widths,
+                    color=c1,
+                    alpha=0.5,  # Semi-transparent
+                    edgecolor='black',
+                    linewidth=0.5,
+                    align='center',
+                    label=f"{name1} (n={len(a_clean):,})"
+                )
+                
+                ax.bar(
+                    bin_centers, 
+                    b_density, 
+                    width=bin_widths,
+                    color=c2,
+                    alpha=0.5,  # Semi-transparent
+                    edgecolor='black',
+                    linewidth=0.5,
+                    align='center',
+                    label=f"{name2} (n={len(b_clean):,})"
+                )
+                
+                # Where bars overlap, they blend (orange + blue = brownish)
+                # This shows the true overlap with common density scale
+                
+            else:
+                # Original behavior: separate normalization with seaborn
+                # Create combined dataframe for seaborn
+                combined_df = pd.DataFrame({
+                    'value': pd.concat([a_clean, b_clean]),
+                    'group': [name1] * len(a_clean) + [name2] * len(b_clean)
+                })
+                
+                # Use seaborn with transparency for overlapping
+                sns.histplot(
+                    data=combined_df,
+                    x='value',
+                    hue='group',
+                    ax=ax,
+                    bins=bin_edges,
+                    palette={name1: c1, name2: c2},
+                    kde=kde,
+                    stat="density",
+                    alpha=0.5,  # Semi-transparent
+                    edgecolor='black',
+                    linewidth=0.5,
+                    common_norm=False,  # Separate normalization
+                    multiple='layer',   # Handle overlapping bins
+                )
         
-        # STEP 3: Add KDE for each group (calculated separately, scaled by proportion)
-        if kde:
+        # Add KDE for each group (if kde=True and we're using manual bar plots)
+        if kde and (not hist or common_norm):
+            # We need to manually add KDE when using manual bar plots
             from scipy import stats
             
             # KDE for group 1
@@ -622,26 +645,33 @@ def visualize_feature_groups_hist(
                 kde_a = stats.gaussian_kde(a_clean)
                 x_kde_a = np.linspace(a_clean.min(), a_clean.max(), 500)
                 y_kde_a = kde_a(x_kde_a)
-                # Scale by proportion of group 1 in combined data
-                scale_factor = len(a_clean) / len(combined_data)
-                ax.plot(x_kde_a, y_kde_a * scale_factor, 
+                # Scale by proportion if using common normalization
+                if common_norm:
+                    scale_factor = len(a_clean) / len(combined_data)
+                    y_kde_a = y_kde_a * scale_factor
+                ax.plot(x_kde_a, y_kde_a, 
                        color=c1, 
-                       linewidth=3, 
+                       linewidth=2, 
                        alpha=0.8,
-                       label=f'{name1} (n={len(a_clean):,})')
+                       label=f'KDE ({name1})')
             
             # KDE for group 2
             if len(b_clean) > 1:
                 kde_b = stats.gaussian_kde(b_clean)
                 x_kde_b = np.linspace(b_clean.min(), b_clean.max(), 500)
                 y_kde_b = kde_b(x_kde_b)
-                # Scale by proportion of group 2 in combined data
-                scale_factor = len(b_clean) / len(combined_data)
-                ax.plot(x_kde_b, y_kde_b * scale_factor,
+                # Scale by proportion if using common normalization
+                if common_norm:
+                    scale_factor = len(b_clean) / len(combined_data)
+                    y_kde_b = y_kde_b * scale_factor
+                ax.plot(x_kde_b, y_kde_b,
                        color=c2,
-                       linewidth=3,
+                       linewidth=2,
                        alpha=0.8,
-                       label=f'{name2} (n={len(b_clean):,})')
+                       label=f'KDE ({name2})')
+        elif kde and not common_norm:
+            # KDE is already plotted by seaborn when hist=True and common_norm=False
+            pass
         
         # Add vertical lines for means and medians
         ax.axvline(a_mean, color=c1, linestyle='-', linewidth=2, alpha=0.8)
@@ -673,8 +703,22 @@ def visualize_feature_groups_hist(
             title_lines.append(f"Outliers removed: {a_outliers}+{b_outliers}")
         
         ax.set_title("\n".join(title_lines), fontsize=9)
-        ax.legend(fontsize=8, loc='upper right')
+        
+        # Only add legend if not already added by seaborn
+        if hist and not common_norm:
+            # Seaborn already added legend
+            pass
+        else:
+            ax.legend(fontsize=8, loc='upper right')
+        
         ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Set y-axis label
+        if hist:
+            if common_norm:
+                ax.set_ylabel("Density (common scale)")
+            else:
+                ax.set_ylabel("Density (separate scales)")
         
         # Print per-feature summary
         print(f"{feat:<20} | {name1}: {len(a_clean):>5,}/{len(a_raw):<5,} clean, "
@@ -686,19 +730,18 @@ def visualize_feature_groups_hist(
         axes[idx].set_visible(False)
     
     # Add overall title
-    if remove_outliers:
-        plt.suptitle(
-            f"Feature Distributions by Group ({name1} vs {name2})\n"
-            f"IQR×{iqr_multiplier} outlier removal | bins={bins} | KDE={'on' if kde else 'off'}",
-            fontsize=12, y=1.02
-        )
+    title = f"Feature Distributions by Group ({name1} vs {name2})"
+    if common_norm:
+        title += f"\nCommon normalization | "
     else:
-        plt.suptitle(
-            f"Feature Distributions by Group ({name1} vs {name2})\n"
-            f"No outlier removal | bins={bins} | KDE={'on' if kde else 'off'}",
-            fontsize=12, y=1.02
-        )
+        title += f"\nSeparate normalization | "
     
+    if remove_outliers:
+        title += f"IQR×{iqr_multiplier} outlier removal | "
+    
+    title += f"bins={bins} | KDE={'on' if kde else 'off'}"
+    
+    plt.suptitle(title, fontsize=12, y=1.02)
     plt.tight_layout()
     plt.show()
 
