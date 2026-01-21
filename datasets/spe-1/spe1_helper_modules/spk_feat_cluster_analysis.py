@@ -3023,7 +3023,7 @@ def stats_boxplot_from_window_results(
                 elif "high" in lname:
                     col = "#ff7f0e"   # orange
                 else:
-                    col = "#7f7f7f"   # fallback
+                    col = "green"   # fallback
             else:
                 # plot_mode == "all"
                 col = default_palette[i % len(default_palette)]
