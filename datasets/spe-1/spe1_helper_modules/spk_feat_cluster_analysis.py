@@ -374,11 +374,17 @@ def plot_full_cluster_report(
     bin_size_ms: int = 1000,
     sigma_bins: int = 2,
     heatmap_cmap: str = "magma",
+    stats_alpha: float = 0.05,
+    multiple_testing_correction: str = "fdr_bh",
+    use_parametric_tests: bool = True,
+    check_normality: bool = False,
 ):
     """
     Full diagnostic plotting report for a given cluster column.
-    Dynamically handles 2 or 3 clusters.
+    Includes statistical comparisons for the CLUSTERED FEATURE ONLY.
     """
+    from scipy import stats
+    from statsmodels.stats.multitest import multipletests
 
     SPIKE_WAVEFORM_FEATURES = [
         "ramp_amp",
@@ -405,13 +411,13 @@ def plot_full_cluster_report(
     # --------------------------------------------------
     # A) Spike waveforms
     # --------------------------------------------------
-    print("→ Plotting spike waveforms by cluster")
+    print("\n→ 1. Plotting spike waveforms by cluster")
     plot_spike_clusters_from_df(df, sp, cluster_col)
 
     # --------------------------------------------------
     # B) Cluster proportions over time
     # --------------------------------------------------
-    print("→ Plotting cluster proportions over time")
+    print("\n→ 2. Plotting cluster proportions over time")
     plot_clusters_over_time_min(
         df,
         time_col=time_col,
@@ -424,7 +430,7 @@ def plot_full_cluster_report(
     # --------------------------------------------------
     # C) Transition matrix
     # --------------------------------------------------
-    print("→ Computing cluster transition matrix")
+    print("\n→ 3. Computing cluster transition matrix")
     trans_mat = cluster_transition_matrix(df, cluster_col)
 
     plt.figure(figsize=(5.5, 4.5))
@@ -444,18 +450,18 @@ def plot_full_cluster_report(
     # --------------------------------------------------
     # D) Feature distribution diagnostics
     # --------------------------------------------------
-    print("→ Visualizing feature distributions by cluster")
+    print("\n→ 4. Visualizing feature distributions by cluster")
     
     # Check if clusters are already labeled as 'low', 'mid', 'high'
     has_meaningful_labels = all(str(cluster) in ['low', 'mid', 'high'] for cluster in unique_clusters)
-    # In plot_full_cluster_report, for 3 clusters:
+    
     if has_meaningful_labels:
         # Clusters already have meaningful labels from cluster_multimodal_features
         print(f"  Using existing cluster labels: {sorted(unique_clusters)}")
         
-        # Use the clusters in the order: low, mid, high (for correct plotting)
+        # Use the clusters in the order: low, mid, high (for consistent coloring)
         if n_clusters == 2:
-            # Should be ['low', 'high'] - ensure low comes first
+            # Should be ['low', 'high']
             groups = tuple(sorted(unique_clusters, key=lambda x: 0 if x == 'low' else 1))
             group_names = ("Low", "High")
             
@@ -467,7 +473,7 @@ def plot_full_cluster_report(
             }
             
         elif n_clusters == 3:
-            # Should be ['low', 'mid', 'high'] - ensure correct order
+            # Should be ['low', 'mid', 'high']
             groups = tuple(sorted(unique_clusters, key=lambda x: {'low': 0, 'mid': 1, 'high': 2}[x]))
             group_names = ("Low", "Mid", "High")
             
@@ -481,7 +487,7 @@ def plot_full_cluster_report(
         
         visualize_feature_groups_hist(
             df,
-            features=SPIKE_WAVEFORM_FEATURES,
+            features=SPIKE_WAVEFORM_FEATURES,  # Still show all features for comparison
             group_col=cluster_col,
             groups=groups,
             group_names=group_names,
@@ -491,21 +497,80 @@ def plot_full_cluster_report(
         )
         
     else:
-        # For more than 3 clusters, just use the cluster labels
-        print(f"  Found {n_clusters} clusters (not 2 or 3), using generic visualization")
+        # Clusters have generic labels (e.g., 'cluster_0', 'cluster_1', etc.)
+        # Determine which cluster has higher values on average using the CLUSTERED FEATURE
+        # Extract the feature name from cluster column (e.g., 'ramp_amp' from 'ramp_amp_cluster')
+        if cluster_col.endswith('_cluster'):
+            clustered_feature = cluster_col.replace('_cluster', '')
+        else:
+            # Try to find the feature that was clustered
+            clustered_feature = None
+            for feat in SPIKE_WAVEFORM_FEATURES:
+                if cluster_col == f"{feat}_cluster":
+                    clustered_feature = feat
+                    break
         
-        # Sort clusters for consistent ordering
-        groups = tuple(sorted(unique_clusters))
-        group_names = tuple([f"Cluster {i+1}" for i in range(n_clusters)])
-        
-        # Create a color map for n clusters using a colormap
-        cmap = plt.cm.get_cmap('tab20', n_clusters)
-        color_map = {groups[i]: cmap(i) for i in range(n_clusters)}
-        color_map["default"] = "#9467bd"  # Add default key
+        if clustered_feature and clustered_feature in df.columns:
+            # Use the actual clustered feature for ordering
+            cluster_means = {}
+            for cluster in unique_clusters:
+                cluster_data = df.loc[df[cluster_col] == cluster, clustered_feature].dropna()
+                if len(cluster_data) > 0:
+                    cluster_means[cluster] = cluster_data.mean()
+            
+            if len(cluster_means) == n_clusters:
+                # Sort clusters by mean value of the clustered feature
+                sorted_clusters = sorted(cluster_means.items(), key=lambda x: x[1])
+                
+                if n_clusters == 2:
+                    low_cluster = sorted_clusters[0][0]
+                    high_cluster = sorted_clusters[1][0]
+                    
+                    groups = (low_cluster, high_cluster)
+                    group_names = ("Low", "High")
+                    
+                    color_map = {
+                        low_cluster: "#1f77b4",
+                        high_cluster: "#ff7f0e",
+                        "default": "#9467bd"
+                    }
+                    
+                    print(f"  Assigning by {clustered_feature}: {low_cluster}→'Low' (blue), {high_cluster}→'High' (orange)")
+                    
+                elif n_clusters == 3:
+                    low_cluster = sorted_clusters[0][0]
+                    mid_cluster = sorted_clusters[1][0]
+                    high_cluster = sorted_clusters[2][0]
+                    
+                    groups = (low_cluster, mid_cluster, high_cluster)
+                    group_names = ("Low", "Mid", "High")
+                    
+                    color_map = {
+                        low_cluster: "#1f77b4",
+                        mid_cluster: "#2ca02c",
+                        high_cluster: "#ff7f0e",
+                        "default": "#9467bd"
+                    }
+                    
+                    print(f"  Assigning by {clustered_feature}: {low_cluster}→'Low' (blue), {mid_cluster}→'Mid' (green), {high_cluster}→'High' (orange)")
+            else:
+                # Fallback to alphabetical order
+                groups = tuple(sorted(unique_clusters))
+                group_names = tuple([f"Group {i+1}" for i in range(n_clusters)])
+                cmap = plt.cm.get_cmap('tab20', n_clusters)
+                color_map = {groups[i]: cmap(i) for i in range(n_clusters)}
+                color_map["default"] = "#9467bd"
+        else:
+            # Can't determine clustered feature, use alphabetical
+            groups = tuple(sorted(unique_clusters))
+            group_names = tuple([f"Group {i+1}" for i in range(n_clusters)])
+            cmap = plt.cm.get_cmap('tab20', n_clusters)
+            color_map = {groups[i]: cmap(i) for i in range(n_clusters)}
+            color_map["default"] = "#9467bd"
         
         visualize_feature_groups_hist(
             df,
-            features=SPIKE_WAVEFORM_FEATURES,
+            features=SPIKE_WAVEFORM_FEATURES,  # Still show all features
             group_col=cluster_col,
             groups=groups,
             group_names=group_names,
@@ -514,15 +579,212 @@ def plot_full_cluster_report(
             alpha=0.5
         )
 
-    print("===== DONE =====\n")
+    # --------------------------------------------------
+    # E) Statistical comparisons for the CLUSTERED FEATURE ONLY
+    # --------------------------------------------------
+    # Determine which feature was clustered
+    if cluster_col.endswith('_cluster'):
+        clustered_feature = cluster_col.replace('_cluster', '')
+    else:
+        clustered_feature = None
+        for feat in SPIKE_WAVEFORM_FEATURES:
+            if cluster_col == f"{feat}_cluster":
+                clustered_feature = feat
+                break
+    
+    if not clustered_feature or clustered_feature not in df.columns:
+        print(f"\n⚠️  Could not determine which feature was clustered from column: {cluster_col}")
+        stats_summary = None
+    else:
+        if use_parametric_tests:
+            test_type = "Parametric"
+            print(f"\n→ 5. PARAMETRIC statistical comparisons for: {clustered_feature}")
+        else:
+            test_type = "Non-parametric"
+            print(f"\n→ 5. NON-PARAMETRIC statistical comparisons for: {clustered_feature}")
+        
+        print(f"   Significance level: α={stats_alpha}")
+        print(f"   Multiple testing correction: {multiple_testing_correction}")
+        print("-" * 80)
+        
+        # Get data for each group for the CLUSTERED FEATURE
+        group_data = []
+        group_sizes = []
+        group_means = []
+        group_stds = []
+        
+        for group in groups:
+            data = pd.to_numeric(df.loc[df[cluster_col] == group, clustered_feature], errors='coerce').dropna()
+            group_data.append(data.values)
+            group_sizes.append(len(data))
+            if len(data) > 0:
+                group_means.append(np.mean(data))
+                group_stds.append(np.std(data))
+        
+        # Check if we have enough data
+        if any(size < 5 for size in group_sizes):
+            print(f"  ⚠️  Insufficient data for statistical tests (some groups have < 5 observations)")
+            stats_summary = None
+        else:
+            # Choose test based on number of groups and test type
+            if use_parametric_tests:
+                if n_clusters == 2:
+                    # Independent t-test for 2 groups
+                    stat, p_value = stats.ttest_ind(group_data[0], group_data[1], equal_var=False)
+                    test_name = "Welch's t-test"
+                    
+                    # Calculate Cohen's d
+                    n1, n2 = group_sizes[0], group_sizes[1]
+                    s1, s2 = group_stds[0], group_stds[1]
+                    pooled_std = np.sqrt(((n1-1)*s1**2 + (n2-1)*s2**2) / (n1 + n2 - 2))
+                    cohens_d = (group_means[1] - group_means[0]) / pooled_std
+                    effect_size = f"d={cohens_d:.3f}"
+                    
+                elif n_clusters >= 3:
+                    # One-way ANOVA
+                    stat, p_value = stats.f_oneway(*group_data)
+                    test_name = "One-way ANOVA"
+                    
+                    # Calculate eta-squared
+                    total_data = np.concatenate(group_data)
+                    grand_mean = np.mean(total_data)
+                    
+                    ss_between = 0
+                    for i, data in enumerate(group_data):
+                        n = len(data)
+                        group_mean = np.mean(data)
+                        ss_between += n * (group_mean - grand_mean) ** 2
+                    
+                    ss_total = np.sum((total_data - grand_mean) ** 2)
+                    eta_squared = ss_between / ss_total if ss_total > 0 else 0
+                    effect_size = f"η²={eta_squared:.3f}"
+            
+            else:  # Non-parametric
+                if n_clusters == 2:
+                    stat, p_value = stats.mannwhitneyu(group_data[0], group_data[1], alternative='two-sided')
+                    test_name = "Mann-Whitney U"
+                    
+                    u_stat = min(stat, group_sizes[0] * group_sizes[1] - stat)
+                    r_effect = 1 - (2 * u_stat) / (group_sizes[0] * group_sizes[1])
+                    effect_size = f"r={r_effect:.3f}"
+                    
+                elif n_clusters >= 3:
+                    stat, p_value = stats.kruskal(*group_data)
+                    test_name = "Kruskal-Wallis H"
+                    
+                    total_n = sum(group_sizes)
+                    epsilon_squared = stat / (total_n - 1)
+                    effect_size = f"ε²={epsilon_squared:.3f}"
+            
+            # Apply multiple testing correction (though only one test, still useful for consistency)
+            p_values = [p_value]
+            reject, pvals_corrected, _, _ = multipletests(
+                p_values, 
+                alpha=stats_alpha, 
+                method=multiple_testing_correction
+            )
+            
+            p_corrected = pvals_corrected[0]
+            significant = p_corrected < stats_alpha
+            significance = '***' if p_corrected < 0.001 else '**' if p_corrected < 0.01 else '*' if p_corrected < 0.05 else 'ns'
+            
+            # Calculate descriptive statistics
+            desc_stats = []
+            for i, (group, data) in enumerate(zip(groups, group_data)):
+                if len(data) > 0:
+                    if use_parametric_tests:
+                        mean_val = np.mean(data)
+                        std_val = np.std(data)
+                        desc_stats.append(f"{group_names[i]}: {mean_val:.3f}±{std_val:.3f}")
+                    else:
+                        median_val = np.median(data)
+                        iqr_val = np.percentile(data, 75) - np.percentile(data, 25)
+                        desc_stats.append(f"{group_names[i]}: {median_val:.3f}[{iqr_val:.3f}]")
+            
+            # Print single result
+            print("\n" + "="*90)
+            print(f"STATISTICAL TEST FOR: {clustered_feature}")
+            print("="*90)
+            print(f"Test: {test_name}")
+            print(f"Groups: {', '.join(group_names)}")
+            print(f"Statistic: {stat:.4f}")
+            print(f"P-value: {p_value:.6f}")
+            print(f"P-value (corrected): {p_corrected:.6f}")
+            print(f"Effect size: {effect_size}")
+            print(f"Significant: {'Yes' if significant else 'No'} ({significance})")
+            print(f"Total N: {sum(group_sizes)}")
+            print(f"Descriptive: {' | '.join(desc_stats)}")
+            print("="*90)
+            
+            # Create a simple visualization
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            
+            # Plot 1: Group means/medians with error bars
+            x_pos = np.arange(len(group_names))
+            if use_parametric_tests:
+                # Plot means with standard deviation
+                ax1.bar(x_pos, group_means, yerr=group_stds, 
+                       color=['#1f77b4', '#2ca02c', '#ff7f0e'][:n_clusters],
+                       alpha=0.7, capsize=10)
+                ax1.set_ylabel(f'{clustered_feature} (mean ± SD)')
+            else:
+                # Plot medians with IQR
+                medians = [np.median(data) for data in group_data]
+                iqrs = [np.percentile(data, 75) - np.percentile(data, 25) for data in group_data]
+                ax1.bar(x_pos, medians, yerr=iqrs,
+                       color=['#1f77b4', '#2ca02c', '#ff7f0e'][:n_clusters],
+                       alpha=0.7, capsize=10)
+                ax1.set_ylabel(f'{clustered_feature} (median ± IQR)')
+            
+            ax1.set_xticks(x_pos)
+            ax1.set_xticklabels(group_names)
+            ax1.set_title(f'{clustered_feature} by Cluster')
+            ax1.grid(True, alpha=0.3, axis='y')
+            
+            # Plot 2: Add significance annotation
+            ax2.text(0.1, 0.8, f'Test: {test_name}', fontsize=12, transform=ax2.transAxes)
+            ax2.text(0.1, 0.7, f'Statistic: {stat:.4f}', fontsize=12, transform=ax2.transAxes)
+            ax2.text(0.1, 0.6, f'P-value: {p_value:.6f}', fontsize=12, transform=ax2.transAxes)
+            ax2.text(0.1, 0.5, f'Corrected p: {p_corrected:.6f}', fontsize=12, transform=ax2.transAxes)
+            ax2.text(0.1, 0.4, f'Effect: {effect_size}', fontsize=12, transform=ax2.transAxes)
+            ax2.text(0.1, 0.3, f'Significant: {"Yes" if significant else "No"} ({significance})', 
+                    fontsize=12, transform=ax2.transAxes, 
+                    color='red' if significant else 'black')
+            ax2.text(0.1, 0.2, f'Total N: {sum(group_sizes)}', fontsize=12, transform=ax2.transAxes)
+            
+            ax2.set_xlim(0, 1)
+            ax2.set_ylim(0, 1)
+            ax2.axis('off')
+            ax2.set_title('Statistical Summary')
+            
+            plt.suptitle(f'{clustered_feature}: Comparison across {n_clusters} clusters', fontsize=14)
+            plt.tight_layout()
+            plt.show()
+            
+            # Store results
+            stats_summary = {
+                'feature': clustered_feature,
+                'test': test_name,
+                'statistic': stat,
+                'p_value': p_value,
+                'p_corrected': p_corrected,
+                'effect_size': effect_size,
+                'significant': significant,
+                'significance': significance,
+                'n_total': sum(group_sizes),
+                'groups': group_names,
+                'n_clusters': n_clusters,
+                'test_type': test_type
+            }
+
+    print("\n===== REPORT COMPLETE =====\n")
 
     return {
         "transition_matrix": trans_mat,
         "n_clusters": n_clusters,
         "cluster_labels": list(unique_clusters),
-        "assigned_labels": dict(zip(groups, group_names)) if n_clusters <= 3 else None,
+        "statistics": stats_summary
     }
-
 
 def visualize_feature_groups_hist(
     df: pd.DataFrame,
