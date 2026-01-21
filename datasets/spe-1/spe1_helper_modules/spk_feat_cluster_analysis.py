@@ -377,6 +377,7 @@ def plot_full_cluster_report(
 ):
     """
     Full diagnostic plotting report for a given cluster column.
+    Dynamically handles 2 or 3 clusters.
     """
 
     SPIKE_WAVEFORM_FEATURES = [
@@ -393,8 +394,13 @@ def plot_full_cluster_report(
 
     if cluster_col not in df.columns:
         raise KeyError(f"{cluster_col} not found in dataframe")
-
+    
+    # Get unique clusters and count
+    unique_clusters = df[cluster_col].dropna().unique()
+    n_clusters = len(unique_clusters)
+    
     print(f"\n===== CLUSTER REPORT: {cluster_col} =====")
+    print(f"Found {n_clusters} clusters: {sorted(unique_clusters)}")
 
     # --------------------------------------------------
     # A) Spike waveforms
@@ -435,32 +441,94 @@ def plot_full_cluster_report(
     plt.tight_layout()
     plt.show()
 
-    
     # --------------------------------------------------
-    # D) High vs Low feature distribution diagnostics
+    # D) Feature distribution diagnostics
     # --------------------------------------------------
-    print("→ Visualizing high vs low feature distributions")
+    print("→ Visualizing feature distributions by cluster")
     
-    visualize_feature_groups_hist(
-        df,
-        features=SPIKE_WAVEFORM_FEATURES,
-        group_col=cluster_col,
-        groups=("high", "low"),
-        group_names=("High", "Low"),
-    )
-
+    # Check if clusters are already labeled as 'low', 'mid', 'high'
+    has_meaningful_labels = all(str(cluster) in ['low', 'mid', 'high'] for cluster in unique_clusters)
+    # In plot_full_cluster_report, for 3 clusters:
+    if has_meaningful_labels:
+        # Clusters already have meaningful labels from cluster_multimodal_features
+        print(f"  Using existing cluster labels: {sorted(unique_clusters)}")
+        
+        # Use the clusters in the order: low, mid, high (for correct plotting)
+        if n_clusters == 2:
+            # Should be ['low', 'high'] - ensure low comes first
+            groups = tuple(sorted(unique_clusters, key=lambda x: 0 if x == 'low' else 1))
+            group_names = ("Low", "High")
+            
+            # Color map matching the labels
+            color_map = {
+                'low': "#1f77b4",   # Blue for Low
+                'high': "#ff7f0e",  # Orange for High
+                "default": "#9467bd"
+            }
+            
+        elif n_clusters == 3:
+            # Should be ['low', 'mid', 'high'] - ensure correct order
+            groups = tuple(sorted(unique_clusters, key=lambda x: {'low': 0, 'mid': 1, 'high': 2}[x]))
+            group_names = ("Low", "Mid", "High")
+            
+            # Color map matching the labels
+            color_map = {
+                'low': "#1f77b4",   # Blue for Low
+                'mid': "#2ca02c",   # Green for Mid
+                'high': "#ff7f0e",  # Orange for High
+                "default": "#9467bd"
+            }
+        
+        visualize_feature_groups_hist(
+            df,
+            features=SPIKE_WAVEFORM_FEATURES,
+            group_col=cluster_col,
+            groups=groups,
+            group_names=group_names,
+            color_map=color_map,
+            common_norm=True,
+            alpha=0.5
+        )
+        
+    else:
+        # For more than 3 clusters, just use the cluster labels
+        print(f"  Found {n_clusters} clusters (not 2 or 3), using generic visualization")
+        
+        # Sort clusters for consistent ordering
+        groups = tuple(sorted(unique_clusters))
+        group_names = tuple([f"Cluster {i+1}" for i in range(n_clusters)])
+        
+        # Create a color map for n clusters using a colormap
+        cmap = plt.cm.get_cmap('tab20', n_clusters)
+        color_map = {groups[i]: cmap(i) for i in range(n_clusters)}
+        color_map["default"] = "#9467bd"  # Add default key
+        
+        visualize_feature_groups_hist(
+            df,
+            features=SPIKE_WAVEFORM_FEATURES,
+            group_col=cluster_col,
+            groups=groups,
+            group_names=group_names,
+            color_map=color_map,
+            common_norm=True,
+            alpha=0.5
+        )
 
     print("===== DONE =====\n")
 
     return {
         "transition_matrix": trans_mat,
+        "n_clusters": n_clusters,
+        "cluster_labels": list(unique_clusters),
+        "assigned_labels": dict(zip(groups, group_names)) if n_clusters <= 3 else None,
     }
+
 
 def visualize_feature_groups_hist(
     df: pd.DataFrame,
     features: list,
     group_col: str,
-    groups: tuple = ("high", "low"),
+    groups: tuple = ("low", "mid", "high"),  # CHANGED ORDER to low, mid, high
     group_names: Optional[Tuple] = None,
     bins: int = 50,
     color_map: Optional[Dict] = None,
@@ -468,36 +536,50 @@ def visualize_feature_groups_hist(
     iqr_multiplier: float = 3,
     kde: bool = True,
     hist: bool = True,
-    common_norm: bool = True,  # Changed default to True
+    common_norm: bool = True,
+    alpha: float = 0.5,
+    plot_order: tuple = ("low", "mid", "high"),  # NEW: Control plotting order
 ):
     """
-    Plot distributions of spike features for two groups using IQR outlier removal.
-    Fixes both y-axis scaling AND overlapping bin visibility.
+    Plot distributions of spike features for multiple groups using IQR outlier removal.
+    Handles 2 or 3 groups with consistent visualization.
     
     Parameters:
     -----------
-    common_norm : bool
-        Whether to normalize both groups together (True) or separately (False)
-        True: Both histograms use same density scale (recommended for comparison)
-        False: Each histogram normalized independently (original behavior)
+    groups : tuple
+        Group labels to compare. Should be in order of plotting (lowest to highest)
+    plot_order : tuple
+        Order in which to plot the histograms (for layering). Should match groups order.
     """
     
-    g1, g2 = groups
-    if group_names is None:
-        name1, name2 = g1, g2
-    else:
-        name1, name2 = group_names
+    n_groups = len(groups)
+    if n_groups < 2 or n_groups > 3:
+        raise ValueError(f"Function supports 2 or 3 groups, got {n_groups}")
     
-    # Default color map (same as in plot_spike_feature_distributions)
+    if group_names is None:
+        group_names = groups
+    elif len(group_names) != n_groups:
+        raise ValueError(f"group_names length ({len(group_names)}) must match groups length ({n_groups})")
+    
+    # Default color map - MATCHING THE STANDARD ORDER
     if color_map is None:
         color_map = {
-            "high": "#ff7f0e",
-            "low": "#1f77b4",
-            "default": "steelblue"
+            "low": "#1f77b4",   # Blue
+            "mid": "#2ca02c",   # Green  
+            "high": "#ff7f0e",  # Orange
+            "default": "#9467bd"  # Purple (for any additional groups)
         }
     
-    c1 = color_map.get(g1, color_map["default"])
-    c2 = color_map.get(g2, color_map["default"])
+    # Ensure color_map has a "default" key
+    color_map = color_map.copy() if color_map else {}
+    if "default" not in color_map:
+        color_map["default"] = "#9467bd"
+    
+    # Assign colors to each group in the order they appear in groups tuple
+    group_colors = []
+    for i, group in enumerate(groups):
+        color = color_map.get(group, color_map["default"])
+        group_colors.append(color)
     
     n_features = len(features)
     n_cols = 3
@@ -508,13 +590,34 @@ def visualize_feature_groups_hist(
     
     # Print header
     print(f"Plotting feature distributions by group...")
+    print(f"Groups: {', '.join([f'{n} ({g})' for g, n in zip(groups, group_names)])}")
+    print(f"Plot order: {plot_order}")
     if remove_outliers:
         print(f"Removing outliers using IQR method (multiplier={iqr_multiplier})")
     if common_norm:
-        print(f"Using common normalization for both groups")
+        print(f"Using common normalization for all groups")
     else:
         print(f"Using separate normalization for each group")
     print("-" * 60)
+    
+    # Helper function for IQR outlier removal
+    def clean_data_with_iqr(data):
+        Q1 = data.quantile(0.25)
+        Q3 = data.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - iqr_multiplier * IQR
+        upper_bound = Q3 + iqr_multiplier * IQR
+        
+        if remove_outliers:
+            data_clean = data[(data >= lower_bound) & (data <= upper_bound)].copy()
+            n_outliers = len(data) - len(data_clean)
+            bounds = (lower_bound, upper_bound)
+        else:
+            data_clean = data.copy()
+            n_outliers = 0
+            bounds = None
+        
+        return data_clean, n_outliers, bounds
     
     for idx, feat in enumerate(features):
         if idx >= len(axes):
@@ -523,100 +626,100 @@ def visualize_feature_groups_hist(
         ax = axes[idx]
         
         # Get raw data for each group
-        a_raw = pd.to_numeric(df.loc[df[group_col] == g1, feat], errors="coerce").dropna()
-        b_raw = pd.to_numeric(df.loc[df[group_col] == g2, feat], errors="coerce").dropna()
+        group_data_raw = []
+        group_data_clean = []
+        group_outliers = []
+        group_bounds = []
+        group_stats = []
         
-        if len(a_raw) < 5 or len(b_raw) < 5:
+        all_data_valid = True
+        for group in groups:
+            data_raw = pd.to_numeric(df.loc[df[group_col] == group, feat], errors="coerce").dropna()
+            if len(data_raw) < 5:
+                all_data_valid = False
+                break
+            group_data_raw.append(data_raw)
+        
+        if not all_data_valid:
             ax.text(0.5, 0.5, f"Insufficient data\nfor {feat}", 
                    ha='center', va='center', transform=ax.transAxes)
             ax.set_title(feat)
             continue
         
-        # Function to clean data using IQR method (same as plot_spike_feature_distributions)
-        def clean_data_with_iqr(data):
-            Q1 = data.quantile(0.25)
-            Q3 = data.quantile(0.75)
-            IQR = Q3 - Q1
-            lower_bound = Q1 - iqr_multiplier * IQR
-            upper_bound = Q3 + iqr_multiplier * IQR
+        # Clean data for all groups
+        for data_raw in group_data_raw:
+            data_clean, n_outliers, bounds = clean_data_with_iqr(data_raw)
+            group_data_clean.append(data_clean)
+            group_outliers.append(n_outliers)
+            group_bounds.append(bounds)
             
-            if remove_outliers:
-                data_clean = data[(data >= lower_bound) & (data <= upper_bound)].copy()
-                n_outliers = len(data) - len(data_clean)
-                bounds = (lower_bound, upper_bound)
-            else:
-                data_clean = data.copy()
-                n_outliers = 0
-                bounds = None
-            
-            return data_clean, n_outliers, bounds
-        
-        # Clean data for both groups
-        a_clean, a_outliers, a_bounds = clean_data_with_iqr(a_raw)
-        b_clean, b_outliers, b_bounds = clean_data_with_iqr(b_raw)
-        
-        # Calculate statistics for display
-        a_mean = a_clean.mean()
-        a_median = a_clean.median()
-        a_std = a_clean.std()
-        
-        b_mean = b_clean.mean()
-        b_median = b_clean.median()
-        b_std = b_clean.std()
+            # Calculate statistics
+            stats = {
+                'mean': data_clean.mean(),
+                'median': data_clean.median(),
+                'std': data_clean.std(),
+                'n_clean': len(data_clean),
+                'n_raw': len(data_raw)
+            }
+            group_stats.append(stats)
         
         # Determine global bin edges for consistent comparison
-        combined_data = np.concatenate([a_clean.values, b_clean.values])
+        combined_data = np.concatenate([data.values for data in group_data_clean])
         bin_edges = np.histogram_bin_edges(combined_data, bins=bins)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
         bin_widths = np.diff(bin_edges)
         
         if hist:
             if common_norm:
-                # Calculate histogram counts for both groups
-                a_counts, _ = np.histogram(a_clean, bins=bin_edges)
-                b_counts, _ = np.histogram(b_clean, bins=bin_edges)
-                
-                # Calculate density with common normalization
+                # Calculate histogram counts for all groups
+                group_counts = []
+                group_densities = []
                 total_count = len(combined_data)
-                a_density = a_counts / (total_count * bin_widths)
-                b_density = b_counts / (total_count * bin_widths)
                 
-                # Plot BOTH histograms OVERLAPPING with semi-transparency
-                # This shows the true overlap with common y-axis
-                ax.bar(
-                    bin_centers, 
-                    a_density, 
-                    width=bin_widths,
-                    color=c1,
-                    alpha=0.5,  # Semi-transparent
-                    edgecolor='black',
-                    linewidth=0.5,
-                    align='center',
-                    label=f"{name1} (n={len(a_clean):,})"
-                )
+                for data_clean in group_data_clean:
+                    counts, _ = np.histogram(data_clean, bins=bin_edges)
+                    group_counts.append(counts)
+                    density = counts / (total_count * bin_widths)
+                    group_densities.append(density)
                 
-                ax.bar(
-                    bin_centers, 
-                    b_density, 
-                    width=bin_widths,
-                    color=c2,
-                    alpha=0.5,  # Semi-transparent
-                    edgecolor='black',
-                    linewidth=0.5,
-                    align='center',
-                    label=f"{name2} (n={len(b_clean):,})"
-                )
-                
-                # Where bars overlap, they blend (orange + blue = brownish)
-                # This shows the true overlap with common density scale
+                # Plot overlapping histograms for all groups IN THE CORRECT ORDER
+                # We want to plot low first (bottom), then mid, then high (top)
+                # This ensures the highest values (high) are most visible
+                for plot_idx in range(len(groups)):
+                    i = plot_idx  # Plot in the order of groups tuple
+                    
+                    # But we need to ensure the plotting order matches what we want visually
+                    # Typically: low (blue) at bottom, mid (green) in middle, high (orange) on top
+                    
+                    data_clean = group_data_clean[i]
+                    density = group_densities[i]
+                    color = group_colors[i]
+                    name = group_names[i]
+                    
+                    ax.bar(
+                        bin_centers, 
+                        density, 
+                        width=bin_widths,
+                        color=color,
+                        alpha=alpha,
+                        edgecolor='black',
+                        linewidth=0.5,
+                        align='center',
+                        label=f"{name} (n={len(data_clean):,})"
+                    )
                 
             else:
                 # Original behavior: separate normalization with seaborn
                 # Create combined dataframe for seaborn
-                combined_df = pd.DataFrame({
-                    'value': pd.concat([a_clean, b_clean]),
-                    'group': [name1] * len(a_clean) + [name2] * len(b_clean)
-                })
+                combined_df_list = []
+                for i, (data_clean, name) in enumerate(zip(group_data_clean, group_names)):
+                    temp_df = pd.DataFrame({
+                        'value': data_clean,
+                        'group': [name] * len(data_clean)
+                    })
+                    combined_df_list.append(temp_df)
+                
+                combined_df = pd.concat(combined_df_list, ignore_index=True)
                 
                 # Use seaborn with transparency for overlapping
                 sns.histplot(
@@ -625,82 +728,66 @@ def visualize_feature_groups_hist(
                     hue='group',
                     ax=ax,
                     bins=bin_edges,
-                    palette={name1: c1, name2: c2},
+                    palette=dict(zip(group_names, group_colors)),
                     kde=kde,
                     stat="density",
-                    alpha=0.5,  # Semi-transparent
+                    alpha=alpha,
                     edgecolor='black',
                     linewidth=0.5,
                     common_norm=False,  # Separate normalization
                     multiple='layer',   # Handle overlapping bins
                 )
         
-        # Add KDE for each group (if kde=True and we're using manual bar plots)
+        # Add KDE for each group
         if kde and (not hist or common_norm):
-            # We need to manually add KDE when using manual bar plots
             from scipy import stats
             
-            # KDE for group 1
-            if len(a_clean) > 1:
-                kde_a = stats.gaussian_kde(a_clean)
-                x_kde_a = np.linspace(a_clean.min(), a_clean.max(), 500)
-                y_kde_a = kde_a(x_kde_a)
-                # Scale by proportion if using common normalization
-                if common_norm:
-                    scale_factor = len(a_clean) / len(combined_data)
-                    y_kde_a = y_kde_a * scale_factor
-                ax.plot(x_kde_a, y_kde_a, 
-                       color=c1, 
-                       linewidth=2, 
-                       alpha=0.8,
-                       label=f'KDE ({name1})')
-            
-            # KDE for group 2
-            if len(b_clean) > 1:
-                kde_b = stats.gaussian_kde(b_clean)
-                x_kde_b = np.linspace(b_clean.min(), b_clean.max(), 500)
-                y_kde_b = kde_b(x_kde_b)
-                # Scale by proportion if using common normalization
-                if common_norm:
-                    scale_factor = len(b_clean) / len(combined_data)
-                    y_kde_b = y_kde_b * scale_factor
-                ax.plot(x_kde_b, y_kde_b,
-                       color=c2,
-                       linewidth=2,
-                       alpha=0.8,
-                       label=f'KDE ({name2})')
+            for i, (data_clean, color, name) in enumerate(zip(group_data_clean, group_colors, group_names)):
+                if len(data_clean) > 1:
+                    kde_obj = stats.gaussian_kde(data_clean)
+                    x_kde = np.linspace(data_clean.min(), data_clean.max(), 500)
+                    y_kde = kde_obj(x_kde)
+                    
+                    # Scale by proportion if using common normalization
+                    if common_norm:
+                        scale_factor = len(data_clean) / len(combined_data)
+                        y_kde = y_kde * scale_factor
+                    
+                    ax.plot(x_kde, y_kde, 
+                           color=color, 
+                           linewidth=2, 
+                           alpha=0.8,
+                           label=f'KDE ({name})')
         elif kde and not common_norm:
             # KDE is already plotted by seaborn when hist=True and common_norm=False
             pass
         
         # Add vertical lines for means and medians
-        ax.axvline(a_mean, color=c1, linestyle='-', linewidth=2, alpha=0.8)
-        ax.axvline(a_median, color=c1, linestyle='--', linewidth=1.5, alpha=0.6)
-        ax.axvline(b_mean, color=c2, linestyle='-', linewidth=2, alpha=0.8)
-        ax.axvline(b_median, color=c2, linestyle='--', linewidth=1.5, alpha=0.6)
+        for i, (stats, color, name) in enumerate(zip(group_stats, group_colors, group_names)):
+            ax.axvline(stats['mean'], color=color, linestyle='-', linewidth=2, alpha=0.8)
+            ax.axvline(stats['median'], color=color, linestyle='--', linewidth=1.5, alpha=0.6)
         
         # Add outlier bounds if outliers were removed
-        if remove_outliers and a_bounds:
-            ax.axvline(a_bounds[0], color=c1, linestyle=':', 
-                      linewidth=1, alpha=0.4)
-            ax.axvline(a_bounds[1], color=c1, linestyle=':', 
-                      linewidth=1, alpha=0.4)
-        
-        if remove_outliers and b_bounds:
-            ax.axvline(b_bounds[0], color=c2, linestyle=':', 
-                      linewidth=1, alpha=0.4)
-            ax.axvline(b_bounds[1], color=c2, linestyle=':', 
-                      linewidth=1, alpha=0.4)
+        if remove_outliers:
+            for i, (bounds, color) in enumerate(zip(group_bounds, group_colors)):
+                if bounds:
+                    ax.axvline(bounds[0], color=color, linestyle=':', 
+                              linewidth=1, alpha=0.4)
+                    ax.axvline(bounds[1], color=color, linestyle=':', 
+                              linewidth=1, alpha=0.4)
         
         # Create title with statistics
-        title_lines = [
-            f"{feat}",
-            f"{name1}: μ={a_mean:.3f}, σ={a_std:.3f}, n={len(a_clean):,}/{len(a_raw):,}",
-            f"{name2}: μ={b_mean:.3f}, σ={b_std:.3f}, n={len(b_clean):,}/{len(b_raw):,}"
-        ]
+        title_lines = [f"{feat}"]
+        for i, (stats, name) in enumerate(zip(group_stats, group_names)):
+            title_lines.append(
+                f"{name}: μ={stats['mean']:.3f}, σ={stats['std']:.3f}, "
+                f"n={stats['n_clean']:,}/{stats['n_raw']:,}"
+            )
         
-        if remove_outliers and (a_outliers > 0 or b_outliers > 0):
-            title_lines.append(f"Outliers removed: {a_outliers}+{b_outliers}")
+        total_outliers = sum(group_outliers)
+        if remove_outliers and total_outliers > 0:
+            outlier_str = "+".join(str(o) for o in group_outliers)
+            title_lines.append(f"Outliers removed: {outlier_str} points")
         
         ax.set_title("\n".join(title_lines), fontsize=9)
         
@@ -721,16 +808,22 @@ def visualize_feature_groups_hist(
                 ax.set_ylabel("Density (separate scales)")
         
         # Print per-feature summary
-        print(f"{feat:<20} | {name1}: {len(a_clean):>5,}/{len(a_raw):<5,} clean, "
-              f"{name2}: {len(b_clean):>5,}/{len(b_raw):<5,} clean | "
-              f"{a_outliers + b_outliers} outliers removed")
+        summary_parts = [f"{feat:<20}"]
+        for i, (name, stats, n_outliers) in enumerate(zip(group_names, group_stats, group_outliers)):
+            summary_parts.append(
+                f"{name}: {stats['n_clean']:>5,}/{stats['n_raw']:<5,} clean"
+            )
+        summary_parts.append(f"{total_outliers} outliers removed")
+        
+        print(" | ".join(summary_parts))
     
     # Hide unused subplots
     for idx in range(len(features), len(axes)):
         axes[idx].set_visible(False)
     
     # Add overall title
-    title = f"Feature Distributions by Group ({name1} vs {name2})"
+    groups_str = " vs ".join(group_names)
+    title = f"Feature Distributions by Group ({groups_str})"
     if common_norm:
         title += f"\nCommon normalization | "
     else:
@@ -744,7 +837,6 @@ def visualize_feature_groups_hist(
     plt.suptitle(title, fontsize=12, y=1.02)
     plt.tight_layout()
     plt.show()
-
 def kmeans_1d_cluster(
     df: pd.DataFrame,
     feature: str,
@@ -1001,7 +1093,6 @@ def _looks_clustered_1d(
         "valley_ratio": float(valley_ratio)
     }
 
-
 def cluster_multimodal_features(
     df: pd.DataFrame,
     features: Optional[List[str]] = None,
@@ -1012,14 +1103,22 @@ def cluster_multimodal_features(
     peak_ratio: float = 0.10,
     valley_ratio: float = 0.70,
     unique_min: int = 8,
-    manual_thresholds: Optional[Dict[str, float]] = None,
+    manual_thresholds: Optional[Dict[str, Union[float, Tuple[float, float]]]] = None,
     bins: int = 50,
     kde: bool = True,
     assign_labels: bool = True,
+    hist_alpha: float = 0.7,  # Added: transparency for histograms
 ):
     """
     Cluster multimodal features with consistent histogram style.
-    Plots ONE histogram for all data, colors bars by group, then overlays KDEs per group.
+    Supports 2 or 3 clusters with manual thresholds.
+    
+    Parameters:
+    -----------
+    manual_thresholds : Optional[Dict[str, Union[float, Tuple[float, float]]]]
+        - For 2 clusters: {feature_name: threshold_float}
+        - For 3 clusters: {feature_name: (threshold1, threshold2)}
+        where threshold1 < threshold2
     """
     df_out = df.copy() if assign_labels else df
     if manual_thresholds is None:
@@ -1032,8 +1131,8 @@ def cluster_multimodal_features(
     
     colors = {
         "low": "#1f77b4",
+        "mid": "#2ca02c",  # Added for middle cluster
         "high": "#ff7f0e", 
-        "mid": "#2ca02c",
         "default": "steelblue"
     }
 
@@ -1047,19 +1146,43 @@ def cluster_multimodal_features(
         #  MANUAL THRESHOLD — VISUALIZATION ONLY
         # ==========================================================
         if feat in manual_thresholds:
-            thr = manual_thresholds[feat]
-            labels = ["low", "high"]
+            thr_value = manual_thresholds[feat]
             
-            if assign_labels:
-                cluster_assign = np.where(data <= thr, labels[0], labels[1])
-                df_out.loc[valid, new_col] = cluster_assign
-                df_out.loc[~valid, new_col] = np.nan
-
+            # Determine if it's 2 clusters (single threshold) or 3 clusters (dual thresholds)
+            if isinstance(thr_value, (int, float)):
+                # Single threshold -> 2 clusters
+                thr = float(thr_value)
+                labels = ["low", "high"]
+                
+                if assign_labels:
+                    cluster_assign = np.where(data <= thr, labels[0], labels[1])
+                    df_out.loc[valid, new_col] = cluster_assign
+                    df_out.loc[~valid, new_col] = np.nan
+                
+                thresholds = [thr]
+                n_clusters = 2
+                
+            elif isinstance(thr_value, (tuple, list)) and len(thr_value) == 2:
+                # Dual thresholds -> 3 clusters
+                thr1, thr2 = sorted([float(thr_value[0]), float(thr_value[1])])  # Ensure thr1 < thr2
+                labels = ["low", "mid", "high"]
+                
+                if assign_labels:
+                    cluster_assign = np.where(data <= thr1, labels[0], 
+                                             np.where(data <= thr2, labels[1], labels[2]))
+                    df_out.loc[valid, new_col] = cluster_assign
+                    df_out.loc[~valid, new_col] = np.nan
+                
+                thresholds = [thr1, thr2]
+                n_clusters = 3
+            else:
+                raise ValueError(f"Invalid threshold format for {feat}. Use float for 2 clusters or tuple for 3 clusters.")
+            
             report[feat] = {
-                "k": 2,
-                "centers": [np.nan, np.nan],
-                "cutoffs": [thr],
-                "diagnostics": {"manual_threshold": thr},
+                "k": n_clusters,
+                "centers": [np.nan] * n_clusters,
+                "cutoffs": thresholds,
+                "diagnostics": {"manual_threshold": thr_value},
                 "column": new_col if assign_labels else None,
                 "labels": labels,
             }
@@ -1067,78 +1190,179 @@ def cluster_multimodal_features(
             if plot_each:
                 fig, ax = plt.subplots(figsize=(8, 5))
                 
-                # STEP 1: Plot ONE histogram for ALL data
-                n, bin_edges, patches = ax.hist(
-                    data,
-                    bins=bins,
-                    color='lightgray',  # Start with all gray
-                    edgecolor='black',
-                    linewidth=0.5,
-                    density=True,
-                    label=f"All data (n={len(data):,})"
-                )
+                # Determine global bin edges
+                bin_edges = np.histogram_bin_edges(data, bins=bins)
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                bin_widths = np.diff(bin_edges)
                 
-                # STEP 2: Color bars based on threshold
-                # For each bar, check if its center is <= thr or > thr
-                for i, (bin_start, bin_end) in enumerate(zip(bin_edges[:-1], bin_edges[1:])):
-                    bin_center = (bin_start + bin_end) / 2
-                    if bin_center <= thr:
-                        patches[i].set_facecolor(colors["low"])
-                        patches[i].set_alpha(0.7)
-                    else:
-                        patches[i].set_facecolor(colors["high"])
-                        patches[i].set_alpha(0.7)
-                
-                # STEP 3: Add KDE for each segment (calculated separately)
-                if kde:
-                    from scipy import stats
-                    
-                    # Split data for KDE calculation
+                # Calculate histogram counts for each segment
+                if n_clusters == 2:
+                    # Split data for 2 clusters
                     data_low = data[data <= thr]
                     data_high = data[data > thr]
                     
-                    # KDE for low segment
-                    if len(data_low) > 1:
-                        kde_low = stats.gaussian_kde(data_low)
-                        x_kde_low = np.linspace(data_low.min(), data_low.max(), 500)
-                        y_kde_low = kde_low(x_kde_low)
-                        # Scale KDE to match the histogram density
-                        # Multiply by (n_low / n_total) to account for proportion
-                        scale_factor = len(data_low) / len(data)
-                        ax.plot(x_kde_low, y_kde_low * scale_factor, 
-                               color=colors["low"], 
-                               linewidth=3, 
-                               alpha=0.8,
-                               label='KDE (low)')
+                    # Calculate densities
+                    total_count = len(data)
+                    counts_low, _ = np.histogram(data_low, bins=bin_edges)
+                    counts_high, _ = np.histogram(data_high, bins=bin_edges)
                     
-                    # KDE for high segment
-                    if len(data_high) > 1:
-                        kde_high = stats.gaussian_kde(data_high)
-                        x_kde_high = np.linspace(data_high.min(), data_high.max(), 500)
-                        y_kde_high = kde_high(x_kde_high)
-                        scale_factor = len(data_high) / len(data)
-                        ax.plot(x_kde_high, y_kde_high * scale_factor,
-                               color=colors["high"],
-                               linewidth=3,
-                               alpha=0.8,
-                               label='KDE (high)')
+                    density_low = counts_low / (total_count * bin_widths)
+                    density_high = counts_high / (total_count * bin_widths)
+                    
+                    # Plot overlapping histograms
+                    ax.bar(
+                        bin_centers, 
+                        density_low, 
+                        width=bin_widths,
+                        color=colors["low"],
+                        alpha=hist_alpha,
+                        edgecolor='black',
+                        linewidth=0.5,
+                        align='center',
+                        label=f"Low (≤{thr:.3f}, n={len(data_low):,})"
+                    )
+                    
+                    ax.bar(
+                        bin_centers, 
+                        density_high, 
+                        width=bin_widths,
+                        color=colors["high"],
+                        alpha=hist_alpha,
+                        edgecolor='black',
+                        linewidth=0.5,
+                        align='center',
+                        label=f"High (> {thr:.3f}, n={len(data_high):,})"
+                    )
+                    
+                    # Add KDE for each segment
+                    if kde:
+                        from scipy import stats
+                        
+                        if len(data_low) > 1:
+                            kde_low = stats.gaussian_kde(data_low)
+                            x_kde_low = np.linspace(data_low.min(), data_low.max(), 500)
+                            y_kde_low = kde_low(x_kde_low)
+                            scale_factor = len(data_low) / total_count
+                            ax.plot(x_kde_low, y_kde_low * scale_factor, 
+                                   color=colors["low"], 
+                                   linewidth=3, 
+                                   alpha=0.8,
+                                   label='KDE (low)')
+                        
+                        if len(data_high) > 1:
+                            kde_high = stats.gaussian_kde(data_high)
+                            x_kde_high = np.linspace(data_high.min(), data_high.max(), 500)
+                            y_kde_high = kde_high(x_kde_high)
+                            scale_factor = len(data_high) / total_count
+                            ax.plot(x_kde_high, y_kde_high * scale_factor,
+                                   color=colors["high"],
+                                   linewidth=3,
+                                   alpha=0.8,
+                                   label='KDE (high)')
+                    
+                    # Add threshold line
+                    ax.axvline(thr, color='k', linestyle='--', linewidth=2.5, 
+                              alpha=0.9, label=f'Threshold = {thr:.3f}')
+                    
+                    # Statistics
+                    stats_text = (f"Threshold: {thr:.3f}\n"
+                                 f"Total n: {len(data):,}\n"
+                                 f"Low (≤{thr:.3f}): {len(data_low):,} points\n"
+                                 f"High (> {thr:.3f}): {len(data_high):,} points")
                 
-                # Add threshold line
-                ax.axvline(thr, color='k', linestyle='--', linewidth=2.5, 
-                          alpha=0.9, label=f'Threshold = {thr:.3f}')
+                else:  # n_clusters == 3
+                    # Split data for 3 clusters
+                    data_low = data[data <= thr1]
+                    data_mid = data[(data > thr1) & (data <= thr2)]
+                    data_high = data[data > thr2]
+                    
+                    # Calculate densities
+                    total_count = len(data)
+                    counts_low, _ = np.histogram(data_low, bins=bin_edges)
+                    counts_mid, _ = np.histogram(data_mid, bins=bin_edges)
+                    counts_high, _ = np.histogram(data_high, bins=bin_edges)
+                    
+                    density_low = counts_low / (total_count * bin_widths)
+                    density_mid = counts_mid / (total_count * bin_widths)
+                    density_high = counts_high / (total_count * bin_widths)
+                    
+                    # Plot overlapping histograms for 3 clusters
+                    ax.bar(
+                        bin_centers, 
+                        density_low, 
+                        width=bin_widths,
+                        color=colors["low"],
+                        alpha=hist_alpha,
+                        edgecolor='black',
+                        linewidth=0.5,
+                        align='center',
+                        label=f"Low (≤{thr1:.3f}, n={len(data_low):,})"
+                    )
+                    
+                    ax.bar(
+                        bin_centers, 
+                        density_mid, 
+                        width=bin_widths,
+                        color=colors["mid"],
+                        alpha=hist_alpha,
+                        edgecolor='black',
+                        linewidth=0.5,
+                        align='center',
+                        label=f"Mid ({thr1:.3f}<x≤{thr2:.3f}, n={len(data_mid):,})"
+                    )
+                    
+                    ax.bar(
+                        bin_centers, 
+                        density_high, 
+                        width=bin_widths,
+                        color=colors["high"],
+                        alpha=hist_alpha,
+                        edgecolor='black',
+                        linewidth=0.5,
+                        align='center',
+                        label=f"High (> {thr2:.3f}, n={len(data_high):,})"
+                    )
+                    
+                    # Add KDE for each segment
+                    if kde:
+                        from scipy import stats
+                        
+                        for segment_data, label, color_key in [
+                            (data_low, "low", "low"),
+                            (data_mid, "mid", "mid"), 
+                            (data_high, "high", "high")
+                        ]:
+                            if len(segment_data) > 1:
+                                kde_obj = stats.gaussian_kde(segment_data)
+                                x_kde = np.linspace(segment_data.min(), segment_data.max(), 500)
+                                y_kde = kde_obj(x_kde)
+                                scale_factor = len(segment_data) / total_count
+                                ax.plot(x_kde, y_kde * scale_factor,
+                                       color=colors[color_key],
+                                       linewidth=3,
+                                       alpha=0.8,
+                                       label=f'KDE ({label})')
+                    
+                    # Add threshold lines
+                    ax.axvline(thr1, color='k', linestyle='--', linewidth=2.5, 
+                              alpha=0.9, label=f'Threshold1 = {thr1:.3f}')
+                    ax.axvline(thr2, color='k', linestyle='--', linewidth=2.5, 
+                              alpha=0.9, label=f'Threshold2 = {thr2:.3f}')
+                    
+                    # Statistics
+                    stats_text = (f"Thresholds: {thr1:.3f}, {thr2:.3f}\n"
+                                 f"Total n: {len(data):,}\n"
+                                 f"Low (≤{thr1:.3f}): {len(data_low):,} points\n"
+                                 f"Mid ({thr1:.3f}<x≤{thr2:.3f}): {len(data_mid):,} points\n"
+                                 f"High (> {thr2:.3f}): {len(data_high):,} points")
                 
                 # Add statistics text box
-                stats_text = (f"Threshold: {thr:.3f}\n"
-                             f"Total n: {len(data):,}\n"
-                             f"Low (≤{thr:.3f}): {len(data[data <= thr]):,} points\n"
-                             f"High (> {thr:.3f}): {len(data[data > thr]):,} points")
-                
                 ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
                        verticalalignment='top', horizontalalignment='left',
                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
                        fontsize=9)
                 
-                ax.set_title(f"{feat} (manual threshold)")
+                ax.set_title(f"{feat} (manual threshold, {n_clusters} clusters)")
                 ax.set_xlabel(feat)
                 ax.set_ylabel("Density")
                 ax.legend(fontsize=9, loc='upper right')
@@ -1146,7 +1370,7 @@ def cluster_multimodal_features(
                 plt.tight_layout()
                 plt.show()
 
-            continue
+            continue  # Skip automatic clustering for manual threshold features
 
         # ==========================================================
         #  HEURISTIC GATES (ONLY FOR AUTO MODE)
@@ -1168,9 +1392,21 @@ def cluster_multimodal_features(
         if labels_map and feat in labels_map:
             labels = labels_map[feat]
             if len(labels) != k_suggest:
-                labels = ["low", "high"] if k_suggest == 2 else ["low", "mid", "high"][:k_suggest]
+                # Use default labels based on k_suggest
+                if k_suggest == 2:
+                    labels = ["low", "high"]
+                elif k_suggest == 3:
+                    labels = ["low", "mid", "high"]
+                else:
+                    labels = [f"cluster_{i}" for i in range(k_suggest)]
         else:
-            labels = ["low", "high"] if k_suggest == 2 else ["low", "mid", "high"][:k_suggest]
+            # Use default labels based on k_suggest
+            if k_suggest == 2:
+                labels = ["low", "high"]
+            elif k_suggest == 3:
+                labels = ["low", "mid", "high"]
+            else:
+                labels = [f"cluster_{i}" for i in range(k_suggest)]
 
         # Use existing kmeans_1d_cluster function
         if assign_labels:
@@ -1220,34 +1456,43 @@ def cluster_multimodal_features(
                 cluster_data = pd.to_numeric(temp_df.loc[temp_df["temp_viz"].notna(), feat], errors='coerce').dropna()
                 cluster_labels = temp_df.loc[temp_df["temp_viz"].notna(), "temp_viz"]
             
-            # STEP 1: Plot ONE histogram for ALL clustered data
-            n, bin_edges, patches = ax.hist(
-                cluster_data,
-                bins=bins,
-                color='lightgray',
-                edgecolor='black',
-                linewidth=0.5,
-                density=True,
-                label=f"All data (n={len(cluster_data):,})"
-            )
+            # Determine global bin edges
+            bin_edges = np.histogram_bin_edges(cluster_data, bins=bins)
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            bin_widths = np.diff(bin_edges)
+            total_count = len(cluster_data)
             
-            # STEP 2: Color bars by which cluster they belong to
-            # For each bar, find which cluster center is closest to the bar center
-            for i, (bin_start, bin_end) in enumerate(zip(bin_edges[:-1], bin_edges[1:])):
-                bin_center = (bin_start + bin_end) / 2
-                
-                # Find which cluster this bin belongs to
-                # Simple: assign to nearest cluster center
-                if len(centers) > 0:
-                    distances = [abs(bin_center - center) for center in centers]
-                    closest_cluster_idx = np.argmin(distances)
-                    if closest_cluster_idx < len(labels):
-                        color_label = labels[closest_cluster_idx]
-                        color = colors.get(color_label, colors["default"])
-                        patches[i].set_facecolor(color)
-                        patches[i].set_alpha(0.7)
+            # Calculate density for each cluster
+            all_densities = []
+            for i, label in enumerate(labels):
+                cluster_points = cluster_data[cluster_labels == label]
+                if len(cluster_points) == 0:
+                    all_densities.append(np.zeros(len(bin_edges)-1))
+                    continue
+                    
+                counts, _ = np.histogram(cluster_points, bins=bin_edges)
+                density = counts / (total_count * bin_widths)
+                all_densities.append(density)
             
-            # STEP 3: Add KDE for each cluster
+            # Plot overlapping histograms for all clusters
+            for i, (label, density) in enumerate(zip(labels, all_densities)):
+                if density.sum() == 0:
+                    continue
+                    
+                color = colors.get(label, colors["default"])
+                ax.bar(
+                    bin_centers, 
+                    density, 
+                    width=bin_widths,
+                    color=color,
+                    alpha=hist_alpha,
+                    edgecolor='black',
+                    linewidth=0.5,
+                    align='center',
+                    label=f"{label} (n={len(cluster_data[cluster_labels == label]):,})"
+                )
+            
+            # Add KDE for each cluster
             if kde:
                 from scipy import stats
                 
@@ -1257,8 +1502,7 @@ def cluster_multimodal_features(
                         kde_obj = stats.gaussian_kde(cluster_points)
                         x_kde = np.linspace(cluster_points.min(), cluster_points.max(), 500)
                         y_kde = kde_obj(x_kde)
-                        # Scale KDE by proportion of this cluster
-                        scale_factor = len(cluster_points) / len(cluster_data)
+                        scale_factor = len(cluster_points) / total_count
                         color = colors.get(label, colors["default"])
                         ax.plot(x_kde, y_kde * scale_factor, 
                                color=color, 
