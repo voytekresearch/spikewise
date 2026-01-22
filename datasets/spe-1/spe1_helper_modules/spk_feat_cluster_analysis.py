@@ -15,7 +15,8 @@ from tqdm.auto import tqdm
 import mne
 from specparam import SpectralTimeModel
 from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union, Sequence
-from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway
+from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway, kruskal
+
 
 
 
@@ -289,6 +290,502 @@ def trim_edges(results, edge_sec=0.5):
         trimmed.append(out_w_trimmed)
     return trimmed
 
+def get_cluster_colors_and_labels(cluster_col, unique_clusters, df=None, clustered_feature=None):
+    """
+    Get consistent colors and labels for clusters.
+    
+    Returns: (groups, group_names, color_map)
+    """
+    # Check if clusters are already labeled as 'low', 'mid', 'high'
+    has_meaningful_labels = all(str(cluster) in ['low', 'mid', 'high'] for cluster in unique_clusters)
+    n_clusters = len(unique_clusters)
+    
+    if has_meaningful_labels:
+        print(f"  Using existing cluster labels: {sorted(unique_clusters)}")
+        
+        if n_clusters == 2:
+            groups = tuple(sorted(unique_clusters, key=lambda x: 0 if x == 'low' else 1))
+            group_names = ("Low", "High")
+            color_map = {
+                'low': "#1f77b4",   # Blue for Low
+                'high': "#ff7f0e",  # Orange for High
+                "default": "#9467bd"
+            }
+            
+        elif n_clusters == 3:
+            groups = tuple(sorted(unique_clusters, key=lambda x: {'low': 0, 'mid': 1, 'high': 2}[x]))
+            group_names = ("Low", "Mid", "High")
+            color_map = {
+                'low': "#1f77b4",   # Blue for Low
+                'mid': "#2ca02c",   # Green for Mid
+                'high': "#ff7f0e",  # Orange for High
+                "default": "#9467bd"
+            }
+        
+        return groups, group_names, color_map
+        
+    else:
+        # Generic labels - sort by clustered feature value if possible
+        if clustered_feature and df is not None and clustered_feature in df.columns:
+            cluster_means = {}
+            for cluster in unique_clusters:
+                cluster_data = df.loc[df[cluster_col] == cluster, clustered_feature].dropna()
+                if len(cluster_data) > 0:
+                    cluster_means[cluster] = cluster_data.mean()
+            
+            if len(cluster_means) == n_clusters:
+                sorted_clusters = sorted(cluster_means.items(), key=lambda x: x[1])
+                
+                if n_clusters == 2:
+                    low_cluster = sorted_clusters[0][0]
+                    high_cluster = sorted_clusters[1][0]
+                    
+                    groups = (low_cluster, high_cluster)
+                    group_names = ("Low", "High")
+                    color_map = {
+                        low_cluster: "#1f77b4",
+                        high_cluster: "#ff7f0e",
+                        "default": "#9467bd"
+                    }
+                    
+                    print(f"  Assigning by {clustered_feature}: {low_cluster}→'Low' (blue), {high_cluster}→'High' (orange)")
+                    
+                elif n_clusters == 3:
+                    low_cluster = sorted_clusters[0][0]
+                    mid_cluster = sorted_clusters[1][0]
+                    high_cluster = sorted_clusters[2][0]
+                    
+                    groups = (low_cluster, mid_cluster, high_cluster)
+                    group_names = ("Low", "Mid", "High")
+                    color_map = {
+                        low_cluster: "#1f77b4",
+                        mid_cluster: "#2ca02c",
+                        high_cluster: "#ff7f0e",
+                        "default": "#9467bd"
+                    }
+                    
+                    print(f"  Assigning by {clustered_feature}: {low_cluster}→'Low' (blue), {mid_cluster}→'Mid' (green), {high_cluster}→'High' (orange)")
+                    
+                return groups, group_names, color_map
+        
+        # Fallback to alphabetical order
+        groups = tuple(sorted(unique_clusters))
+        group_names = tuple([f"Group {i+1}" for i in range(n_clusters)])
+        import matplotlib.pyplot as plt
+        cmap = plt.cm.get_cmap('tab20', n_clusters)
+        color_map = {groups[i]: cmap(i) for i in range(n_clusters)}
+        color_map["default"] = "#9467bd"
+        
+        return groups, group_names, color_map
+
+
+def plot_avg_waveforms_simple(sp, df, cluster_col, groups, group_names, color_map):
+    """
+    Simple plot showing average waveforms with RMSE.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Store waveforms
+    waveforms_data = {}
+    
+    for i, group in enumerate(groups):
+        spike_indices = df.loc[df[cluster_col] == group, "spk_id"].astype(int).tolist()
+        
+        if not spike_indices:
+            continue
+        
+        # Get waveforms
+        wfs = []
+        for idx in spike_indices:
+            if idx < len(sp.spikes):
+                wfs.append(sp.spikes[idx])
+        
+        if not wfs:
+            continue
+        
+        wfs = np.array(wfs)
+        avg_wf = np.mean(wfs, axis=0)
+        waveforms_data[group] = avg_wf
+        
+        # Time axis
+        time_axis = np.arange(len(avg_wf)) - len(avg_wf) // 2
+        
+        # Get color
+        color = color_map.get(str(group), color_map.get("default", '#9467bd'))
+        
+        # Plot
+        ax.plot(time_axis, avg_wf, 
+                color=color,
+                linewidth=3,
+                label=f"{group_names[i]} (n={len(wfs)})",
+                alpha=0.8)
+    
+    # Calculate RMSE if we have waveforms
+    if len(waveforms_data) >= 2:
+        # Get time axis
+        time_axis = np.arange(len(list(waveforms_data.values())[0])) - len(list(waveforms_data.values())[0]) // 2
+        
+        # For 2 groups: fill between
+        if len(waveforms_data) == 2:
+            groups_list = list(waveforms_data.keys())
+            wf1 = waveforms_data[groups_list[0]]
+            wf2 = waveforms_data[groups_list[1]]
+            
+            # Fill area between waveforms
+            ax.fill_between(time_axis, wf1, wf2, 
+                           color='gray', alpha=0.3, 
+                           label='Difference (RMSE)')
+            
+            # Calculate RMSE
+            rmse = np.sqrt(np.mean((wf1 - wf2)**2))
+            
+            # Add RMSE text
+            mid_idx = len(time_axis) // 2
+            mid_y = (wf1[mid_idx] + wf2[mid_idx]) / 2
+            ax.text(time_axis[mid_idx], mid_y, 
+                   f"RMSE = {rmse:.3f}",
+                   ha='center', va='center',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            
+            print(f"\nRMSE between waveforms: {rmse:.4f}")
+        
+        # For 3 groups: show pairwise RMSE
+        else:
+            groups_list = list(waveforms_data.keys())
+            for i in range(len(groups_list)):
+                for j in range(i+1, len(groups_list)):
+                    wf1 = waveforms_data[groups_list[i]]
+                    wf2 = waveforms_data[groups_list[j]]
+                    
+                    # Calculate RMSE
+                    rmse = np.sqrt(np.mean((wf1 - wf2)**2))
+                    print(f"RMSE {group_names[i]} vs {group_names[j]}: {rmse:.4f}")
+                    
+                    # Add vertical line at max separation point
+                    diff = np.abs(wf1 - wf2)
+                    max_idx = np.argmax(diff)
+                    ax.plot([time_axis[max_idx], time_axis[max_idx]],
+                           [wf1[max_idx], wf2[max_idx]],
+                           color='gray', linestyle=':', alpha=0.5)
+    
+    ax.set_xlabel('Time (samples)')
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Average Waveforms by Group')
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def compute_cluster_statistics(group_data, alpha=0.05):
+    """
+    Compute statistics for cluster comparisons.
+    """
+    # ADD THESE IMPORTS INSIDE THE FUNCTION
+    from scipy import stats
+    import numpy as np
+    
+    n_groups = len(group_data)
+    
+    # Quick sanity check
+    if any(len(g) < 3 for g in group_data):
+        return {
+            'p_value': None,
+            'significance': None,
+            'test_type': None,
+            'n_groups': n_groups,
+            'eta_squared': None,
+            'error': 'Insufficient data'
+        }
+    
+    test_type = "nonparametric"
+    
+    if n_groups == 2:
+        # Mann-Whitney U test
+        g1, g2 = group_data[0], group_data[1]
+        
+        # Handle edge cases
+        if len(g1) == 0 or len(g2) == 0:
+            return {
+                'p_value': None,
+                'significance': None,
+                'test_type': test_type,
+                'n_groups': n_groups,
+                'eta_squared': None,
+                'error': 'One group has no data'
+            }
+        
+        stat, p = stats.mannwhitneyu(g1, g2)
+        test_name = "Mann-Whitney U"
+        
+        # Direct calculation of η² from data
+        all_data = np.concatenate([g1, g2])
+        grand_mean = np.mean(all_data)
+        
+        # Sum of squares between
+        ss_between = len(g1) * (np.mean(g1) - grand_mean) ** 2 + len(g2) * (np.mean(g2) - grand_mean) ** 2
+        
+        # Sum of squares total
+        ss_total = np.sum((all_data - grand_mean) ** 2)
+        
+        # η² = SS_between / SS_total
+        if ss_total > 0:
+            eta_squared = ss_between / ss_total
+        else:
+            eta_squared = 0
+        
+    else:  # 3+ groups
+        # Kruskal-Wallis test
+        stat, p = stats.kruskal(*group_data)
+        test_name = "Kruskal-Wallis"
+        
+        # Direct ε² calculation (analogous to η²)
+        total_n = sum(len(g) for g in group_data)
+        if total_n > 1:
+            eta_squared = stat / (total_n - 1)
+        else:
+            eta_squared = 0
+    
+    # Handle NaN/Inf values
+    if np.isnan(eta_squared) or np.isinf(eta_squared):
+        eta_squared = 0
+    
+    # Clip to valid range [0, 1]
+    eta_squared = np.clip(eta_squared, 0, 1)
+    
+    # Significance stars
+    if p < 0.001:
+        sig_stars = '***'
+    elif p < 0.01:
+        sig_stars = '**'
+    elif p < 0.05:
+        sig_stars = '*'
+    else:
+        sig_stars = 'ns'
+    
+    # Interpretation
+    if eta_squared < 0.01:
+        interpretation = "Negligible"
+    elif eta_squared < 0.06:
+        interpretation = "Small"
+    elif eta_squared < 0.14:
+        interpretation = "Medium"
+    elif eta_squared < 0.26:
+        interpretation = "Large"
+    else:
+        interpretation = "Very Large"
+    
+    return {
+        'p_value': p,
+        'significance': sig_stars,
+        'test_type': test_type,
+        'n_groups': n_groups,
+        'eta_squared': eta_squared,
+        'interpretation': interpretation,
+        'test_name': test_name
+    }
+
+
+def plot_full_cluster_report(
+    df: pd.DataFrame,
+    sp,
+    cluster_col: str,
+    time_col: str = "spk_times_ms",
+    time_unit: str = "ms",
+    bin_size_ms: int = 1000,
+    sigma_bins: int = 2,
+    heatmap_cmap: str = "magma",
+    stats_alpha: float = 0.05,
+):
+    """
+    Full diagnostic plotting report for a given cluster column.
+    Includes statistical comparisons for the CLUSTERED FEATURE ONLY.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
+    from scipy import stats
+
+    SPIKE_WAVEFORM_FEATURES = [
+        "ramp_amp",
+        "inflection_time",
+        "inflection_amp",
+        "peak_amp",
+        "peak_width",
+        "peak_sharpness",
+        "exp_lambda",
+        "exp_const",
+        "log_isi",
+    ]
+
+    if cluster_col not in df.columns:
+        raise KeyError(f"{cluster_col} not found in dataframe")
+    
+    # Get unique clusters and count
+    unique_clusters = df[cluster_col].dropna().unique()
+    n_clusters = len(unique_clusters)
+    
+    print(f"\n===== CLUSTER REPORT: {cluster_col} =====")
+    print(f"Found {n_clusters} clusters: {sorted(unique_clusters)}")
+    
+    # --------------------------------------------------
+    # COLOR AND LABEL ASSIGNMENT (AT THE TOP)
+    # --------------------------------------------------
+    print("\n→ Determining cluster colors and labels...")
+    
+    # Get the clustered feature name
+    if cluster_col.endswith('_cluster'):
+        clustered_feature = cluster_col.replace('_cluster', '')
+    else:
+        clustered_feature = None
+        for feat in SPIKE_WAVEFORM_FEATURES:
+            if cluster_col == f"{feat}_cluster":
+                clustered_feature = feat
+                break
+    
+    # Get consistent colors and labels
+    groups, group_names, color_map = get_cluster_colors_and_labels(
+        cluster_col, unique_clusters, df, clustered_feature
+    )
+    
+    print(f"  Groups: {groups}")
+    print(f"  Group names: {group_names}")
+    
+    # --------------------------------------------------
+    # A) Spike waveforms
+    # --------------------------------------------------
+    print("\n→ 1. Plotting spike waveforms by cluster")
+    plot_spike_clusters_from_df(df, sp, cluster_col)
+    
+    # --------------------------------------------------
+    # A.5) Average waveforms with visual RMSE
+    # --------------------------------------------------
+    print("\n→ 1.5 Average waveforms with visual RMSE")
+    
+    # Now we have color_map, groups, group_names defined
+    avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map)
+    
+    # --------------------------------------------------
+    # B) Cluster proportions over time
+    # --------------------------------------------------
+    print("\n→ 2. Plotting cluster proportions over time")
+    plot_clusters_over_time_min(
+        df,
+        time_col=time_col,
+        label_col=cluster_col,
+        time_unit=time_unit,
+        bin_size_ms=bin_size_ms,
+        sigma_bins=sigma_bins,
+    )
+
+    # --------------------------------------------------
+    # C) Transition matrix
+    # --------------------------------------------------
+    print("\n→ 3. Computing cluster transition matrix")
+    trans_mat = cluster_transition_matrix(df, cluster_col)
+
+    plt.figure(figsize=(5.5, 4.5))
+    order = list(trans_mat.index)
+    sns.heatmap(
+        trans_mat.loc[order, order],
+        annot=True,
+        cmap=heatmap_cmap,
+        cbar=False,
+    )
+    plt.title(f"{cluster_col} transition probabilities")
+    plt.xlabel("Next spike cluster")
+    plt.ylabel("Current spike cluster")
+    plt.tight_layout()
+    plt.show()
+
+    # --------------------------------------------------
+    # D) Feature distribution diagnostics
+    # --------------------------------------------------
+    print("\n→ 4. Visualizing feature distributions by cluster")
+    
+    # Just use the already-defined groups, group_names, color_map
+    visualize_feature_groups_hist(
+        df,
+        features=SPIKE_WAVEFORM_FEATURES,
+        group_col=cluster_col,
+        groups=groups,
+        group_names=group_names,
+        color_map=color_map,
+        common_norm=True,
+        alpha=0.5
+    )
+
+    # --------------------------------------------------
+    # E) Statistical comparisons for the CLUSTERED FEATURE 
+    # --------------------------------------------------
+    print(f"\n→ 5. Statistical analysis for: {clustered_feature}")
+    print("-" * 40)
+    
+    # Get group data
+    group_data = []
+    for group in groups:
+        data = df.loc[df[cluster_col] == group, clustered_feature].dropna().values
+        group_data.append(data)
+    
+    # Compute statistics
+    stats_results = compute_cluster_statistics(group_data, alpha=stats_alpha)
+    
+    if stats_results and stats_results['p_value'] is not None:
+        # Print results
+        print(f"\nTest: {stats_results['test_name']} ({stats_results['test_type']})")
+        print(f"Number of groups: {stats_results['n_groups']}")
+        print(f"P-value: {stats_results['p_value']:.6f}")
+        print(f"Significance: {stats_results['significance']}")
+        print(f"η² effect size: {stats_results['eta_squared']:.3f}")
+        print(f"Interpretation: {stats_results['interpretation']}")
+        
+        # Simple visualization
+        fig, ax = plt.subplots(figsize=(8, 5))
+        
+        # Box plot
+        positions = range(len(group_names))
+        ax.boxplot(group_data, labels=group_names)
+        
+        # Add effect size annotation
+        ax.text(0.5, 0.95, 
+                f"η² = {stats_results['eta_squared']:.3f} ({stats_results['interpretation']})",
+                transform=ax.transAxes, ha='center',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        # Add p-value annotation
+        ax.text(0.5, 0.88, 
+                f"p = {stats_results['p_value']:.4f} {stats_results['significance']}",
+                transform=ax.transAxes, ha='center',
+                color='red' if stats_results['significance'] != 'ns' else 'black')
+        
+        ax.set_ylabel(clustered_feature)
+        ax.set_title(f'{clustered_feature} by Cluster')
+        plt.tight_layout()
+        plt.show()
+        
+        stats_summary = stats_results
+    else:
+        print(" Could not compute statistics")
+        stats_summary = None
+
+    print("\n===== REPORT COMPLETE =====\n")
+
+    return {
+        "transition_matrix": trans_mat,
+        "n_clusters": n_clusters,
+        "cluster_labels": list(unique_clusters),
+        "clustered_feature": clustered_feature,
+        "groups": groups,
+        "group_names": group_names,
+        "color_map": color_map,
+        "statistics": stats_summary
+    }
+
 
 def plot_spike_clusters_from_df(
     df,
@@ -364,107 +861,23 @@ def plot_spike_clusters_from_df(
     return fig, ax
 
 
-def plot_full_cluster_report(
-    df: pd.DataFrame,
-    sp,
-    cluster_col: str,
-    *,
-    time_col: str = "spk_times_ms",
-    time_unit: str = "ms",
-    bin_size_ms: int = 1000,
-    sigma_bins: int = 2,
-    heatmap_cmap: str = "magma",
-    stats_alpha: float = 0.05,
-    multiple_testing_correction: str = "fdr_bh",
-    use_parametric_tests: bool = True,
-    check_normality: bool = False,
-):
+
+def get_cluster_colors_and_labels(cluster_col, unique_clusters, df=None, clustered_feature=None):
     """
-    Full diagnostic plotting report for a given cluster column.
-    Includes statistical comparisons for the CLUSTERED FEATURE ONLY.
+    Get consistent colors and labels for clusters.
+    
+    Returns: (groups, group_names, color_map)
     """
-   
-
-    SPIKE_WAVEFORM_FEATURES = [
-        "ramp_amp",
-        "inflection_time",
-        "inflection_amp",
-        "peak_amp",
-        "peak_width",
-        "peak_sharpness",
-        "exp_lambda",
-        "exp_const",
-        "log_isi",
-    ]
-
-    if cluster_col not in df.columns:
-        raise KeyError(f"{cluster_col} not found in dataframe")
-    
-    # Get unique clusters and count
-    unique_clusters = df[cluster_col].dropna().unique()
-    n_clusters = len(unique_clusters)
-    
-    print(f"\n===== CLUSTER REPORT: {cluster_col} =====")
-    print(f"Found {n_clusters} clusters: {sorted(unique_clusters)}")
-
-    # --------------------------------------------------
-    # A) Spike waveforms
-    # --------------------------------------------------
-    print("\n→ 1. Plotting spike waveforms by cluster")
-    plot_spike_clusters_from_df(df, sp, cluster_col)
-
-    # --------------------------------------------------
-    # B) Cluster proportions over time
-    # --------------------------------------------------
-    print("\n→ 2. Plotting cluster proportions over time")
-    plot_clusters_over_time_min(
-        df,
-        time_col=time_col,
-        label_col=cluster_col,
-        time_unit=time_unit,
-        bin_size_ms=bin_size_ms,
-        sigma_bins=sigma_bins,
-    )
-
-    # --------------------------------------------------
-    # C) Transition matrix
-    # --------------------------------------------------
-    print("\n→ 3. Computing cluster transition matrix")
-    trans_mat = cluster_transition_matrix(df, cluster_col)
-
-    plt.figure(figsize=(5.5, 4.5))
-    order = list(trans_mat.index)
-    sns.heatmap(
-        trans_mat.loc[order, order],
-        annot=True,
-        cmap=heatmap_cmap,
-        cbar=False,
-    )
-    plt.title(f"{cluster_col} transition probabilities")
-    plt.xlabel("Next spike cluster")
-    plt.ylabel("Current spike cluster")
-    plt.tight_layout()
-    plt.show()
-
-    # --------------------------------------------------
-    # D) Feature distribution diagnostics
-    # --------------------------------------------------
-    print("\n→ 4. Visualizing feature distributions by cluster")
-    
     # Check if clusters are already labeled as 'low', 'mid', 'high'
     has_meaningful_labels = all(str(cluster) in ['low', 'mid', 'high'] for cluster in unique_clusters)
+    n_clusters = len(unique_clusters)
     
     if has_meaningful_labels:
-        # Clusters already have meaningful labels from cluster_multimodal_features
         print(f"  Using existing cluster labels: {sorted(unique_clusters)}")
         
-        # Use the clusters in the order: low, mid, high (for consistent coloring)
         if n_clusters == 2:
-            # Should be ['low', 'high']
             groups = tuple(sorted(unique_clusters, key=lambda x: 0 if x == 'low' else 1))
             group_names = ("Low", "High")
-            
-            # Color map matching the labels
             color_map = {
                 'low': "#1f77b4",   # Blue for Low
                 'high': "#ff7f0e",  # Orange for High
@@ -472,11 +885,8 @@ def plot_full_cluster_report(
             }
             
         elif n_clusters == 3:
-            # Should be ['low', 'mid', 'high']
             groups = tuple(sorted(unique_clusters, key=lambda x: {'low': 0, 'mid': 1, 'high': 2}[x]))
             group_names = ("Low", "Mid", "High")
-            
-            # Color map matching the labels
             color_map = {
                 'low': "#1f77b4",   # Blue for Low
                 'mid': "#2ca02c",   # Green for Mid
@@ -484,33 +894,11 @@ def plot_full_cluster_report(
                 "default": "#9467bd"
             }
         
-        visualize_feature_groups_hist(
-            df,
-            features=SPIKE_WAVEFORM_FEATURES,  # Still show all features for comparison
-            group_col=cluster_col,
-            groups=groups,
-            group_names=group_names,
-            color_map=color_map,
-            common_norm=True,
-            alpha=0.5
-        )
+        return groups, group_names, color_map
         
     else:
-        # Clusters have generic labels (e.g., 'cluster_0', 'cluster_1', etc.)
-        # Determine which cluster has higher values on average using the CLUSTERED FEATURE
-        # Extract the feature name from cluster column (e.g., 'ramp_amp' from 'ramp_amp_cluster')
-        if cluster_col.endswith('_cluster'):
-            clustered_feature = cluster_col.replace('_cluster', '')
-        else:
-            # Try to find the feature that was clustered
-            clustered_feature = None
-            for feat in SPIKE_WAVEFORM_FEATURES:
-                if cluster_col == f"{feat}_cluster":
-                    clustered_feature = feat
-                    break
-        
-        if clustered_feature and clustered_feature in df.columns:
-            # Use the actual clustered feature for ordering
+        # Generic labels - sort by clustered feature value if possible
+        if clustered_feature and df is not None and clustered_feature in df.columns:
             cluster_means = {}
             for cluster in unique_clusters:
                 cluster_data = df.loc[df[cluster_col] == cluster, clustered_feature].dropna()
@@ -518,7 +906,6 @@ def plot_full_cluster_report(
                     cluster_means[cluster] = cluster_data.mean()
             
             if len(cluster_means) == n_clusters:
-                # Sort clusters by mean value of the clustered feature
                 sorted_clusters = sorted(cluster_means.items(), key=lambda x: x[1])
                 
                 if n_clusters == 2:
@@ -527,7 +914,6 @@ def plot_full_cluster_report(
                     
                     groups = (low_cluster, high_cluster)
                     group_names = ("Low", "High")
-                    
                     color_map = {
                         low_cluster: "#1f77b4",
                         high_cluster: "#ff7f0e",
@@ -543,7 +929,6 @@ def plot_full_cluster_report(
                     
                     groups = (low_cluster, mid_cluster, high_cluster)
                     group_names = ("Low", "Mid", "High")
-                    
                     color_map = {
                         low_cluster: "#1f77b4",
                         mid_cluster: "#2ca02c",
@@ -552,95 +937,135 @@ def plot_full_cluster_report(
                     }
                     
                     print(f"  Assigning by {clustered_feature}: {low_cluster}→'Low' (blue), {mid_cluster}→'Mid' (green), {high_cluster}→'High' (orange)")
-            else:
-                # Fallback to alphabetical order
-                groups = tuple(sorted(unique_clusters))
-                group_names = tuple([f"Group {i+1}" for i in range(n_clusters)])
-                cmap = plt.cm.get_cmap('tab20', n_clusters)
-                color_map = {groups[i]: cmap(i) for i in range(n_clusters)}
-                color_map["default"] = "#9467bd"
-        else:
-            # Can't determine clustered feature, use alphabetical
-            groups = tuple(sorted(unique_clusters))
-            group_names = tuple([f"Group {i+1}" for i in range(n_clusters)])
-            cmap = plt.cm.get_cmap('tab20', n_clusters)
-            color_map = {groups[i]: cmap(i) for i in range(n_clusters)}
-            color_map["default"] = "#9467bd"
+                    
+                return groups, group_names, color_map
         
-        visualize_feature_groups_hist(
-            df,
-            features=SPIKE_WAVEFORM_FEATURES,  # Still show all features
-            group_col=cluster_col,
-            groups=groups,
-            group_names=group_names,
-            color_map=color_map,
-            common_norm=True,
-            alpha=0.5
-        )
+        # Fallback to alphabetical order
+        groups = tuple(sorted(unique_clusters))
+        group_names = tuple([f"Group {i+1}" for i in range(n_clusters)])
+        import matplotlib.pyplot as plt
+        cmap = plt.cm.get_cmap('tab20', n_clusters)
+        color_map = {groups[i]: cmap(i) for i in range(n_clusters)}
+        color_map["default"] = "#9467bd"
+        
+        return groups, group_names, color_map
 
-    # --------------------------------------------------
-    # E) Statistical comparisons for the CLUSTERED FEATURE 
-    # --------------------------------------------------
-     
-    # Statistical analysis section
-    clustered_feature = cluster_col.replace('_cluster', '')
+def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
+    """
+    Simple plot showing average waveforms with the space between them representing RMSE.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
     
-    print(f"\n→ 5. Statistical analysis for: {clustered_feature}")
-    print("-" * 40)
+    # Create figure
+    fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Get group data
-    group_data = []
-    for group in groups:
-        data = df.loc[df[cluster_col] == group, clustered_feature].dropna().values
-        group_data.append(data)
+    # Store waveforms for RMSE calculation
+    waveforms_data = {}
     
-    # Compute statistics
-    stats_results = compute_cluster_statistics(group_data, alpha=stats_alpha)
+    # Plot each group
+    for i, group in enumerate(groups):
+        spike_indices = df.loc[df[cluster_col] == group, "spk_id"].astype(int).tolist()
+        
+        if not spike_indices:
+            continue
+        
+        # Get waveforms
+        wfs = []
+        for idx in spike_indices:
+            if idx < len(sp.spikes):
+                wfs.append(sp.spikes[idx])
+        
+        if not wfs:
+            continue
+        
+        wfs = np.array(wfs)
+        avg_wf = np.mean(wfs, axis=0)
+        waveforms_data[group] = avg_wf
+        
+        # Time axis (centered)
+        time_axis = np.arange(len(avg_wf)) - len(avg_wf) // 2
+        
+        # Get color from color_map
+        color = color_map.get(group, color_map.get("default", '#9467bd'))
+        
+        # Plot
+        ax.plot(time_axis, avg_wf, 
+                color=color,
+                linewidth=3,
+                label=f"{group_names[i]} (n={len(wfs)})",
+                alpha=0.8)
     
-    # Print results
-    print(f"\nTest: {stats_results['test_name']} ({stats_results['test_type']})")
-    print(f"Number of groups: {stats_results['n_groups']}")
-    print(f"P-value: {stats_results['p_value']:.6f}")
-    print(f"Significance: {stats_results['significance']}")
-    print(f"η² effect size: {stats_results['eta_squared']:.3f}")
-    print(f"Interpretation: {stats_results['interpretation']}")
+    # Visualize RMSE as shaded area between waveforms
+    if len(waveforms_data) >= 2:
+        # Get all time points (they should all be same length)
+        time_axis = np.arange(len(list(waveforms_data.values())[0])) - len(list(waveforms_data.values())[0]) // 2
+        
+        # For 2 groups: fill between
+        if len(waveforms_data) == 2:
+            groups_list = list(waveforms_data.keys())
+            wf1 = waveforms_data[groups_list[0]]
+            wf2 = waveforms_data[groups_list[1]]
+            
+            # Fill area between waveforms (visualizes the "space" = RMSE)
+            ax.fill_between(time_axis, wf1, wf2, 
+                           color='gray', alpha=0.3, 
+                           label='RMSE area')
+            
+            # Calculate RMSE
+            rmse = np.sqrt(np.mean((wf1 - wf2)**2))
+            
+            # Add RMSE text in the middle of the filled area
+            mid_idx = len(time_axis) // 2
+            mid_y = (wf1[mid_idx] + wf2[mid_idx]) / 2
+            ax.text(time_axis[mid_idx], mid_y, 
+                   f"RMSE = {rmse:.3f}",
+                   ha='center', va='center',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            
+            print(f"\nRMSE between waveforms: {rmse:.4f}")
+        
+        # For 3 groups: show pairwise RMSE at max separation points
+        else:
+            groups_list = list(waveforms_data.keys())
+            for i in range(len(groups_list)):
+                for j in range(i+1, len(groups_list)):
+                    wf1 = waveforms_data[groups_list[i]]
+                    wf2 = waveforms_data[groups_list[j]]
+                    
+                    # Find point of maximum separation
+                    diff = np.abs(wf1 - wf2)
+                    max_idx = np.argmax(diff)
+                    
+                    # Draw vertical line at max separation
+                    ax.plot([time_axis[max_idx], time_axis[max_idx]],
+                           [wf1[max_idx], wf2[max_idx]],
+                           color='gray', linestyle=':', alpha=0.5)
+                    
+                    # Calculate and label RMSE
+                    rmse = np.sqrt(np.mean((wf1 - wf2)**2))
+                    mid_y = (wf1[max_idx] + wf2[max_idx]) / 2
+                    ax.text(time_axis[max_idx], mid_y,
+                           f"{rmse:.3f}",
+                           fontsize=8,
+                           ha='center', va='center',
+                           bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
+                    
+                    print(f"RMSE {group_names[i]} vs {group_names[j]}: {rmse:.4f}")
     
-    # Simple visualization
-    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.set_xlabel('Time (samples)')
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Average Waveforms')
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
     
-    # Box plot
-    positions = range(len(group_names))
-    ax.boxplot(group_data, labels=group_names)
-    
-    # Add effect size annotation
-    ax.text(0.5, 0.95, 
-            f"η² = {stats_results['eta_squared']:.3f} ({stats_results['interpretation']})",
-            transform=ax.transAxes, ha='center',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-    
-    # Add p-value annotation
-    ax.text(0.5, 0.88, 
-            f"p = {stats_results['p_value']:.4f} {stats_results['significance']}",
-            transform=ax.transAxes, ha='center',
-            color='red' if stats_results['significance'] != 'ns' else 'black')
-    
-    ax.set_ylabel(clustered_feature)
-    ax.set_title(f'{clustered_feature} by Cluster')
     plt.tight_layout()
     plt.show()
     
-    # Store 
-    stats_summary = stats_results
+    # Return the waveforms data if needed
+    return waveforms_data
 
-    print("\n===== REPORT COMPLETE =====\n")
 
-    return {
-        "transition_matrix": trans_mat,
-        "n_clusters": n_clusters,
-        "cluster_labels": list(unique_clusters),
-        "statistics": stats_summary,
-        "waveform_errors": error_analysis  # Add this
-    }
 
 
 def compute_cluster_statistics(group_data, alpha=0.05):
@@ -688,7 +1113,7 @@ def compute_cluster_statistics(group_data, alpha=0.05):
                 'error': 'One group has no data'
             }
         
-        stat, p = stats.mannwhitneyu(g1, g2)
+        stat, p = mannwhitneyu(g1, g2)
         test_name = "Mann-Whitney U"
         
         # Direct calculation of η² from data
@@ -710,7 +1135,7 @@ def compute_cluster_statistics(group_data, alpha=0.05):
         
     else:  # 3+ groups
         # Kruskal-Wallis test
-        stat, p = stats.kruskal(*group_data)
+        stat, p = kruskal(*group_data)
         test_name = "Kruskal-Wallis"
         
         # Direct ε² calculation (analogous to η²)
