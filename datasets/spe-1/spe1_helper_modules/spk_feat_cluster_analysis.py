@@ -632,7 +632,15 @@ def plot_full_cluster_report(
     # Store 
     stats_summary = stats_results
 
+    print("\n===== REPORT COMPLETE =====\n")
 
+    return {
+        "transition_matrix": trans_mat,
+        "n_clusters": n_clusters,
+        "cluster_labels": list(unique_clusters),
+        "statistics": stats_summary,
+        "waveform_errors": error_analysis  # Add this
+    }
 
 
 def compute_cluster_statistics(group_data, alpha=0.05):
@@ -645,8 +653,7 @@ def compute_cluster_statistics(group_data, alpha=0.05):
     - n_groups (2 or 3+)
     - η² effect size (comparable across 2 and 3+ groups)
     """
-    from scipy import stats
-    import numpy as np
+
     
     n_groups = len(group_data)
     
@@ -684,7 +691,7 @@ def compute_cluster_statistics(group_data, alpha=0.05):
         stat, p = stats.mannwhitneyu(g1, g2)
         test_name = "Mann-Whitney U"
         
-        # BETTER WAY: Direct calculation of η² from data
+        # Direct calculation of η² from data
         # This avoids the problematic prob_sup → d → η² conversion
         all_data = np.concatenate([g1, g2])
         grand_mean = np.mean(all_data)
