@@ -952,18 +952,16 @@ def get_cluster_colors_and_labels(cluster_col, unique_clusters, df=None, cluster
 
 def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
     """
-    Simple plot showing average waveforms with the space between them representing RMSE.
+    Plot average waveforms with pairwise RMSE comparison.
+    For 2 groups: single plot with RMSE
+    For 3+ groups: grid of pairwise comparisons
     """
-    import numpy as np
-    import matplotlib.pyplot as plt
+
     
-    # Create figure
-    fig, ax = plt.subplots(figsize=(10, 6))
+    # Store waveforms and counts
+    avg_waveforms = {}
+    waveform_counts = {}
     
-    # Store waveforms for RMSE calculation
-    waveforms_data = {}
-    
-    # Plot each group
     for i, group in enumerate(groups):
         spike_indices = df.loc[df[cluster_col] == group, "spk_id"].astype(int).tolist()
         
@@ -981,89 +979,149 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
         
         wfs = np.array(wfs)
         avg_wf = np.mean(wfs, axis=0)
-        waveforms_data[group] = avg_wf
-        
-        # Time axis (centered)
-        time_axis = np.arange(len(avg_wf)) - len(avg_wf) // 2
-        
-        # Get color from color_map
-        color = color_map.get(group, color_map.get("default", '#9467bd'))
-        
-        # Plot
-        ax.plot(time_axis, avg_wf, 
-                color=color,
-                linewidth=3,
-                label=f"{group_names[i]} (n={len(wfs)})",
-                alpha=0.8)
+        avg_waveforms[group] = avg_wf
+        waveform_counts[group] = len(wfs)
     
-    # Visualize RMSE as shaded area between waveforms
-    if len(waveforms_data) >= 2:
-        # Get all time points (they should all be same length)
-        time_axis = np.arange(len(list(waveforms_data.values())[0])) - len(list(waveforms_data.values())[0]) // 2
+    n_groups = len(avg_waveforms)
+    
+    if n_groups < 2:
+        print("Not enough groups with data to compare")
+        return {}
+    
+    # Create figure based on number of groups
+    if n_groups == 2:
+        # Simple single plot for 2 groups
+        fig, ax = plt.subplots(figsize=(10, 6))
+        groups_list = list(avg_waveforms.keys())
         
-        # For 2 groups: fill between
-        if len(waveforms_data) == 2:
-            groups_list = list(waveforms_data.keys())
-            wf1 = waveforms_data[groups_list[0]]
-            wf2 = waveforms_data[groups_list[1]]
-            
-            # Fill area between waveforms (visualizes the "space" = RMSE)
-            ax.fill_between(time_axis, wf1, wf2, 
-                           color='gray', alpha=0.3, 
-                           label='RMSE area')
-            
-            # Calculate RMSE
-            rmse = np.sqrt(np.mean((wf1 - wf2)**2))
-            
-            # Add RMSE text in the middle of the filled area
-            mid_idx = len(time_axis) // 2
-            mid_y = (wf1[mid_idx] + wf2[mid_idx]) / 2
-            ax.text(time_axis[mid_idx], mid_y, 
-                   f"RMSE = {rmse:.3f}",
-                   ha='center', va='center',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            
-            print(f"\nRMSE between waveforms: {rmse:.4f}")
+        # Get waveforms
+        wf1 = avg_waveforms[groups_list[0]]
+        wf2 = avg_waveforms[groups_list[1]]
         
-        # For 3 groups: show pairwise RMSE at max separation points
+        # Time axis
+        time_axis = np.arange(len(wf1)) - len(wf1) // 2
+        
+        # Plot both waveforms
+        color1 = color_map.get(str(groups_list[0]), color_map.get("default", '#9467bd'))
+        color2 = color_map.get(str(groups_list[1]), color_map.get("default", '#9467bd'))
+        
+        ax.plot(time_axis, wf1, color=color1, linewidth=3, 
+                label=f"{group_names[0]} (n={waveform_counts[groups_list[0]]})", alpha=0.8)
+        ax.plot(time_axis, wf2, color=color2, linewidth=3, 
+                label=f"{group_names[1]} (n={waveform_counts[groups_list[1]]})", alpha=0.8)
+        
+        # Fill area between waveforms
+        ax.fill_between(time_axis, wf1, wf2, color='gray', alpha=0.3, label='Difference')
+        
+        # Calculate RMSE
+        rmse = np.sqrt(np.mean((wf1 - wf2)**2))
+        
+        # Add RMSE text
+        ax.text(0.5, 0.95, f"RMSE = {rmse:.3f}",
+                transform=ax.transAxes, ha='center',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+        
+        ax.set_xlabel('Time (samples)')
+        ax.set_ylabel('Amplitude')
+        ax.set_title(f'Average Waveforms: {group_names[0]} vs {group_names[1]}')
+        ax.legend(loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        print(f"\nRMSE between waveforms: {rmse:.4f}")
+        
+        rmse_results = {f"{group_names[0]}_vs_{group_names[1]}": rmse}
+        
+    else:  # 3+ groups
+        # Create grid of pairwise plots
+        n_pairs = n_groups * (n_groups - 1) // 2
+        
+        # Determine grid layout
+        if n_pairs <= 3:
+            n_rows, n_cols = 1, n_pairs
+        elif n_pairs == 4:
+            n_rows, n_cols = 2, 2
         else:
-            groups_list = list(waveforms_data.keys())
-            for i in range(len(groups_list)):
-                for j in range(i+1, len(groups_list)):
-                    wf1 = waveforms_data[groups_list[i]]
-                    wf2 = waveforms_data[groups_list[j]]
-                    
-                    # Find point of maximum separation
-                    diff = np.abs(wf1 - wf2)
-                    max_idx = np.argmax(diff)
-                    
-                    # Draw vertical line at max separation
-                    ax.plot([time_axis[max_idx], time_axis[max_idx]],
-                           [wf1[max_idx], wf2[max_idx]],
-                           color='gray', linestyle=':', alpha=0.5)
-                    
-                    # Calculate and label RMSE
-                    rmse = np.sqrt(np.mean((wf1 - wf2)**2))
-                    mid_y = (wf1[max_idx] + wf2[max_idx]) / 2
-                    ax.text(time_axis[max_idx], mid_y,
-                           f"{rmse:.3f}",
-                           fontsize=8,
-                           ha='center', va='center',
-                           bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
-                    
-                    print(f"RMSE {group_names[i]} vs {group_names[j]}: {rmse:.4f}")
-    
-    ax.set_xlabel('Time (samples)')
-    ax.set_ylabel('Amplitude')
-    ax.set_title('Average Waveforms')
-    ax.legend(loc='best')
-    ax.grid(True, alpha=0.3)
+            n_cols = 3
+            n_rows = (n_pairs + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+        
+        # Flatten axes for easy indexing
+        if n_rows > 1 or n_cols > 1:
+            axes = axes.flatten()
+        else:
+            axes = [axes]
+        
+        groups_list = list(avg_waveforms.keys())
+        time_axis = None
+        rmse_results = {}
+        pair_idx = 0
+        
+        print(f"\n=== PAIRWISE RMSE COMPARISONS ===")
+        
+        # Create pairwise plots
+        for i in range(n_groups):
+            for j in range(i+1, n_groups):
+                if pair_idx >= len(axes):
+                    break
+                
+                ax = axes[pair_idx]
+                g1 = groups_list[i]
+                g2 = groups_list[j]
+                
+                # Get waveforms
+                wf1 = avg_waveforms[g1]
+                wf2 = avg_waveforms[g2]
+                
+                # Time axis (same for all)
+                if time_axis is None:
+                    time_axis = np.arange(len(wf1)) - len(wf1) // 2
+                
+                # Get colors
+                color1 = color_map.get(str(g1), color_map.get("default", '#9467bd'))
+                color2 = color_map.get(str(g2), color_map.get("default", '#9467bd'))
+                
+                # Map to display names
+                name1 = group_names[list(groups).index(g1)]
+                name2 = group_names[list(groups).index(g2)]
+                
+                # Plot both waveforms
+                ax.plot(time_axis, wf1, color=color1, linewidth=2.5, 
+                        label=f"{name1} (n={waveform_counts[g1]})", alpha=0.8)
+                ax.plot(time_axis, wf2, color=color2, linewidth=2.5, 
+                        label=f"{name2} (n={waveform_counts[g2]})", alpha=0.8)
+                
+                # Fill area between waveforms
+                ax.fill_between(time_axis, wf1, wf2, color='gray', alpha=0.3)
+                
+                # Calculate RMSE
+                rmse = np.sqrt(np.mean((wf1 - wf2)**2))
+                rmse_results[f"{name1}_vs_{name2}"] = rmse
+                
+                # Add RMSE to plot
+                ax.text(0.5, 0.95, f"RMSE = {rmse:.3f}",
+                        transform=ax.transAxes, ha='center',
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+                
+                ax.set_xlabel('Time (samples)')
+                ax.set_ylabel('Amplitude')
+                ax.set_title(f'{name1} vs {name2}')
+                ax.legend(loc='best', fontsize=9)
+                ax.grid(True, alpha=0.3)
+                
+                # Print RMSE
+                print(f"  {name1} vs {name2}: {rmse:.4f}")
+                
+                pair_idx += 1
+        
+        # Hide any unused axes
+        for idx in range(pair_idx, len(axes)):
+            axes[idx].set_visible(False)
     
     plt.tight_layout()
     plt.show()
     
-    # Return the waveforms data if needed
-    return waveforms_data
+    return rmse_results
 
 
 
