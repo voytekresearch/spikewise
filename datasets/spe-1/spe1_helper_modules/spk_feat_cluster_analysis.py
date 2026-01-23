@@ -15,7 +15,8 @@ from tqdm.auto import tqdm
 import mne
 from specparam import SpectralTimeModel
 from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union, Sequence
-from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway, kruskal
+from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway, kruskal, zscore
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 
@@ -850,179 +851,116 @@ def get_cluster_colors_and_labels(cluster_col, unique_clusters, df=None, cluster
         
         return groups, group_names, color_map
 
+
+
 def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
     """
-    Plot average waveforms with pairwise RMSE comparison.
-    For 2 groups: single plot with RMSE
-    For 3+ groups: grid of pairwise comparisons
-    """
-
+    Plot average waveforms with pairwise RMSE and Normalized metrics.
     
-    # Store waveforms and counts
+    Layout:
+    - Left Plot: Raw Amplitude (Original Units).
+    - Right Plot: Max-Scaled (Unitless, but preserves relative size).
+    """
+    
+    # --- 1. Data Extraction (Same as before) ---
     avg_waveforms = {}
     waveform_counts = {}
     
     for i, group in enumerate(groups):
         spike_indices = df.loc[df[cluster_col] == group, "spk_id"].astype(int).tolist()
+        if not spike_indices: continue
         
-        if not spike_indices:
-            continue
-        
-        # Get waveforms
         wfs = []
         for idx in spike_indices:
-            if idx < len(sp.spikes):
-                wfs.append(sp.spikes[idx])
-        
-        if not wfs:
-            continue
+            if idx < len(sp.spikes): wfs.append(sp.spikes[idx])
+        if not wfs: continue
         
         wfs = np.array(wfs)
-        avg_wf = np.mean(wfs, axis=0)
-        avg_waveforms[group] = avg_wf
+        avg_waveforms[group] = np.mean(wfs, axis=0)
         waveform_counts[group] = len(wfs)
     
     n_groups = len(avg_waveforms)
-    
-    if n_groups < 2:
-        print("Not enough groups with data to compare")
-        return {}
-    
-    # Create figure based on number of groups
-    if n_groups == 2:
-        # Simple single plot for 2 groups
-        fig, ax = plt.subplots(figsize=(10, 6))
-        groups_list = list(avg_waveforms.keys())
-        
-        # Get waveforms
-        wf1 = avg_waveforms[groups_list[0]]
-        wf2 = avg_waveforms[groups_list[1]]
-        
-        # Time axis
-        time_axis = np.arange(len(wf1)) - len(wf1) // 2
-        
-        # Plot both waveforms
-        color1 = color_map.get(str(groups_list[0]), color_map.get("default", '#9467bd'))
-        color2 = color_map.get(str(groups_list[1]), color_map.get("default", '#9467bd'))
-        
-        ax.plot(time_axis, wf1, color=color1, linewidth=3, 
-                label=f"{group_names[0]} (n={waveform_counts[groups_list[0]]})", alpha=0.8)
-        ax.plot(time_axis, wf2, color=color2, linewidth=3, 
-                label=f"{group_names[1]} (n={waveform_counts[groups_list[1]]})", alpha=0.8)
-        
-        # Fill area between waveforms
-        ax.fill_between(time_axis, wf1, wf2, color='gray', alpha=0.3, label='Difference')
-        
-        # Calculate RMSE
+    if n_groups < 2: return {}
+
+    # --- 2. Helper to calculate metrics ---
+    def get_metrics(wf1, wf2):
+        # A. Raw Metrics
         rmse = np.sqrt(np.mean((wf1 - wf2)**2))
         
-        # Add RMSE text
-        ax.text(0.5, 0.95, f"RMSE = {rmse:.3f}",
-                transform=ax.transAxes, ha='center',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+        # B. Unit-Agnostic but Scale-Preserving (Max-Scaling)
+        # We find the max absolute value across BOTH waveforms to treat them as a pair
+        global_max = np.max([np.abs(wf1), np.abs(wf2)])
+        if global_max == 0: global_max = 1e-9 # Avoid div by zero
         
-        ax.set_xlabel('Time (samples)')
-        ax.set_ylabel('Amplitude')
-        ax.set_title(f'Average Waveforms: {group_names[0]} vs {group_names[1]}')
-        ax.legend(loc='best')
-        ax.grid(True, alpha=0.3)
+        # Normalize both by the SAME factor
+        norm_wf1 = wf1 / global_max
+        norm_wf2 = wf2 / global_max
         
-        print(f"\nRMSE between waveforms: {rmse:.4f}")
+        # NRMSE: Normalized RMSE (Error as a fraction of peak amplitude)
+        nrmse = np.sqrt(np.mean((norm_wf1 - norm_wf2)**2))
         
-        rmse_results = {f"{group_names[0]}_vs_{group_names[1]}": rmse}
+        # C. Shape Only (Cosine Sim) - still useful to see pure shape correlation
+        cos_sim = cosine_similarity(wf1.reshape(1, -1), wf2.reshape(1, -1))[0][0]
         
-    else:  # 3+ groups
-        # Create grid of pairwise plots
-        n_pairs = n_groups * (n_groups - 1) // 2
+        return rmse, nrmse, cos_sim, norm_wf1, norm_wf2
+
+    groups_list = list(avg_waveforms.keys())
+    rmse_results = {}
+    n_pairs = n_groups * (n_groups - 1) // 2
+
+    # --- 3. Plotting (One Row Per Pair) ---
+    fig, axes = plt.subplots(n_pairs, 2, figsize=(14, 5 * n_pairs))
+    if n_pairs == 1: axes = axes.reshape(1, -1)
         
-        # Determine grid layout
-        if n_pairs <= 3:
-            n_rows, n_cols = 1, n_pairs
-        elif n_pairs == 4:
-            n_rows, n_cols = 2, 2
-        else:
-            n_cols = 3
-            n_rows = (n_pairs + n_cols - 1) // n_cols
-        
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
-        
-        # Flatten axes for easy indexing
-        if n_rows > 1 or n_cols > 1:
-            axes = axes.flatten()
-        else:
-            axes = [axes]
-        
-        groups_list = list(avg_waveforms.keys())
-        time_axis = None
-        rmse_results = {}
-        pair_idx = 0
-        
-        print(f"\n=== PAIRWISE RMSE COMPARISONS ===")
-        
-        # Create pairwise plots
-        for i in range(n_groups):
-            for j in range(i+1, n_groups):
-                if pair_idx >= len(axes):
-                    break
-                
-                ax = axes[pair_idx]
-                g1 = groups_list[i]
-                g2 = groups_list[j]
-                
-                # Get waveforms
-                wf1 = avg_waveforms[g1]
-                wf2 = avg_waveforms[g2]
-                
-                # Time axis (same for all)
-                if time_axis is None:
-                    time_axis = np.arange(len(wf1)) - len(wf1) // 2
-                
-                # Get colors
-                color1 = color_map.get(str(g1), color_map.get("default", '#9467bd'))
-                color2 = color_map.get(str(g2), color_map.get("default", '#9467bd'))
-                
-                # Map to display names
-                name1 = group_names[list(groups).index(g1)]
-                name2 = group_names[list(groups).index(g2)]
-                
-                # Plot both waveforms
-                ax.plot(time_axis, wf1, color=color1, linewidth=2.5, 
-                        label=f"{name1} (n={waveform_counts[g1]})", alpha=0.8)
-                ax.plot(time_axis, wf2, color=color2, linewidth=2.5, 
-                        label=f"{name2} (n={waveform_counts[g2]})", alpha=0.8)
-                
-                # Fill area between waveforms
-                ax.fill_between(time_axis, wf1, wf2, color='gray', alpha=0.3)
-                
-                # Calculate RMSE
-                rmse = np.sqrt(np.mean((wf1 - wf2)**2))
-                rmse_results[f"{name1}_vs_{name2}"] = rmse
-                
-                # Add RMSE to plot
-                ax.text(0.5, 0.95, f"RMSE = {rmse:.3f}",
-                        transform=ax.transAxes, ha='center',
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
-                
-                ax.set_xlabel('Time (samples)')
-                ax.set_ylabel('Amplitude')
-                ax.set_title(f'{name1} vs {name2}')
-                ax.legend(loc='best', fontsize=9)
-                ax.grid(True, alpha=0.3)
-                
-                # Print RMSE
-                print(f"  {name1} vs {name2}: {rmse:.4f}")
-                
-                pair_idx += 1
-        
-        # Hide any unused axes
-        for idx in range(pair_idx, len(axes)):
-            axes[idx].set_visible(False)
-    
+    pair_idx = 0
+    for i in range(n_groups):
+        for j in range(i+1, n_groups):
+            g1, g2 = groups_list[i], groups_list[j]
+            wf1, wf2 = avg_waveforms[g1], avg_waveforms[g2]
+            name1, name2 = group_names[i], group_names[j]
+            c1, c2 = color_map.get(str(g1), '#9467bd'), color_map.get(str(g2), '#2ca02c')
+            
+            # Get Metrics & Normalized Waveforms
+            rmse, nrmse, cos_sim, n_wf1, n_wf2 = get_metrics(wf1, wf2)
+            time_axis = np.arange(len(wf1)) - len(wf1) // 2
+            
+            # --- LEFT: Raw Amplitude ---
+            ax_raw = axes[pair_idx, 0]
+            ax_raw.plot(time_axis, wf1, color=c1, lw=2, label=name1)
+            ax_raw.plot(time_axis, wf2, color=c2, lw=2, label=name2)
+            ax_raw.fill_between(time_axis, wf1, wf2, color='gray', alpha=0.2)
+            ax_raw.text(0.05, 0.95, f"Raw RMSE: {rmse:.2f}", transform=ax_raw.transAxes, 
+                        va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+            ax_raw.set_title(f"Raw: {name1} vs {name2}")
+            ax_raw.set_ylabel("Amplitude (uV)")
+            ax_raw.grid(True, alpha=0.3)
+            
+            # --- RIGHT: Max-Scaled (Relative Amplitude) ---
+            ax_norm = axes[pair_idx, 1]
+            ax_norm.plot(time_axis, n_wf1, color=c1, lw=2, label=name1)
+            ax_norm.plot(time_axis, n_wf2, color=c2, lw=2, label=name2)
+            ax_norm.fill_between(time_axis, n_wf1, n_wf2, color='red', alpha=0.1)
+            
+            # Display NRMSE (The unit-agnostic error)
+            # NRMSE of 0.5 means average error is 50% of the peak amplitude
+            stats = (f"NRMSE: {nrmse:.3f}\n"
+                     f"Cos Sim: {cos_sim:.3f}")
+            
+            ax_norm.text(0.05, 0.95, stats, transform=ax_norm.transAxes, 
+                         va='top', bbox=dict(boxstyle='round', facecolor='mistyrose', alpha=0.9))
+            
+            ax_norm.set_title(f"Scaled (Max=1.0): {name1} vs {name2}")
+            ax_norm.set_ylabel("Norm. Amp (a.u.)")
+            ax_norm.grid(True, alpha=0.3)
+            if pair_idx == n_pairs - 1:
+                ax_raw.set_xlabel("Samples"); ax_norm.set_xlabel("Samples")
+            
+            rmse_results[f"{name1}_vs_{name2}"] = {"rmse": rmse, "nrmse": nrmse}
+            pair_idx += 1
+
     plt.tight_layout()
     plt.show()
-    
     return rmse_results
-
 
 
 
