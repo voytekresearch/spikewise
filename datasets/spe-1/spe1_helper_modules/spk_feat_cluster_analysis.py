@@ -853,16 +853,17 @@ def get_cluster_colors_and_labels(cluster_col, unique_clusters, df=None, cluster
 
 
 
+
 def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
     """
-    Plot average waveforms with pairwise RMSE and Normalized metrics.
+    Plot average waveforms with 3 distinct panels per pair.
     
-    Layout:
-    - Left Plot: Raw Amplitude (Original Units).
-    - Right Plot: Max-Scaled (Unitless, but preserves relative size).
+    1. Raw (Absolute Amplitude) -> RMSE
+    2. Scaled (Relative Amplitude) -> NRMSE
+    3. Z-Scored (Pure Shape) -> Cosine Similarity
     """
     
-    # --- 1. Data Extraction (Same as before) ---
+    # --- 1. Data Extraction ---
     avg_waveforms = {}
     waveform_counts = {}
     
@@ -884,32 +885,30 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
 
     # --- 2. Helper to calculate metrics ---
     def get_metrics(wf1, wf2):
-        # A. Raw Metrics
+        # A. Raw RMSE
         rmse = np.sqrt(np.mean((wf1 - wf2)**2))
         
-        # B. Unit-Agnostic but Scale-Preserving (Max-Scaling)
-        # We find the max absolute value across BOTH waveforms to treat them as a pair
+        # B. Max-Scaled (Preserves relative amplitude ratio)
         global_max = np.max([np.abs(wf1), np.abs(wf2)])
-        if global_max == 0: global_max = 1e-9 # Avoid div by zero
+        if global_max == 0: global_max = 1e-9
+        n_wf1, n_wf2 = wf1 / global_max, wf2 / global_max
+        nrmse = np.sqrt(np.mean((n_wf1 - n_wf2)**2))
         
-        # Normalize both by the SAME factor
-        norm_wf1 = wf1 / global_max
-        norm_wf2 = wf2 / global_max
+        # C. Z-Scored (Pure Shape / Cosine Proxy)
+        z_wf1, z_wf2 = zscore(wf1), zscore(wf2)
         
-        # NRMSE: Normalized RMSE (Error as a fraction of peak amplitude)
-        nrmse = np.sqrt(np.mean((norm_wf1 - norm_wf2)**2))
-        
-        # C. Shape Only (Cosine Sim) - still useful to see pure shape correlation
+        # Cosine Similarity
         cos_sim = cosine_similarity(wf1.reshape(1, -1), wf2.reshape(1, -1))[0][0]
         
-        return rmse, nrmse, cos_sim, norm_wf1, norm_wf2
+        return rmse, nrmse, cos_sim, n_wf1, n_wf2, z_wf1, z_wf2
 
     groups_list = list(avg_waveforms.keys())
     rmse_results = {}
     n_pairs = n_groups * (n_groups - 1) // 2
 
-    # --- 3. Plotting (One Row Per Pair) ---
-    fig, axes = plt.subplots(n_pairs, 2, figsize=(14, 5 * n_pairs))
+    # --- 3. Plotting (3 Columns per Pair) ---
+    # We increase width to accommodate the 3rd panel
+    fig, axes = plt.subplots(n_pairs, 3, figsize=(18, 5 * n_pairs))
     if n_pairs == 1: axes = axes.reshape(1, -1)
         
     pair_idx = 0
@@ -920,42 +919,61 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
             name1, name2 = group_names[i], group_names[j]
             c1, c2 = color_map.get(str(g1), '#9467bd'), color_map.get(str(g2), '#2ca02c')
             
-            # Get Metrics & Normalized Waveforms
-            rmse, nrmse, cos_sim, n_wf1, n_wf2 = get_metrics(wf1, wf2)
+            rmse, nrmse, cos_sim, n_wf1, n_wf2, z_wf1, z_wf2 = get_metrics(wf1, wf2)
             time_axis = np.arange(len(wf1)) - len(wf1) // 2
             
-            # --- LEFT: Raw Amplitude ---
+            # --- PANEL 1: Raw Amplitude (RMSE) ---
             ax_raw = axes[pair_idx, 0]
             ax_raw.plot(time_axis, wf1, color=c1, lw=2, label=name1)
             ax_raw.plot(time_axis, wf2, color=c2, lw=2, label=name2)
             ax_raw.fill_between(time_axis, wf1, wf2, color='gray', alpha=0.2)
-            ax_raw.text(0.05, 0.95, f"Raw RMSE: {rmse:.2f}", transform=ax_raw.transAxes, 
+            
+            ax_raw.text(0.05, 0.95, f"RMSE: {rmse:.2f}", transform=ax_raw.transAxes, 
                         va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
-            ax_raw.set_title(f"Raw: {name1} vs {name2}")
+            ax_raw.set_title(f"1. Absolute Amp (Raw)\n{name1} vs {name2}")
             ax_raw.set_ylabel("Amplitude (uV)")
             ax_raw.grid(True, alpha=0.3)
             
-            # --- RIGHT: Max-Scaled (Relative Amplitude) ---
-            ax_norm = axes[pair_idx, 1]
-            ax_norm.plot(time_axis, n_wf1, color=c1, lw=2, label=name1)
-            ax_norm.plot(time_axis, n_wf2, color=c2, lw=2, label=name2)
-            ax_norm.fill_between(time_axis, n_wf1, n_wf2, color='red', alpha=0.1)
+            # --- PANEL 2: Relative Amplitude (NRMSE) ---
+            ax_scale = axes[pair_idx, 1]
+            ax_scale.plot(time_axis, n_wf1, color=c1, lw=2)
+            ax_scale.plot(time_axis, n_wf2, color=c2, lw=2)
+            ax_scale.fill_between(time_axis, n_wf1, n_wf2, color='orange', alpha=0.1)
             
-            # Display NRMSE (The unit-agnostic error)
-            # NRMSE of 0.5 means average error is 50% of the peak amplitude
-            stats = (f"NRMSE: {nrmse:.3f}\n"
-                     f"Cos Sim: {cos_sim:.3f}")
+            ax_scale.text(0.05, 0.95, f"NRMSE: {nrmse:.3f}", transform=ax_scale.transAxes, 
+                         va='top', bbox=dict(boxstyle='round', facecolor='floralwhite', alpha=0.9))
+            ax_scale.set_title(f"2. Relative Amp (Max-Scaled)")
+            ax_scale.set_ylabel("Norm. Amp (a.u.)")
+            ax_scale.grid(True, alpha=0.3)
             
-            ax_norm.text(0.05, 0.95, stats, transform=ax_norm.transAxes, 
-                         va='top', bbox=dict(boxstyle='round', facecolor='mistyrose', alpha=0.9))
+            # --- PANEL 3: Pure Shape (Cosine Sim) ---
+            ax_shape = axes[pair_idx, 2]
+            ax_shape.plot(time_axis, z_wf1, color=c1, lw=2, ls='--')
+            ax_shape.plot(time_axis, z_wf2, color=c2, lw=2, ls='--')
             
-            ax_norm.set_title(f"Scaled (Max=1.0): {name1} vs {name2}")
-            ax_norm.set_ylabel("Norm. Amp (a.u.)")
-            ax_norm.grid(True, alpha=0.3)
+            # Highlight pure shape difference
+            ax_shape.fill_between(time_axis, z_wf1, z_wf2, color='red', alpha=0.1)
+            
+            stats_shape = f"Cos Sim: {cos_sim:.4f}"
+            ax_shape.text(0.05, 0.95, stats_shape, transform=ax_shape.transAxes, 
+                          va='top', fontweight='bold',
+                          bbox=dict(boxstyle='round', facecolor='mistyrose', alpha=0.9))
+            
+            ax_shape.set_title(f"3. Pure Shape (Z-Scored)")
+            ax_shape.set_ylabel("Z-Score (SD)")
+            ax_shape.grid(True, alpha=0.3)
+            
+            # Only label x-axis on the very last row
             if pair_idx == n_pairs - 1:
-                ax_raw.set_xlabel("Samples"); ax_norm.set_xlabel("Samples")
+                ax_raw.set_xlabel("Samples")
+                ax_scale.set_xlabel("Samples")
+                ax_shape.set_xlabel("Samples")
             
-            rmse_results[f"{name1}_vs_{name2}"] = {"rmse": rmse, "nrmse": nrmse}
+            rmse_results[f"{name1}_vs_{name2}"] = {
+                "rmse": rmse, 
+                "nrmse": nrmse, 
+                "cos_sim": cos_sim
+            }
             pair_idx += 1
 
     plt.tight_layout()
