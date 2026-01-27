@@ -34,10 +34,10 @@ class Spike:
 
         # Filtering defaults
         self.default_filter_params = {
-            'min_inflection': 0,
-            'max_inflection': 2,
-            'min_r2_exp': 0.5,
-            'min_r2_ramp': 0.1,
+            'min_inflection': -10000,
+            'max_inflection': 10000,
+            'min_r2_exp': 0.0,
+            'min_r2_ramp': 0.0,
             'log_isi': True,
             'drop_r_squared': True,
             'replace_inf': True
