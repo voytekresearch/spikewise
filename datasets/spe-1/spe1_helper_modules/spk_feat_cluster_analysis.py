@@ -17,6 +17,7 @@ from specparam import SpectralTimeModel
 from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union, Sequence
 from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway, kruskal, zscore
 from sklearn.metrics.pairwise import cosine_similarity
+from itertools import combinations
 
 
 
@@ -495,6 +496,7 @@ def plot_full_cluster_report(
     df: pd.DataFrame,
     sp,
     cluster_col: str,
+    cluster_group_id: int,
     time_col: str = "spk_times_ms",
     time_unit: str = "ms",
     bin_size_ms: int = 1000,
@@ -506,11 +508,7 @@ def plot_full_cluster_report(
     Full diagnostic plotting report for a given cluster column.
     Includes statistical comparisons for the CLUSTERED FEATURE ONLY.
     """
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    import pandas as pd
-    from scipy import stats
+ 
 
     SPIKE_WAVEFORM_FEATURES = [
         "ramp_amp",
@@ -569,7 +567,7 @@ def plot_full_cluster_report(
     print("\n→ 1.5 Average waveforms with visual RMSE")
     
     # Now we have color_map, groups, group_names defined
-    avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map)
+    wf_metrics = avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map)
     
     # --------------------------------------------------
     # B) Cluster proportions over time
@@ -675,17 +673,34 @@ def plot_full_cluster_report(
         stats_summary = None
 
     print("\n===== REPORT COMPLETE =====\n")
+    # --------------------------------------------------
+    # F) Construct the rows with nRMSE info for the Master DF
+    # --------------------------------------------------
+    
+    #Generate Pairwise Rows for nRMSE Ranking
+    
+    group_indices = range(len(groups))
+    pairs = list(combinations(group_indices, 2))
+    
+    rows = []
+    for idx1, idx2 in pairs:
+        g1, g2 = group_names[idx1], group_names[idx2]
+        
+        # Match the key in wf_metrics (checking both orders)
+        pair_key = f"{g1}_vs_{g2}"
+        alt_key = f"{g2}_vs_{g1}"
+        metrics = wf_metrics.get(pair_key) or wf_metrics.get(alt_key) or {}
 
-    return {
-        "transition_matrix": trans_mat,
-        "n_clusters": n_clusters,
-        "cluster_labels": list(unique_clusters),
-        "clustered_feature": clustered_feature,
-        "groups": groups,
-        "group_names": group_names,
-        "color_map": color_map,
-        "statistics": stats_summary
-    }
+        # The specific minimalist structure
+        row = {
+            "cluster_group_id": cluster_group_id,
+            "feature_clustered": clustered_feature,
+            "groups": f"{g1}-{g2}",
+            "nRMSE": metrics.get('nrmse', np.nan)
+        }
+        rows.append(row)
+    return pd.DataFrame(rows)
+    
 
 
 def plot_spike_clusters_from_df(
