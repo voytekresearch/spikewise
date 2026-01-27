@@ -1685,6 +1685,7 @@ def _looks_clustered_1d(
 def cluster_multimodal_features(
     df: pd.DataFrame,
     features: Optional[List[str]] = None,
+    ignore_features: Optional[List[str]] = None,  # NEW
     max_k: int = 3,
     labels_map: Optional[Dict[str, List[str]]] = None,
     suffix: str = "_cluster",
@@ -1696,22 +1697,18 @@ def cluster_multimodal_features(
     bins: int = 50,
     kde: bool = True,
     assign_labels: bool = True,
-    hist_alpha: float = 0.7,  # Added: transparency for histograms
+    hist_alpha: float = 0.7, 
 ):
     """
     Cluster multimodal features with consistent histogram style.
     Supports 2 or 3 clusters with manual thresholds.
-    
-    Parameters:
-    -----------
-    manual_thresholds : Optional[Dict[str, Union[float, Tuple[float, float]]]]
-        - For 2 clusters: {feature_name: threshold_float}
-        - For 3 clusters: {feature_name: (threshold1, threshold2)}
-        where threshold1 < threshold2
     """
     df_out = df.copy() if assign_labels else df
     if manual_thresholds is None:
         manual_thresholds = {}
+    
+    if ignore_features is None: # NEW
+        ignore_features = []
 
     if features is None:
         features = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
@@ -1720,12 +1717,19 @@ def cluster_multimodal_features(
     
     colors = {
         "low": "#1f77b4",
-        "mid": "#2ca02c",  # Added for middle cluster
+        "mid": "#2ca02c", 
         "high": "#ff7f0e", 
         "default": "steelblue"
     }
 
     for feat in features:
+        # ==========================================================
+        #  NEW: IGNORE FEATURE
+        # ==========================================================
+        if feat in ignore_features:
+            print(f"→ {feat}: Skipping (feature ignored).")
+            continue
+
         x = pd.to_numeric(df[feat], errors="coerce").to_numpy(dtype=float)
         valid = np.isfinite(x)
         data = x[valid]
@@ -1947,9 +1951,9 @@ def cluster_multimodal_features(
                 
                 # Add statistics text box
                 ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
-                       verticalalignment='top', horizontalalignment='left',
-                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
-                       fontsize=9)
+                        verticalalignment='top', horizontalalignment='left',
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
+                        fontsize=9)
                 
                 ax.set_title(f"{feat} (manual threshold, {n_clusters} clusters)")
                 ax.set_xlabel(feat)
@@ -2119,9 +2123,9 @@ def cluster_multimodal_features(
             stats_text = "\n".join(stats_lines)
             
             ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
-                   verticalalignment='top', horizontalalignment='left',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
-                   fontsize=9)
+                    verticalalignment='top', horizontalalignment='left',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+                    fontsize=9)
             
             title = f"{feat} (k={k_suggest}, auto-clustered)"
             ax.set_title(title)
