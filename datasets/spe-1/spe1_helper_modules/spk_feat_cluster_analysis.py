@@ -696,7 +696,8 @@ def plot_full_cluster_report(
             "cluster_group_id": cluster_group_id,
             "feature_clustered": clustered_feature,
             "groups": f"{g1}-{g2}",
-            "nRMSE": metrics.get('nrmse', np.nan)
+            "nRMSE": metrics.get('nrmse', np.nan),
+            "cos_sim": metrics.get('cos_sim', np.nan)
         }
         rows.append(row)
     return pd.DataFrame(rows)
@@ -1426,6 +1427,8 @@ def visualize_feature_groups_hist(
     plt.suptitle(title, fontsize=12, y=1.02)
     plt.tight_layout()
     plt.show()
+
+
 def kmeans_1d_cluster(
     df: pd.DataFrame,
     feature: str,
