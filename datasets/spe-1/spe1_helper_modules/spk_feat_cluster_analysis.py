@@ -15,6 +15,7 @@ from tqdm.auto import tqdm
 import mne
 from specparam import SpectralTimeModel
 from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union, Sequence
+import scipy.stats as stats
 from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway, kruskal, zscore
 from sklearn.metrics.pairwise import cosine_similarity
 from itertools import combinations
@@ -1118,7 +1119,7 @@ def visualize_feature_groups_hist(
     df: pd.DataFrame,
     features: list,
     group_col: str,
-    groups: tuple = ("low", "mid", "high"),  # CHANGED ORDER to low, mid, high
+    groups: tuple = ("low", "mid", "high"),
     group_names: Optional[Tuple] = None,
     bins: int = 50,
     color_map: Optional[Dict] = None,
@@ -1128,48 +1129,31 @@ def visualize_feature_groups_hist(
     hist: bool = True,
     common_norm: bool = True,
     alpha: float = 0.5,
-    plot_order: tuple = ("low", "mid", "high"),  # NEW: Control plotting order
+    plot_order: tuple = ("low", "mid", "high"),
 ):
     """
-    Plot distributions of spike features for multiple groups using IQR outlier removal.
-    Handles 2 or 3 groups with consistent visualization.
-    
-    Parameters:
-    -----------
-    groups : tuple
-        Group labels to compare. Should be in order of plotting (lowest to highest)
-    plot_order : tuple
-        Order in which to plot the histograms (for layering). Should match groups order.
+    Plot distributions of spike features for multiple groups.
+    Includes safety checks for zero-variance data to prevent LinAlgErrors during KDE.
     """
-    
+   
     n_groups = len(groups)
     if n_groups < 2 or n_groups > 3:
         raise ValueError(f"Function supports 2 or 3 groups, got {n_groups}")
     
     if group_names is None:
         group_names = groups
-    elif len(group_names) != n_groups:
-        raise ValueError(f"group_names length ({len(group_names)}) must match groups length ({n_groups})")
-    
-    # Default color map - MATCHING THE STANDARD ORDER
+
+    # Default color map
     if color_map is None:
         color_map = {
-            "low": "#1f77b4",   # Blue
-            "mid": "#2ca02c",   # Green  
-            "high": "#ff7f0e",  # Orange
-            "default": "#9467bd"  # Purple (for any additional groups)
+            "low": "#1f77b4", "mid": "#2ca02c", "high": "#ff7f0e", "default": "#9467bd"
         }
     
-    # Ensure color_map has a "default" key
-    color_map = color_map.copy() if color_map else {}
+    color_map = color_map.copy()
     if "default" not in color_map:
         color_map["default"] = "#9467bd"
     
-    # Assign colors to each group in the order they appear in groups tuple
-    group_colors = []
-    for i, group in enumerate(groups):
-        color = color_map.get(group, color_map["default"])
-        group_colors.append(color)
+    group_colors = [color_map.get(g, color_map["default"]) for g in groups]
     
     n_features = len(features)
     n_cols = 3
@@ -1178,253 +1162,83 @@ def visualize_feature_groups_hist(
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
     axes = axes.flatten() if n_rows > 1 or n_cols > 1 else [axes]
     
-    # Print header
-    print(f"Plotting feature distributions by group...")
-    print(f"Groups: {', '.join([f'{n} ({g})' for g, n in zip(groups, group_names)])}")
-    print(f"Plot order: {plot_order}")
-    if remove_outliers:
-        print(f"Removing outliers using IQR method (multiplier={iqr_multiplier})")
-    if common_norm:
-        print(f"Using common normalization for all groups")
-    else:
-        print(f"Using separate normalization for each group")
-    print("-" * 60)
-    
     # Helper function for IQR outlier removal
     def clean_data_with_iqr(data):
-        Q1 = data.quantile(0.25)
-        Q3 = data.quantile(0.75)
+        if len(data) < 2: return data.copy(), 0, None
+        Q1, Q3 = data.quantile(0.25), data.quantile(0.75)
         IQR = Q3 - Q1
-        lower_bound = Q1 - iqr_multiplier * IQR
-        upper_bound = Q3 + iqr_multiplier * IQR
+        lower_bound, upper_bound = Q1 - iqr_multiplier * IQR, Q3 + iqr_multiplier * IQR
         
         if remove_outliers:
             data_clean = data[(data >= lower_bound) & (data <= upper_bound)].copy()
-            n_outliers = len(data) - len(data_clean)
-            bounds = (lower_bound, upper_bound)
-        else:
-            data_clean = data.copy()
-            n_outliers = 0
-            bounds = None
-        
-        return data_clean, n_outliers, bounds
-    
+            return data_clean, len(data) - len(data_clean), (lower_bound, upper_bound)
+        return data.copy(), 0, None
+
     for idx, feat in enumerate(features):
-        if idx >= len(axes):
-            break
-            
+        if idx >= len(axes): break
         ax = axes[idx]
         
-        # Get raw data for each group
-        group_data_raw = []
-        group_data_clean = []
-        group_outliers = []
-        group_bounds = []
-        group_stats = []
+        # Prepare storage for this feature's group data
+        feat_data_clean = {}
+        feat_stats = {}
+        feat_outliers = {}
         
-        all_data_valid = True
-        for group in groups:
-            data_raw = pd.to_numeric(df.loc[df[group_col] == group, feat], errors="coerce").dropna()
-            if len(data_raw) < 5:
-                all_data_valid = False
-                break
-            group_data_raw.append(data_raw)
-        
-        if not all_data_valid:
-            ax.text(0.5, 0.5, f"Insufficient data\nfor {feat}", 
-                   ha='center', va='center', transform=ax.transAxes)
-            ax.set_title(feat)
+        # 1. Collect and Clean Data
+        valid_feature = True
+        for g in groups:
+            raw = pd.to_numeric(df.loc[df[group_col] == g, feat], errors="coerce").dropna()
+            if len(raw) < 2: 
+                valid_feature = False; break
+            
+            clean, n_out, bounds = clean_data_with_iqr(raw)
+            feat_data_clean[g] = clean
+            feat_outliers[g] = n_out
+            feat_stats[g] = {'mean': clean.mean(), 'std': clean.std(), 'n': len(clean)}
+
+        if not valid_feature:
+            ax.text(0.5, 0.5, f"Insufficient data: {feat}", ha='center', transform=ax.transAxes)
             continue
-        
-        # Clean data for all groups
-        for data_raw in group_data_raw:
-            data_clean, n_outliers, bounds = clean_data_with_iqr(data_raw)
-            group_data_clean.append(data_clean)
-            group_outliers.append(n_outliers)
-            group_bounds.append(bounds)
+
+        # 2. Setup Bins
+        all_vals = np.concatenate([feat_data_clean[g].values for g in groups])
+        edges = np.histogram_bin_edges(all_vals, bins=bins)
+        centers = (edges[:-1] + edges[1:]) / 2
+        widths = np.diff(edges)
+
+        # 3. Plot Histograms (Respecting plot_order)
+        for g in plot_order:
+            if g not in feat_data_clean: continue
+            data = feat_data_clean[g]
+            color = color_map.get(g, color_map["default"])
             
-            # Calculate statistics
-            stats = {
-                'mean': data_clean.mean(),
-                'median': data_clean.median(),
-                'std': data_clean.std(),
-                'n_clean': len(data_clean),
-                'n_raw': len(data_raw)
-            }
-            group_stats.append(stats)
-        
-        # Determine global bin edges for consistent comparison
-        combined_data = np.concatenate([data.values for data in group_data_clean])
-        bin_edges = np.histogram_bin_edges(combined_data, bins=bins)
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        bin_widths = np.diff(bin_edges)
-        
-        if hist:
-            if common_norm:
-                # Calculate histogram counts for all groups
-                group_counts = []
-                group_densities = []
-                total_count = len(combined_data)
-                
-                for data_clean in group_data_clean:
-                    counts, _ = np.histogram(data_clean, bins=bin_edges)
-                    group_counts.append(counts)
-                    density = counts / (total_count * bin_widths)
-                    group_densities.append(density)
-                
-                # Plot overlapping histograms for all groups IN THE CORRECT ORDER
-                # We want to plot low first (bottom), then mid, then high (top)
-                # This ensures the highest values (high) are most visible
-                for plot_idx in range(len(groups)):
-                    i = plot_idx  # Plot in the order of groups tuple
-                    
-                    # But we need to ensure the plotting order matches what we want visually
-                    # Typically: low (blue) at bottom, mid (green) in middle, high (orange) on top
-                    
-                    data_clean = group_data_clean[i]
-                    density = group_densities[i]
-                    color = group_colors[i]
-                    name = group_names[i]
-                    
-                    ax.bar(
-                        bin_centers, 
-                        density, 
-                        width=bin_widths,
-                        color=color,
-                        alpha=alpha,
-                        edgecolor='black',
-                        linewidth=0.5,
-                        align='center',
-                        label=f"{name} (n={len(data_clean):,})"
-                    )
-                
-            else:
-                # Original behavior: separate normalization with seaborn
-                # Create combined dataframe for seaborn
-                combined_df_list = []
-                for i, (data_clean, name) in enumerate(zip(group_data_clean, group_names)):
-                    temp_df = pd.DataFrame({
-                        'value': data_clean,
-                        'group': [name] * len(data_clean)
-                    })
-                    combined_df_list.append(temp_df)
-                
-                combined_df = pd.concat(combined_df_list, ignore_index=True)
-                
-                # Use seaborn with transparency for overlapping
-                sns.histplot(
-                    data=combined_df,
-                    x='value',
-                    hue='group',
-                    ax=ax,
-                    bins=bin_edges,
-                    palette=dict(zip(group_names, group_colors)),
-                    kde=kde,
-                    stat="density",
-                    alpha=alpha,
-                    edgecolor='black',
-                    linewidth=0.5,
-                    common_norm=False,  # Separate normalization
-                    multiple='layer',   # Handle overlapping bins
-                )
-        
-        # Add KDE for each group
-        if kde and (not hist or common_norm):
-            from scipy import stats
-            
-            for i, (data_clean, color, name) in enumerate(zip(group_data_clean, group_colors, group_names)):
-                if len(data_clean) > 1:
-                    kde_obj = stats.gaussian_kde(data_clean)
-                    x_kde = np.linspace(data_clean.min(), data_clean.max(), 500)
-                    y_kde = kde_obj(x_kde)
-                    
-                    # Scale by proportion if using common normalization
-                    if common_norm:
-                        scale_factor = len(data_clean) / len(combined_data)
-                        y_kde = y_kde * scale_factor
-                    
-                    ax.plot(x_kde, y_kde, 
-                           color=color, 
-                           linewidth=2, 
-                           alpha=0.8,
-                           label=f'KDE ({name})')
-        elif kde and not common_norm:
-            # KDE is already plotted by seaborn when hist=True and common_norm=False
-            pass
-        
-        # Add vertical lines for means and medians
-        for i, (stats, color, name) in enumerate(zip(group_stats, group_colors, group_names)):
-            ax.axvline(stats['mean'], color=color, linestyle='-', linewidth=2, alpha=0.8)
-            ax.axvline(stats['median'], color=color, linestyle='--', linewidth=1.5, alpha=0.6)
-        
-        # Add outlier bounds if outliers were removed
-        if remove_outliers:
-            for i, (bounds, color) in enumerate(zip(group_bounds, group_colors)):
-                if bounds:
-                    ax.axvline(bounds[0], color=color, linestyle=':', 
-                              linewidth=1, alpha=0.4)
-                    ax.axvline(bounds[1], color=color, linestyle=':', 
-                              linewidth=1, alpha=0.4)
-        
-        # Create title with statistics
-        title_lines = [f"{feat}"]
-        for i, (stats, name) in enumerate(zip(group_stats, group_names)):
-            title_lines.append(
-                f"{name}: μ={stats['mean']:.3f}, σ={stats['std']:.3f}, "
-                f"n={stats['n_clean']:,}/{stats['n_raw']:,}"
-            )
-        
-        total_outliers = sum(group_outliers)
-        if remove_outliers and total_outliers > 0:
-            outlier_str = "+".join(str(o) for o in group_outliers)
-            title_lines.append(f"Outliers removed: {outlier_str} points")
-        
-        ax.set_title("\n".join(title_lines), fontsize=9)
-        
-        # Only add legend if not already added by seaborn
-        if hist and not common_norm:
-            # Seaborn already added legend
-            pass
-        else:
-            ax.legend(fontsize=8, loc='upper right')
-        
-        ax.grid(True, alpha=0.3, linestyle='--')
-        
-        # Set y-axis label
-        if hist:
-            if common_norm:
-                ax.set_ylabel("Density (common scale)")
-            else:
-                ax.set_ylabel("Density (separate scales)")
-        
-        # Print per-feature summary
-        summary_parts = [f"{feat:<20}"]
-        for i, (name, stats, n_outliers) in enumerate(zip(group_names, group_stats, group_outliers)):
-            summary_parts.append(
-                f"{name}: {stats['n_clean']:>5,}/{stats['n_raw']:<5,} clean"
-            )
-        summary_parts.append(f"{total_outliers} outliers removed")
-        
-        print(" | ".join(summary_parts))
-    
-    # Hide unused subplots
-    for idx in range(len(features), len(axes)):
-        axes[idx].set_visible(False)
-    
-    # Add overall title
-    groups_str = " vs ".join(group_names)
-    title = f"Feature Distributions by Group ({groups_str})"
-    if common_norm:
-        title += f"\nCommon normalization | "
-    else:
-        title += f"\nSeparate normalization | "
-    
-    if remove_outliers:
-        title += f"IQR×{iqr_multiplier} outlier removal | "
-    
-    title += f"bins={bins} | KDE={'on' if kde else 'off'}"
-    
-    plt.suptitle(title, fontsize=12, y=1.02)
+            if hist:
+                norm = len(all_vals) if common_norm else len(data)
+                counts, _ = np.histogram(data, bins=edges)
+                density = counts / (norm * widths)
+                ax.bar(centers, density, width=widths, color=color, alpha=alpha, 
+                       edgecolor='black', linewidth=0.5, label=f"{g} (n={len(data)})")
+
+            # 4. KDE Logic with LinAlgError Prevention
+            if kde:
+                try:
+                    # Check for zero variance to prevent singular matrix error
+                    if len(data) > 1 and np.var(data) > 0:
+                        kde_func = stats.gaussian_kde(data)
+                        x_plot = np.linspace(data.min(), data.max(), 200)
+                        y_plot = kde_func(x_plot)
+                        if common_norm:
+                            y_plot *= (len(data) / len(all_vals))
+                        ax.plot(x_plot, y_plot, color=color, lw=2, alpha=0.8)
+                    else:
+                        print(f"Skipping KDE for {feat} ({g}): Zero variance.")
+                except Exception as e:
+                    print(f"KDE Error on {feat} ({g}): {e}")
+
+        # 5. Styling
+        ax.set_title(f"{feat}", fontsize=10)
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.2)
+
     plt.tight_layout()
     plt.show()
 
