@@ -1,6 +1,7 @@
 import os
 import sys
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import pandas as pd
 import glob
 
@@ -61,98 +62,121 @@ def compile_experiment_results(folder_path):
         'patch_type', 'current_type', 'cell_type', 'cortical_depth', 
         'dark_neuron', 'clear_EAP_waveform'
     ]
-    
+
     return final_table[cols]
 
 
-def save_clean_merged_table(df, filename='final_merged_report.png', save_fig=False):
-    # 1. Prep and Column Ordering
+
+def gen_table_fig(df, filename='clust_table_report.png', save_fig=False, global_stats=None):
+    # 1. Formatting and Numerical Sorting (c1, c2, c3... c46)
     cols_order = [
-        'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth', 
+        'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth',
         'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'cluster', 'nRMSE', 'cos_sim'
     ]
-    plot_data = df[cols_order].copy()
+    df_copy = df.copy()
+    # Sort numerically (c1, c2, c10...)
+    df_copy['sort_idx'] = df_copy['cell_id'].str.extract('(\d+)').astype(int)
+    plot_data = df_copy.sort_values(by=['sort_idx', 'spike_feature']).drop(columns=['sort_idx'])[cols_order].copy()
     
-    # Format numeric values
-    plot_data['nRMSE'] = plot_data['nRMSE'].map(lambda x: f'{x:.3f}' if isinstance(x, float) else x)
-    plot_data['cos_sim'] = plot_data['cos_sim'].map(lambda x: f'{x:.3f}' if isinstance(x, float) else x)
-    plot_data['cortical_depth'] = plot_data['cortical_depth'].map(lambda x: f'{x:.1f}' if isinstance(x, float) else x)
-    
-    # 2. Custom Header Formatting
-    headers = []
-    for col in plot_data.columns:
-        if col == 'clear_EAP_waveform':
-            headers.append("Clear EAP\nWaveform") 
-        elif col == 'nRMSE':
-            headers.append("nRMSE") 
-        elif col == 'cos_sim':
-            headers.append("Cos Sim")
-        else:
-            headers.append(col.replace('_', ' ').title())
+    # Extract raw numeric values
+    raw_depth = pd.to_numeric(plot_data['cortical_depth'], errors='coerce')
+    raw_nrmse = pd.to_numeric(plot_data['nRMSE'], errors='coerce')
+    raw_cossim = pd.to_numeric(plot_data['cos_sim'], errors='coerce')
+
+    # Use Global Stats for normalization if provided, otherwise fallback to local
+    g_min_d, g_max_d = global_stats['depth'] if global_stats else (raw_depth.min(), raw_depth.max())
+    g_min_n, g_max_n = global_stats['nrmse'] if global_stats else (raw_nrmse.min(), raw_nrmse.max())
+    g_min_c, g_max_c = global_stats['cossim'] if global_stats else (raw_cossim.min(), raw_cossim.max())
+
+    # Formatting display strings
+    plot_data['nRMSE'] = raw_nrmse.map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
+    plot_data['cos_sim'] = raw_cossim.map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
+    plot_data['cortical_depth'] = raw_depth.map(lambda x: f'{x:.1f}' if pd.notnull(x) else '')
+
+    # 2. Fixed Family Color Map
+    feature_shades = {
+        'peak_amp': '#8c564b', 'peak_sharpness': '#a06d62', 'peak_width': '#b38479',
+        'exp_const': '#e377c2', 'exp_lambda': '#c561a8',
+        'inflection_amp': '#d62728', 'inflection_time': '#e05354',
+        'ramp_amp': '#ff7f0e', 'log_isi': '#7f7f7f'
+    }
 
     # 3. Setup Figure
+    headers = [c.replace('_', ' ').title() for c in plot_data.columns]
+    headers[6], headers[9], headers[10] = "Clear EAP\nWaveform", "nRMSE", "Cos Sim"
+    
     fig_height = len(plot_data) * 0.6 + 2
     fig, ax = plt.subplots(figsize=(22, fig_height))
     ax.axis('off')
+    table = ax.table(cellText=plot_data.values, colLabels=headers, cellLoc='center', loc='center')
 
-    table = ax.table(
-        cellText=plot_data.values,
-        colLabels=headers,
-        cellLoc='center',
-        loc='center'
-    )
-
-    # 4. Merging & Centering Logic
-    def merge_cells(table, row_start, row_end, col):
-        main_cell = table[row_start, col]
-        for row in range(row_start + 1, row_end + 1):
-            cell = table[row, col]
-            cell.get_text().set_text("")
-            cell.visible_edges = 'LR' 
-        
-        table[row_end, col].visible_edges = 'LRB' 
-        main_cell.visible_edges = 'LRT'
-        main_cell.get_text().set_verticalalignment('center')
-
-    # Apply merges based on Cell ID and Feature blocks
-    start_row = 1 
+    # 4. Merging & Global Gradient Logic
+    start_row = 1
     for i in range(1, len(plot_data) + 1):
-        if i == len(plot_data) or plot_data.iloc[i]['cell_id'] != plot_data.iloc[start_row-1]['cell_id']:
+        is_cell_end = (i == len(plot_data) or plot_data.iloc[i]['cell_id'] != plot_data.iloc[start_row-1]['cell_id'])
+        
+        if is_cell_end:
             end_row = i
-            for c in range(7): # Metadata
-                merge_cells(table, start_row, end_row, c)
-            
+            # Metadata merge (Cols 0-6)
+            for c in range(7):
+                for r in range(start_row, end_row + 1):
+                    cell = table[r, c]
+                    if r != start_row: cell.get_text().set_text("") 
+                    cell.get_text().set_verticalalignment('center')
+                    if c == 0: cell.get_text().set_weight('bold')
+                    
+                    # SHADE CORTICAL DEPTH: Using Global Range
+                    if c == 4 and r == start_row:
+                        val = raw_depth.iloc[start_row-1]
+                        if pd.notnull(val) and g_max_d != g_min_d:
+                            norm = (val - g_min_d) / (g_max_d - g_min_d)
+                            cell.set_facecolor(mcolors.to_hex(plt.cm.YlGn(0.1 + norm * 0.4)))
+
+            # SPIKE FEATURE MERGE (Col 7)
             feat_start = start_row
             for j in range(start_row, end_row + 1):
-                current_feat = plot_data.iloc[j-1]['spike_feature']
-                next_feat = plot_data.iloc[j]['spike_feature'] if j < end_row else None
-                if next_feat != current_feat:
-                    merge_cells(table, feat_start, j, 7)
+                curr_feat = plot_data.iloc[j-1]['spike_feature']
+                if j == end_row or plot_data.iloc[j]['spike_feature'] != curr_feat:
+                    shade = feature_shades.get(curr_feat, 'white')
+                    brightness = sum(mcolors.to_rgb(shade)) / 3
+                    t_color = 'white' if brightness < 0.55 else 'black'
+                    for r_f in range(feat_start, j + 1):
+                        cell_f = table[r_f, 7]
+                        if r_f != feat_start: cell_f.get_text().set_text("") 
+                        cell_f.set_facecolor(shade)
+                        cell_f.get_text().set_weight('bold')
+                        cell_f.get_text().set_color(t_color)
+                        cell_f.get_text().set_verticalalignment('center')
                     feat_start = j + 1
+
+            # Global Metric Gradients (Cols 9-10)
+            for r in range(start_row, end_row + 1):
+                n_val, c_val = raw_nrmse.iloc[r-1], raw_cossim.iloc[r-1]
+                
+                # nRMSE: Darker = Larger (Global Bad)
+                if pd.notnull(n_val) and g_max_n != g_min_n:
+                    n_norm = (n_val - g_min_n) / (g_max_n - g_min_n)
+                    table[r, 9].set_facecolor(mcolors.to_hex(plt.cm.Oranges(0.05 + n_norm * 0.4)))
+                
+                # Cos Sim: Darker = Smaller (Global Bad)
+                if pd.notnull(c_val) and g_max_c != g_min_c:
+                    c_norm = (g_max_c - c_val) / (g_max_c - g_min_c)
+                    table[r, 10].set_facecolor(mcolors.to_hex(plt.cm.Blues(0.05 + c_norm * 0.4)))
+                
+                table[r, 8].set_facecolor('#F8F9FA') 
+            
             start_row = i + 1
 
-    # 5. Final Styling
+    # 5. Global Polish
     table.auto_set_font_size(False)
     table.set_fontsize(11)
-    table.scale(1, 3.5) 
-
+    table.scale(1, 3.5)
     for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor('#BDBDBD')
-        cell.get_text().set_verticalalignment('center')
-        
         if row == 0:
-            cell.set_text_props(weight='bold', color='white')
             cell.set_facecolor('#40466e')
-            cell.visible_edges = 'closed'
-        else:
-            if col == 0: # BOLD the Cell ID column
-                cell.set_text_props(weight='bold')
-            if col >= 9:
-                cell.set_facecolor('#F8F9FA')
+            cell.get_text().set_color('white')
+            cell.get_text().set_weight('bold')
 
-    # 6. Optional Saving Logic
-    if save_fig:
-        plt.savefig(filename, bbox_inches='tight', dpi=300)
-        print(f"Figure saved as {filename}")
-    
+    if save_fig: plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.show()
+
