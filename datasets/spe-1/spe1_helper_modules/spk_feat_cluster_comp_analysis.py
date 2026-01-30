@@ -67,8 +67,19 @@ def compile_experiment_results(folder_path):
 
 
 
-def gen_table_fig(df, filename='clust_table_report.png', save_fig=False, global_stats=None):
-    # 1. Formatting and Numerical Sorting (c1, c2, c3... c46)
+
+
+def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
+    # 1. Internal Global Stats Calculation
+    raw_depth_all = pd.to_numeric(df['cortical_depth'], errors='coerce')
+    raw_nrmse_all = pd.to_numeric(df['nRMSE'], errors='coerce')
+    raw_cossim_all = pd.to_numeric(df['cos_sim'], errors='coerce')
+    
+    g_min_d, g_max_d = raw_depth_all.min(), raw_depth_all.max()
+    g_min_n, g_max_n = raw_nrmse_all.min(), raw_nrmse_all.max()
+    g_min_c, g_max_c = raw_cossim_all.min(), raw_cossim_all.max()
+
+    # 2. Formatting and Numerical Sorting (c1, c2, c3... c46)
     cols_order = [
         'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth',
         'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'cluster', 'nRMSE', 'cos_sim'
@@ -78,22 +89,12 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=False, global_
     df_copy['sort_idx'] = df_copy['cell_id'].str.extract('(\d+)').astype(int)
     plot_data = df_copy.sort_values(by=['sort_idx', 'spike_feature']).drop(columns=['sort_idx'])[cols_order].copy()
     
-    # Extract raw numeric values
-    raw_depth = pd.to_numeric(plot_data['cortical_depth'], errors='coerce')
-    raw_nrmse = pd.to_numeric(plot_data['nRMSE'], errors='coerce')
-    raw_cossim = pd.to_numeric(plot_data['cos_sim'], errors='coerce')
+    # Prep display strings for the table
+    plot_data['nRMSE'] = pd.to_numeric(plot_data['nRMSE'], errors='coerce').map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
+    plot_data['cos_sim'] = pd.to_numeric(plot_data['cos_sim'], errors='coerce').map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
+    plot_data['cortical_depth'] = pd.to_numeric(plot_data['cortical_depth'], errors='coerce').map(lambda x: f'{x:.1f}' if pd.notnull(x) else '')
 
-    # Use Global Stats for normalization if provided, otherwise fallback to local
-    g_min_d, g_max_d = global_stats['depth'] if global_stats else (raw_depth.min(), raw_depth.max())
-    g_min_n, g_max_n = global_stats['nrmse'] if global_stats else (raw_nrmse.min(), raw_nrmse.max())
-    g_min_c, g_max_c = global_stats['cossim'] if global_stats else (raw_cossim.min(), raw_cossim.max())
-
-    # Formatting display strings
-    plot_data['nRMSE'] = raw_nrmse.map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
-    plot_data['cos_sim'] = raw_cossim.map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
-    plot_data['cortical_depth'] = raw_depth.map(lambda x: f'{x:.1f}' if pd.notnull(x) else '')
-
-    # 2. Fixed Family Color Map
+    # 3. Fixed Family Color Map
     feature_shades = {
         'peak_amp': '#8c564b', 'peak_sharpness': '#a06d62', 'peak_width': '#b38479',
         'exp_const': '#e377c2', 'exp_lambda': '#c561a8',
@@ -101,7 +102,7 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=False, global_
         'ramp_amp': '#ff7f0e', 'log_isi': '#7f7f7f'
     }
 
-    # 3. Setup Figure
+    # 4. Setup Figure
     headers = [c.replace('_', ' ').title() for c in plot_data.columns]
     headers[6], headers[9], headers[10] = "Clear EAP\nWaveform", "nRMSE", "Cos Sim"
     
@@ -110,29 +111,36 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=False, global_
     ax.axis('off')
     table = ax.table(cellText=plot_data.values, colLabels=headers, cellLoc='center', loc='center')
 
-    # 4. Merging & Global Gradient Logic
+    # 5. Merging Logic & Selective Coloring (Cols 0-7)
     start_row = 1
     for i in range(1, len(plot_data) + 1):
         is_cell_end = (i == len(plot_data) or plot_data.iloc[i]['cell_id'] != plot_data.iloc[start_row-1]['cell_id'])
         
         if is_cell_end:
             end_row = i
-            # Metadata merge (Cols 0-6)
+            # Seamless Metadata merge (Cols 0-6)
             for c in range(7):
                 for r in range(start_row, end_row + 1):
                     cell = table[r, c]
-                    if r != start_row: cell.get_text().set_text("") 
+                    if r != start_row: cell.get_text().set_text("")
+                    
+                    # Remove horizontal lines within merged blocks
+                    if start_row == end_row: cell.visible_edges = 'closed'
+                    elif r == start_row: cell.visible_edges = 'LRT'
+                    elif r == end_row: cell.visible_edges = 'LRB'
+                    else: cell.visible_edges = 'LR'
+                    
                     cell.get_text().set_verticalalignment('center')
                     if c == 0: cell.get_text().set_weight('bold')
                     
-                    # SHADE CORTICAL DEPTH: Using Global Range
+                    # SHADE DEPTH: First row only
                     if c == 4 and r == start_row:
-                        val = raw_depth.iloc[start_row-1]
+                        val = raw_depth_all.iloc[start_row-1]
                         if pd.notnull(val) and g_max_d != g_min_d:
                             norm = (val - g_min_d) / (g_max_d - g_min_d)
                             cell.set_facecolor(mcolors.to_hex(plt.cm.YlGn(0.1 + norm * 0.4)))
 
-            # SPIKE FEATURE MERGE (Col 7)
+            # Seamless Feature merge (Col 7)
             feat_start = start_row
             for j in range(start_row, end_row + 1):
                 curr_feat = plot_data.iloc[j-1]['spike_feature']
@@ -140,18 +148,30 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=False, global_
                     shade = feature_shades.get(curr_feat, 'white')
                     brightness = sum(mcolors.to_rgb(shade)) / 3
                     t_color = 'white' if brightness < 0.55 else 'black'
+                    
                     for r_f in range(feat_start, j + 1):
                         cell_f = table[r_f, 7]
                         if r_f != feat_start: cell_f.get_text().set_text("") 
-                        cell_f.set_facecolor(shade)
+                        
+                        # SHADE FEATURE: Only first row of block to avoid artifacts
+                        if r_f == feat_start:
+                            cell_f.set_facecolor(shade)
+                            cell_f.get_text().set_color(t_color)
+                        
                         cell_f.get_text().set_weight('bold')
-                        cell_f.get_text().set_color(t_color)
                         cell_f.get_text().set_verticalalignment('center')
+                        
+                        # Remove horizontal lines within feature block
+                        if feat_start == j: cell_f.visible_edges = 'closed'
+                        elif r_f == feat_start: cell_f.visible_edges = 'LRT'
+                        elif r_f == j: cell_f.visible_edges = 'LRB'
+                        else: cell_f.visible_edges = 'LR'
                     feat_start = j + 1
 
-            # Global Metric Gradients (Cols 9-10)
+            # Metric Gradients (Cols 9-10)
             for r in range(start_row, end_row + 1):
-                n_val, c_val = raw_nrmse.iloc[r-1], raw_cossim.iloc[r-1]
+                n_val = raw_nrmse_all.iloc[r-1]
+                c_val = raw_cossim_all.iloc[r-1]
                 
                 # nRMSE: Darker = Larger (Global Bad)
                 if pd.notnull(n_val) and g_max_n != g_min_n:
@@ -167,7 +187,7 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=False, global_
             
             start_row = i + 1
 
-    # 5. Global Polish
+    # 6. Global Polish
     table.auto_set_font_size(False)
     table.set_fontsize(11)
     table.scale(1, 3.5)
@@ -179,4 +199,5 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=False, global_
 
     if save_fig: plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.show()
+
 
