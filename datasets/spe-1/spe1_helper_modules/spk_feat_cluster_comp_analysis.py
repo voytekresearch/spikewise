@@ -210,4 +210,57 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
     if save_fig: plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.show()
 
+def analyze_waveform_variance(df, N=20):
+    """
+    Ranks cells by waveform change, plots the selection logic, 
+    and returns the intersection of top-tier results.
+    """
+    # 1. Selection Logic
+    df_ranked_comb = df.sort_values(by=['nRMSE', 'cos_sim'], ascending=[False, True])
+    df_ranked_nrmse = df.sort_values(by=['nRMSE'], ascending=[False])
+    df_ranked_cosim = df.sort_values(by=['cos_sim'], ascending=[True])
 
+    top_n_comb = df_ranked_comb.head(N)
+    top_n_nrmse = df_ranked_nrmse.head(N)
+    top_n_cosim = df_ranked_cosim.head(N)
+
+    # Intersection: In Both (nRMSE & CosSim) AND in the Combined Sort
+    both_indices = df.index[df.index.isin(top_n_nrmse.index) & df.index.isin(top_n_cosim.index)]
+    final_targets = df.loc[both_indices[both_indices.isin(top_n_comb.index)]].copy()
+    final_targets = final_targets.sort_values(['nRMSE', 'cos_sim'], ascending=[False, True])
+
+    # 2. Setup Figure
+    fig, (ax_plot, ax_list) = plt.subplots(1, 2, figsize=(16, 8), gridspec_kw={'width_ratios': [2, 1]})
+
+    # --- LEFT: THE PLOT ---
+    sns.scatterplot(data=df, x='nRMSE', y='cos_sim', color='#e0e0e0', alpha=0.3, s=40, ax=ax_plot, label='other cell-feature groups')
+    
+    # Selection Markers
+    sns.scatterplot(data=df.loc[both_indices], x='nRMSE', y='cos_sim', 
+                    color='purple', s=120, marker='X', label=f'Top {N} in Both', ax=ax_plot)
+    sns.scatterplot(data=top_n_comb, x='nRMSE', y='cos_sim', 
+                    facecolor='none', edgecolor='gold', s=200, linewidth=1.5, label=f'Top {N} Combined', ax=ax_plot)
+
+    ax_plot.set_title(f"Waveform Variance Landscape (N={N})", fontsize=14)
+    ax_plot.set_xlabel("nRMSE (Amplitude Variance)")
+    ax_plot.set_ylabel("Cos Sim (Shape Similarity)")
+    ax_plot.grid(True, linestyle='--', alpha=0.2)
+    ax_plot.legend(loc='upper right')
+
+    # --- RIGHT: THE IDENTITY LIST ---
+    ax_list.axis('off')
+    title_text = f"INTERSECTION IDENTITIES (N={N})\n"
+    header = f"{'Cell ID':<15} | {'Spike Feature':<15}\n"
+    separator = "-" * 35 + "\n"
+
+    list_content = ""
+    for _, row in final_targets.iterrows():
+        list_content += f"{str(row['cell_id']):<15} | {str(row['spike_feature']):<15}\n"
+
+    ax_list.text(0, 1, title_text + header + separator + list_content, 
+                 family='monospace', fontsize=10, verticalalignment='top')
+
+    plt.tight_layout()
+    plt.show()
+
+    return final_targets
