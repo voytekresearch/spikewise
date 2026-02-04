@@ -2,9 +2,13 @@ import os
 import sys
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.patches import Circle
 import pandas as pd
 import numpy as np
+import seaborn as sns
 import glob
+from scipy.stats import pearsonr
+
 
 #import metadata file
 config_dir = "/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spikeparam/datasets/spe-1/spe1_helper_modules/"
@@ -264,3 +268,95 @@ def analyze_waveform_variance(df, N=20):
     plt.show()
 
     return final_targets
+
+
+
+
+
+def analyze_cross_correlations(df, alpha=0.05):
+    # 1. Define Groups
+    metadata_cols = ['patch_type', 'current_type', 'cell_type', 'cortical_depth', 'dark_neuron', 'clear_EAP_waveform']
+    feature_cols = ['num_clusters', 'nRMSE', 'cos_sim']
+    all_cols = metadata_cols + feature_cols
+    
+    # 2. Encode and Clean
+    df_sub = df[all_cols].copy()
+    cat_feats = ['patch_type', 'current_type', 'cell_type', 'dark_neuron', 'clear_EAP_waveform']
+    for col in cat_feats:
+        df_sub[col] = df_sub[col].astype('category').cat.codes
+    df_clean = df_sub.dropna()
+    
+    # 3. Calculate Correlation and P-values
+    corr_matrix = df_clean.corr()
+    n_total = len(all_cols)
+    p_values = np.ones((n_total, n_total))
+    significant_cross_pairs = []
+    
+    for i in range(n_total):
+        for j in range(i + 1, n_total):
+            col_a, col_b = all_cols[i], all_cols[j]
+            r, p = pearsonr(df_clean[col_a], df_clean[col_b])
+            p_values[i, j] = p
+            p_values[j, i] = p
+            
+            # Identify Cross-Group Logic: One is Metadata, one is Feature
+            is_cross = (col_a in metadata_cols and col_b in feature_cols) or \
+                       (col_b in metadata_cols and col_a in feature_cols)
+            
+            if is_cross and p < alpha:
+                significant_cross_pairs.append({
+                    'Metadata': col_a if col_a in metadata_cols else col_b,
+                    'Feature': col_b if col_b in feature_cols else col_a,
+                    'Pearson $r$': round(r, 3),
+                    'p-value': f"{p:.2e}",
+                    'Significance': '***' if p < 0.001 else '**' if p < 0.01 else '*'
+                })
+
+    # 4. Slicing for Plotting (Matches your layout: removes row 0 and last col)
+    # Heatmap Rows: current_type ... cos_sim (indices 1 to 8)
+    # Heatmap Cols: patch_type ... nRMSE (indices 0 to 7)
+    corr_sliced = corr_matrix.iloc[1:, :-1]
+    p_sliced = p_values[1:, :-1]
+    mask = np.triu(np.ones_like(corr_sliced, dtype=bool), k=1)
+
+    # 5. Plotting
+    plt.figure(figsize=(14, 12))
+    ax = sns.heatmap(
+        corr_sliced, mask=mask, cmap='coolwarm', center=0, 
+        square=True, linewidths=.5, annot=False,
+        cbar_kws={"label": "Pearson Correlation ($r$)"}
+    )
+
+    row_names = corr_sliced.index.tolist()
+    col_names = corr_sliced.columns.tolist()
+
+    for i in range(len(row_names)):
+        for j in range(len(col_names)):
+            if not mask[i, j]:
+                r_val = corr_sliced.iloc[i, j]
+                p_val = p_sliced[i, j]
+                row_feat = row_names[i]
+                col_feat = col_names[j]
+                
+                # Check for Cross-Group Highlight
+                is_cross = (row_feat in metadata_cols and col_feat in feature_cols) or \
+                           (col_feat in metadata_cols and row_feat in feature_cols)
+                
+                # Add Stars and R-values
+                stars = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else ""
+                ax.text(j + 0.5, i + 0.35, stars, ha='center', va='center', color='black', fontsize=14, fontweight='bold')
+                ax.text(j + 0.5, i + 0.65, f"{r_val:.2f}", ha='center', va='center', color='black', fontsize=11)
+                
+                # Circle only SIGNIFICANT CROSS-GROUP pairs
+                if is_cross and p_val < alpha:
+                    circle = Circle((j + 0.5, i + 0.5), 0.42, color='black', fill=False, linewidth=2.5)
+                    ax.add_patch(circle)
+
+    plt.xticks(rotation=45, ha='right')
+    plt.title(f"Cross-Correlation Matrix: Exp Metadata vs. Clustering Waveform Features ($p < {alpha}$)", fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
+    # 6. Return Table
+    return pd.DataFrame(significant_cross_pairs).sort_values('Pearson $r$', key=abs, ascending=False).reset_index(drop=True)
+
