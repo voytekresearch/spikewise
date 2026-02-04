@@ -273,6 +273,7 @@ def analyze_waveform_variance(df, N=20):
 
 
 
+
 def analyze_cross_correlations(df, alpha=0.05):
     # 1. Define Groups
     metadata_cols = ['patch_type', 'current_type', 'cell_type', 'cortical_depth', 'dark_neuron', 'clear_EAP_waveform']
@@ -299,7 +300,6 @@ def analyze_cross_correlations(df, alpha=0.05):
             p_values[i, j] = p
             p_values[j, i] = p
             
-            # Identify Cross-Group Logic: One is Metadata, one is Feature
             is_cross = (col_a in metadata_cols and col_b in feature_cols) or \
                        (col_b in metadata_cols and col_a in feature_cols)
             
@@ -312,9 +312,7 @@ def analyze_cross_correlations(df, alpha=0.05):
                     'Significance': '***' if p < 0.001 else '**' if p < 0.01 else '*'
                 })
 
-    # 4. Slicing for Plotting (Matches your layout: removes row 0 and last col)
-    # Heatmap Rows: current_type ... cos_sim (indices 1 to 8)
-    # Heatmap Cols: patch_type ... nRMSE (indices 0 to 7)
+    # 4. Slicing for Plotting
     corr_sliced = corr_matrix.iloc[1:, :-1]
     p_sliced = p_values[1:, :-1]
     mask = np.triu(np.ones_like(corr_sliced, dtype=bool), k=1)
@@ -338,25 +336,30 @@ def analyze_cross_correlations(df, alpha=0.05):
                 row_feat = row_names[i]
                 col_feat = col_names[j]
                 
-                # Check for Cross-Group Highlight
+                # Dynamic Text Color: White for dark colors, Black for light colors
+                # For PRGn, dark colors are at the extremes (low and high r)
+                text_color = "white" if abs(r_val) > 0.45 else "black"
+                
                 is_cross = (row_feat in metadata_cols and col_feat in feature_cols) or \
                            (col_feat in metadata_cols and row_feat in feature_cols)
                 
-                # Add Stars and R-values
                 stars = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else ""
-                ax.text(j + 0.5, i + 0.35, stars, ha='center', va='center', color='black', fontsize=14, fontweight='bold')
-                ax.text(j + 0.5, i + 0.65, f"{r_val:.2f}", ha='center', va='center', color='black', fontsize=11)
                 
-                # Circle only SIGNIFICANT CROSS-GROUP pairs
+                ax.text(j + 0.5, i + 0.35, stars, ha='center', va='center', 
+                        color=text_color, fontsize=14, fontweight='bold')
+                ax.text(j + 0.5, i + 0.65, f"{r_val:.2f}", ha='center', va='center', 
+                        color=text_color, fontsize=11)
+                
                 if is_cross and p_val < alpha:
-                    circle = Circle((j + 0.5, i + 0.5), 0.42, color='black', fill=False, linewidth=2.5)
+                    # Circle significant cross-pairs (using contrast color for the circle edge)
+                    circle_color = "white" if abs(r_val) > 0.7 else "black"
+                    circle = Circle((j + 0.5, i + 0.5), 0.44, color=circle_color, fill=False, linewidth=2.5)
                     ax.add_patch(circle)
 
     plt.xticks(rotation=45, ha='right')
-    plt.title(f"Cross-Correlation Matrix: Exp Metadata vs. Clustering Waveform Features ($p < {alpha}$)", fontsize=16)
+    plt.title(f"Significant Cross-Correlations ($p < {alpha}$)", fontsize=16)
     plt.tight_layout()
     plt.show()
 
-    # 6. Return Table
     return pd.DataFrame(significant_cross_pairs).sort_values('Pearson $r$', key=abs, ascending=False).reset_index(drop=True)
 
