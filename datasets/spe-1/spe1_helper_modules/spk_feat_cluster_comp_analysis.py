@@ -285,7 +285,7 @@ def analyze_cross_correlations(df, alpha=0.05):
     
     # 2. Encode and Clean
     df_sub = df[all_cols].copy()
-    cat_feats = ['patch_type', 'current_type', 'cell_type', 'dark_neuron', 'clear_EAP_waveform']
+    cat_feats = ['patch_type', 'current_type', 'cell_type', 'dark_neuron', 'clear_EAP_waveform', 'num_clusters']
     for col in cat_feats:
         df_sub[col] = df_sub[col].astype('category').cat.codes
     df_clean = df_sub.dropna()
