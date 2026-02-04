@@ -3,6 +3,7 @@ import sys
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import pandas as pd
+import numpy as np
 import glob
 
 #import metadata file
@@ -11,62 +12,74 @@ if config_dir not in sys.path:
     sys.path.append(config_dir)
 import config
 
+
+
 def compile_experiment_results(folder_path):
     """
-    Reads all cluster pickles and maps metadata from config.py.
+    Iterates through config Cell IDs. If no pickle exists, 
+    populates clustering metrics as NaN.
     """
-    # 1. Grab all pkl files in the folder
-    search_pattern = os.path.join(folder_path, "*.pkl")
-    all_files = glob.glob(search_pattern)
+    # 1. Use config as the source of truth for Cell IDs
+    all_cell_ids = list(config.DICT_CELL_TYPE.keys())
     
     master_list = []
 
-    for file in all_files:
-        # Load the individual experiment results
-        df = pd.read_pickle(file)
+    for cell_num in all_cell_ids:
+        cell_id_str = f"c{cell_num}"
         
-        # 2. Extract numeric ID (e.g., 'c1' from 'c1_df_clusters.pkl')
-        filename = os.path.basename(file)
-        cell_id_str = filename.split('_')[0] 
-        cell_id_num = int(cell_id_str.replace('c', ''))
+        # 2. Search for the specific pickle
+        search_pattern = os.path.join(folder_path, f"{cell_id_str}_*.pkl")
+        matching_files = glob.glob(search_pattern)
         
-        # Add basic identifiers
+        if matching_files:
+            df = pd.read_pickle(matching_files[0])
+        else:
+            # 3. NO PICKLE: Populate metrics as NaN
+            # We create a single-row DataFrame with all cluster-related columns as NaN
+            df = pd.DataFrame({
+                'feature_clustered': [np.nan],
+                'groups': [np.nan],
+                'nRMSE': [np.nan],
+                'cos_sim': [np.nan]
+            })
+
+        # 4. Map Metadata (Always populates regardless of pickle existence)
         df['cell_id'] = cell_id_str
         
-        # 3. Map metadata from config.py dictionaries
-        # Use .get() to avoid errors if a cell_id is missing in config
-        patch_info = config.DICT_PATCH_TYPE.get(cell_id_num, "Unknown, Unknown")
-        
-        # Split "Juxta, IC" into two distinct columns for your table
-        df['patch_type'], df['current_type'] = patch_info.split(', ')
-        
-        df['cell_type'] = config.DICT_CELL_TYPE.get(cell_id_num)
-        df['cortical_depth'] = config.DICT_CORT_DEPTH.get(cell_id_num)
-        df['dark_neuron'] = config.DICT_DARK_NEURONS.get(cell_id_num)
-        df['clear_EAP_waveform'] = config.DICT_CLEAR_EAP_WAV.get(cell_id_num)
+        # Safe extraction of Patch/Current info
+        patch_info = config.DICT_PATCH_TYPE.get(cell_num)
+        if patch_info and ", " in patch_info:
+            df['patch_type'], df['current_type'] = patch_info.split(', ')
+        else:
+            df['patch_type'], df['current_type'] = np.nan, np.nan
+
+        df['cell_type'] = config.DICT_CELL_TYPE.get(cell_num)
+        df['cortical_depth'] = config.DICT_CORT_DEPTH.get(cell_num)
+        df['dark_neuron'] = config.DICT_DARK_NEURONS.get(cell_num)
+        df['clear_EAP_waveform'] = config.DICT_CLEAR_EAP_WAV.get(cell_num)
         
         master_list.append(df)
 
-    # 4. Concatenate and Reorder
+    # 5. Concatenate and Clean
     final_table = pd.concat(master_list, ignore_index=True)
     
-    # Rename for clarity to match your whiteboard
     final_table = final_table.rename(columns={
         'feature_clustered': 'spike_feature',
         'groups': 'cluster'
     })
 
-    # Order columns as requested
+    # Order columns to match your "Whiteboard" layout
     cols = [
-        'cell_id', 'spike_feature', 'cluster', 'nRMSE', 'cos_sim',
-        'patch_type', 'current_type', 'cell_type', 'cortical_depth', 
-        'dark_neuron', 'clear_EAP_waveform'
+        'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth', 
+        'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'cluster', 'nRMSE', 'cos_sim'
     ]
 
+    # Final check: Ensure all columns are present (prevents KeyError if no pickles exist at all)
+    for c in cols:
+        if c not in final_table.columns:
+            final_table[c] = np.nan
+
     return final_table[cols]
-
-
-
 
 
 def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
