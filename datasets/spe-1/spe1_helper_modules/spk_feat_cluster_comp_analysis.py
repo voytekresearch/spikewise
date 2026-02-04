@@ -36,6 +36,9 @@ def compile_experiment_results(folder_path):
             n_clusters = df['groups'].nunique()
             if n_clusters ==1:
                 n_clusters =2
+
+            #convert to str to convert to categorical variable
+            n_clusters = str(n_clusters)
         else:
             # Placeholder for no-pickle cells
             df = pd.DataFrame({
@@ -96,7 +99,7 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
     # 2. Formatting and Numerical Sorting (c1, c2, c3... c46)
     cols_order = [
         'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth',
-        'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'cluster', 'nRMSE', 'cos_sim'
+        'dark_neuron', 'clear_EAP_waveform', 'spike_feature','num_clusters', 'cluster', 'nRMSE', 'cos_sim'
     ]
     df_copy = df.copy()
     # Sort numerically (c1, c2, c10...)
@@ -357,7 +360,6 @@ def analyze_cross_correlations(df, alpha=0.05):
                     ax.add_patch(circle)
 
     plt.xticks(rotation=45, ha='right')
-    plt.title(f"Significant Cross-Correlations ($p < {alpha}$)", fontsize=16)
     plt.tight_layout()
     plt.show()
 
