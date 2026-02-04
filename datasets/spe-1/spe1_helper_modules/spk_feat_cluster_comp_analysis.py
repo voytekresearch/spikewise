@@ -30,6 +30,8 @@ def compile_experiment_results(folder_path):
             # Count unique clusters in this specific experiment
             # We assume 'groups' contains the cluster IDs
             n_clusters = df['groups'].nunique()
+            if n_clusters ==1:
+                n_clusters =2
         else:
             # Placeholder for no-pickle cells
             df = pd.DataFrame({
