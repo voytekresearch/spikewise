@@ -13,40 +13,37 @@ if config_dir not in sys.path:
 import config
 
 
-
 def compile_experiment_results(folder_path):
     """
-    Iterates through config Cell IDs. If no pickle exists, 
-    populates clustering metrics as NaN.
+    Iterates through config Cell IDs. Populates num_clusters (0 if missing).
     """
-    # 1. Use config as the source of truth for Cell IDs
     all_cell_ids = list(config.DICT_CELL_TYPE.keys())
-    
     master_list = []
 
     for cell_num in all_cell_ids:
         cell_id_str = f"c{cell_num}"
-        
-        # 2. Search for the specific pickle
         search_pattern = os.path.join(folder_path, f"{cell_id_str}_*.pkl")
         matching_files = glob.glob(search_pattern)
         
         if matching_files:
             df = pd.read_pickle(matching_files[0])
+            # Count unique clusters in this specific experiment
+            # We assume 'groups' contains the cluster IDs
+            n_clusters = df['groups'].nunique()
         else:
-            # 3. NO PICKLE: Populate metrics as NaN
-            # We create a single-row DataFrame with all cluster-related columns as NaN
+            # Placeholder for no-pickle cells
             df = pd.DataFrame({
                 'feature_clustered': [np.nan],
                 'groups': [np.nan],
                 'nRMSE': [np.nan],
                 'cos_sim': [np.nan]
             })
+            n_clusters = 0 # No pickle = 0 clusters
 
-        # 4. Map Metadata (Always populates regardless of pickle existence)
+        # Map Metadata
         df['cell_id'] = cell_id_str
+        df['num_clusters'] = n_clusters # Add the new count column
         
-        # Safe extraction of Patch/Current info
         patch_info = config.DICT_PATCH_TYPE.get(cell_num)
         if patch_info and ", " in patch_info:
             df['patch_type'], df['current_type'] = patch_info.split(', ')
@@ -60,7 +57,6 @@ def compile_experiment_results(folder_path):
         
         master_list.append(df)
 
-    # 5. Concatenate and Clean
     final_table = pd.concat(master_list, ignore_index=True)
     
     final_table = final_table.rename(columns={
@@ -68,19 +64,18 @@ def compile_experiment_results(folder_path):
         'groups': 'cluster'
     })
 
-    # Order columns to match your "Whiteboard" layout
+    # Updated column order including num_clusters
     cols = [
         'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth', 
-        'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'cluster', 'nRMSE', 'cos_sim'
+        'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'num_clusters', 
+        'cluster', 'nRMSE', 'cos_sim'
     ]
 
-    # Final check: Ensure all columns are present (prevents KeyError if no pickles exist at all)
     for c in cols:
         if c not in final_table.columns:
             final_table[c] = np.nan
 
     return final_table[cols]
-
 
 def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
     # 1. Internal Global Stats Calculation
