@@ -322,7 +322,7 @@ def analyze_cross_correlations(df, alpha=0.05):
     # 5. Plotting
     plt.figure(figsize=(14, 12))
     ax = sns.heatmap(
-        corr_sliced, mask=mask, cmap='coolwarm', center=0, 
+        corr_sliced, mask=mask, cmap='PRGn', center=0, 
         square=True, linewidths=.5, annot=False,
         cbar_kws={"label": "Pearson Correlation ($r$)"}
     )
