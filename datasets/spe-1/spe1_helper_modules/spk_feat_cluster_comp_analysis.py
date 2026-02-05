@@ -9,6 +9,7 @@ import seaborn as sns
 import glob
 from scipy.stats import pearsonr
 import math
+import warnings 
 
 
 #import metadata file
@@ -368,17 +369,18 @@ def analyze_cross_correlations(df, alpha=0.05):
 
 
 
-
 def plot_sig_feat_pairs(df, sig_pairs_df):
+    
+    warnings.simplefilter(action='ignore', category=FutureWarning)
+    
     sns.set_theme(style="ticks")
     
     n_plots = len(sig_pairs_df)
     cols = 3
     rows = math.ceil(n_plots / cols)
     
-    # Increase figure height based on the number of rows
     fig, axes = plt.subplots(rows, cols, figsize=(18, 5 * rows))
-    axes = axes.flatten() # Flatten to 1D array for easy iteration
+    axes = axes.flatten() 
 
     for i, (_, row) in enumerate(sig_pairs_df.iterrows()):
         m, f = row['Metadata'], row['Feature']
@@ -386,7 +388,8 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
         stars = "***" if p < .001 else "**" if p < .01 else "*" if p < .05 else "ns"
         ax = axes[i]
 
-        plot_data = df[[m, f]].dropna()
+        # Convert Inf to NaN manually so Seaborn doesn't have to trigger the warning
+        plot_data = df[[m, f]].replace([np.inf, -np.inf], np.nan).dropna()
         if plot_data.empty: continue
         
         # 1. HORIZONTAL BOXPLOTS for Num Clusters
@@ -428,7 +431,6 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
         ax.set_title(f"{m} vs {f}\n{stars} (r={r:.2f})", fontweight='bold', fontsize=10)
         sns.despine(ax=ax)
 
-    # Remove any empty subplots at the end
     for j in range(i + 1, len(axes)):
         fig.delaxes(axes[j])
 
