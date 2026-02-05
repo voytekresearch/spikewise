@@ -370,7 +370,8 @@ def analyze_cross_correlations(df, alpha=0.05):
 
 
 def plot_sig_feat_pairs(df, sig_pairs_df):
-    
+
+    # Nuke the warnings
     warnings.simplefilter(action='ignore', category=FutureWarning)
     
     sns.set_theme(style="ticks")
@@ -388,7 +389,6 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
         stars = "***" if p < .001 else "**" if p < .01 else "*" if p < .05 else "ns"
         ax = axes[i]
 
-        # Convert Inf to NaN manually so Seaborn doesn't have to trigger the warning
         plot_data = df[[m, f]].replace([np.inf, -np.inf], np.nan).dropna()
         if plot_data.empty: continue
         
@@ -406,6 +406,10 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
             
             x_min, x_max = plot_data[val_col].min(), plot_data[val_col].max()
             ax.set_xlim(x_min - (x_max - x_min) * 0.1, x_max + (x_max - x_min) * 0.1)
+            
+            # Explicit Labels
+            ax.set_xlabel(val_col.replace('_', ' ').title())
+            ax.set_ylabel(cat_col.replace('_', ' ').title())
 
         # 2. CONTINUOUS REGRESSION
         elif plot_data[m].nunique() > 5:
@@ -419,6 +423,10 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
             
             y_min, y_max = y_num.min(), y_num.max()
             ax.set_ylim(y_min - (y_max - y_min) * 0.1, y_max + (y_max - y_min) * 0.1)
+            
+            # Explicit Labels
+            ax.set_xlabel(m.replace('_', ' ').title())
+            ax.set_ylabel(f.replace('_', ' ').title())
 
         # 3. OTHER CATEGORICAL
         else:
@@ -427,13 +435,17 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
             
             y_min, y_max = plot_data[f].min(), plot_data[f].max()
             ax.set_ylim(y_min - (y_max - y_min) * 0.1, y_max + (y_max - y_min) * 0.1)
+            
+            # Explicit Labels
+            ax.set_xlabel(m.replace('_', ' ').title())
+            ax.set_ylabel(f.replace('_', ' ').title())
 
-        ax.set_title(f"{m} vs {f}\n{stars} (r={r:.2f})", fontweight='bold', fontsize=10)
+        ax.set_title(f"{stars} (r={r:.2f})", fontweight='bold', fontsize=12)
         sns.despine(ax=ax)
 
+    # Cleanup unused axes
     for j in range(i + 1, len(axes)):
         fig.delaxes(axes[j])
 
     plt.tight_layout()
     plt.show()
-
