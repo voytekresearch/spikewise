@@ -8,6 +8,7 @@ import numpy as np
 import seaborn as sns
 import glob
 from scipy.stats import pearsonr
+import math
 
 
 #import metadata file
@@ -364,4 +365,73 @@ def analyze_cross_correlations(df, alpha=0.05):
     plt.show()
 
     return pd.DataFrame(significant_cross_pairs).sort_values('Pearson $r$', key=abs, ascending=False).reset_index(drop=True)
+
+
+
+
+def plot_sig_feat_pairs(df, sig_pairs_df):
+    sns.set_theme(style="ticks")
+    
+    n_plots = len(sig_pairs_df)
+    cols = 3
+    rows = math.ceil(n_plots / cols)
+    
+    # Increase figure height based on the number of rows
+    fig, axes = plt.subplots(rows, cols, figsize=(18, 5 * rows))
+    axes = axes.flatten() # Flatten to 1D array for easy iteration
+
+    for i, (_, row) in enumerate(sig_pairs_df.iterrows()):
+        m, f = row['Metadata'], row['Feature']
+        r, p = float(row['Pearson $r$']), float(row['p-value'])
+        stars = "***" if p < .001 else "**" if p < .01 else "*" if p < .05 else "ns"
+        ax = axes[i]
+
+        plot_data = df[[m, f]].dropna()
+        if plot_data.empty: continue
+        
+        # 1. HORIZONTAL BOXPLOTS for Num Clusters
+        if 'num_clusters' in [m, f]:
+            cat_col = 'num_clusters'
+            val_col = f if m == 'num_clusters' else m
+            plot_data[cat_col] = plot_data[cat_col].astype(float).astype(str)
+            order = ['0.0', '2.0', '3.0']
+            
+            sns.boxplot(data=plot_data, y=cat_col, x=val_col, palette="Paired", 
+                        order=order, showfliers=False, orient='h', ax=ax)
+            sns.stripplot(data=plot_data, y=cat_col, x=val_col, color=".3", 
+                          alpha=.3, order=order, orient='h', ax=ax)
+            
+            x_min, x_max = plot_data[val_col].min(), plot_data[val_col].max()
+            ax.set_xlim(x_min - (x_max - x_min) * 0.1, x_max + (x_max - x_min) * 0.1)
+
+        # 2. CONTINUOUS REGRESSION
+        elif plot_data[m].nunique() > 5:
+            x_num = pd.to_numeric(plot_data[m], errors='coerce')
+            y_num = pd.to_numeric(plot_data[f], errors='coerce')
+            ax.scatter(x_num, y_num, alpha=0.3, color='purple')
+            
+            idx = np.isfinite(x_num) & np.isfinite(y_num)
+            m_slope, b_int = np.polyfit(x_num[idx], y_num[idx], 1)
+            ax.plot(x_num, m_slope*x_num + b_int, color='darkblue', lw=2)
+            
+            y_min, y_max = y_num.min(), y_num.max()
+            ax.set_ylim(y_min - (y_max - y_min) * 0.1, y_max + (y_max - y_min) * 0.1)
+
+        # 3. OTHER CATEGORICAL
+        else:
+            sns.boxplot(data=plot_data, x=m, y=f, palette="Paired", showfliers=False, ax=ax)
+            sns.stripplot(data=plot_data, x=m, y=f, color=".3", alpha=.3, ax=ax)
+            
+            y_min, y_max = plot_data[f].min(), plot_data[f].max()
+            ax.set_ylim(y_min - (y_max - y_min) * 0.1, y_max + (y_max - y_min) * 0.1)
+
+        ax.set_title(f"{m} vs {f}\n{stars} (r={r:.2f})", fontweight='bold', fontsize=10)
+        sns.despine(ax=ax)
+
+    # Remove any empty subplots at the end
+    for j in range(i + 1, len(axes)):
+        fig.delaxes(axes[j])
+
+    plt.tight_layout()
+    plt.show()
 
