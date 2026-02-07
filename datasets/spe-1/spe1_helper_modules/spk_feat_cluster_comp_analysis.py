@@ -242,7 +242,7 @@ def analyze_waveform_variance(df, N=20):
     fig, (ax_plot, ax_list) = plt.subplots(1, 2, figsize=(16, 8), gridspec_kw={'width_ratios': [2, 1]})
 
     # --- LEFT: THE PLOT ---
-    sns.scatterplot(data=df, x='nRMSE', y='cos_sim', color='#e0e0e0', alpha=0.3, s=40, ax=ax_plot, label='other cell-feature groups')
+    sns.scatterplot(data=df, x='nRMSE', y='cos_sim', color='darkgrey', alpha=0.3, s=40, ax=ax_plot, label='other cell-feature groups')
     
     # Selection Markers
     sns.scatterplot(data=df.loc[both_indices], x='nRMSE', y='cos_sim', 
