@@ -463,3 +463,22 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Analyze spk feat results ------------------------------ #
 # ------------------------------------------------------------------------------------------- #
+
+
+def quantify_spk_feature_prevalence(df):
+    # Calculate unique cells per feature
+    feature_counts = df.groupby('spike_feature')['cell_id'].nunique().reset_index()
+    feature_counts.columns = ['spike_feature', 'n_cells_with_feature']
+    
+    # Calculate prevalence based on the total unique cells in your current master df
+    total_cells = df['cell_id'].nunique()
+    feature_counts['prevalence_pct'] = (feature_counts['n_cells_with_feature'] / total_cells) * 100
+    
+    # Merge with cluster metrics
+    metrics = df.groupby('spike_feature').agg({
+        'num_clusters': 'mean',
+        'cos_sim': 'mean',
+        'nRMSE': 'mean'
+    }).reset_index()
+    
+    return feature_counts.merge(metrics, on='spike_feature').sort_values('prevalence_pct', ascending=False)
