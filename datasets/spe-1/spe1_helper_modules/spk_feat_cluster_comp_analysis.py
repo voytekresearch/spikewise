@@ -482,3 +482,88 @@ def quantify_spk_feature_prevalence(df):
     }).reset_index()
     
     return feature_counts.merge(metrics, on='spike_feature').sort_values('prevalence_pct', ascending=False)
+
+
+
+
+
+
+def plot_aggregated_spike_feat(raw_df):
+
+    # 1. Internal Aggregation: Calculate Means and 95% CI
+    # 95% CI = 1.96 * (std / sqrt(n))
+    stats = raw_df.groupby('spike_feature').agg({
+        'nRMSE': ['mean', 'std', 'count'],
+        'cos_sim': ['mean', 'std', 'count'],
+        'num_clusters': 'mean'
+    })
+    
+    # Flatten columns
+    stats.columns = ['nRMSE', 'nRMSE_std', 'nRMSE_n', 'cos_sim', 'cos_sim_std', 'cos_sim_n', 'num_clusters']
+    stats = stats.reset_index()
+    
+    # Calculate the 95% Confidence Interval arms
+    # Using .fillna(0) for features with n=1 where std is NaN
+    stats['nRMSE_ci'] = 1.96 * (stats['nRMSE_std'] / np.sqrt(stats['nRMSE_n'])).fillna(0)
+    stats['cos_sim_ci'] = 1.96 * (stats['cos_sim_std'] / np.sqrt(stats['cos_sim_n'])).fillna(0)
+
+    # Prevalence calculation
+    total_cells = raw_df['cell_id'].nunique()
+    stats['prevalence_pct'] = (stats['nRMSE_n'] / total_cells) * 100
+
+    # 2. Setup Plot
+    plt.figure(figsize=(11, 7))
+    sns.set_theme(style="ticks")
+
+    # 3. Draw the 95% CI Crosses
+    # We use a slightly darker gray and thinner lines for precision
+    plt.errorbar(
+        x=stats.nRMSE, 
+        y=stats.cos_sim, 
+        xerr=stats.nRMSE_ci, 
+        yerr=stats.cos_sim_ci,
+        fmt='none', 
+        ecolor='#5e5e5e', 
+        elinewidth=1.2, 
+        capsize=3, 
+        alpha=0.6, 
+        zorder=1
+    )
+
+    # 4. Draw Main Bubbles
+    scatter = sns.scatterplot(
+        data=stats,
+        x='nRMSE', 
+        y='cos_sim',
+        size='prevalence_pct',
+        hue='num_clusters',
+        sizes=(40, 400),
+        palette='viridis',
+        alpha=0.9,
+        edgecolor='black',
+        linewidth=1,
+        zorder=2
+    )
+
+    # 5. Annotations
+    for i, row in stats.iterrows():
+        plt.text(
+            row['nRMSE'] + 0.003, 
+            row['cos_sim'] + 0.001, 
+            row['spike_feature'], 
+            fontsize=9, fontweight='semibold', va='bottom'
+        )
+
+    # 6. Final Polish
+    plt.title('Spike Feature Aggregated Analysis (Mean ± 95% CI)', fontsize=15, fontweight='bold', pad=20)
+    plt.xlabel('$\longrightarrow$ Higher difference in waveforms (nRMSE)', fontsize=11)
+    plt.ylabel('$\longleftarrow$ Higher difference in shape morphology (Cosine Similarity)', fontsize=11)
+    
+    # Standardize limits
+    plt.ylim(stats['cos_sim'].min() - 0.03, 1.01)
+    plt.xlim(-0.005, stats['nRMSE'].max() + 0.03)
+    
+    plt.legend(title='Clusters & % Prevalence', bbox_to_anchor=(1.05, 1), loc='upper left', frameon=False)
+    sns.despine()
+    plt.grid(True, linestyle=':', alpha=0.3)
+    plt.tight_layo
