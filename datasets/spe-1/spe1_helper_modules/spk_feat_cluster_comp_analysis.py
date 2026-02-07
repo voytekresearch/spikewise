@@ -18,6 +18,9 @@ if config_dir not in sys.path:
     sys.path.append(config_dir)
 import config
 
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ Aggregate Results ------------------------------ #
+# ------------------------------------------------------------------------------------------- #
 
 def compile_experiment_results(folder_path):
     """
@@ -219,6 +222,11 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
     if save_fig: plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.show()
 
+
+
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ Analyze metadata results ------------------------------ #
+# ------------------------------------------------------------------------------------------- #
 def analyze_waveform_variance(df, N=20):
     """
     Ranks cells by waveform change, plots the selection logic, 
@@ -449,3 +457,9 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
 
     plt.tight_layout()
     plt.show()
+
+
+
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ Analyze spk feat results ------------------------------ #
+# ------------------------------------------------------------------------------------------- #
