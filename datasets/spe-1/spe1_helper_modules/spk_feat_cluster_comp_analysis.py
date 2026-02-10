@@ -1,26 +1,29 @@
 import os
 import sys
+import glob
+import math
+import warnings
+import numpy as np
+import pandas as pd
+import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-from matplotlib.patches import Circle
 import matplotlib.patches as patches
-import pandas as pd
-import numpy as np
-import seaborn as sns
-import glob
+from matplotlib.patches import Circle
 from scipy.stats import pearsonr
-import math
-import warnings 
 
+# ------------------------------------------------------------------------------------------- #
+#                                     Environment Setup                                       #
+# ------------------------------------------------------------------------------------------- #
 
-#import metadata file
+# Import metadata file
 config_dir = "/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spikeparam/datasets/spe-1/spe1_helper_modules/"
 if config_dir not in sys.path:
     sys.path.append(config_dir)
 import config
 
 # ------------------------------------------------------------------------------------------- #
-# ------------------------------ Aggregate Results ------------------------------ #
+#                                     Aggregate Results                                       #
 # ------------------------------------------------------------------------------------------- #
 
 def compile_experiment_results(folder_path):
@@ -40,10 +43,10 @@ def compile_experiment_results(folder_path):
             # Count unique clusters in this specific experiment
             # We assume 'groups' contains the cluster IDs
             n_clusters = df['groups'].nunique()
-            if n_clusters ==1:
-                n_clusters =2
+            if n_clusters == 1:
+                n_clusters = 2
 
-            #convert to str to convert to categorical variable
+            # convert to str to convert to categorical variable
             n_clusters = str(n_clusters)
         else:
             # Placeholder for no-pickle cells
@@ -223,11 +226,10 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
     if save_fig: plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.show()
 
-
-
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Analyze metadata results ------------------------------ #
 # ------------------------------------------------------------------------------------------- #
+
 def analyze_waveform_variance(df, N=20):
     """
     Ranks cells by waveform change, plots the selection logic, 
@@ -282,11 +284,6 @@ def analyze_waveform_variance(df, N=20):
     plt.show()
 
     return final_targets
-
-
-
-
-
 
 def analyze_cross_correlations(df, alpha=0.05):
     # 1. Define Groups
@@ -351,7 +348,6 @@ def analyze_cross_correlations(df, alpha=0.05):
                 col_feat = col_names[j]
                 
                 # Dynamic Text Color: White for dark colors, Black for light colors
-                # For PRGn, dark colors are at the extremes (low and high r)
                 text_color = "white" if abs(r_val) > 0.45 else "black"
                 
                 is_cross = (row_feat in metadata_cols and col_feat in feature_cols) or \
@@ -365,7 +361,7 @@ def analyze_cross_correlations(df, alpha=0.05):
                         color=text_color, fontsize=11)
                 
                 if is_cross and p_val < alpha:
-                    # Circle significant cross-pairs (using contrast color for the circle edge)
+                    # Circle significant cross-pairs
                     circle_color = "white" if abs(r_val) > 0.7 else "black"
                     circle = Circle((j + 0.5, i + 0.5), 0.44, color=circle_color, fill=False, linewidth=2.5)
                     ax.add_patch(circle)
@@ -376,10 +372,7 @@ def analyze_cross_correlations(df, alpha=0.05):
 
     return pd.DataFrame(significant_cross_pairs).sort_values('Pearson $r$', key=abs, ascending=False).reset_index(drop=True)
 
-
-
 def plot_sig_feat_pairs(df, sig_pairs_df):
-
     # Nuke the warnings
     warnings.simplefilter(action='ignore', category=FutureWarning)
     
@@ -459,12 +452,9 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
     plt.tight_layout()
     plt.show()
 
-
-
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Analyze spk feat results ------------------------------ #
 # ------------------------------------------------------------------------------------------- #
-
 
 def quantify_spk_feature_prevalence(df):
     cols_to_fix = ['num_clusters', 'cos_sim', 'nRMSE']
@@ -487,15 +477,8 @@ def quantify_spk_feature_prevalence(df):
     
     return feature_counts.merge(metrics, on='spike_feature').sort_values('prevalence_pct', ascending=False)
 
-
-
-
-
-
 def plot_aggregated_spike_feat(raw_df):
-
     # 1. Internal Aggregation: Calculate Means and 95% CI
-    # 95% CI = 1.96 * (std / sqrt(n))
     stats = raw_df.groupby('spike_feature').agg({
         'nRMSE': ['mean', 'std', 'count'],
         'cos_sim': ['mean', 'std', 'count'],
@@ -507,7 +490,6 @@ def plot_aggregated_spike_feat(raw_df):
     stats = stats.reset_index()
     
     # Calculate the 95% Confidence Interval arms
-    # Using .fillna(0) for features with n=1 where std is NaN
     stats['nRMSE_ci'] = 1.96 * (stats['nRMSE_std'] / np.sqrt(stats['nRMSE_n'])).fillna(0)
     stats['cos_sim_ci'] = 1.96 * (stats['cos_sim_std'] / np.sqrt(stats['cos_sim_n'])).fillna(0)
 
@@ -520,7 +502,6 @@ def plot_aggregated_spike_feat(raw_df):
     sns.set_theme(style="ticks")
 
     # 3. Draw the 95% CI Crosses
-    # We use a slightly darker gray and thinner lines for precision
     plt.errorbar(
         x=stats.nRMSE, 
         y=stats.cos_sim, 
@@ -563,7 +544,6 @@ def plot_aggregated_spike_feat(raw_df):
     plt.xlabel('$\longrightarrow$ Higher difference in waveforms (nRMSE)', fontsize=11)
     plt.ylabel('$\longleftarrow$ Higher difference in shape morphology (Cosine Similarity)', fontsize=11)
     
-    # Standardize limits
     plt.ylim(stats['cos_sim'].min() - 0.03, 1.01)
     plt.xlim(-0.005, stats['nRMSE'].max() + 0.03)
     
@@ -573,9 +553,6 @@ def plot_aggregated_spike_feat(raw_df):
     plt.tight_layout()
     plt.show()
 
-
-
-
 def plot_feature_depth_distribution(df):
     plt.figure(figsize=(12, 8))
     sns.set_theme(style="ticks")
@@ -584,12 +561,9 @@ def plot_feature_depth_distribution(df):
     sorted_features = df.groupby('spike_feature')['cortical_depth'].median().sort_values().index
     
     # 2. Create a "Deeper is Darker" palette
-    # Using 'Blues' or 'Purples' ensures that features found at 800um 
-    # look "heavier" than those at 100um
     palette = sns.color_palette("YlGnBu", n_colors=len(sorted_features))
 
     # 3. Plot Boxplot (The Range)
-    # We make this subtle so it acts as a "track" for the dots
     sns.boxplot(
         data=df, 
         x='cortical_depth', 
@@ -598,15 +572,14 @@ def plot_feature_depth_distribution(df):
         whis=[5, 95], 
         palette=palette,
         showfliers=False,
-        boxprops=dict(alpha=0.2, edgecolor='none'), # Very faint boxes
+        boxprops=dict(alpha=0.2, edgecolor='none'), 
         whiskerprops=dict(color='gray', alpha=0.5),
         capprops=dict(color='gray', alpha=0.5),
-        medianprops=dict(color='red', alpha=0.8, linewidth=2), # Red line for 'Deepest' point of feature
+        medianprops=dict(color='red', alpha=0.8, linewidth=2), 
         width=0.4
     )
 
     # 4. Plot Stripplot (The Raw Data)
-    # Increased size and jitter for better readability
     sns.stripplot(
         data=df, 
         x='cortical_depth', 
@@ -616,7 +589,7 @@ def plot_feature_depth_distribution(df):
         palette=palette,
         jitter=0.25, 
         alpha=0.5, 
-        s=7, # Larger points
+        s=7, 
         legend=False
     )
 
@@ -625,17 +598,11 @@ def plot_feature_depth_distribution(df):
     plt.xlabel('Cortical Depth ($\mu m$)', fontsize=13, fontweight='semibold')
     plt.ylabel('Clustered Spike Features', fontsize=13, fontweight='semibold')
     
-    # Invert Y-Axis so 0 (Pia/Surface) is at the top
-    # This makes the "Deeper = Darker" visual logic match the physical orientation
-    # plt.gca().invert_yaxis() 
-
     # 6. Clean up
     plt.grid(axis='x', linestyle='--', alpha=0.4)
     sns.despine(trim=True)
     plt.tight_layout()
     plt.show()
-
-
 
 def plot_meta_spk_feature_dependency(df):
     # 1. Identify Categorical Metadata (excluding metrics and keys)
@@ -650,17 +617,17 @@ def plot_meta_spk_feature_dependency(df):
         prevalence = (counts / counts.sum()) * 100
         prevalence.columns = [f"{col}: {c}" for c in prevalence.columns]
         cat_data.append(prevalence)
-        group_sizes.append(len(prevalence.columns)) # Store count of categories in this group
+        group_sizes.append(len(prevalence.columns)) 
     
     # 3. Calculate Mean Depth for Sorting and the Depth Column
     depth_stats = df.groupby('spike_feature')['cortical_depth'].mean().to_frame()
     depth_stats.columns = ['Avg_Depth_um']
 
-    # 4. Merge and Sort by Depth (Top of cortex to Bottom)
+    # 4. Merge and Sort by Depth
     master_matrix = pd.concat(cat_data + [depth_stats], axis=1).fillna(0)
     master_matrix = master_matrix.sort_values(by='Avg_Depth_um')
 
-    # 5. Plotting with increased spacing to prevent overlaps
+    # 5. Plotting 
     fig_height = max(8, len(master_matrix) * 0.6)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, fig_height), 
                                    gridspec_kw={'width_ratios': [8, 1]})
@@ -681,14 +648,12 @@ def plot_meta_spk_feature_dependency(df):
     current_col = 0
     for size in group_sizes:
         # Draw a thick rectangle around the group
-        # (x, y), width, height
         rect = patches.Rectangle(
             (current_col, 0), size, len(master_matrix), 
             linewidth=4, edgecolor='black', facecolor='none', zorder=10
         )
         ax1.add_patch(rect)
         current_col += size
-    # ---------------------------
 
     ax1.set_title('Spike Feature Prevalence by Metadata (%)', fontweight='bold', fontsize=14, pad=15)
     ax2.set_title('Mean Depth', fontweight='bold', fontsize=14, pad=15)
