@@ -633,3 +633,66 @@ def plot_feature_depth_distribution(df):
     sns.despine(trim=True)
     plt.tight_layout()
     plt.show()
+
+
+
+def plot_meta_spk_feature_dependency(df):
+    # 1. Identify Categorical Metadata (excluding metrics and keys)
+    exclude = ['spike_feature', 'num_clusters', 'cos_sim', 'nRMSE', 'cell_id', 'cortical_depth', 'nRMSE_std', 'cos_sim_std', 'cluster']
+    meta_cols = [c for c in df.columns if c not in exclude]
+    
+    # 2. Calculate Prevalence (%) for Categorical Metadata
+    cat_data = []
+    group_sizes = [] # Track sizes for the borders
+    for col in meta_cols:
+        counts = df.groupby(['spike_feature', col]).size().unstack(fill_value=0)
+        prevalence = (counts / counts.sum()) * 100
+        prevalence.columns = [f"{col}: {c}" for c in prevalence.columns]
+        cat_data.append(prevalence)
+        group_sizes.append(len(prevalence.columns)) # Store count of categories in this group
+    
+    # 3. Calculate Mean Depth for Sorting and the Depth Column
+    depth_stats = df.groupby('spike_feature')['cortical_depth'].mean().to_frame()
+    depth_stats.columns = ['Avg_Depth_um']
+
+    # 4. Merge and Sort by Depth (Top of cortex to Bottom)
+    master_matrix = pd.concat(cat_data + [depth_stats], axis=1).fillna(0)
+    master_matrix = master_matrix.sort_values(by='Avg_Depth_um')
+
+    # 5. Plotting with increased spacing to prevent overlaps
+    fig_height = max(8, len(master_matrix) * 0.6)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, fig_height), 
+                                   gridspec_kw={'width_ratios': [8, 1]})
+    
+    # Categorical Prevalence Heatmap (Purples color scheme)
+    sns.heatmap(master_matrix.drop(columns=['Avg_Depth_um']), 
+                annot=True, fmt=".1f", cmap="Purples", ax=ax1, 
+                cbar_kws={'label': 'Group Prevalence (%)'},
+                linewidths=0.5)
+    
+    # Depth Heatmap (Deeper = Darker using "YlGnBu")
+    sns.heatmap(master_matrix[['Avg_Depth_um']], 
+                annot=True, fmt=".0f", cmap="YlGnBu", ax=ax2, 
+                cbar_kws={'label': 'Depth (um)'},
+                linewidths=0.5)
+
+    # --- THE BORDER ADDITION ---
+    current_col = 0
+    for size in group_sizes:
+        # Draw a thick rectangle around the group
+        # (x, y), width, height
+        rect = patches.Rectangle(
+            (current_col, 0), size, len(master_matrix), 
+            linewidth=4, edgecolor='black', facecolor='none', zorder=10
+        )
+        ax1.add_patch(rect)
+        current_col += size
+    # ---------------------------
+
+    ax1.set_title('Spike Feature Prevalence by Metadata (%)', fontweight='bold', fontsize=14, pad=15)
+    ax2.set_title('Mean Depth', fontweight='bold', fontsize=14, pad=15)
+    ax1.set_ylabel('Spike Features (Sorted by Depth)', fontsize=12)
+    ax1.set_xlabel('Metadata Categories', fontsize=12)
+    
+    plt.tight_layout()
+    plt.show()
