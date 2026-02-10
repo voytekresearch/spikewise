@@ -466,6 +466,9 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
 
 
 def quantify_spk_feature_prevalence(df):
+    cols_to_fix = ['num_clusters', 'cos_sim', 'nRMSE']
+    for col in cols_to_fix:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
     # Calculate unique cells per feature
     feature_counts = df.groupby('spike_feature')['cell_id'].nunique().reset_index()
     feature_counts.columns = ['spike_feature', 'n_cells_with_feature']
@@ -566,4 +569,67 @@ def plot_aggregated_spike_feat(raw_df):
     plt.legend(title='Clusters & % Prevalence', bbox_to_anchor=(1.05, 1), loc='upper left', frameon=False)
     sns.despine()
     plt.grid(True, linestyle=':', alpha=0.3)
-    plt.tight_layo
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+def plot_feature_depth_distribution(df):
+    plt.figure(figsize=(12, 8))
+    sns.set_theme(style="ticks")
+
+    # 1. Sort features by median depth so the Y-axis follows the anatomy
+    sorted_features = df.groupby('spike_feature')['cortical_depth'].median().sort_values().index
+    
+    # 2. Create a "Deeper is Darker" palette
+    # Using 'Blues' or 'Purples' ensures that features found at 800um 
+    # look "heavier" than those at 100um
+    palette = sns.color_palette("YlGnBu", n_colors=len(sorted_features))
+
+    # 3. Plot Boxplot (The Range)
+    # We make this subtle so it acts as a "track" for the dots
+    sns.boxplot(
+        data=df, 
+        x='cortical_depth', 
+        y='spike_feature', 
+        order=sorted_features,
+        whis=[5, 95], 
+        palette=palette,
+        showfliers=False,
+        boxprops=dict(alpha=0.2, edgecolor='none'), # Very faint boxes
+        whiskerprops=dict(color='gray', alpha=0.5),
+        capprops=dict(color='gray', alpha=0.5),
+        medianprops=dict(color='red', alpha=0.8, linewidth=2), # Red line for 'Deepest' point of feature
+        width=0.4
+    )
+
+    # 4. Plot Stripplot (The Raw Data)
+    # Increased size and jitter for better readability
+    sns.stripplot(
+        data=df, 
+        x='cortical_depth', 
+        y='spike_feature', 
+        order=sorted_features,
+        hue='spike_feature',
+        palette=palette,
+        jitter=0.25, 
+        alpha=0.5, 
+        s=7, # Larger points
+        legend=False
+    )
+
+    # 5. Anatomical Formatting
+    plt.title('Cortical Depth Distribution of clustered spike features', fontsize=16, fontweight='bold', pad=25)
+    plt.xlabel('Cortical Depth ($\mu m$)', fontsize=13, fontweight='semibold')
+    plt.ylabel('Clustered Spike Features', fontsize=13, fontweight='semibold')
+    
+    # Invert Y-Axis so 0 (Pia/Surface) is at the top
+    # This makes the "Deeper = Darker" visual logic match the physical orientation
+    # plt.gca().invert_yaxis() 
+
+    # 6. Clean up
+    plt.grid(axis='x', linestyle='--', alpha=0.4)
+    sns.despine(trim=True)
+    plt.tight_layout()
+    plt.show()
