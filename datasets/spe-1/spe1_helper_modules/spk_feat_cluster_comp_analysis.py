@@ -11,6 +11,8 @@ import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 from matplotlib.patches import Circle
 from scipy.stats import pearsonr
+from scipy.stats import chi2_contingency
+from scipy.stats import kruskal
 
 # ------------------------------------------------------------------------------------------- #
 #                                     Environment Setup                                       #
@@ -662,3 +664,61 @@ def plot_meta_spk_feature_dependency(df):
     
     plt.tight_layout()
     plt.show()
+
+
+
+def stat_test_depth_stratification(df):
+    """
+    Tests if spike features live at different depths without external post-hoc libs.
+    """
+    # Group depths by feature, dropping NaNs
+    groups = {name: group['cortical_depth'].dropna().values 
+              for name, group in df.groupby('spike_feature')}
+    
+    # 1. Global Kruskal-Wallis Test
+    stat, p = kruskal(*groups.values())
+    
+    print("-" * 40)
+    print(f"DEPTH STRATIFICATION ANALYSIS")
+    print("-" * 40)
+    print(f"Kruskal-Wallis H-stat: {stat:.3f}")
+    print(f"p-value: {p:.3e}")
+    
+    if p < 0.05:
+        print("\nSignificant differences found across cortical layers.")
+    else:
+        print("\nNo significant depth stratification found.")
+    print("-" * 40)
+    
+    return p
+
+
+
+def stat_test_metadata_dependency(df):
+    """
+    Runs Chi-Square tests for all metadata categories to see if they 
+    influence which spike features appear.
+    """
+    exclude = ['spike_feature', 'num_clusters', 'cos_sim', 'nRMSE', 'cell_id', 
+               'cortical_depth', 'nRMSE_std', 'cos_sim_std', 'cluster']
+    meta_cols = [c for c in df.columns if c not in exclude]
+    
+    print("-" * 40)
+    print(f"METADATA DEPENDENCY ANALYSIS (Chi-Square)")
+    print("-" * 40)
+    
+    results = []
+    for col in meta_cols:
+        # Create the contingency table (Counts of Feature vs Metadata Category)
+        contingency = pd.crosstab(df['spike_feature'], df[col])
+        
+        # Test if the rows (features) and columns (metadata) are independent
+        chi2, p, dof, expected = chi2_contingency(contingency)
+        
+        sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+        print(f"{col:<20} | p = {p:.3e} ({sig})")
+        
+        results.append({'metadata': col, 'p_value': p, 'sig': sig})
+        
+    print("-" * 40)
+    return pd.DataFrame(results)
