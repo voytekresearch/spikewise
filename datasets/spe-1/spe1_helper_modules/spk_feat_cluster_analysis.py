@@ -2240,8 +2240,8 @@ def compute_lfp_windows(
     min_peak_height: float = 0.0,
     peak_threshold: float = 2.0,
     verbose: bool = False,
-    # NEW: optionally return the spectrogram (linear power)
-    return_powers: bool = False,
+    # optionally return the spectrogram 
+    return_powers: bool = True,
 ):
     """
     Build multitaper spectra across time for a 1D LFP trace and fit Specparam across bins.
@@ -2487,32 +2487,96 @@ def run_time_resolved_specparam_on_window(
 
 
 
+import os
+import pickle
+from tqdm.auto import tqdm
+from typing import Optional
 
 def run_time_resolved_specparam_per_spike(
     lfp_windows,        # list of windows, one per spike
     times_rel_list,     # same length
     next_rel_list,      # same length
     fs,
+    # --- NEW CHUNKING KWARGS ---
+    chunk_size: Optional[int] = None,
+    save_dir: Optional[str] = None,
+    save_prefix: str = "spk_chunk",
+    resume_start_chunk: int = 0,
+    # ---------------------------
     **specparam_kwargs
 ):
     """
     Returns a list where index == spike index
     """
     all_results = []
+    n_spikes = len(lfp_windows)
 
-    for i, (win, t_rel, next_rel) in enumerate(
-        tqdm(zip(lfp_windows, times_rel_list, next_rel_list),
-             total=len(lfp_windows),
-             desc="Specparam per spike")
-    ):
-        out = run_time_resolved_specparam_on_window(
-            lfp_window=win,
-            times_rel=t_rel,
-            fs=fs,
-            next_spike_rel=next_rel,
-            **specparam_kwargs
-        )
-        all_results.append(out)
+    # ------------------------------------------------------------------- #
+    # PATH A: ORIGINAL BEHAVIOR (No Chunking)                             #
+    # ------------------------------------------------------------------- #
+    if chunk_size is None:
+        for i, (win, t_rel, next_rel) in enumerate(
+            tqdm(zip(lfp_windows, times_rel_list, next_rel_list),
+                 total=n_spikes,
+                 desc="Specparam per spike")
+        ):
+            out = run_time_resolved_specparam_on_window(
+                lfp_window=win,
+                times_rel=t_rel,
+                fs=fs,
+                next_spike_rel=next_rel,
+                **specparam_kwargs
+            )
+            all_results.append(out)
+
+        return all_results
+
+    # ------------------------------------------------------------------- #
+    # PATH B: SAFE CHUNKED BEHAVIOR (For massive cells like C21)          #
+    # ------------------------------------------------------------------- #
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+
+    # Create chunk boundaries
+    chunk_indices = list(range(0, n_spikes, chunk_size))
+
+    for chunk_idx, start_idx in enumerate(chunk_indices):
+        end_idx = min(start_idx + chunk_size, n_spikes)
+        
+        # 1. RESUME LOGIC: If skipping this chunk, just load it from disk
+        if chunk_idx < resume_start_chunk:
+            if save_dir is not None:
+                save_path = os.path.join(save_dir, f"{save_prefix}_{chunk_idx}.pkl")
+                if os.path.exists(save_path):
+                    print(f"Skipping and Loading Chunk {chunk_idx} from disk...")
+                    with open(save_path, 'rb') as f:
+                        chunk_results = pickle.load(f)
+                    all_results.extend(chunk_results)
+                else:
+                    print(f"WARNING: Chunk {chunk_idx} not found at {save_path}. Data missing!")
+            continue
+
+        # 2. PROCESSING LOGIC
+        print(f"\nProcessing Chunk {chunk_idx} (Spikes {start_idx} to {end_idx - 1})...")
+        chunk_results = []
+        
+        for i in tqdm(range(start_idx, end_idx), desc=f"Chunk {chunk_idx}/{len(chunk_indices)-1}"):
+            out = run_time_resolved_specparam_on_window(
+                lfp_window=lfp_windows[i],
+                times_rel=times_rel_list[i],
+                fs=fs,
+                next_spike_rel=next_rel_list[i],
+                **specparam_kwargs
+            )
+            chunk_results.append(out)
+
+        # 3. SAFE SAVE LOGIC: Save this chunk immediately
+        if save_dir is not None:
+            save_path = os.path.join(save_dir, f"{save_prefix}_{chunk_idx}.pkl")
+            with open(save_path, 'wb') as f:
+                pickle.dump(chunk_results, f)
+                
+        all_results.extend(chunk_results)
 
     return all_results
     
@@ -3254,7 +3318,7 @@ def window_feature_group_traces_ci_delta(
     window_results = {}
 
     # ==========================================================
-    # LOOP OVER PLOTTING SETS (this is the ONLY new loop)
+    # LOOP OVER PLOTTING SETS
     # ==========================================================
     for set_name, group_names in plot_sets.items():
 
