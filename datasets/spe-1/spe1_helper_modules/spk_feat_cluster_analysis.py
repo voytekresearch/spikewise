@@ -2915,50 +2915,38 @@ def make_feature_groups(time_res_results, feature, band=None):
 
 
 
-
 def plot_window_feature_groups_heatmap(
     groups: Dict[str, Dict[str, Any]],
     feature_label: str = "value",
-    time_unit: str = "s",          # units of all groups' times_rel
+    time_unit: str = "s",          
     tmin: Optional[float] = None,
     tmax: Optional[float] = None,
-    sort_by: str = "next_rel",     # "next_rel" or "none"
+    sort_by: str = "next_rel",     
     cmap: str = "viridis",
     titles: Optional[Dict[str, str]] = None,
     transition_time: float = 0.0,
+    n_cols: int = 4, # NEW: Grid layout control
 ) -> Dict[str, Dict[str, Any]]:
-    """
-    For each group in `groups`, make a separate heatmap figure.
-
-    Parameters
-    ----------
-    groups : dict
-        {group_name: {"windows": [...], "times_rel": [...], "next_rel": optional}}
-    feature_label : str
-        Colorbar label.
-    time_unit : {"s","ms"}
-        Units of all groups' times_rel / next_rel.
-    tmin, tmax : float or None
-        Time window (in time_unit) to keep.
-    sort_by : {"next_rel","none"}
-        If "next_rel" and group has 'next_rel', events are sorted by next_rel and
-        those values are used as orange "next spike" markers.
-    cmap : str
-        Colormap.
-    titles : dict or None
-        Optional mapping {group_name: title}; default: use group_name.
-    transition_time : float
-        Time of transition (same units as times_rel), vertical line & white markers.
-
-    Returns
-    -------
-    results : dict
-        {group_name: {"fig": fig, "ax": ax, "out": out_from_single}}
-    """
+    
     results: Dict[str, Dict[str, Any]] = {}
+    
+    n_plots = len(groups)
+    if n_plots == 0:
+        return results
 
-    for gname, g in groups.items():
-        # decide sorting and markers for this group
+    # --- Setup Grid ---
+    n_cols_actual = min(n_cols, n_plots)
+    n_rows = (n_plots + n_cols_actual - 1) // n_cols_actual
+    fig, axes = plt.subplots(n_rows, n_cols_actual, figsize=(6 * n_cols_actual, 4 * n_rows))
+    
+    if n_plots == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+
+    for idx, (gname, g) in enumerate(groups.items()):
+        ax = axes[idx]
+
         if sort_by == "next_rel" and "next_rel" in g:
             sort_vec   = np.asarray(g["next_rel"], float)
             next_times = sort_vec
@@ -2966,31 +2954,74 @@ def plot_window_feature_groups_heatmap(
             sort_vec   = None
             next_times = g.get("next_rel", None)
 
-        # transition spike markers: usually all at transition_time
         n_events = len(g["windows"])
         trans_spike_times = np.full(n_events, transition_time, dtype=float)
-
         title = titles[gname] if (titles is not None and gname in titles) else gname
 
-        fig, ax, out = plot_window_feature_group_heatmap_single(
-            g,
-            feature_label=feature_label,
-            time_unit=time_unit,
-            tmin=tmin,
-            tmax=tmax,
-            sort_by=sort_vec,
-            title=title,
-            cmap=cmap,
-            transition_time=transition_time,
-            trans_spike_times=trans_spike_times,
-            next_spike_times=next_times,
-            trans_label="Transition",
-            trans_spike_label="Transition spike",
-            next_spike_label="Next spike",
-        )
+        # We need a slight modification to the `_single` function to pass the specific `ax`.
+        # Because we don't want to break the existing function, we'll extract its logic to fit the grid:
+        
+        # --- Extracted Heatmap Logic ---
+        windows = g["windows"]
+        times_rel = g["times_rel"]
+        
+        base_T = next((np.asarray(t, float) for t in times_rel if len(t) > 1), None)
+        
+        if tmin is not None or tmax is not None:
+            mask = (base_T >= (tmin if tmin is not None else base_T.min())) & \
+                   (base_T <= (tmax if tmax is not None else base_T.max()))
+            base_T = base_T[mask]
+        else:
+            mask = slice(None)
 
-        results[gname] = {"fig": fig, "ax": ax, "out": out}
+        Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
+        trans_time_sec = transition_time / 1000.0 if time_unit == "ms" else float(transition_time)
 
+        A_list = []
+        for w, t in zip(windows, times_rel):
+            w = np.asarray(w, float)
+            t = np.asarray(t, float)
+            if w.size != t.size or w.size < 2:
+                A_list.append(np.full(base_T.shape, np.nan))
+                continue
+
+            t_crop, w_crop = t[mask], w[mask]
+            if t_crop.size != base_T.size:
+                yi = np.full(base_T.shape, np.nan, dtype=float)
+                inside = (base_T >= t[0]) & (base_T <= t[-1])
+                if inside.any():
+                    yi[inside] = np.interp(base_T[inside], t, w)
+                A_list.append(yi)
+            else:
+                A_list.append(w_crop)
+                
+        A = np.vstack(A_list)
+        sort_idx = np.argsort(sort_vec) if sort_vec is not None else np.arange(n_events)
+        A = A[sort_idx]
+
+        im = ax.imshow(A, aspect="auto", origin="lower", extent=[Tgrid[0], Tgrid[-1], 0, n_events], cmap=cmap)
+        ax.axvline(trans_time_sec, color="white", linewidth=2, alpha=0.9, label="Transition")
+        
+        y_rows = np.arange(n_events) + 0.5
+        if trans_spike_times is not None:
+            ax.scatter((np.asarray(trans_spike_times, float)[sort_idx] / 1000.0 if time_unit == "ms" else np.asarray(trans_spike_times, float)[sort_idx]), y_rows, s=20, facecolors="none", edgecolors="white", linewidths=1.0, zorder=3)
+            
+        if next_times is not None:
+            ax.scatter((np.asarray(next_times, float)[sort_idx] / 1000.0 if time_unit == "ms" else np.asarray(next_times, float)[sort_idx]), y_rows, s=20, facecolors="orange", edgecolors="black", linewidths=0.5, zorder=3)
+
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Events (sorted)" if sort_vec is not None else "Events")
+        ax.set_title(title)
+        cbar = fig.colorbar(im, ax=ax)
+        cbar.set_label(feature_label)
+        
+        results[gname] = {"fig": fig, "ax": ax, "out": {"Tgrid": Tgrid, "A": A, "sort_idx": sort_idx}}
+
+    for i in range(len(groups), len(axes)):
+        axes[i].set_visible(False)
+
+    plt.tight_layout()
+    plt.show()
     return results
 
 def plot_window_feature_group_heatmap_single(
@@ -3343,37 +3374,17 @@ def window_feature_group_traces_ci_delta(
     analysis_window=(-0.2, 0.0),
     alpha_ci=0.25,
     plot=True,
-    plot_mode="all",   # NEW: "all" or "per_cluster"
+    plot_mode="all",
+    n_cols=4,  # NEW: Grid column control
 ):
-    """
-    Plot mean ± 95% CI of baseline-corrected (Δ) feature traces.
-
-    - Computation is unchanged
-    - Plotting can be:
-        * "all"         → one figure with all groups
-        * "per_cluster" → one figure per cluster family
-
-    Returns
-    -------
-    window_results : dict
-        {group_name: list of per-epoch analysis-window means}
-    """
-
     # ---------------------------
     # Organize groups by cluster
     # ---------------------------
     cluster_families = {}
-
     for gname in feat_groups.keys():
-        # infer cluster family from name
-        if ":" in gname:
-            family = gname.split(":")[0]
-        else:
-            family = "all"
-
+        family = gname.split(":")[0] if ":" in gname else "all"
         cluster_families.setdefault(family, []).append(gname)
 
-    # Decide which plotting sets to loop over
     if plot_mode == "all":
         plot_sets = {"All groups": list(feat_groups.keys())}
     elif plot_mode == "per_cluster":
@@ -3383,25 +3394,31 @@ def window_feature_group_traces_ci_delta(
 
     window_results = {}
 
-    # ==========================================================
-    # LOOP OVER PLOTTING SETS
-    # ==========================================================
+    # --- Setup Grid ---
+    if plot:
+        n_plots = len(plot_sets)
+        n_cols_actual = min(n_cols, n_plots) if n_plots > 0 else 1
+        n_rows = (n_plots + n_cols_actual - 1) // n_cols_actual
+        fig, axes = plt.subplots(n_rows, n_cols_actual, figsize=(6 * n_cols_actual, 4 * n_rows))
+        
+        # Flatten axes array for easy iteration
+        if n_plots == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+
+    plot_idx = 0
+
     for set_name, group_names in plot_sets.items():
-
         if plot:
-            fig, ax = plt.subplots(figsize=(12, 4))
+            ax = axes[plot_idx]
 
-        # -----------------------------------------
-        # LOOP OVER GROUPS (unchanged computation)
-        # -----------------------------------------
         for gname in group_names:
-
             g = feat_groups[gname]
             windows   = g["windows"]
             times_rel = g["times_rel"]
             color     = g.get("color", None)
 
-            # --- determine common time grid ---
             base_T = None
             for t in times_rel:
                 if len(t) > 1:
@@ -3411,7 +3428,6 @@ def window_feature_group_traces_ci_delta(
                 continue
 
             Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
-
             mats = []
             epoch_win_means = []
 
@@ -3424,7 +3440,7 @@ def window_feature_group_traces_ci_delta(
 
                 t_sec = t / 1000.0 if time_unit == "ms" else t
 
-                # ---- BASELINE SUBTRACTION ----
+                # BASELINE SUBTRACTION
                 b0, b1 = baseline_window
                 bmask = (t_sec >= b0) & (t_sec <= b1)
                 if not np.any(bmask):
@@ -3433,14 +3449,13 @@ def window_feature_group_traces_ci_delta(
                 baseline = np.nanmean(w[bmask])
                 w = w - baseline
 
-                # ---- interpolate onto common grid ----
                 yi = np.full_like(Tgrid, np.nan)
                 inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
                 if inside.any():
                     yi[inside] = np.interp(Tgrid[inside], t_sec, w)
                     mats.append(yi)
 
-                # ---- ANALYSIS WINDOW ----
+                # ANALYSIS WINDOW
                 w0, w1 = analysis_window
                 amask = (t_sec >= w0) & (t_sec <= w1)
                 epoch_win_means.append(np.nanmean(w[amask]))
@@ -3458,63 +3473,41 @@ def window_feature_group_traces_ci_delta(
 
             if plot:
                 if color is not None:
-                    # If color specified, use it for both
                     line = ax.plot(Tgrid, mean, label=gname, color=color)[0]
                     fill_color = color
                 else:
-                    # If no color, let matplotlib choose and get it back
                     line = ax.plot(Tgrid, mean, label=gname)[0]
                     fill_color = line.get_color()
                 
-                ax.fill_between(
-                    Tgrid,
-                    mean - ci95,
-                    mean + ci95,
-                    color=fill_color,  # Use the right color
-                    alpha=alpha_ci,
-                    linewidth=0,)
+                ax.fill_between(Tgrid, mean - ci95, mean + ci95, color=fill_color, alpha=alpha_ci, linewidth=0)
 
-        # ---------------------------
-        # Finalize figure
-        # ---------------------------
         if plot:
             ax.axvline(0, color="k", linestyle="--", linewidth=1)
             ax.set_xlabel("Time (s, relative to spike)")
             ax.set_ylabel(ylabel)
+            ax.set_title(f"{title + ' — ' if title else ''}{set_name}")
+            ax.legend(loc="upper right", frameon=False, fontsize=8)
+            ax.grid(True, alpha=0.3, linestyle="--")
+            plot_idx += 1
 
-            if title:
-                ax.set_title(f"{title} — {set_name}")
-            else:
-                ax.set_title(set_name)
-
-            ax.legend(
-                loc="center left",
-                bbox_to_anchor=(1.02, 0.5),
-                frameon=False,
-            )
-
-            fig.tight_layout(rect=[0, 0, 0.82, 1])
-            plt.show()
+    if plot:
+        # Hide any unused subplots
+        for i in range(plot_idx, len(axes)):
+            axes[i].set_visible(False)
+        plt.tight_layout()
+        plt.show()
 
     return window_results
-
 
 
 
 def stats_boxplot_from_window_results(
     window_results: dict,
     group_colors=None,
-    plot_mode: str = "all",      # "all" or "per_cluster"
+    plot_mode: str = "all",      
     feature_label: str = "Δ Value",
-    figsize=(10, 5),
+    n_cols: int = 4, # NEW: Grid layout control
 ):
-    """
-    Boxplots + stats directly from precomputed per-epoch window values.
-    """
-
-    # -----------------------------
-    # organize by cluster family
-    # -----------------------------
     families = {}
     for g in window_results:
         fam = g.split(":")[0] if ":" in g else "all"
@@ -3528,21 +3521,32 @@ def stats_boxplot_from_window_results(
         raise ValueError("plot_mode must be 'all' or 'per_cluster'")
 
     report = {}
-
     default_palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    # -----------------------------
-    # plotting + stats
-    # -----------------------------
-    for title, groups in plot_sets.items():
-
+    # --- Pre-calculate valid plots for grid sizing ---
+    valid_plots = []
+    for title_name, groups in plot_sets.items():
         data = [window_results[g] for g in groups if len(window_results[g]) > 0]
+        if len(data) >= 2:
+            valid_plots.append((title_name, groups, data))
+
+    n_plots = len(valid_plots)
+    if n_plots == 0:
+        return report
+
+    # --- Setup Grid ---
+    n_cols_actual = min(n_cols, n_plots)
+    n_rows = (n_plots + n_cols_actual - 1) // n_cols_actual
+    fig, axes = plt.subplots(n_rows, n_cols_actual, figsize=(5 * n_cols_actual, 4 * n_rows))
+    
+    if n_plots == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+
+    for idx, (title_name, groups, data) in enumerate(valid_plots):
+        ax = axes[idx]
         labels = [g for g in groups if len(window_results[g]) > 0]
-
-        if len(data) < 2:
-            continue
-
-        fig, ax = plt.subplots(figsize=figsize)
 
         bp = ax.boxplot(
             data,
@@ -3551,29 +3555,22 @@ def stats_boxplot_from_window_results(
             medianprops=dict(color="black", linewidth=2),
         )
 
-        # -----------------------------
-        # COLOR LOGIC (ONLY CHANGE)
-        # -----------------------------
         for i, box in enumerate(bp["boxes"]):
-
             if plot_mode == "per_cluster":
                 lname = labels[i].lower()
                 if "low" in lname:
-                    col = "#1f77b4"   # blue
+                    col = "#1f77b4"
                 elif "high" in lname:
-                    col = "#ff7f0e"   # orange
+                    col = "#ff7f0e"
                 else:
-                    col = "green"   # fallback
+                    col = "green"
             else:
-                # plot_mode == "all"
                 col = default_palette[i % len(default_palette)]
 
             box.set_facecolor(col)
             box.set_alpha(0.6)
 
-        # -----------------------------
-        # stats
-        # -----------------------------
+        # Stats logic
         if len(data) == 2:
             from scipy.stats import ttest_ind
             stat, p = ttest_ind(data[0], data[1], equal_var=False)
@@ -3585,32 +3582,35 @@ def stats_boxplot_from_window_results(
 
         stars = p_to_stars(p)
 
-        ax.set_title(f"{feature_label} — {title}")
+        ax.set_title(f"{feature_label} — {title_name}")
         ax.set_ylabel(feature_label)
 
+        # Place p-value at the top center inside the plot
         ax.text(
-            0.5, 0.92,
-            f"{stars}  (p={p:.3g})",
-            transform=ax.transAxes,
-            ha="center",
-            va="center",
-            fontsize=14,
-            fontweight="bold",
+            0.5, 0.95, f"{stars}  (p={p:.3g})",
+            transform=ax.transAxes, ha="center", va="top",
+            fontsize=12, fontweight="bold",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8)
         )
 
-        plt.xticks(rotation=25, ha="right")
-        plt.tight_layout()
-        plt.show()
+        ax.tick_params(axis='x', rotation=25)
+        ax.grid(True, axis='y', alpha=0.3, linestyle="--")
 
-        report[title] = {
+        report[title_name] = {
             "groups": labels,
             "test": test,
             "p": p,
             "stars": stars,
         }
 
-    return report
+    # Hide any unused subplots
+    for i in range(len(valid_plots), len(axes)):
+        axes[i].set_visible(False)
 
+    plt.tight_layout()
+    plt.show()
+
+    return report
 
 
 
