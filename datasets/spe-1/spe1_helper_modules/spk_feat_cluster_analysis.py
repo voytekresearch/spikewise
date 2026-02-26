@@ -19,7 +19,10 @@ import scipy.stats as stats
 from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway, kruskal, zscore
 from sklearn.metrics.pairwise import cosine_similarity
 from itertools import combinations
-
+import os
+import re
+import pickle
+import gc
 
 
 
@@ -267,7 +270,61 @@ def plot_spike_feature_distributions(
     
     print("="*90)
     
-   
+
+
+def load_chunked_specparam_results(save_dir: str, prefix: str = "c21_specparam"):
+    """
+    Sequentially loads chunked pickle files from a directory and assembles them 
+    into a single master list, managing memory carefully to prevent kernel crashes.
+    
+    Parameters:
+    -----------
+    save_dir : str
+        The path to the folder containing the chunked .pkl files.
+    prefix : str
+        The string that the chunk files start with (e.g., 'c21_specparam').
+        
+    Returns:
+    --------
+    specparam_by_spike : list
+        The fully reassembled list of specparam results across all spikes.
+    """
+    if not os.path.exists(save_dir):
+        raise FileNotFoundError(f"The directory {save_dir} does not exist.")
+
+    # 1. Find all matching files
+    all_files = [f for f in os.listdir(save_dir) if f.startswith(prefix) and f.endswith(".pkl")]
+    
+    if len(all_files) == 0:
+        print(f"No files found in {save_dir} starting with '{prefix}'.")
+        return []
+
+    # 2. Sort them numerically so spikes stay in temporal order
+    def extract_chunk_number(filename):
+        match = re.search(r'_(\d+)\.pkl$', filename)
+        return int(match.group(1)) if match else -1
+
+    all_files.sort(key=extract_chunk_number)
+    print(f"Found {len(all_files)} chunk files. Assembling master list...")
+
+    # 3. Memory-safe loading
+    specparam_by_spike = []
+    
+    for file_name in tqdm(all_files, desc="Loading Chunks"):
+        file_path = os.path.join(save_dir, file_name)
+        
+        with open(file_path, 'rb') as f:
+            chunk_data = pickle.load(f)
+        
+        # Extend the master list
+        specparam_by_spike.extend(chunk_data)
+        
+        # Free up memory immediately
+        del chunk_data
+        gc.collect() 
+
+    print(f"Success! Master list assembled with {len(specparam_by_spike)} total spikes.")
+    return specparam_by_spike  
 # Post-process: remove first/last 0.5s epochs
 def trim_edges(results, edge_sec=0.5):
     """
