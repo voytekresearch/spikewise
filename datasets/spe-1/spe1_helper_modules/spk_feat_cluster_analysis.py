@@ -270,28 +270,37 @@ def plot_spike_feature_distributions(
    
 # Post-process: remove first/last 0.5s epochs
 def trim_edges(results, edge_sec=0.5):
-    trimmed = []
-    
+    """
+    Trims temporal edges in-place to prevent memory duplication and kernel crashes 
+    when processing massive datasets (e.g., 10,000+ spikes).
+    """
+    # Iterate directly over the original list
     for out_w in results:
         t_bins = out_w["t_bins_s"]
+        
+        # Calculate the mask
         mask = (t_bins >= (t_bins.min() + edge_sec)) & (t_bins <= (t_bins.max() - edge_sec))
         
-        # Apply mask to all epoch-wise arrays
-        out_w_trimmed = {
-            **out_w,
-            "t_bins_s": out_w["t_bins_s"][mask],
-            "epoch_idx": out_w["epoch_idx"][mask],
-            "powers": out_w["powers"][mask, :],
-            "offset": out_w["offset"][mask],
-            "exponent": out_w["exponent"][mask],
-            "r_squared": out_w["r_squared"][mask],
-            "band_aucs": {b: vals[mask] for b, vals in out_w["band_aucs"].items()},
-        }
-        # knee may be None or array
-        if out_w["knee"] is not None:
-            out_w_trimmed["knee"] = out_w["knee"][mask]
-        trimmed.append(out_w_trimmed)
-    return trimmed
+        # Overwrite the arrays IN-PLACE
+        out_w["t_bins_s"] = out_w["t_bins_s"][mask]
+        out_w["epoch_idx"] = out_w["epoch_idx"][mask]
+        out_w["powers"] = out_w["powers"][mask, :]
+        out_w["offset"] = out_w["offset"][mask]
+        out_w["exponent"] = out_w["exponent"][mask]
+        out_w["r_squared"] = out_w["r_squared"][mask]
+        
+        # Update dictionaries in-place
+        for b in list(out_w["band_aucs"].keys()):
+            out_w["band_aucs"][b] = out_w["band_aucs"][b][mask]
+            
+        # Knee may be None or array
+        if out_w.get("knee") is not None:
+            out_w["knee"] = out_w["knee"][mask]
+            
+
+    return results
+
+
 
 def get_cluster_colors_and_labels(cluster_col, unique_clusters, df=None, clustered_feature=None):
     """
