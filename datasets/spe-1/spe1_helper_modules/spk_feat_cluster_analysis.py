@@ -25,6 +25,10 @@ import pickle
 import gc
 
 
+from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+from itertools import combination
+
+
 
 
 # ------------------------------------------------------------------------------------------- #
@@ -3365,253 +3369,184 @@ def make_specparam_feature_groups(
     return out
 
 
-def window_feature_group_traces_ci_delta(
+
+
+#Function to analyze windows is specparam feature traces, and compare across cluster groups 
+def lfp_sliding_stats(
     feat_groups,
     time_unit="s",
     ylabel="Δ Value",
-    title=None,
-    baseline_window=(-0.3, -0.05),
-    analysis_window=(-0.2, 0.0),
+    window_width=0.05,
+    step_size=0.01,
+    p_threshold=0.05,
     alpha_ci=0.25,
-    plot=True,
-    plot_mode="all",
-    n_cols=4,  # NEW: Grid column control
+    plot_mode="both",
+    figsize=(18, 7) # Wider figure for side-by-side layout
 ):
-    # ---------------------------
-    # Organize groups by cluster
-    # ---------------------------
+    """
+    Slides a window to find significant regions. 
+    Demeans each individual trace by its own WHOLE-TRACE average.
+    Layout: Trace on LEFT, Boxplots on RIGHT.
+    """
+
+
+    # --- HELPERS ---
+    def cohens_d(d1, d2):
+        n1, n2 = len(d1), len(d2)
+        if n1 < 2 or n2 < 2: return 0.0
+        var1, var2 = np.var(d1, ddof=1), np.var(d2, ddof=1)
+        pooled_se = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
+        return abs(np.mean(d1) - np.mean(d2)) / (pooled_se + 1e-8)
+
+    def get_stars(p):
+        if p < 0.0001: return "****"
+        elif p < 0.001: return "***"
+        elif p < 0.01: return "**"
+        elif p < 0.05: return "*"
+        return "ns"
+
+    def sort_clusters(names):
+        rank = {"low": 0, "mid": 1, "high": 2}
+        def get_rank(n):
+            ln = n.lower()
+            for k, v in rank.items():
+                if k in ln: return v
+            return 99
+        return sorted(names, key=get_rank)
+
+    # Organize groups
     cluster_families = {}
     for gname in feat_groups.keys():
         family = gname.split(":")[0] if ":" in gname else "all"
         cluster_families.setdefault(family, []).append(gname)
 
-    if plot_mode == "all":
-        plot_sets = {"All groups": list(feat_groups.keys())}
-    elif plot_mode == "per_cluster":
-        plot_sets = cluster_families
-    else:
-        raise ValueError("plot_mode must be 'all' or 'per_cluster'")
+    plot_sets = {}
+    if plot_mode in ["all", "both"]: plot_sets["All groups"] = list(feat_groups.keys())
+    if plot_mode in ["per_cluster", "both"]:
+        for k, v in cluster_families.items(): plot_sets[k] = v
 
-    window_results = {}
-
-    # --- Setup Grid ---
-    if plot:
-        n_plots = len(plot_sets)
-        n_cols_actual = min(n_cols, n_plots) if n_plots > 0 else 1
-        n_rows = (n_plots + n_cols_actual - 1) // n_cols_actual
-        fig, axes = plt.subplots(n_rows, n_cols_actual, figsize=(6 * n_cols_actual, 4 * n_rows))
-        
-        # Flatten axes array for easy iteration
-        if n_plots == 1:
-            axes = [axes]
-        else:
-            axes = axes.flatten()
-
-    plot_idx = 0
-
-    for set_name, group_names in plot_sets.items():
-        if plot:
-            ax = axes[plot_idx]
-
-        for gname in group_names:
-            g = feat_groups[gname]
-            windows   = g["windows"]
-            times_rel = g["times_rel"]
-            color     = g.get("color", None)
-
-            base_T = None
-            for t in times_rel:
-                if len(t) > 1:
-                    base_T = np.asarray(t, float)
-                    break
-            if base_T is None:
-                continue
-
-            Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
-            mats = []
-            epoch_win_means = []
-
-            for w, t in zip(windows, times_rel):
-                w = np.asarray(w, float)
-                t = np.asarray(t, float)
-
-                if w.size != t.size or w.size < 2:
-                    continue
-
-                t_sec = t / 1000.0 if time_unit == "ms" else t
-
-                # BASELINE SUBTRACTION
-                b0, b1 = baseline_window
-                bmask = (t_sec >= b0) & (t_sec <= b1)
-                if not np.any(bmask):
-                    continue
-
-                baseline = np.nanmean(w[bmask])
-                w = w - baseline
-
-                yi = np.full_like(Tgrid, np.nan)
-                inside = (Tgrid >= t_sec[0]) & (Tgrid <= t_sec[-1])
-                if inside.any():
-                    yi[inside] = np.interp(Tgrid[inside], t_sec, w)
-                    mats.append(yi)
-
-                # ANALYSIS WINDOW
-                w0, w1 = analysis_window
-                amask = (t_sec >= w0) & (t_sec <= w1)
-                epoch_win_means.append(np.nanmean(w[amask]))
-
-            if len(mats) < 2:
-                continue
-
-            A = np.vstack(mats)
-            mean = np.nanmean(A, axis=0)
-            std  = np.nanstd(A, axis=0)
-            n    = np.sum(np.isfinite(A), axis=0)
-            ci95 = 1.96 * std / np.sqrt(n)
-
-            window_results[gname] = epoch_win_means
-
-            if plot:
-                if color is not None:
-                    line = ax.plot(Tgrid, mean, label=gname, color=color)[0]
-                    fill_color = color
-                else:
-                    line = ax.plot(Tgrid, mean, label=gname)[0]
-                    fill_color = line.get_color()
-                
-                ax.fill_between(Tgrid, mean - ci95, mean + ci95, color=fill_color, alpha=alpha_ci, linewidth=0)
-
-        if plot:
-            ax.axvline(0, color="k", linestyle="--", linewidth=1)
-            ax.set_xlabel("Time (s, relative to spike)")
-            ax.set_ylabel(ylabel)
-            ax.set_title(f"{title + ' — ' if title else ''}{set_name}")
-            ax.legend(loc="upper right", frameon=False, fontsize=8)
-            ax.grid(True, alpha=0.3, linestyle="--")
-            plot_idx += 1
-
-    if plot:
-        # Hide any unused subplots
-        for i in range(plot_idx, len(axes)):
-            axes[i].set_visible(False)
-        plt.tight_layout()
-        plt.show()
-
-    return window_results
-
-
-
-def stats_boxplot_from_window_results(
-    window_results: dict,
-    group_colors=None,
-    plot_mode: str = "all",      
-    feature_label: str = "Δ Value",
-    n_cols: int = 4, # NEW: Grid layout control
-):
-    families = {}
-    for g in window_results:
-        fam = g.split(":")[0] if ":" in g else "all"
-        families.setdefault(fam, []).append(g)
-
-    if plot_mode == "all":
-        plot_sets = {"All groups": list(window_results.keys())}
-    elif plot_mode == "per_cluster":
-        plot_sets = families
-    else:
-        raise ValueError("plot_mode must be 'all' or 'per_cluster'")
-
-    report = {}
     default_palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    # --- Pre-calculate valid plots for grid sizing ---
-    valid_plots = []
-    for title_name, groups in plot_sets.items():
-        data = [window_results[g] for g in groups if len(window_results[g]) > 0]
-        if len(data) >= 2:
-            valid_plots.append((title_name, groups, data))
+    for set_name, unsorted_names in plot_sets.items():
+        if len(unsorted_names) < 2: continue
+        
+        group_names = sort_clusters(unsorted_names)
+        current_mode = "all" if set_name == "All groups" else "per_cluster"
+        
+        # --- DATA PREP ---
+        A_matrices = {}
+        colors_dict = {}
+        Tgrid = None
 
-    n_plots = len(valid_plots)
-    if n_plots == 0:
-        return report
-
-    # --- Setup Grid ---
-    n_cols_actual = min(n_cols, n_plots)
-    n_rows = (n_plots + n_cols_actual - 1) // n_cols_actual
-    fig, axes = plt.subplots(n_rows, n_cols_actual, figsize=(5 * n_cols_actual, 4 * n_rows))
-    
-    if n_plots == 1:
-        axes = [axes]
-    else:
-        axes = axes.flatten()
-
-    for idx, (title_name, groups, data) in enumerate(valid_plots):
-        ax = axes[idx]
-        labels = [g for g in groups if len(window_results[g]) > 0]
-
-        bp = ax.boxplot(
-            data,
-            labels=labels,
-            patch_artist=True,
-            medianprops=dict(color="black", linewidth=2),
-        )
-
-        for i, box in enumerate(bp["boxes"]):
-            if plot_mode == "per_cluster":
-                lname = labels[i].lower()
-                if "low" in lname:
-                    col = "#1f77b4"
-                elif "high" in lname:
-                    col = "#ff7f0e"
-                else:
-                    col = "green"
+        for i, gname in enumerate(group_names):
+            if current_mode == "per_cluster":
+                lname = gname.lower()
+                colors_dict[gname] = "#1f77b4" if "low" in lname else "#ff7f0e" if "high" in lname else "#2ca02c"
             else:
-                col = default_palette[i % len(default_palette)]
+                colors_dict[gname] = default_palette[i % len(default_palette)]
+            
+            g = feat_groups[gname]
+            if Tgrid is None:
+                base_T = next((np.asarray(t, float) for t in g["times_rel"] if len(t) > 1), None)
+                Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
+            
+            mats = []
+            for w, t in zip(g["windows"], g["times_rel"]):
+                if len(w) != len(t) or len(w) < 2: continue
+                w_demeaned = np.asarray(w, float) - np.nanmean(w)
+                mats.append(np.interp(Tgrid, (t/1000.0 if time_unit=="ms" else t), w_demeaned))
+            if len(mats) >= 2: A_matrices[gname] = np.vstack(mats)
 
-            box.set_facecolor(col)
-            box.set_alpha(0.6)
+        # Sliding Window Math
+        sig_windows = []
+        for w_start in np.arange(Tgrid[0], Tgrid[-1] - window_width, step_size):
+            amask = (Tgrid >= w_start) & (Tgrid <= w_start + window_width)
+            data_for_test = [np.nanmean(A_matrices[gn][:, amask], axis=1) for gn in group_names if gn in A_matrices]
+            data_for_test = [d[np.isfinite(d)] for d in data_for_test if len(d) > 2]
+            
+            if len(data_for_test) >= 2:
+                p = f_oneway(*data_for_test)[1] if len(data_for_test) > 2 else ttest_ind(data_for_test[0], data_for_test[1], equal_var=False)[1]
+                if p < p_threshold:
+                    sig_windows.append((w_start, w_start + window_width, p))
 
-        # Stats logic
-        if len(data) == 2:
-            from scipy.stats import ttest_ind
-            stat, p = ttest_ind(data[0], data[1], equal_var=False)
-            test = "t-test"
-        else:
-            from scipy.stats import f_oneway
-            stat, p = f_oneway(*data)
-            test = "anova"
+        merged_regions = []
+        if sig_windows:
+            cur_s, cur_e, cur_p = sig_windows[0]
+            for w in sig_windows[1:]:
+                if w[0] <= cur_e + 1e-5:
+                    cur_e, cur_p = max(cur_e, w[1]), min(cur_p, w[2])
+                else:
+                    merged_regions.append((cur_s, cur_e, cur_p)); cur_s, cur_e, cur_p = w
+            merged_regions.append((cur_s, cur_e, cur_p))
 
-        stars = p_to_stars(p)
+        # --- NEW SIDE-BY-SIDE LAYOUT ---
+        fig = plt.figure(figsize=figsize)
+        has_regions = len(merged_regions) > 0
+        
+        # 1 Row, 2 Columns (Trace gets more space)
+        master_gs = GridSpec(1, 2, width_ratios=[1.5, 1] if has_regions else [1, 0.01], wspace=0.3)
+        
+        # LEFT SIDE: TRACE
+        ax_trace = fig.add_subplot(master_gs[0])
+        for gname in group_names:
+            if gname not in A_matrices: continue
+            mean, std = np.nanmean(A_matrices[gname], axis=0), np.nanstd(A_matrices[gname], axis=0)
+            ci = 1.96 * std / np.sqrt(np.sum(np.isfinite(A_matrices[gname]), axis=0))
+            ax_trace.plot(Tgrid, mean, label=gname, color=colors_dict[gname], lw=2.5)
+            ax_trace.fill_between(Tgrid, mean-ci, mean+ci, color=colors_dict[gname], alpha=alpha_ci, lw=0)
 
-        ax.set_title(f"{feature_label} — {title_name}")
-        ax.set_ylabel(feature_label)
+        for s, e, _ in merged_regions:
+            ax_trace.axvspan(s, e, color='gold', alpha=0.15)
+        ax_trace.axvline(0, color="k", ls="--", lw=1.5)
+        ax_trace.set_title(f"Temporal Dynamics: {set_name}", fontweight='bold')
+        ax_trace.set_ylabel(ylabel)
+        ax_trace.legend(loc="upper right", frameon=True, fontsize=9)
+        ax_trace.grid(False)
 
-        # Place p-value at the top center inside the plot
-        ax.text(
-            0.5, 0.95, f"{stars}  (p={p:.3g})",
-            transform=ax.transAxes, ha="center", va="top",
-            fontsize=12, fontweight="bold",
-            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8)
-        )
+        # RIGHT SIDE: BOXPLOTS (Stacked or Grid)
+        if has_regions:
+            n_boxes = len(merged_regions)
+            # If many regions, make a 2-col grid on the right, otherwise 1-col
+            n_cols = 2 if n_boxes > 2 else 1
+            n_rows = (n_boxes + n_cols - 1) // n_cols
+            sub_gs = GridSpecFromSubplotSpec(n_rows, n_cols, subplot_spec=master_gs[1], wspace=0.4, hspace=0.6)
+            
+            for idx, (s, e, _) in enumerate(merged_regions):
+                ax_box = fig.add_subplot(sub_gs[idx])
+                amask = (Tgrid >= s) & (Tgrid <= e)
+                box_data = [np.nanmean(A_matrices[gn][:, amask], axis=1) for gn in group_names if gn in A_matrices]
+                box_data = [d[np.isfinite(d)] for d in box_data]
+                
+                bp = ax_box.boxplot(box_data, labels=[l.split(': ')[-1] for l in group_names], patch_artist=True, medianprops=dict(color="black"))
+                for i, box in enumerate(bp['boxes']):
+                    box.set_facecolor(colors_dict[group_names[i]])
+                    box.set_alpha(0.6)
 
-        ax.tick_params(axis='x', rotation=25)
-        ax.grid(True, axis='y', alpha=0.3, linestyle="--")
+                # Pairwise Annotations
+                y_max, y_min = max([np.max(d) for d in box_data if len(d)>0]), min([np.min(d) for d in box_data if len(d)>0])
+                y_range = y_max - y_min
+                step = y_range * 0.15
+                current_y = y_max + step
 
-        report[title_name] = {
-            "groups": labels,
-            "test": test,
-            "p": p,
-            "stars": stars,
-        }
+                for i, j in combinations(range(len(box_data)), 2):
+                    d1, d2 = box_data[i], box_data[j]
+                    if len(d1) < 2 or len(d2) < 2: continue
+                    _, p_pair = ttest_ind(d1, d2, equal_var=False)
+                    if p_pair < p_threshold:
+                        stars = get_stars(p_pair)
+                        p_str = f"p={p_pair:.4f}" if p_pair > 0.0001 else "p<0.0001"
+                        ax_box.plot([i+1, i+1, j+1, j+1], [current_y, current_y+step*0.2, current_y+step*0.2, current_y], lw=1.2, c='k')
+                        ax_box.text((i+j+2)/2, current_y+step*0.2, f"{stars}\n{p_str}\n(d={cohens_d(d1, d2):.1f})", ha='center', va='bottom', fontsize=7)
+                        current_y += step * 2.5
 
-    # Hide any unused subplots
-    for i in range(len(valid_plots), len(axes)):
-        axes[i].set_visible(False)
+                ax_box.set_ylim(bottom=y_min - step, top=current_y + step)
+                ax_box.set_title(f"Window: {s:+.2f} to {e:+.2f}s", fontsize=9, pad=5)
+                ax_box.set_ylabel(ylabel)
+                plt.setp(ax_box.get_xticklabels(), rotation=30, ha="right", fontsize=8)
+                ax_box.grid(False)
 
-    plt.tight_layout()
-    plt.show()
-
-    return report
-
+        plt.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.15)
+        plt.show()
 
 
 def p_to_stars(p):
