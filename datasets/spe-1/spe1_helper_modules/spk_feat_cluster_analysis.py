@@ -26,7 +26,7 @@ import gc
 
 
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
-from itertools import combination
+from itertools import combinations
 
 
 
