@@ -3373,7 +3373,6 @@ def make_specparam_feature_groups(
 
 #Function to analyze windows is specparam feature traces, and compare across cluster groups 
 
-
 def lfp_sliding_stats(
     feat_groups,
     time_unit="s",
@@ -3389,8 +3388,11 @@ def lfp_sliding_stats(
     Slides a window to find significant regions. 
     Demeans each individual trace by its own WHOLE-TRACE average.
     Layout: Trace on LEFT, Boxplots on RIGHT.
+    SAVES TRACE DATA for cross-cell comparison.
     """
-
+    from scipy.stats import ttest_ind, f_oneway
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+    from itertools import combinations
 
     # --- HELPERS ---
     def cohens_d(d1, d2):
@@ -3429,9 +3431,9 @@ def lfp_sliding_stats(
 
     default_palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     
-    # --- FIX: Initialize lists outside the loop to prevent UnboundLocalError
     stats_report = [] 
     merged_regions = []
+    trace_data = {} 
 
     for set_name, unsorted_names in plot_sets.items():
         if len(unsorted_names) < 2: continue
@@ -3463,6 +3465,19 @@ def lfp_sliding_stats(
                 mats.append(np.interp(Tgrid, (t/1000.0 if time_unit=="ms" else t), w_demeaned))
             if len(mats) >= 2: A_matrices[gname] = np.vstack(mats)
 
+        # --- NEW: Save the Trace Data for this group ---
+        if "Tgrid" not in trace_data and Tgrid is not None:
+            trace_data["Tgrid"] = Tgrid
+            
+        for gname in group_names:
+            if gname in A_matrices and gname not in trace_data:
+                A = A_matrices[gname]
+                trace_data[gname] = {
+                    "mean": np.nanmean(A, axis=0),
+                    "std": np.nanstd(A, axis=0),
+                    "n": np.sum(np.isfinite(A), axis=0)
+                }
+
         # Sliding Window Math
         sig_windows = []
         for w_start in np.arange(Tgrid[0], Tgrid[-1] - window_width, step_size):
@@ -3485,13 +3500,11 @@ def lfp_sliding_stats(
                     merged_regions.append((cur_s, cur_e, cur_p)); cur_s, cur_e, cur_p = w
             merged_regions.append((cur_s, cur_e, cur_p))
 
-        # --- NEW SIDE-BY-SIDE LAYOUT ---
+        # --- PLOTTING (Untouched) ---
         fig = plt.figure(figsize=figsize)
         has_regions = len(merged_regions) > 0
-        
         master_gs = GridSpec(1, 2, width_ratios=[1.5, 1] if has_regions else [1, 0.01], wspace=0.3)
         
-        # LEFT SIDE: TRACE
         ax_trace = fig.add_subplot(master_gs[0])
         for gname in group_names:
             if gname not in A_matrices: continue
@@ -3500,15 +3513,13 @@ def lfp_sliding_stats(
             ax_trace.plot(Tgrid, mean, label=gname, color=colors_dict[gname], lw=2.5)
             ax_trace.fill_between(Tgrid, mean-ci, mean+ci, color=colors_dict[gname], alpha=alpha_ci, lw=0)
 
-        for s, e, _ in merged_regions:
-            ax_trace.axvspan(s, e, color='gold', alpha=0.15)
+        for s, e, _ in merged_regions: ax_trace.axvspan(s, e, color='gold', alpha=0.15)
         ax_trace.axvline(0, color="k", ls="--", lw=1.5)
         ax_trace.set_title(f"Temporal Dynamics: {set_name}", fontweight='bold')
         ax_trace.set_ylabel(ylabel)
         ax_trace.legend(loc="upper right", frameon=True, fontsize=9)
         ax_trace.grid(False)
 
-        # RIGHT SIDE: BOXPLOTS
         if has_regions:
             n_boxes = len(merged_regions)
             n_cols = 2 if n_boxes > 2 else 1
@@ -3526,7 +3537,6 @@ def lfp_sliding_stats(
                     box.set_facecolor(colors_dict[group_names[i]])
                     box.set_alpha(0.6)
 
-                # Pairwise Annotations
                 y_max, y_min = max([np.max(d) for d in box_data if len(d)>0]), min([np.min(d) for d in box_data if len(d)>0])
                 y_range = y_max - y_min
                 step = y_range * 0.15
@@ -3562,10 +3572,11 @@ def lfp_sliding_stats(
         plt.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.15)
         plt.show()
 
-    # --- RETURN ---
+
     return {
         "omnibus_windows": merged_regions,
-        "pairwise_stats": stats_report
+        "pairwise_stats": stats_report,
+        "trace_data": trace_data
     }
 
 def p_to_stars(p):
