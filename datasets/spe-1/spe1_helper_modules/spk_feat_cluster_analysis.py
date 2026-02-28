@@ -3384,17 +3384,8 @@ def lfp_sliding_stats(
     plot_mode="both",
     figsize=(14, 6)
 ):
-    """
-    Slides a window to find significant regions. 
-    Demeans each individual trace by its own WHOLE-TRACE average.
-    Layout: Trace on LEFT, Boxplots on RIGHT.
-    SAVES TRACE DATA for cross-cell comparison.
-    """
-    from scipy.stats import ttest_ind, f_oneway
-    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
-    from itertools import combinations
 
-    # --- HELPERS ---
+
     def cohens_d(d1, d2):
         n1, n2 = len(d1), len(d2)
         if n1 < 2 or n2 < 2: return 0.0
@@ -3418,7 +3409,7 @@ def lfp_sliding_stats(
             return 99
         return sorted(names, key=get_rank)
 
-    # Organize groups
+    # Organizes groups by spike feature!
     cluster_families = {}
     for gname in feat_groups.keys():
         family = gname.split(":")[0] if ":" in gname else "all"
@@ -3441,7 +3432,6 @@ def lfp_sliding_stats(
         group_names = sort_clusters(unsorted_names)
         current_mode = "all" if set_name == "All groups" else "per_cluster"
         
-        # --- DATA PREP ---
         A_matrices = {}
         colors_dict = {}
         Tgrid = None
@@ -3465,14 +3455,12 @@ def lfp_sliding_stats(
                 mats.append(np.interp(Tgrid, (t/1000.0 if time_unit=="ms" else t), w_demeaned))
             if len(mats) >= 2: A_matrices[gname] = np.vstack(mats)
 
-        # --- NEW: Save the Trace Data for this group ---
-        if "Tgrid" not in trace_data and Tgrid is not None:
-            trace_data["Tgrid"] = Tgrid
-            
+        # --- FIX: Save Trace Data organized by `set_name` (the spike feature) ---
+        trace_data[set_name] = {"Tgrid": Tgrid, "groups": {}}
         for gname in group_names:
-            if gname in A_matrices and gname not in trace_data:
+            if gname in A_matrices:
                 A = A_matrices[gname]
-                trace_data[gname] = {
+                trace_data[set_name]["groups"][gname] = {
                     "mean": np.nanmean(A, axis=0),
                     "std": np.nanstd(A, axis=0),
                     "n": np.sum(np.isfinite(A), axis=0)
@@ -3500,7 +3488,7 @@ def lfp_sliding_stats(
                     merged_regions.append((cur_s, cur_e, cur_p)); cur_s, cur_e, cur_p = w
             merged_regions.append((cur_s, cur_e, cur_p))
 
-        # --- PLOTTING (Untouched) ---
+        # --- PLOTTING ---
         fig = plt.figure(figsize=figsize)
         has_regions = len(merged_regions) > 0
         master_gs = GridSpec(1, 2, width_ratios=[1.5, 1] if has_regions else [1, 0.01], wspace=0.3)
@@ -3548,7 +3536,10 @@ def lfp_sliding_stats(
                     _, p_pair = ttest_ind(d1, d2, equal_var=False)
                     if p_pair < p_threshold:
                         d_eff = cohens_d(d1, d2)
+                        
+                        # --- FIX: Track the spike_feature (set_name) directly in the stats! ---
                         stats_report.append({
+                            "spike_feature": set_name,
                             "window_start": s,
                             "window_end": e,
                             "group_1": group_names[i],
@@ -3572,7 +3563,6 @@ def lfp_sliding_stats(
         plt.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.15)
         plt.show()
 
-
     return {
         "omnibus_windows": merged_regions,
         "pairwise_stats": stats_report,
@@ -3595,21 +3585,14 @@ def run_master_LFP_spk_analysis(
     specparam_by_spike, 
     groups, 
     features_to_analyze, 
-    save_dir="/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spe1_pickles/lfp_spk_group_pickles", # <--- UPDATED PATH
+    save_dir="/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spe1_pickles/lfp_spk_group_pickles", 
     window_width=0.05, 
     step_size=0.025,
     p_threshold=0.05
 ):
-    """
-    Loops through a list of features, generates the feature groups,
-    plots the heatmaps, and runs the sliding window statistical analysis.
-    SAVES the results to a dictionary/pickle for cross-cell comparison.
-    """
-    # Initialize dictionary to hold all results for this cell
     cell_master_results = {"cell_id": cell_id}
 
     for feat_info in features_to_analyze:
-        # Extract feature info
         feature_type = feat_info.get("feature")
         band = feat_info.get("band", None)
         label = feat_info.get("label", feature_type.capitalize())
@@ -3620,45 +3603,24 @@ def run_master_LFP_spk_analysis(
         
         # 1. Generate Groups
         if feature_type == "band" and band is not None:
-            feat_groups = make_specparam_feature_groups(
-                specparam_by_spike, groups, feature=feature_type, band=band
-            )
+            feat_groups = make_specparam_feature_groups(specparam_by_spike, groups, feature=feature_type, band=band)
         else:
-            feat_groups = make_specparam_feature_groups(
-                specparam_by_spike, groups, feature=feature_type
-            )
+            feat_groups = make_specparam_feature_groups(specparam_by_spike, groups, feature=feature_type)
             
         # 2. Plot Heatmaps
-        print(f"--- Generating Heatmaps for {label} ---")
-        _ = plot_window_feature_groups_heatmap(
-            feat_groups,
-            feature_label=label,
-            cmap="viridis",
-            time_unit="s",   
-            sort_by="next_rel",
-        )
+        _ = plot_window_feature_groups_heatmap(feat_groups, feature_label=label, cmap="viridis", time_unit="s", sort_by="next_rel")
         
         # 3. Run Sliding Window Stats
-        print(f"--- Running Sliding Window Stats for {label} ---")
-        sig_report = lfp_sliding_stats(
-            feat_groups,
-            ylabel=f"Δ {label}",
-            window_width=window_width,
-            step_size=step_size,
-            p_threshold=p_threshold,
-            plot_mode="per_cluster"
-        )
+        sig_report = lfp_sliding_stats(feat_groups, ylabel=f"Δ {label}", window_width=window_width, step_size=step_size, p_threshold=p_threshold, plot_mode="per_cluster")
         
-        # Save this feature's report into the master dictionary
+        # Save to master dict
         cell_master_results[label] = sig_report
 
-    # 4. Save everything to a Pickle file!
+    # 4. Save file
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"{cell_id}_sliding_stats.pkl")
-    
     with open(save_path, 'wb') as file:
         pickle.dump(cell_master_results, file)
         
     print(f"\n✅ All statistical results for {cell_id} successfully saved to: {save_path}")
-    
     return cell_master_results
