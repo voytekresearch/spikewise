@@ -3390,9 +3390,7 @@ def lfp_sliding_stats(
     Demeans each individual trace by its own WHOLE-TRACE average.
     Layout: Trace on LEFT, Boxplots on RIGHT.
     """
-    from scipy.stats import ttest_ind, f_oneway
-    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
-    from itertools import combinations
+
 
     # --- HELPERS ---
     def cohens_d(d1, d2):
