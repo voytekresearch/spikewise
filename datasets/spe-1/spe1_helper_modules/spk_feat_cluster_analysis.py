@@ -3558,3 +3558,61 @@ def p_to_stars(p):
         return "*"
     else:
         return "n.s."
+
+
+
+def run_master_LFP_spk_analysis(
+    specparam_by_spike, 
+    groups, # The output from build_lfp_groups_from_clusters
+    features_to_analyze, 
+    window_width=0.05, 
+    step_size=0.025,
+    p_threshold=0.05
+):
+    """
+    Loops through a list of features, generates the feature groups,
+    plots the heatmaps, and runs the sliding window statistical analysis.
+    Uses the exact functions currently defined in your workflow.
+    """
+    for feat_info in features_to_analyze:
+        # Extract feature info
+        feature_type = feat_info.get("feature")
+        band = feat_info.get("band", None)
+        label = feat_info.get("label", feature_type.capitalize())
+        
+        print(f"\n" + "="*60)
+        print(f"  RUNNING PIPELINE FOR: {label.upper()}")
+        print("="*60 + "\n")
+        
+        # 1. Generate Groups
+        if feature_type == "band" and band is not None:
+            feat_groups = make_specparam_feature_groups(
+                specparam_by_spike, groups, feature=feature_type, band=band
+            )
+        else:
+            feat_groups = make_specparam_feature_groups(
+                specparam_by_spike, groups, feature=feature_type
+            )
+            
+        # 2. Plot Heatmaps
+        print(f"--- Generating Heatmaps for {label} ---")
+        _ = plot_window_feature_groups_heatmap(
+            feat_groups,
+            feature_label=label,
+            cmap="viridis",
+            time_unit="s",   
+            sort_by="next_rel",
+        )
+        
+        # 3. Run Sliding Window Stats
+        # (Assuming you renamed the function we just built to plot_sliding_window_with_posthoc 
+        # or update this name to lfp_sliding_stats if that's what you are keeping it as)
+        print(f"--- Running Sliding Window Stats for {label} ---")
+        sig_report = lfp_sliding_stats(
+            feat_groups,
+            ylabel=f"Δ {label}",
+            window_width=window_width,
+            step_size=step_size,
+            p_threshold=p_threshold,
+            plot_mode="per_cluster"
+        )
