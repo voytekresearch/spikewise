@@ -3381,7 +3381,7 @@ def lfp_sliding_stats(
     p_threshold=0.05,
     alpha_ci=0.25,
     plot_mode="both",
-    figsize=(18, 7) # Wider figure for side-by-side layout
+    figsize=(14, 6) # Wider figure for side-by-side layout
 ):
     """
     Slides a window to find significant regions. 
