@@ -3372,6 +3372,8 @@ def make_specparam_feature_groups(
 
 
 #Function to analyze windows is specparam feature traces, and compare across cluster groups 
+
+
 def lfp_sliding_stats(
     feat_groups,
     time_unit="s",
@@ -3381,14 +3383,16 @@ def lfp_sliding_stats(
     p_threshold=0.05,
     alpha_ci=0.25,
     plot_mode="both",
-    figsize=(14, 6) # Wider figure for side-by-side layout
+    figsize=(14, 6)
 ):
     """
     Slides a window to find significant regions. 
     Demeans each individual trace by its own WHOLE-TRACE average.
     Layout: Trace on LEFT, Boxplots on RIGHT.
     """
-
+    from scipy.stats import ttest_ind, f_oneway
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+    from itertools import combinations
 
     # --- HELPERS ---
     def cohens_d(d1, d2):
@@ -3426,6 +3430,10 @@ def lfp_sliding_stats(
         for k, v in cluster_families.items(): plot_sets[k] = v
 
     default_palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    
+    # --- FIX: Initialize lists outside the loop to prevent UnboundLocalError
+    stats_report = [] 
+    merged_regions = []
 
     for set_name, unsorted_names in plot_sets.items():
         if len(unsorted_names) < 2: continue
@@ -3483,7 +3491,6 @@ def lfp_sliding_stats(
         fig = plt.figure(figsize=figsize)
         has_regions = len(merged_regions) > 0
         
-        # 1 Row, 2 Columns (Trace gets more space)
         master_gs = GridSpec(1, 2, width_ratios=[1.5, 1] if has_regions else [1, 0.01], wspace=0.3)
         
         # LEFT SIDE: TRACE
@@ -3503,10 +3510,9 @@ def lfp_sliding_stats(
         ax_trace.legend(loc="upper right", frameon=True, fontsize=9)
         ax_trace.grid(False)
 
-        # RIGHT SIDE: BOXPLOTS (Stacked or Grid)
+        # RIGHT SIDE: BOXPLOTS
         if has_regions:
             n_boxes = len(merged_regions)
-            # If many regions, make a 2-col grid on the right, otherwise 1-col
             n_cols = 2 if n_boxes > 2 else 1
             n_rows = (n_boxes + n_cols - 1) // n_cols
             sub_gs = GridSpecFromSubplotSpec(n_rows, n_cols, subplot_spec=master_gs[1], wspace=0.4, hspace=0.6)
@@ -3533,10 +3539,20 @@ def lfp_sliding_stats(
                     if len(d1) < 2 or len(d2) < 2: continue
                     _, p_pair = ttest_ind(d1, d2, equal_var=False)
                     if p_pair < p_threshold:
+                        d_eff = cohens_d(d1, d2)
+                        stats_report.append({
+                            "window_start": s,
+                            "window_end": e,
+                            "group_1": group_names[i],
+                            "group_2": group_names[j],
+                            "p_value": p_pair,
+                            "cohens_d": d_eff
+                        })
+                        
                         stars = get_stars(p_pair)
                         p_str = f"p={p_pair:.4f}" if p_pair > 0.0001 else "p<0.0001"
                         ax_box.plot([i+1, i+1, j+1, j+1], [current_y, current_y+step*0.2, current_y+step*0.2, current_y], lw=1.2, c='k')
-                        ax_box.text((i+j+2)/2, current_y+step*0.2, f"{stars}\n{p_str}\n(d={cohens_d(d1, d2):.1f})", ha='center', va='bottom', fontsize=7)
+                        ax_box.text((i+j+2)/2, current_y+step*0.2, f"{stars}\n{p_str}\n(d={d_eff:.1f})", ha='center', va='bottom', fontsize=7)
                         current_y += step * 2.5
 
                 ax_box.set_ylim(bottom=y_min - step, top=current_y + step)
@@ -3548,6 +3564,11 @@ def lfp_sliding_stats(
         plt.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.15)
         plt.show()
 
+    # --- RETURN ---
+    return {
+        "omnibus_windows": merged_regions,
+        "pairwise_stats": stats_report
+    }
 
 def p_to_stars(p):
     if p < 0.001:
@@ -3560,11 +3581,12 @@ def p_to_stars(p):
         return "n.s."
 
 
-
 def run_master_LFP_spk_analysis(
+    cell_id, 
     specparam_by_spike, 
-    groups, # The output from build_lfp_groups_from_clusters
+    groups, 
     features_to_analyze, 
+    save_dir="/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spe1_pickles/lfp_spk_group_pickles", # <--- UPDATED PATH
     window_width=0.05, 
     step_size=0.025,
     p_threshold=0.05
@@ -3572,8 +3594,11 @@ def run_master_LFP_spk_analysis(
     """
     Loops through a list of features, generates the feature groups,
     plots the heatmaps, and runs the sliding window statistical analysis.
-    Uses the exact functions currently defined in your workflow.
+    SAVES the results to a dictionary/pickle for cross-cell comparison.
     """
+    # Initialize dictionary to hold all results for this cell
+    cell_master_results = {"cell_id": cell_id}
+
     for feat_info in features_to_analyze:
         # Extract feature info
         feature_type = feat_info.get("feature")
@@ -3605,8 +3630,6 @@ def run_master_LFP_spk_analysis(
         )
         
         # 3. Run Sliding Window Stats
-        # (Assuming you renamed the function we just built to plot_sliding_window_with_posthoc 
-        # or update this name to lfp_sliding_stats if that's what you are keeping it as)
         print(f"--- Running Sliding Window Stats for {label} ---")
         sig_report = lfp_sliding_stats(
             feat_groups,
@@ -3616,3 +3639,17 @@ def run_master_LFP_spk_analysis(
             p_threshold=p_threshold,
             plot_mode="per_cluster"
         )
+        
+        # Save this feature's report into the master dictionary
+        cell_master_results[label] = sig_report
+
+    # 4. Save everything to a Pickle file!
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, f"{cell_id}_sliding_stats.pkl")
+    
+    with open(save_path, 'wb') as file:
+        pickle.dump(cell_master_results, file)
+        
+    print(f"\n✅ All statistical results for {cell_id} successfully saved to: {save_path}")
+    
+    return cell_master_results
