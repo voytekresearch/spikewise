@@ -260,25 +260,27 @@ def plot_temporal_significance_density(df_stats, feature_shades, bin_size=0.01):
 
 
 
-
 # ==========================================
 # 4. PLOT ALL GRAND AVERAGE TRACES (GRID)
 # ==========================================
 
-def plot_all_grand_average_traces(master_traces):
+def plot_all_grand_average_traces(master_traces, df_stats):
     """
     Generates a master grid of population Grand Average traces for EVERY 
     LFP feature and spike feature combination.
-    Uses interpolation to rescue cells with slightly mismatched array lengths.
+    FILTERS out any spike features that did not yield significant results.
     """
-    unique_lfp_features = sorted(list(set(t["lfp_feature"] for t in master_traces)))
-    unique_spike_features = sorted(list(set(t["spike_feature"] for t in master_traces)))
+    # 1. Identify which features actually survived
+    valid_spike_features = set(df_stats["spike_feature"].unique())
     
-    if not unique_lfp_features:
-        print("No traces found in the dataset!")
+    unique_lfp_features = sorted(list(set(t["lfp_feature"] for t in master_traces)))
+    # 2. Only keep spike features that are in the valid list
+    unique_spike_features = sorted(list(set(t["spike_feature"] for t in master_traces if t["spike_feature"] in valid_spike_features)))
+    
+    if not unique_lfp_features or not unique_spike_features:
+        print("No valid traces found in the dataset to plot!")
         return
         
-    # Define a MASTER time grid from the very first valid trace
     master_Tgrid = None
     for t in master_traces:
         if "trace_data" in t and "Tgrid" in t["trace_data"]:
@@ -289,7 +291,6 @@ def plot_all_grand_average_traces(master_traces):
         print("Could not find 'Tgrid' in any trace data!")
         return
 
-    # Loop through each LFP feature and create a new figure
     for lfp_feat in unique_lfp_features:
         n_spk = len(unique_spike_features)
         cols = 3
@@ -323,7 +324,6 @@ def plot_all_grand_average_traces(master_traces):
                         val = td["groups"][c_name]
                         cell_mean = None
                         
-                        # Extract the array
                         if isinstance(val, dict):
                             cell_mean = val.get("mean", val.get("avg", None))
                         else:
@@ -331,12 +331,10 @@ def plot_all_grand_average_traces(master_traces):
                             if val_arr.ndim == 1: cell_mean = val_arr
                             elif val_arr.ndim == 2: cell_mean = np.nanmean(val_arr, axis=0)
                         
-                        # THE FIX: Interpolate the trace to match the master_Tgrid perfectly
                         if cell_mean is not None:
                             aligned_mean = np.interp(master_Tgrid, cell_Tgrid, cell_mean)
                             stacked_data[c_name].append(aligned_mean)
             
-            # Plot the stacked traces on the current subplot
             lines_plotted = 0
             for c_name in cluster_names:
                 if len(stacked_data[c_name]) > 0:
@@ -344,7 +342,6 @@ def plot_all_grand_average_traces(master_traces):
                     grand_mean = np.nanmean(matrix, axis=0)
                     grand_sem = np.nanstd(matrix, axis=0) / np.sqrt(matrix.shape[0])
                     
-                    # Smart Coloring
                     c_lower = c_name.lower()
                     if 'low' in c_lower: color = '#1f77b4'
                     elif 'high' in c_lower: color = '#ff7f0e'
@@ -356,28 +353,23 @@ def plot_all_grand_average_traces(master_traces):
                     ax.fill_between(master_Tgrid, grand_mean - grand_sem, grand_mean + grand_sem, color=color, alpha=0.2, lw=0)
                     lines_plotted += 1
             
-            # Subplot Aesthetics
             ax.axvline(0, color="k", ls="--", lw=1.5)
             ax.set_title(spk_feat, fontweight="bold", fontsize=12)
-
             
             if lines_plotted > 0:
                 ax.legend(fontsize=8, loc="upper right")
             else:
                 ax.text(0.5, 0.5, "No valid arrays found", ha='center', va='center', transform=ax.transAxes, color='gray')
 
-        # Clean up empty subplots
         for i in range(n_spk, len(axes)):
             fig.delaxes(axes[i])
             
-        # Figure Aesthetics
         plt.suptitle(f"Population Grand Average: {lfp_feat}", fontweight="bold", fontsize=18, y=1.02)
         fig.text(0.5, -0.01, 'Time relative to spike (s)', ha='center', fontsize=14)
         fig.text(-0.01, 0.5, f'Δ {lfp_feat}', va='center', rotation='vertical', fontsize=14)
         
         plt.tight_layout()
         plt.show()
-
 
 
 # ==========================================
@@ -503,7 +495,6 @@ def plot_cluster_relationship_heatmap(df_stats, master_traces):
 
 
 
-
 # ==========================================
 # 6. RESPONDER YIELD (PERCENTAGE) HEATMAP
 # ==========================================
@@ -513,22 +504,25 @@ def plot_significant_yield_heatmap(df_stats, master_traces):
     Calculates and plots the percentage of 'valid' cells (cells that actually 
     formed High/Low clusters) that exhibited at least one significant LFP 
     difference for each feature combination.
+    FILTERS out features that yielded 0 significant windows across the board.
     """
     print("Calculating yields across all cells...")
     yield_data = []
     
-    # Get all unique features
+    # 1. Get unique features, but ONLY pull spike features that exist in df_stats
     lfp_feats = sorted(list(set(t["lfp_feature"] for t in master_traces)))
-    spk_feats = sorted(list(set(t["spike_feature"] for t in master_traces)))
+    spk_feats = sorted(list(df_stats["spike_feature"].unique()))  # <-- The strict filter
+    
+    if not spk_feats:
+        print("No significant spike features available to plot.")
+        return
     
     for lfp in lfp_feats:
         for spk in spk_feats:
-            # 1. Find all traces for this specific combo
             combo_traces = [t for t in master_traces if t["lfp_feature"] == lfp and t["spike_feature"] == spk]
             
             valid_cells = 0
             for t in combo_traces:
-                # A cell is only "valid" if it physically has both a High and Low cluster
                 if "groups" in t.get("trace_data", {}):
                     groups = t["trace_data"]["groups"]
                     has_high = any('high' in k.lower() for k in groups.keys())
@@ -536,9 +530,7 @@ def plot_significant_yield_heatmap(df_stats, master_traces):
                     if has_high and has_low:
                         valid_cells += 1
                         
-            # 2. Count how many of those valid cells had a significant hit in df_stats
             if valid_cells > 0:
-                # Number of unique cells that popped a significant p-value
                 sig_cells = df_stats[
                     (df_stats["lfp_feature"] == lfp) & 
                     (df_stats["spike_feature"] == spk)
@@ -546,7 +538,7 @@ def plot_significant_yield_heatmap(df_stats, master_traces):
                 
                 yield_pct = (sig_cells / valid_cells) * 100
             else:
-                yield_pct = np.nan # Leave blank if no cells even had clusters to test
+                yield_pct = np.nan 
                 
             yield_data.append({
                 "lfp_feature": lfp, 
@@ -557,17 +549,15 @@ def plot_significant_yield_heatmap(df_stats, master_traces):
             
     df_yield = pd.DataFrame(yield_data)
     
-    # Create pivot tables for the colors and the text labels
     pivot_color = df_yield.pivot(index='lfp_feature', columns='spike_feature', values='yield_pct')
     pivot_text = df_yield.pivot(index='lfp_feature', columns='spike_feature', values='text_label')
     
-    # 3. Plotting
     plt.figure(figsize=(12, 8))
     sns.heatmap(
         pivot_color,
-        annot=pivot_text,    # Prints the percentage AND the raw fraction (e.g., 3/5)
-        fmt="",              # Required when passing custom string labels
-        cmap="YlGnBu",       # Yellow (Low Yield) to Dark Blue (High Yield)
+        annot=pivot_text,    
+        fmt="",              
+        cmap="YlGnBu",       
         vmin=0,
         vmax=100,
         linewidths=0.5,
@@ -579,6 +569,117 @@ def plot_significant_yield_heatmap(df_stats, master_traces):
     plt.xlabel("Spike Feature (Clustering Metric)", fontsize=12, fontweight="bold")
     plt.ylabel("LFP Feature", fontsize=12, fontweight="bold")
     plt.xticks(rotation=45, ha='right')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+# ==========================================
+# 7. SPIKE FEATURE REDUNDANCY (CORRELATION)
+# ==========================================
+
+def plot_feature_redundancy(pop_traces, df_stats):
+    """
+    Checks if spike features are redundant across the population.
+    Filters out any spike features that did not yield significant results.
+    """
+    # 1. Get the list of features that ACTUALLY survived the stats test
+    valid_features = set(df_stats['spike_feature'].unique())
+    
+    data = []
+    
+    for t in pop_traces:
+        # 2. SKIP this trace entirely if it's a "dead" feature
+        if t['spike_feature'] not in valid_features:
+            continue
+            
+        groups = t['trace_data'].get('groups', {})
+        cell_vals = []
+        for v in groups.values():
+            arr = v.get('mean', v) if isinstance(v, dict) else v
+            if arr is not None:
+                cell_vals.append(np.nanmean(arr))
+        
+        if cell_vals:
+            data.append({
+                'cell': t['cell_id'], 
+                'feat': t['spike_feature'], 
+                'val': np.mean(cell_vals)
+            })
+    
+    if not data:
+        print("Could not extract feature values for redundancy matrix.")
+        return
+
+    df = pd.DataFrame(data).groupby(['cell', 'feat'])['val'].mean().unstack()
+    
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(
+        df.corr(method='spearman'), 
+        annot=True, 
+        fmt=".2f", 
+        cmap="mako", 
+        vmin=-1, 
+        vmax=1,
+        linewidths=1,
+        linecolor='white'
+    )
+    
+    plt.title("Spike Feature Redundancy (Significant Features Only)", fontweight='bold', pad=15)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.show()
+
+
+
+# ==========================================
+# 8. TEMPORAL LANDSCAPE (TIMING)
+# ==========================================
+
+def plot_relationship_timing(df_stats, feature_shades):
+    """
+    Plots the exact timing of significant windows relative to the spike.
+    Only reserves colors/legend space for features that actually exist in the data.
+    """
+    if df_stats.empty: 
+        print("No stats data available to plot timing.")
+        return
+    
+    df_plot = df_stats.copy()
+    df_plot['midpoint'] = (df_plot['window_start'] + df_plot['window_end']) / 2
+    
+    plt.figure(figsize=(12, 7))
+    
+    # FILTER: Only keep the colors for features that actually have significant data
+    valid_features = set(df_plot['spike_feature'].unique())
+    master_order = [f for f in feature_shades.keys() if f in valid_features]
+    
+    ax = sns.stripplot(
+        data=df_plot, 
+        x='midpoint', 
+        y='lfp_feature', 
+        hue='spike_feature', 
+        hue_order=master_order,
+        palette=feature_shades,
+        dodge=True, 
+        alpha=0.7, 
+        size=7,
+        jitter=0.25
+    )
+    
+    plt.axvline(0, color='black', ls='--', lw=2, label='Spike (t=0)')
+    
+    plt.title("Temporal Landscape: When do these LFP relationships occur?", fontweight='bold', fontsize=15, pad=15)
+    plt.xlabel("Time relative to spike (seconds)", fontsize=12, fontweight='bold')
+    plt.ylabel("LFP Feature", fontsize=12, fontweight='bold')
+    
+    handles, labels = ax.get_legend_handles_labels()
+    num_features = len(master_order)
+    handles = handles[:num_features] + [Line2D([0], [0], color='black', ls='--', lw=2)]
+    labels = labels[:num_features] + ['Spike (t=0)']
+    
+    plt.legend(handles, labels, bbox_to_anchor=(1.05, 1), loc='upper left', title="Spike Feature", frameon=True, shadow=True)
+    plt.grid(axis='x', alpha=0.3, linestyle=':')
     
     plt.tight_layout()
     plt.show()
