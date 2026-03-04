@@ -575,61 +575,103 @@ def plot_significant_yield_heatmap(df_stats, master_traces):
 
 
 # ==========================================
-# 7. SPIKE FEATURE REDUNDANCY (CORRELATION)
+# 7. RELATIONSHIP REDUNDANCY (EFFECT SIZE CORRELATION)
 # ==========================================
 
-def plot_feature_redundancy(pop_traces, df_stats):
+def plot_relationship_redundancy(df_stats, master_traces):
     """
-    Checks if spike features are redundant across the population.
-    Filters out any spike features that did not yield significant results.
+    Correlates the Effect Size (Signed Cohen's d) profiles to see if 
+    different spike features have redundant relationships with the LFP, 
+    and vice versa.
     """
-    # 1. Get the list of features that ACTUALLY survived the stats test
-    valid_features = set(df_stats['spike_feature'].unique())
-    
-    data = []
-    
-    for t in pop_traces:
-        # 2. SKIP this trace entirely if it's a "dead" feature
-        if t['spike_feature'] not in valid_features:
-            continue
-            
-        groups = t['trace_data'].get('groups', {})
-        cell_vals = []
-        for v in groups.values():
-            arr = v.get('mean', v) if isinstance(v, dict) else v
-            if arr is not None:
-                cell_vals.append(np.nanmean(arr))
-        
-        if cell_vals:
-            data.append({
-                'cell': t['cell_id'], 
-                'feat': t['spike_feature'], 
-                'val': np.mean(cell_vals)
-            })
-    
-    if not data:
-        print("Could not extract feature values for redundancy matrix.")
+    if df_stats.empty:
+        print("No data found to correlate!")
         return
 
-    df = pd.DataFrame(data).groupby(['cell', 'feat'])['val'].mean().unstack()
+    print("Extracting relationship profiles...")
+    df_signed = df_stats.copy()
+    signs = []
     
-    plt.figure(figsize=(10, 8))
+    # 1. Recover the sign (+ or -) for every significant window
+    for _, row in df_signed.iterrows():
+        cell_id = row['cell_id']
+        lfp_feat = row['lfp_feature']
+        spk_feat = row['spike_feature']
+        w_start = row['window_start']
+        w_end = row['window_end']
+        
+        trace_record = next((t for t in master_traces 
+                             if t['cell_id'] == cell_id and 
+                             t['lfp_feature'] == lfp_feat and 
+                             t['spike_feature'] == spk_feat), None)
+        
+        sign = 1 # Default to Positive
+        
+        if trace_record and 'groups' in trace_record['trace_data']:
+            groups = trace_record['trace_data']['groups']
+            tgrid = trace_record['trace_data'].get('Tgrid', [])
+            
+            high_key = next((k for k in groups.keys() if 'high' in k.lower()), None)
+            low_key = next((k for k in groups.keys() if 'low' in k.lower()), None)
+            
+            if high_key and low_key and len(tgrid) > 0:
+                high_val = groups[high_key]
+                low_val = groups[low_key]
+                
+                high_arr = high_val.get('mean', high_val.get('avg')) if isinstance(high_val, dict) else np.array(high_val)
+                low_arr = low_val.get('mean', low_val.get('avg')) if isinstance(low_val, dict) else np.array(low_val)
+                
+                if high_arr is not None and low_arr is not None:
+                    if high_arr.ndim == 2: high_arr = np.nanmean(high_arr, axis=0)
+                    if low_arr.ndim == 2: low_arr = np.nanmean(low_arr, axis=0)
+                    
+                    mask = (tgrid >= w_start) & (tgrid <= w_end)
+                    if np.any(mask) and len(high_arr) == len(tgrid) and len(low_arr) == len(tgrid):
+                        if np.nanmean(low_arr[mask]) > np.nanmean(high_arr[mask]):
+                            sign = -1
+                            
+        signs.append(sign)
+        
+    df_signed['signed_cohens_d'] = df_signed['cohens_d'] * signs
+
+    # 2. Pivot into a Matrix: Rows = LFP Features, Columns = Spike Features
+    heatmap_data = df_signed.groupby(['lfp_feature', 'spike_feature'])['signed_cohens_d'].median().reset_index()
+    pivot_table = heatmap_data.pivot(index='lfp_feature', columns='spike_feature', values='signed_cohens_d')
+    
+    # Fill missing values with 0 (No effect) so the correlation math works perfectly
+    pivot_table = pivot_table.fillna(0)
+
+    # 3. Correlate Spike Features (Columns) and LFP Features (Rows)
+    spike_corr = pivot_table.corr(method='spearman')
+    lfp_corr = pivot_table.T.corr(method='spearman')
+
+    # 4. Plot them side-by-side
+    fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+
+    # Plot A: Spike Feature Redundancy
     sns.heatmap(
-        df.corr(method='spearman'), 
-        annot=True, 
-        fmt=".2f", 
-        cmap="mako", 
-        vmin=-1, 
-        vmax=1,
-        linewidths=1,
-        linecolor='white'
+        spike_corr, annot=True, fmt=".2f", cmap="mako", 
+        vmin=-1, vmax=1, linewidths=1, linecolor='white', ax=axes[0],
+        cbar_kws={'shrink': 0.8}
     )
-    
-    plt.title("Spike Feature Redundancy (Significant Features Only)", fontweight='bold', pad=15)
-    plt.xticks(rotation=45, ha='right')
+    axes[0].set_title("Spike Feature Redundancy\n(Do any spike features have the same relationship with the LFP features?)", fontweight='bold', pad=15)
+    axes[0].set_xlabel("Spike Feature", fontweight='bold')
+    axes[0].set_ylabel("Spike Feature", fontweight='bold')
+    axes[0].tick_params(axis='x', rotation=45)
+
+    # Plot B: LFP Feature Redundancy
+    sns.heatmap(
+        lfp_corr, annot=True, fmt=".2f", cmap="rocket", 
+        vmin=-1, vmax=1, linewidths=1, linecolor='white', ax=axes[1],
+        cbar_kws={'shrink': 0.8}
+    )
+    axes[1].set_title("LFP Feature Redundancy\n(Do any LFP features have the same relationship with the spike features?)", fontweight='bold', pad=15)
+    axes[1].set_xlabel("LFP Feature", fontweight='bold')
+    axes[1].set_ylabel("LFP Feature", fontweight='bold')
+    axes[1].tick_params(axis='x', rotation=45)
+
     plt.tight_layout()
     plt.show()
-
 
 
 # ==========================================
