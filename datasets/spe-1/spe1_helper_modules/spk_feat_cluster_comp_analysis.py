@@ -132,14 +132,15 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
 
     # 4. Setup Figure
     headers = [c.replace('_', ' ').title() for c in plot_data.columns]
-    headers[6], headers[9], headers[10] = "Clear EAP\nWaveform", "nRMSE", "Cos Sim"
+    # FIX: Shifted header indices to 10 and 11
+    headers[6], headers[10], headers[11] = "Clear EAP\nWaveform", "nRMSE", "Cos Sim"
     
     fig_height = len(plot_data) * 0.6 + 2
     fig, ax = plt.subplots(figsize=(22, fig_height))
     ax.axis('off')
     table = ax.table(cellText=plot_data.values, colLabels=headers, cellLoc='center', loc='center')
 
-    # 5. Merging Logic & Selective Coloring (Cols 0-7)
+    # 5. Merging Logic & Selective Coloring
     start_row = 1
     for i in range(1, len(plot_data) + 1):
         is_cell_end = (i == len(plot_data) or plot_data.iloc[i]['cell_id'] != plot_data.iloc[start_row-1]['cell_id'])
@@ -196,22 +197,26 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
                         else: cell_f.visible_edges = 'LR'
                     feat_start = j + 1
 
-            # Metric Gradients (Cols 9-10)
+            # Metric Gradients (Cols 9-11)
             for r in range(start_row, end_row + 1):
                 n_val = raw_nrmse_all.iloc[r-1]
                 c_val = raw_cossim_all.iloc[r-1]
                 
-                # nRMSE: Darker = Larger (Global Bad)
+                # nRMSE (Col 10): Darker = Larger (Global Bad)
+                # FIX: Shifted to index 10
                 if pd.notnull(n_val) and g_max_n != g_min_n:
                     n_norm = (n_val - g_min_n) / (g_max_n - g_min_n)
-                    table[r, 9].set_facecolor(mcolors.to_hex(plt.cm.Oranges(0.05 + n_norm * 0.4)))
+                    table[r, 10].set_facecolor(mcolors.to_hex(plt.cm.Oranges(0.05 + n_norm * 0.4)))
                 
-                # Cos Sim: Darker = Smaller (Global Bad)
+                # Cos Sim (Col 11): Darker = Smaller (Global Bad)
+                # FIX: Shifted to index 11
                 if pd.notnull(c_val) and g_max_c != g_min_c:
                     c_norm = (g_max_c - c_val) / (g_max_c - g_min_c)
-                    table[r, 10].set_facecolor(mcolors.to_hex(plt.cm.Blues(0.05 + c_norm * 0.4)))
+                    table[r, 11].set_facecolor(mcolors.to_hex(plt.cm.Blues(0.05 + c_norm * 0.4)))
                 
-                table[r, 8].set_facecolor('#F8F9FA') 
+                # Cluster background shading
+                # FIX: Shifted to index 9
+                table[r, 9].set_facecolor('#F8F9FA') 
             
             start_row = i + 1
 
@@ -227,7 +232,6 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
 
     if save_fig: plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.show()
-
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Analyze metadata results ------------------------------ #
 # ------------------------------------------------------------------------------------------- #
