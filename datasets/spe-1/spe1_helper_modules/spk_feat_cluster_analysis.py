@@ -3624,3 +3624,176 @@ def run_master_LFP_spk_analysis(
         
     print(f"\n✅ All statistical results for {cell_id} successfully saved to: {save_path}")
     return cell_master_results
+
+
+
+
+
+# -----------------------------------------------------------------
+# Plotting Function for avg specparam
+# -----------------------------------------------------------------
+def plot_cluster_spectra_with_aucs(freqs, spectra_matrix, df_aucs, feature_name="Spike Feature", title_suffix=""):
+    """Plots the spectral ribbons and a text box with the pre-calculated AUCs."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    color_map = {'low': '#1f77b4', 'mid': '#2ca02c', 'high': '#ff7f0e'}
+    default_colors = plt.cm.tab10.colors
+    
+    unique_labels = [l for l in df_aucs['cluster'].unique() if pd.notna(l)]
+    sort_order = {"low": 0, "mid": 1, "high": 2}
+    unique_labels = sorted(unique_labels, key=lambda x: sort_order.get(str(x).lower(), 99))
+    
+    stats_text_lines = [f"Average Band AUCs:", "-"*35]
+    
+    for i, label in enumerate(unique_labels):
+        cluster_mask = (df_aucs['cluster'] == label).values
+        cluster_spectra = spectra_matrix[cluster_mask]
+        
+        valid_mask = ~np.isnan(cluster_spectra).all(axis=1)
+        valid_spectra = cluster_spectra[valid_mask]
+        
+        if len(valid_spectra) == 0: continue
+            
+        mean_spectrum = np.mean(valid_spectra, axis=0)
+        std_spectrum = np.std(valid_spectra, axis=0)
+        color = color_map.get(str(label).lower(), default_colors[i % len(default_colors)])
+        
+        ax.plot(freqs, mean_spectrum, label=f'{label} (n={len(valid_spectra)})', color=color, linewidth=2.5)
+        ax.fill_between(freqs, mean_spectrum - std_spectrum, mean_spectrum + std_spectrum, color=color, alpha=0.15)
+        
+        cluster_mean_aucs = df_aucs[cluster_mask][valid_mask].drop(columns=['cluster']).mean()
+        
+        auc_strings = []
+        for band_name, auc_val in cluster_mean_aucs.items():
+            if pd.notna(auc_val):
+                auc_strings.append(f"{band_name.capitalize()}: {auc_val:.3f}")
+                
+        stats_text_lines.append(f"{label.upper()} | " + ", ".join(auc_strings))
+                         
+    ax.set_title(f'Group Average LFP Spectra by {feature_name}\n{title_suffix}', fontsize=14, fontweight='bold', pad=15)
+    ax.set_xlabel('Frequency (Hz)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Power (log10)', fontsize=12, fontweight='bold')
+    
+    props = dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='gray')
+    ax.text(0.97, 0.95, "\n".join(stats_text_lines), transform=ax.transAxes, fontsize=10,
+            verticalalignment='top', horizontalalignment='right', bbox=props, family='monospace')
+    
+    sns.despine()
+    ax.legend(frameon=False, loc='lower left', fontsize=11)
+    plt.tight_layout()
+    plt.show()
+
+# -----------------------------------------------------------------
+# Extraction Function (Accepts any target_t)
+# -----------------------------------------------------------------
+def extract_target_time_spectra_and_aucs(df_clust, specparam_list, cluster_col, target_t=0.0):
+    """Safely extracts spectra and AUCs for a given cluster column at a SPECIFIC TIME."""
+    valid_res = next((res for res in specparam_list if res is not None and 'model' in res), None)
+    if valid_res is None: return None, None, None, None
+        
+    freqs = valid_res['model'].get_model(ind=0).freqs
+    t_bins = valid_res['t_bins_s']
+    
+    # Find the index closest to our target time!
+    target_index = np.argmin(np.abs(t_bins - target_t))
+    exact_time = t_bins[target_index]
+
+    spectra_list = []
+    auc_list = []
+
+    for idx, row in df_clust.dropna(subset=[cluster_col]).iterrows():
+        spk_idx = int(row['spk_id'])
+        cluster_label = row[cluster_col]
+        
+        if spk_idx >= len(specparam_list): continue
+        res = specparam_list[spk_idx]
+        if res is None or 'model' not in res: continue
+            
+        time_model = res['model']
+        
+        try:
+            sm = time_model.get_model(ind=target_index)
+            full_log = sm.get_model(component="full", space="log")
+            
+            spike_aucs = {'cluster': cluster_label}
+            for band_name, band_array in res.get('band_aucs', {}).items():
+                spike_aucs[band_name] = band_array[target_index]
+            
+            if full_log is not None:
+                spectra_list.append(full_log)
+                auc_list.append(spike_aucs)
+                
+        except Exception:
+            continue
+
+    if len(spectra_list) == 0:
+        return None, None, None, None
+        
+    return freqs, np.array(spectra_list), pd.DataFrame(auc_list), exact_time
+
+# -----------------------------------------------------------------
+#Master Loop Function (Reads the Stats Dictionary)
+# -----------------------------------------------------------------
+def plot_significant_windows_spectra(df_clust, specparam_list, pop_stats_dict):
+    """
+    Finds all significant time windows in the stats dictionary and plots 
+    the full SpecParam spectra precisely at the midpoint of those windows.
+    """
+    cluster_cols = [c for c in df_clust.columns if c.endswith('_cluster')]
+    if not cluster_cols:
+        print("No cluster columns found!")
+        return
+
+    for col in cluster_cols:
+        # 1. Gather all significant windows for this specific morphological feature
+        sig_windows = []
+        for lfp_feat, stats in pop_stats_dict.items():
+            if 'pairwise_stats' in stats:
+                for stat in stats['pairwise_stats']:
+                    if stat['spike_feature'] == col:
+                        # Save the window and the LFP feature it was significant for
+                        sig_windows.append((stat['window_start'], stat['window_end'], lfp_feat))
+                        
+        if not sig_windows:
+            print(f"No significant windows found for {col}. Skipping.")
+            continue
+
+        # 2. Group by exact window to avoid plotting the exact same time twice 
+        # (e.g., if both Gamma and Theta were significant at the same time)
+        unique_windows = {}
+        for start, end, feat in sig_windows:
+            w = (start, end)
+            if w not in unique_windows:
+                unique_windows[w] = []
+            unique_windows[w].append(feat)
+
+        # 3. Extract and Plot for each unique significant window
+        for (start, end), feats in unique_windows.items():
+            # Target the midpoint of the significant window
+            mid_t = (start + end) / 2.0 
+            
+            print(f"\nExtacting {col} at significant window: {start:.3f}s to {end:.3f}s")
+            
+            freqs, spectra_t, df_aucs, exact_time = extract_target_time_spectra_and_aucs(
+                df_clust=df_clust, 
+                specparam_list=specparam_list, 
+                cluster_col=col, 
+                target_t=mid_t
+            )
+            
+            if spectra_t is not None:
+                feature_name_clean = col.replace('_cluster', '').replace('_', ' ').title()
+                
+                # Add a custom subtitle explaining exactly why this window was chosen
+                sig_feats_str = ", ".join(list(set(feats))) # Unique list of significant LFP features
+                title_suffix = f"(Sig. Window: {start:.2f}s to {end:.2f}s | Plotted Midpoint: {exact_time:.2f}s)\n[Significant for: {sig_feats_str}]"
+                
+                plot_cluster_spectra_with_aucs(
+                    freqs=freqs, 
+                    spectra_matrix=spectra_t, 
+                    df_aucs=df_aucs, 
+                    feature_name=feature_name_clean,
+                    title_suffix=title_suffix
+                )
+            else:
+                print(f"  -> Failed to extract valid spectra at t={mid_t}s")
