@@ -3580,13 +3580,167 @@ def p_to_stars(p):
         return "n.s."
 
 
+def compute_simple_lfp_by_spike(
+    windows_all,
+    times_rel_list,
+    fs,
+    inner_window_s=0.5,
+    step_s=0.025,
+    freq_range=(4, 90),
+):
+    """
+    For each spike's raw LFP window, slide through with inner sub-windows and compute
+    mean amplitude, std, and spectral exponent (log-log FFT slope) per bin.
+
+    Parameters
+    ----------
+    windows_all : list of np.ndarray
+        Raw LFP windows, one per spike.
+    times_rel_list : list of np.ndarray
+        Time arrays in ms relative to spike, one per spike.
+    fs : float
+        LFP sampling rate in Hz.
+    inner_window_s : float
+        Sub-window width in seconds.
+    step_s : float
+        Step size in seconds.
+    freq_range : tuple
+        (low, high) Hz range used for the exponent fit.
+
+    Returns
+    -------
+    list of dict (or None if window too short), parallel to windows_all:
+        {
+            "t_bins_s":     np.ndarray,  # center time of each sub-window (s)
+            "lfp_mean":     np.ndarray,
+            "lfp_std":      np.ndarray,
+            "lfp_exponent": np.ndarray,
+        }
+    """
+    inner_samples = int(inner_window_s * fs)
+    step_samples  = max(1, int(step_s * fs))
+
+    results = []
+
+    for raw_win, t_rel_ms in zip(windows_all, times_rel_list):
+        raw_win  = np.asarray(raw_win, float)
+        t_rel_s  = np.asarray(t_rel_ms, float) / 1000.0
+
+        n = len(raw_win)
+        if n < inner_samples:
+            results.append(None)
+            continue
+
+        t_bins, means, stds, exps = [], [], [], []
+
+        for start in range(0, n - inner_samples + 1, step_samples):
+            end      = start + inner_samples
+            segment  = raw_win[start:end]
+            center   = (start + end) // 2
+            t_center = t_rel_s[center] if center < len(t_rel_s) else t_rel_s[-1]
+
+            means.append(np.nanmean(segment))
+            stds.append(np.nanstd(segment))
+
+            # Spectral exponent: fit line to log-log power spectrum
+            fft_vals = np.fft.rfft(segment)
+            power    = (np.abs(fft_vals) ** 2) / len(segment)
+            freqs    = np.fft.rfftfreq(len(segment), d=1.0 / fs)
+
+            mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1]) & (power > 0)
+            if np.sum(mask) > 2:
+                coeffs = np.polyfit(np.log10(freqs[mask]), np.log10(power[mask]), 1)
+                exps.append(-coeffs[0])  # positive value = steeper 1/f slope
+            else:
+                exps.append(np.nan)
+
+            t_bins.append(t_center)
+
+        results.append({
+            "t_bins_s":     np.array(t_bins),
+            "lfp_mean":     np.array(means),
+            "lfp_std":      np.array(stds),
+            "lfp_exponent": np.array(exps),
+        })
+
+    return results
+
+
+def make_simple_lfp_feature_groups(
+    lfp_windows_by_spike,
+    groups,
+    feature: str,
+):
+    """
+    Build a feat_groups dict for simple LFP features (lfp_mean, lfp_std, lfp_exponent),
+    mirroring make_specparam_feature_groups so lfp_sliding_stats works unchanged.
+
+    Parameters
+    ----------
+    lfp_windows_by_spike : list of dict
+        Output of compute_simple_lfp_by_spike.
+    groups : dict
+        Output of build_lfp_groups_from_clusters.
+    feature : str
+        One of "lfp_mean", "lfp_std", "lfp_exponent".
+
+    Returns
+    -------
+    dict with same structure as make_specparam_feature_groups output.
+    """
+    out = {}
+
+    for gname, gdict in groups.items():
+        spk_inds = np.asarray(gdict.get("spk_inds", []), dtype=int)
+        if spk_inds.size == 0:
+            continue
+
+        next_rel   = np.asarray(gdict.get("next_rel", np.full(spk_inds.size, np.nan)), float)
+        next_rel_s = next_rel / 1000.0  # groups stores next_rel in ms
+
+        win_list, t_list, next_list = [], [], []
+
+        for k, ind in enumerate(spk_inds):
+            if ind < 0 or ind >= len(lfp_windows_by_spike):
+                continue
+            res = lfp_windows_by_spike[ind]
+            if res is None:
+                continue
+
+            t_bins = np.asarray(res.get("t_bins_s", []), float)
+            arr    = np.asarray(res.get(feature, []), float)
+
+            if arr.size == 0 or arr.size != t_bins.size:
+                continue
+
+            win_list.append(arr)
+            t_list.append(t_bins)
+            next_list.append(next_rel_s[k])
+
+        if len(win_list) == 0:
+            continue
+
+        out[gname] = {
+            "windows":   win_list,
+            "times_rel": t_list,
+            "next_rel":  np.asarray(next_list, float),
+            "spk_inds":  spk_inds,
+        }
+
+    return out
+
+
+_SIMPLE_LFP_FEATURES = {"lfp_mean", "lfp_std", "lfp_exponent"}
+
+
 def run_master_LFP_spk_analysis(
-    cell_id, 
-    specparam_by_spike, 
-    groups, 
-    features_to_analyze, 
-    save_dir="/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spe1_pickles/lfp_spk_group_pickles", 
-    window_width=0.05, 
+    cell_id,
+    specparam_by_spike,
+    groups,
+    features_to_analyze,
+    lfp_windows_by_spike=None,
+    save_dir="/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spe1_pickles/lfp_spk_group_pickles",
+    window_width=0.05,
     step_size=0.025,
     p_threshold=0.05
 ):
@@ -3596,23 +3750,28 @@ def run_master_LFP_spk_analysis(
         feature_type = feat_info.get("feature")
         band = feat_info.get("band", None)
         label = feat_info.get("label", feature_type.capitalize())
-        
+
         print(f"\n" + "="*60)
         print(f"  RUNNING PIPELINE FOR: {label.upper()}")
         print("="*60 + "\n")
-        
+
         # 1. Generate Groups
-        if feature_type == "band" and band is not None:
+        if feature_type in _SIMPLE_LFP_FEATURES:
+            if lfp_windows_by_spike is None:
+                print(f"  Skipping {label}: lfp_windows_by_spike not provided.")
+                continue
+            feat_groups = make_simple_lfp_feature_groups(lfp_windows_by_spike, groups, feature=feature_type)
+        elif feature_type == "band" and band is not None:
             feat_groups = make_specparam_feature_groups(specparam_by_spike, groups, feature=feature_type, band=band)
         else:
             feat_groups = make_specparam_feature_groups(specparam_by_spike, groups, feature=feature_type)
-            
+
         # 2. Plot Heatmaps
         _ = plot_window_feature_groups_heatmap(feat_groups, feature_label=label, cmap="viridis", time_unit="s", sort_by="next_rel")
-        
+
         # 3. Run Sliding Window Stats
         sig_report = lfp_sliding_stats(feat_groups, ylabel=f"Δ {label}", window_width=window_width, step_size=step_size, p_threshold=p_threshold, plot_mode="per_cluster")
-        
+
         # Save to master dict
         cell_master_results[label] = sig_report
 
@@ -3621,7 +3780,7 @@ def run_master_LFP_spk_analysis(
     save_path = os.path.join(save_dir, f"{cell_id}_sliding_stats.pkl")
     with open(save_path, 'wb') as file:
         pickle.dump(cell_master_results, file)
-        
+
     print(f"\n✅ All statistical results for {cell_id} successfully saved to: {save_path}")
     return cell_master_results
 
