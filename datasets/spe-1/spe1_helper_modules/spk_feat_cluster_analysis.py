@@ -16,7 +16,7 @@ import mne
 from specparam import SpectralTimeModel
 from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union, Sequence
 import scipy.stats as stats
-from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway, kruskal, zscore
+from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, probplot, f_oneway, kruskal, zscore, spearmanr
 from sklearn.metrics.pairwise import cosine_similarity
 from itertools import combinations
 import os
@@ -749,26 +749,41 @@ def plot_full_cluster_report(
     # --------------------------------------------------
     
     #Generate Pairwise Rows for nRMSE Ranking
-    
+
+    # --------------------------------------------------
+    # G) Temporal structure: Spearman rho between spike time and cluster label
+    # --------------------------------------------------
+    temporal_rho, temporal_p = np.nan, np.nan
+    if time_col in df.columns and len(groups) >= 2:
+        ordinal_map = {g: i for i, g in enumerate(groups)}
+        df_valid = df[[time_col, cluster_col]].dropna()
+        df_valid = df_valid[df_valid[cluster_col].isin(groups)]
+        ordinal_labels = df_valid[cluster_col].map(ordinal_map)
+        if len(ordinal_labels) > 2 and ordinal_labels.nunique() > 1:
+            result = spearmanr(df_valid[time_col].values, ordinal_labels.values)
+            temporal_rho = result.statistic
+            temporal_p   = result.pvalue
+
     group_indices = range(len(groups))
     pairs = list(combinations(group_indices, 2))
-    
+
     rows = []
     for idx1, idx2 in pairs:
         g1, g2 = group_names[idx1], group_names[idx2]
-        
+
         # Match the key in wf_metrics (checking both orders)
         pair_key = f"{g1}_vs_{g2}"
         alt_key = f"{g2}_vs_{g1}"
         metrics = wf_metrics.get(pair_key) or wf_metrics.get(alt_key) or {}
 
-        # The specific minimalist structure
         row = {
             "cluster_group_id": cluster_group_id,
             "feature_clustered": clustered_feature,
             "groups": f"{g1}-{g2}",
             "nRMSE": metrics.get('nrmse', np.nan),
-            "cos_sim": metrics.get('cos_sim', np.nan)
+            "cos_sim": metrics.get('cos_sim', np.nan),
+            "temporal_rho": temporal_rho,
+            "temporal_p": temporal_p,
         }
         rows.append(row)
     return pd.DataFrame(rows)
