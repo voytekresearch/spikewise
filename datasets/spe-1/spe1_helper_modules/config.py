@@ -1,5 +1,9 @@
 # config.py
 
+# Cells with strongest spike-LFP cluster differences (from cluster comparison analysis)
+# Use these as priority cells for LFP analysis pipelines
+PRIORITY_CELLS = [21, 24, 42, 19, 45, 8, 10]
+
 # Hardware/experiment parameters
 NPX_CHANNELS = 384
 CELL_IDS = ["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c10", "c12", "c13", "c14", "c15", "c16","c17", "c18", "c19", "c20", 
