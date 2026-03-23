@@ -23,3 +23,6 @@ doc/generated
 dist/
 spikeparam.egg-info/
 build/
+
+# Ignore Claude Code internal files
+.claude/
