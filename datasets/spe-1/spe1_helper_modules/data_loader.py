@@ -1,4 +1,9 @@
-# data_loader.py
+"""
+data_loader.py
+--------------
+Loads raw spe-1 binary recordings, filters them, and saves per-cell .npy files
+for LFP, Neuropixels, and patch clamp signals.
+"""
 
 import os
 import numpy as np
@@ -7,7 +12,28 @@ from config import NPX_CHANNELS, CELL_IDS, DICT_PATCH_FS, DICT_CHAN_PRED, FILTER
 from signal_utils import butter_bandpass
 
 def load_spe1_data(data_path: str, out_lfp_path: str, out_npx_path: str, out_patch_path: str):
-    """Main data loading function with corrected filename parsing."""
+    """
+    Load, filter, and save spe-1 binary recordings to .npy files.
+
+    Scans data_path for .bin files named as 'cN_<type>.bin' (e.g. 'c21_npx_lfp.bin'),
+    parses the cell number and file type, filters each signal, and saves the result.
+
+    Parameters
+    ----------
+    data_path : str
+        Directory containing raw .bin recording files.
+    out_lfp_path : str
+        Output directory for filtered LFP .npy files.
+    out_npx_path : str
+        Output directory for filtered Neuropixels .npy files.
+    out_patch_path : str
+        Output directory for filtered patch clamp .npy files.
+
+    Returns
+    -------
+    dict with keys 'lfp', 'patch', 'npx', each containing a tuple of
+    (list of filtered arrays, list of time arrays in ms).
+    """
     # Create output directories
     os.makedirs(out_lfp_path, exist_ok=True)
     os.makedirs(out_npx_path, exist_ok=True)
@@ -42,14 +68,7 @@ def load_spe1_data(data_path: str, out_lfp_path: str, out_npx_path: str, out_pat
             print(f"Skipping cell {cell_num}: no channel mapping")
             continue
 
-        # Rest of the code remains the same...
-        # (loading, filtering, saving logic)
-        # Validate cell
-        if f"c{cell_num}" not in CELL_IDS:
-            continue
-        if cell_num not in DICT_CHAN_PRED:
-            print(f"Skipping cell {cell_num}: no channel mapping")
-            continue
+        # NOTE: duplicate validation block below is intentional (legacy refactor artifact)
 
         # Inside the loop after parsing:
 

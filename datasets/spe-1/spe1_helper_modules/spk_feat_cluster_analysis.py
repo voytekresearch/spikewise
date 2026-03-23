@@ -1,9 +1,15 @@
 """
-skp_feat_cluster_analysis.py
-----------------------------
-Analysis utilities for identifying and visualizing spike feature clustering patterns
-and their temporal dynamics.
+spk_feat_cluster_analysis.py
+-----------------------------
+Analysis utilities for identifying and visualizing spike waveform feature clustering,
+temporal dynamics of cluster membership, and LFP-spike group comparisons.
 
+Main pipeline:
+  1. Cluster spikes by waveform features (cluster_multimodal_features)
+  2. Report on cluster quality and temporal structure (plot_full_cluster_report)
+  3. Extract LFP windows per spike group (extract_lfp_windows, build_lfp_groups_from_clusters)
+  4. Run time-resolved specparam + simple LFP features per group (run_master_LFP_spk_analysis)
+  5. Identify sliding windows with significant group differences (lfp_sliding_stats)
 """
 
 import numpy as np
@@ -26,7 +32,6 @@ import gc
 
 
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
-from itertools import combinations
 
 
 
@@ -2686,7 +2691,7 @@ def build_specparam_groups_from_spike_indices(
 
 
 # ------------------------------------------------------------------------------------------- #
-# --------------------  Time-resolved and window visualziations  --------------------- #
+# --------------------  Time-resolved and window visualizations  --------------------- #
 # ------------------------------------------------------------------------------------------- #
 
 
@@ -3585,6 +3590,7 @@ def lfp_sliding_stats(
     }
 
 def p_to_stars(p):
+    """Convert a p-value to a significance star string ('***', '**', '*', or 'n.s.')."""
     if p < 0.001:
         return "***"
     elif p < 0.01:
@@ -3745,6 +3751,7 @@ def make_simple_lfp_feature_groups(
     return out
 
 
+# Feature names routed to make_simple_lfp_feature_groups instead of make_specparam_feature_groups
 _SIMPLE_LFP_FEATURES = {"lfp_mean", "lfp_std", "lfp_exponent"}
 
 
@@ -3759,6 +3766,46 @@ def run_master_LFP_spk_analysis(
     step_size=0.025,
     p_threshold=0.05
 ):
+    """
+    Master pipeline: run sliding-window LFP-spike group analysis for all requested features
+    and save results to a pickle.
+
+    For each feature in features_to_analyze, this function:
+      1. Builds per-group feature arrays (specparam or simple LFP)
+      2. Plots a heatmap of the feature over time per group
+      3. Runs sliding-window stats to find windows with significant group differences
+      4. Saves all results to {save_dir}/{cell_id}_sliding_stats.pkl
+
+    Parameters
+    ----------
+    cell_id : str
+        Cell identifier, used as the pickle filename prefix.
+    specparam_by_spike : list of dict
+        Output of load_chunked_specparam_results — specparam results per spike.
+    groups : dict
+        Output of build_lfp_groups_from_clusters — spike indices and LFP windows per cluster group.
+    features_to_analyze : list of dict
+        Each dict specifies a feature, e.g.:
+          {"feature": "exponent", "label": "Aperiodic Exponent"}
+          {"feature": "band", "band": "gamma", "label": "Gamma AUC"}
+          {"feature": "lfp_mean", "label": "LFP Mean Amplitude"}
+        Simple LFP features ("lfp_mean", "lfp_std", "lfp_exponent") require lfp_windows_by_spike.
+    lfp_windows_by_spike : list of dict, optional
+        Output of compute_simple_lfp_by_spike. Required for simple LFP features.
+    save_dir : str
+        Directory to save the output pickle.
+    window_width : float
+        Width of each sliding analysis window in seconds.
+    step_size : float
+        Step size between consecutive windows in seconds.
+    p_threshold : float
+        Significance threshold for pairwise stats.
+
+    Returns
+    -------
+    dict
+        Master results dict keyed by feature label, saved to disk as a pickle.
+    """
     cell_master_results = {"cell_id": cell_id}
 
     for feat_info in features_to_analyze:

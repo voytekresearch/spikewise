@@ -1,5 +1,17 @@
 """
-lfp_spike_window_analysis.py - Comprehensive module for LFP-spike analysis integration
+lfp_spike_window_analysis.py
+-----------------------------
+LFP-spike integration analysis for the spe-1 dataset.
+
+Covers:
+  - LFP window extraction around spike times (compute_lfp_windows, extract_lfp_windows)
+  - Time-resolved specparam fitting per spike (run_time_resolved_specparam_per_spike)
+  - Gamma AUC and aperiodic exponent extraction (gamma_auc_and_exponent_per_window)
+  - Sensitivity analysis across specparam parameter grids
+  - Helper utilities for spike-to-window mapping and feature extraction
+
+Note: some functions appear in multiple versions reflecting earlier (legacy) and
+current implementations. The most recent version of each is used in the active pipeline.
 """
 
 import numpy as np
@@ -838,6 +850,30 @@ def map_spikes_to_windows(
     df_spike_ids: Union[pd.Series, List[int]],
     fs: float
 ) -> Dict[int, List[int]]:
+    """
+    Map spike times to their corresponding LFP windows.
+
+    Converts window sample indices to ms using fs, then delegates to
+    _map_spikes_to_window_helper.
+
+    Parameters
+    ----------
+    spk_times_ms : list of float
+        Spike times in milliseconds.
+    spk_ids : list of int
+        Spike identifiers parallel to spk_times_ms.
+    window_times : list of (int, int)
+        Window boundaries in samples (start, end).
+    df_spike_ids : Series or list of int
+        Valid spike IDs to include (e.g. from df_features).
+    fs : float
+        Sampling rate in Hz used to convert samples → ms.
+
+    Returns
+    -------
+    dict
+        Maps window index → list of spike IDs that fall within that window.
+    """
     window_times_ms = [(start / fs * 1000, end / fs * 1000) for (start, end) in window_times]
     return _map_spikes_to_window_helper(spk_times_ms, spk_ids, window_times_ms, df_spike_ids)
 

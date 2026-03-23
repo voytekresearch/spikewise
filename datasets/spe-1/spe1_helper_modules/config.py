@@ -1,24 +1,48 @@
-# config.py
+"""
+config.py
+---------
+Experiment-wide constants and per-cell metadata for the spe-1 dataset.
 
-# Cells with strongest spike-LFP cluster differences (from cluster comparison analysis)
-# Use these as priority cells for LFP analysis pipelines
+Sections:
+  - Priority cells (target cells for LFP analysis)
+  - Hardware/experiment parameters
+  - Per-cell sampling rates, channel predictions, spike thresholds
+  - Per-cell metadata: patch type, cell type, cortical depth,
+    dark neuron flag, EAP waveform quality
+"""
+
+# =============================================================================
+# ANALYSIS TARGETS
+# =============================================================================
+
+# Cells with strongest spike waveform cluster differences (from all_cluster_comparison.ipynb)
 PRIORITY_CELLS = [21, 24, 42, 19, 45, 8, 10]
 
-# Hardware/experiment parameters
+# =============================================================================
+# HARDWARE / EXPERIMENT PARAMETERS
+# =============================================================================
+
+# Number of channels on the Neuropixels probe
 NPX_CHANNELS = 384
 CELL_IDS = ["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c10", "c12", "c13", "c14", "c15", "c16","c17", "c18", "c19", "c20", 
             "c21", "c22", "c23", "c24", "c25", "c26", "c27", "c28", "c29",
             "c31", "c32", "c33", "c34", "c35", "c36", "c37", "c38",
             "c39", "c40", "c41","c42","c43", "c44", "c45", "c46"]
 
-# Filter parameters
+# =============================================================================
+# FILTER PARAMETERS  (Hz)
+# =============================================================================
 FILTER_SETTINGS = {
     "lfp": [0.1, 250],
     "patch": [10, 25000],
     "npx": [300, 14000]
 }
 
-# Sampling frequencies
+# =============================================================================
+# PER-CELL METADATA
+# =============================================================================
+
+# Patch clamp sampling frequency (Hz) per cell
 DICT_PATCH_FS = {
     1:50023.91875795,
     2: 50023.91258241,
@@ -65,7 +89,7 @@ DICT_PATCH_FS = {
     46: 50023.87552924
 }
 
-# Channel predictions
+# Best Neuropixels channel prediction per cell (used to extract single-channel LFP/NPX)
 DICT_CHAN_PRED = {
 
 
@@ -116,8 +140,8 @@ DICT_CHAN_PRED = {
 
 }
 
-# Spike thresholds 
-DICT_SPK_THRESH =  {
+# Spike detection amplitude threshold (mV) per cell
+DICT_SPK_THRESH = {
 1:1.25,
 2:62.2,
 3:0.81,
@@ -164,7 +188,7 @@ DICT_SPK_THRESH =  {
 }
 
 
-# Patch type
+# Recording modality and clamp mode per cell: "Juxta" or "WC" (whole-cell), "IC" or "VC"
 DICT_PATCH_TYPE = {1:"Juxta, IC",
 2:"Juxta, VC",
 3:"Juxta, IC",
@@ -209,7 +233,7 @@ DICT_PATCH_TYPE = {1:"Juxta, IC",
 45:"Juxta, VC",
 46:"Juxta, VC"}
 
-# Cell type
+# Cell type per cell: "PC" (pyramidal) or "IN" (interneuron)
 DICT_CELL_TYPE = {
 1:"PC",
 2:"PC",
@@ -257,7 +281,7 @@ DICT_CELL_TYPE = {
 }
 
 
-# Clear EAP waveform?
+# Whether the extracellular AP (EAP) waveform is clearly visible on the Neuropixels channel
 DICT_EAP_WAV = {
 1:False,
 2:True,
@@ -305,7 +329,7 @@ DICT_EAP_WAV = {
 }
 
 
-# Dark neurons
+# Whether the cell is a "dark neuron" (not detected by Kilosort / no clear EAP on NPX)
 DICT_DARK_NEURONS = {
 
 1:False,
@@ -354,8 +378,8 @@ DICT_DARK_NEURONS = {
 }
 
 
-# Cortical depth
-DICT_CORT_DEPTH= {
+# Estimated cortical depth (µm) per cell based on Neuropixels channel position
+DICT_CORT_DEPTH = {
 1:843.9,
 2:723.5,
 3:1024.1,
@@ -401,10 +425,8 @@ DICT_CORT_DEPTH= {
 46:1039.7
 }
 
-#Clear EAP waveform
-
-
-DICT_CLEAR_EAP_WAV= {
+# Alias for DICT_EAP_WAV — same values, kept for backwards compatibility
+DICT_CLEAR_EAP_WAV = {
 
 1:False,
 2:True,
