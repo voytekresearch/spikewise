@@ -11,6 +11,7 @@ import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 from matplotlib.patches import Circle
 from scipy.stats import pearsonr
+from scipy.stats import spearmanr
 from scipy.stats import chi2_contingency
 from scipy.stats import kruskal
 
@@ -56,7 +57,9 @@ def compile_experiment_results(folder_path):
                 'feature_clustered': [np.nan],
                 'groups': [np.nan],
                 'nRMSE': [np.nan],
-                'cos_sim': [np.nan]
+                'cos_sim': [np.nan],
+                'temporal_rho': [np.nan],
+                'temporal_p': [np.nan]
             })
             n_clusters = 0 # No pickle = 0 clusters
 
@@ -84,16 +87,21 @@ def compile_experiment_results(folder_path):
         'groups': 'cluster'
     })
 
-    # Updated column order including num_clusters
+    # Updated column order including num_clusters and temporal metrics
     cols = [
-        'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth', 
-        'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'num_clusters', 
-        'cluster', 'nRMSE', 'cos_sim'
+        'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth',
+        'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'num_clusters',
+        'cluster', 'nRMSE', 'cos_sim', 'temporal_rho', 'temporal_p', 'temporal_component'
     ]
 
     for c in cols:
         if c not in final_table.columns:
             final_table[c] = np.nan
+
+    # Binary flag: 1 if temporal drift is statistically significant (p < 0.05)
+    final_table['temporal_component'] = (
+        pd.to_numeric(final_table['temporal_p'], errors='coerce') < 0.05
+    ).astype(float)
 
     return final_table[cols]
 
@@ -102,15 +110,17 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
     raw_depth_all = pd.to_numeric(df['cortical_depth'], errors='coerce')
     raw_nrmse_all = pd.to_numeric(df['nRMSE'], errors='coerce')
     raw_cossim_all = pd.to_numeric(df['cos_sim'], errors='coerce')
-    
+    raw_trho_all  = pd.to_numeric(df['temporal_rho'], errors='coerce')
+
     g_min_d, g_max_d = raw_depth_all.min(), raw_depth_all.max()
     g_min_n, g_max_n = raw_nrmse_all.min(), raw_nrmse_all.max()
     g_min_c, g_max_c = raw_cossim_all.min(), raw_cossim_all.max()
+    g_min_t, g_max_t = raw_trho_all.min(), raw_trho_all.max()
 
     # 2. Formatting and Numerical Sorting (c1, c2, c3... c46)
     cols_order = [
         'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth',
-        'dark_neuron', 'clear_EAP_waveform', 'spike_feature','num_clusters', 'cluster', 'nRMSE', 'cos_sim'
+        'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'num_clusters', 'cluster', 'nRMSE', 'cos_sim', 'temporal_rho'
     ]
     df_copy = df.copy()
     # Sort numerically (c1, c2, c10...)
@@ -121,6 +131,7 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
     plot_data['nRMSE'] = pd.to_numeric(plot_data['nRMSE'], errors='coerce').map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
     plot_data['cos_sim'] = pd.to_numeric(plot_data['cos_sim'], errors='coerce').map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
     plot_data['cortical_depth'] = pd.to_numeric(plot_data['cortical_depth'], errors='coerce').map(lambda x: f'{x:.1f}' if pd.notnull(x) else '')
+    plot_data['temporal_rho'] = pd.to_numeric(plot_data['temporal_rho'], errors='coerce').map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
 
     # 3. Fixed Family Color Map
     feature_shades = {
@@ -197,25 +208,28 @@ def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
                         else: cell_f.visible_edges = 'LR'
                     feat_start = j + 1
 
-            # Metric Gradients (Cols 9-11)
+            # Metric Gradients (Cols 9-12)
             for r in range(start_row, end_row + 1):
                 n_val = raw_nrmse_all.iloc[r-1]
                 c_val = raw_cossim_all.iloc[r-1]
-                
-                # nRMSE (Col 10): Darker = Larger (Global Bad)
-                # FIX: Shifted to index 10
+                t_val = raw_trho_all.iloc[r-1]
+
+                # nRMSE (Col 10): Darker = Larger
                 if pd.notnull(n_val) and g_max_n != g_min_n:
                     n_norm = (n_val - g_min_n) / (g_max_n - g_min_n)
                     table[r, 10].set_facecolor(mcolors.to_hex(plt.cm.Oranges(0.05 + n_norm * 0.4)))
-                
-                # Cos Sim (Col 11): Darker = Smaller (Global Bad)
-                # FIX: Shifted to index 11
+
+                # Cos Sim (Col 11): Darker = Smaller
                 if pd.notnull(c_val) and g_max_c != g_min_c:
                     c_norm = (g_max_c - c_val) / (g_max_c - g_min_c)
                     table[r, 11].set_facecolor(mcolors.to_hex(plt.cm.Blues(0.05 + c_norm * 0.4)))
-                
+
+                # Temporal Rho (Col 12): diverging — negative=cool, positive=warm
+                if pd.notnull(t_val) and g_max_t != g_min_t:
+                    t_norm = (t_val - g_min_t) / (g_max_t - g_min_t)
+                    table[r, 12].set_facecolor(mcolors.to_hex(plt.cm.RdBu_r(t_norm)))
+
                 # Cluster background shading
-                # FIX: Shifted to index 9
                 table[r, 9].set_facecolor('#F8F9FA') 
             
             start_row = i + 1
@@ -294,7 +308,7 @@ def analyze_waveform_variance(df, N=20):
 def analyze_cross_correlations(df, alpha=0.05):
     # 1. Define Groups
     metadata_cols = ['patch_type', 'current_type', 'cell_type', 'cortical_depth', 'dark_neuron', 'clear_EAP_waveform']
-    feature_cols = ['num_clusters', 'nRMSE', 'cos_sim']
+    feature_cols = ['num_clusters', 'nRMSE', 'cos_sim', 'temporal_rho']
     all_cols = metadata_cols + feature_cols
     
     # 2. Encode and Clean
@@ -478,7 +492,8 @@ def quantify_spk_feature_prevalence(df):
     metrics = df.groupby('spike_feature').agg({
         'num_clusters': 'mean',
         'cos_sim': 'mean',
-        'nRMSE': 'mean'
+        'nRMSE': 'mean',
+        'temporal_rho': 'mean'
     }).reset_index()
     
     return feature_counts.merge(metrics, on='spike_feature').sort_values('prevalence_pct', ascending=False)
@@ -488,11 +503,12 @@ def plot_aggregated_spike_feat(raw_df):
     stats = raw_df.groupby('spike_feature').agg({
         'nRMSE': ['mean', 'std', 'count'],
         'cos_sim': ['mean', 'std', 'count'],
-        'num_clusters': 'mean'
+        'num_clusters': 'mean',
+        'temporal_rho': 'mean'
     })
-    
+
     # Flatten columns
-    stats.columns = ['nRMSE', 'nRMSE_std', 'nRMSE_n', 'cos_sim', 'cos_sim_std', 'cos_sim_n', 'num_clusters']
+    stats.columns = ['nRMSE', 'nRMSE_std', 'nRMSE_n', 'cos_sim', 'cos_sim_std', 'cos_sim_n', 'num_clusters', 'temporal_rho']
     stats = stats.reset_index()
     
     # Calculate the 95% Confidence Interval arms
@@ -612,7 +628,7 @@ def plot_feature_depth_distribution(df):
 
 def plot_meta_spk_feature_dependency(df):
     # 1. Identify Categorical Metadata (excluding metrics and keys)
-    exclude = ['spike_feature', 'num_clusters', 'cos_sim', 'nRMSE', 'cell_id', 'cortical_depth', 'nRMSE_std', 'cos_sim_std', 'cluster']
+    exclude = ['spike_feature', 'num_clusters', 'cos_sim', 'nRMSE', 'temporal_rho', 'temporal_p', 'cell_id', 'cortical_depth', 'nRMSE_std', 'cos_sim_std', 'cluster']
     meta_cols = [c for c in df.columns if c not in exclude]
     
     # 2. Calculate Prevalence (%) for Categorical Metadata
@@ -696,6 +712,295 @@ def stat_test_depth_stratification(df):
     
     return p
 
+
+
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ Temporal Structure Analysis ------------------------------ #
+# ------------------------------------------------------------------------------------------- #
+
+def plot_temporal_structure(df, alpha=0.05):
+    """
+    Visualize temporal_rho across all cell-feature groups.
+
+    Shows whether spike cluster identity drifts over recording time
+    (Spearman rho between spike time and ordinal cluster label).
+
+    Panel A: lollipop chart of temporal_rho per cell-feature group,
+             sorted by rho, colored by spike_feature, stars for significant.
+    Panel B: strip/box plot of temporal_rho distribution per spike feature.
+    """
+    df_plot = df[['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p']].dropna().copy()
+    df_plot['temporal_rho'] = pd.to_numeric(df_plot['temporal_rho'], errors='coerce')
+    df_plot['temporal_p']   = pd.to_numeric(df_plot['temporal_p'],   errors='coerce')
+    df_plot = df_plot.dropna(subset=['temporal_rho'])
+
+    df_plot['significant'] = df_plot['temporal_p'] < alpha
+    df_plot['label'] = df_plot['cell_id'] + '\n' + df_plot['spike_feature']
+    df_plot = df_plot.sort_values('temporal_rho').reset_index(drop=True)
+
+    # Consistent color per spike feature
+    features = sorted(df_plot['spike_feature'].unique())
+    palette = dict(zip(features, sns.color_palette('tab10', n_colors=len(features))))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, max(6, len(df_plot) * 0.28 + 2)),
+                                   gridspec_kw={'width_ratios': [2, 1]})
+
+    # --- Panel A: Lollipop ---
+    for i, row in df_plot.iterrows():
+        color = palette[row['spike_feature']]
+        ax1.plot([0, row['temporal_rho']], [i, i], color=color, lw=1.2, alpha=0.6)
+        marker = '*' if row['significant'] else 'o'
+        ms = 10 if row['significant'] else 6
+        ax1.plot(row['temporal_rho'], i, marker=marker, color=color, ms=ms, zorder=3)
+
+    ax1.axvline(0, color='black', lw=1, linestyle='--', alpha=0.5)
+    ax1.set_yticks(range(len(df_plot)))
+    ax1.set_yticklabels(df_plot['label'], fontsize=7)
+    ax1.set_xlabel("Temporal Rho (Spearman)", fontsize=11)
+    ax1.set_title(f"Temporal Drift of Spike Clusters\n(* = p < {alpha})", fontsize=12, fontweight='bold')
+
+    # Legend for spike features
+    handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=palette[f],
+                          markersize=8, label=f) for f in features]
+    handles += [plt.Line2D([0], [0], marker='*', color='gray', markersize=10,
+                           linestyle='None', label=f'p < {alpha}')]
+    ax1.legend(handles=handles, loc='lower right', fontsize=8, frameon=True)
+    ax1.set_xlim(-1.1, 1.1)
+    sns.despine(ax=ax1)
+
+    # --- Panel B: Distribution per spike feature ---
+    feat_order = df_plot.groupby('spike_feature')['temporal_rho'].median().sort_values().index.tolist()
+    feat_palette = [palette[f] for f in feat_order]
+
+    sns.boxplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
+                palette=feat_palette, showfliers=False, width=0.5, ax=ax2)
+    sns.stripplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
+                  palette=feat_palette, alpha=0.5, size=5, ax=ax2)
+    ax2.axvline(0, color='black', lw=1, linestyle='--', alpha=0.5)
+    ax2.set_xlabel("Temporal Rho", fontsize=11)
+    ax2.set_ylabel("")
+    ax2.set_title("Distribution by\nSpike Feature", fontsize=12, fontweight='bold')
+    ax2.set_xlim(-1.1, 1.1)
+    sns.despine(ax=ax2)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Print summary
+    n_sig = df_plot['significant'].sum()
+    n_total = len(df_plot)
+    print(f"\nTemporal drift summary (p < {alpha}):")
+    print(f"  Significant: {n_sig} / {n_total} cell-feature groups ({100*n_sig/n_total:.1f}%)")
+    print(f"  Mean |rho|: {df_plot['temporal_rho'].abs().mean():.3f}")
+    sig_df = df_plot[df_plot['significant']][['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p']].copy()
+    sig_df['temporal_rho'] = sig_df['temporal_rho'].round(3)
+    sig_df['temporal_p']   = sig_df['temporal_p'].map(lambda x: f"{x:.4f}" if x >= 0.0001 else "<0.0001")
+    if not sig_df.empty:
+        print("\nSignificant groups:")
+        print(sig_df.sort_values('temporal_rho').to_string(index=False))
+
+    return df_plot
+
+
+def analyze_temporal_metadata_dependency(df, alpha=0.05):
+    """
+    Tests whether cell-level metadata predicts temporal_rho (drift of cluster identity
+    over recording time).
+
+    Categorical metadata (cell_type, patch_type, etc.): Kruskal-Wallis + box/strip plot.
+    Continuous metadata (cortical_depth): Spearman correlation + scatter plot.
+
+    Returns a DataFrame of test results sorted by p-value.
+    """
+    meta_cols = ['patch_type', 'current_type', 'cell_type', 'dark_neuron', 'clear_EAP_waveform', 'cortical_depth']
+    cont_cols = {'cortical_depth'}
+
+    df_plot = df[['cell_id', 'spike_feature', 'temporal_rho'] + meta_cols].copy()
+    df_plot['temporal_rho'] = pd.to_numeric(df_plot['temporal_rho'], errors='coerce')
+    df_plot = df_plot.dropna(subset=['temporal_rho'])
+
+    n_plots = len(meta_cols)
+    ncols = 3
+    nrows = math.ceil(n_plots / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(16, 5 * nrows))
+    axes = axes.flatten()
+
+    results = []
+    for ax_idx, col in enumerate(meta_cols):
+        ax = axes[ax_idx]
+        sub = df_plot[['temporal_rho', col]].dropna()
+
+        if col in cont_cols:
+            x = pd.to_numeric(sub[col], errors='coerce')
+            y = sub['temporal_rho']
+            valid = np.isfinite(x) & np.isfinite(y)
+            rho, p = spearmanr(x[valid], y[valid])
+            sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+
+            ax.scatter(x[valid], y[valid], alpha=0.4, color='steelblue', s=30)
+            m_s, b_s = np.polyfit(x[valid], y[valid], 1)
+            x_line = np.linspace(x[valid].min(), x[valid].max(), 100)
+            ax.plot(x_line, m_s * x_line + b_s, color='darkblue', lw=2)
+            ax.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
+            ax.set_xlabel(col.replace('_', ' ').title(), fontsize=10)
+            ax.set_ylabel('Temporal Rho', fontsize=10)
+            p_str = f"{p:.4f}" if p >= 0.0001 else "<0.0001"
+            ax.set_title(f'{col}\nSpearman ρ={rho:.2f}, {sig} (p={p_str})', fontsize=10, fontweight='bold')
+            results.append({'variable': col, 'test': 'Spearman', 'statistic': round(rho, 3), 'p': p, 'sig': sig})
+        else:
+            groups_list = [g['temporal_rho'].values for _, g in sub.groupby(col)]
+            if len(groups_list) >= 2:
+                stat, p = kruskal(*groups_list)
+            else:
+                stat, p = np.nan, np.nan
+            sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+
+            sns.boxplot(data=sub, x=col, y='temporal_rho', showfliers=False,
+                        palette='Paired', ax=ax)
+            sns.stripplot(data=sub, x=col, y='temporal_rho', color='.3', alpha=0.4, ax=ax)
+            ax.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
+            ax.set_xlabel(col.replace('_', ' ').title(), fontsize=10)
+            ax.set_ylabel('Temporal Rho', fontsize=10)
+            p_str = f"{p:.4f}" if p >= 0.0001 else "<0.0001"
+            ax.set_title(f'{col}\nKruskal-Wallis {sig} (p={p_str})', fontsize=10, fontweight='bold')
+            results.append({'variable': col, 'test': 'Kruskal-Wallis', 'statistic': round(stat, 3) if pd.notnull(stat) else np.nan, 'p': p, 'sig': sig})
+
+        sns.despine(ax=ax)
+
+    for j in range(len(meta_cols), len(axes)):
+        fig.delaxes(axes[j])
+
+    plt.suptitle('Metadata Predictors of Temporal Drift (temporal_rho)', fontsize=14, fontweight='bold', y=1.01)
+    plt.tight_layout()
+    plt.show()
+
+    res_df = pd.DataFrame(results).sort_values('p').reset_index(drop=True)
+    print("\nMetadata → temporal_rho test results:")
+    print(res_df.to_string(index=False))
+    return res_df
+
+
+def analyze_temporal_clustering_relationship(df, alpha=0.05):
+    """
+    Tests whether temporal drift (temporal_rho / temporal_component) is related to
+    clustering quality metrics: nRMSE, cos_sim, num_clusters.
+
+    Panel 1: scatter of temporal_rho vs each metric, colored by spike_feature.
+    Panel 2: box/strip of nRMSE and cos_sim split by temporal_component (0 vs 1).
+
+    Returns a DataFrame of Spearman correlation results.
+    """
+    df_plot = df[['cell_id', 'spike_feature', 'temporal_rho', 'temporal_component',
+                  'nRMSE', 'cos_sim', 'num_clusters']].copy()
+    for col in ['temporal_rho', 'nRMSE', 'cos_sim', 'num_clusters', 'temporal_component']:
+        df_plot[col] = pd.to_numeric(df_plot[col], errors='coerce')
+    df_plot = df_plot.dropna(subset=['temporal_rho', 'nRMSE', 'cos_sim'])
+
+    # Aggregate to one row per cell-feature group (temporal_rho is constant within a group;
+    # nRMSE/cos_sim vary per cluster so we average across clusters)
+    df_plot = df_plot.groupby(['cell_id', 'spike_feature'], as_index=False).agg({
+        'temporal_rho': 'first',
+        'temporal_component': 'first',
+        'nRMSE': 'mean',
+        'cos_sim': 'mean',
+        'num_clusters': 'first',
+    })
+
+    features = sorted(df_plot['spike_feature'].dropna().unique())
+    palette = dict(zip(features, sns.color_palette('tab10', n_colors=len(features))))
+
+    # --- Panel 1: temporal_rho vs clustering metrics ---
+    metrics = ['nRMSE', 'cos_sim', 'num_clusters']
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    results = []
+    for ax, metric in zip(axes, metrics):
+        sub = df_plot[['temporal_rho', metric, 'spike_feature']].dropna()
+        colors = [palette.get(f, 'gray') for f in sub['spike_feature']]
+        ax.scatter(sub['temporal_rho'], sub[metric], c=colors, alpha=0.5, s=40)
+
+        rho, p = spearmanr(sub['temporal_rho'], sub[metric])
+        sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+
+        valid = np.isfinite(sub['temporal_rho']) & np.isfinite(sub[metric])
+        m_s, b_s = np.polyfit(sub['temporal_rho'][valid], sub[metric][valid], 1)
+        x_line = np.linspace(sub['temporal_rho'].min(), sub['temporal_rho'].max(), 100)
+        ax.plot(x_line, m_s * x_line + b_s, color='black', lw=2, alpha=0.8)
+
+        ax.axvline(0, color='gray', lw=1, linestyle='--', alpha=0.4)
+        ax.set_xlabel('Temporal Rho', fontsize=11)
+        ax.set_ylabel(metric, fontsize=11)
+        ax.set_title(f'temporal_rho vs {metric}\nSpearman ρ={rho:.2f}, {sig}', fontsize=11, fontweight='bold')
+        sns.despine(ax=ax)
+        results.append({'metric': metric, 'spearman_rho': round(rho, 3), 'p': p, 'sig': sig})
+
+    handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=palette[f],
+                          markersize=8, label=f) for f in features]
+    axes[-1].legend(handles=handles, title='Spike Feature', bbox_to_anchor=(1.05, 1),
+                    loc='upper left', fontsize=8, frameon=True)
+
+    plt.suptitle('Temporal Drift vs Clustering Quality', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+    # --- Panel 2: temporal_rho distribution by spike_feature ---
+    feat_order = df_plot.groupby('spike_feature')['temporal_rho'].median().sort_values().index.tolist()
+    feat_palette_list = [palette.get(f, 'gray') for f in feat_order]
+
+    fig_feat, ax_feat = plt.subplots(figsize=(10, 5))
+    sns.boxplot(data=df_plot, x='spike_feature', y='temporal_rho', order=feat_order,
+                palette=feat_palette_list, showfliers=False, width=0.5, ax=ax_feat)
+    sns.stripplot(data=df_plot, x='spike_feature', y='temporal_rho', order=feat_order,
+                  palette=feat_palette_list, alpha=0.5, size=6, ax=ax_feat)
+    ax_feat.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
+
+    feat_groups = [df_plot.loc[df_plot['spike_feature'] == f, 'temporal_rho'].dropna().values for f in feat_order]
+    feat_groups = [g for g in feat_groups if len(g) > 0]
+    if len(feat_groups) >= 2:
+        kw_stat, kw_p = kruskal(*feat_groups)
+    else:
+        kw_stat, kw_p = np.nan, np.nan
+    kw_sig = '***' if kw_p < 0.001 else '**' if kw_p < 0.01 else '*' if kw_p < 0.05 else 'ns'
+    kw_p_str = f"{kw_p:.4f}" if pd.notnull(kw_p) and kw_p >= 0.0001 else ("<0.0001" if pd.notnull(kw_p) else "n/a")
+
+    ax_feat.set_title(f'Temporal Rho by Spike Feature\nKruskal-Wallis {kw_sig} (p={kw_p_str})',
+                      fontsize=12, fontweight='bold')
+    ax_feat.set_xlabel('Spike Feature', fontsize=11)
+    ax_feat.set_ylabel('Temporal Rho', fontsize=11)
+    ax_feat.set_xticklabels(ax_feat.get_xticklabels(), rotation=30, ha='right')
+    sns.despine(ax=ax_feat)
+    plt.tight_layout()
+    plt.show()
+
+    # --- Panel 3: temporal_component (0 vs 1) split on nRMSE / cos_sim ---
+    fig2, axes2 = plt.subplots(1, 2, figsize=(10, 5))
+    for ax2, metric in zip(axes2, ['nRMSE', 'cos_sim']):
+        sub2 = df_plot[['temporal_component', metric]].dropna()
+        sub2['temporal_component'] = sub2['temporal_component'].astype(float).map({0.0: 'No drift', 1.0: 'Sig drift'})
+        sns.boxplot(data=sub2, x='temporal_component', y=metric, showfliers=False,
+                    palette=['lightblue', 'salmon'], order=['No drift', 'Sig drift'], ax=ax2)
+        sns.stripplot(data=sub2, x='temporal_component', y=metric, color='.3', alpha=0.4,
+                      order=['No drift', 'Sig drift'], ax=ax2)
+
+        groups_list = [g[metric].values for _, g in sub2.groupby('temporal_component') if len(g) > 0]
+        if len(groups_list) >= 2:
+            stat2, p2 = kruskal(*groups_list)
+        else:
+            p2 = np.nan
+        sig2 = '***' if p2 < 0.001 else '**' if p2 < 0.01 else '*' if p2 < 0.05 else 'ns'
+        p2_str = f"{p2:.4f}" if pd.notnull(p2) and p2 >= 0.0001 else ("<0.0001" if pd.notnull(p2) else "n/a")
+        ax2.set_title(f'temporal_component vs {metric}\n{sig2} (p={p2_str})', fontsize=11, fontweight='bold')
+        ax2.set_xlabel('Temporal Component')
+        sns.despine(ax=ax2)
+
+    plt.suptitle('Does Significant Temporal Drift Affect Clustering Quality?', fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+    res_df = pd.DataFrame(results)
+    print("\ntemporal_rho vs clustering metrics (Spearman):")
+    print(res_df.to_string(index=False))
+    return res_df
 
 
 def stat_test_metadata_dependency(df):
