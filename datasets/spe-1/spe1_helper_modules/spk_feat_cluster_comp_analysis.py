@@ -983,7 +983,7 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
         ax2.set_xlabel('Temporal Component')
         sns.despine(ax=ax2)
 
-    plt.suptitle('Does Significant Temporal Drift Affect Clustering Quality?', fontsize=13, fontweight='bold')
+    plt.suptitle('Does Significant Temporal Drift Affect Cluster Waveform Differences?', fontsize=13, fontweight='bold')
     plt.tight_layout()
     plt.show()
 
