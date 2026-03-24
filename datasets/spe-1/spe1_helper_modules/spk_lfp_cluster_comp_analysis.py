@@ -9,6 +9,50 @@ import math
 import warnings
 from matplotlib.lines import Line2D
 
+# ============================================================
+# Publication style constants
+# ============================================================
+_FS_SM    = 11   # small annotations, tick labels
+_FS_AX    = 13   # axis labels
+_FS_SUB   = 14   # subplot titles
+_FS_TTL   = 16   # figure suptitles
+
+# Spike feature palette (consistent across all notebooks/modules)
+_SPIKE_FEAT_COLORS = {
+    'peak_amp':        '#8c564b',
+    'peak_sharpness':  '#a06d62',
+    'peak_width':      '#b38479',
+    'exp_lambda':      '#c561a8',
+    'inflection_time': '#9b59b6',
+    'exp_const':       '#d7aee0',
+    'log_isi':         '#7f7f7f',
+    'spk_times_ms':    '#b0b0b0',
+    'peak_amp_cluster':        '#8c564b',
+    'peak_sharpness_cluster':  '#a06d62',
+    'peak_width_cluster':      '#b38479',
+    'exp_lambda_cluster':      '#c561a8',
+    'inflection_time_cluster': '#9b59b6',
+    'exp_const_cluster':       '#d7aee0',
+    'log_isi_cluster':         '#7f7f7f',
+    'spk_times_ms_cluster':    '#b0b0b0',
+}
+
+# Colorblind-friendly palette (Wong 2011)
+_CB_PALETTE = ['#0072B2', '#D55E00', '#009E73', '#CC79A7',
+               '#56B4E9', '#E69F00', '#F0E442', '#000000']
+
+# Cluster group colors (low/mid/high)
+_CLUST_LOW  = '#0072B2'
+_CLUST_MID  = '#009E73'
+_CLUST_HIGH = '#D55E00'
+
+# Significance colors
+_SIG_COL   = '#D55E00'
+_INSIG_COL = '#56B4E9'
+# ============================================================
+
+
+
 
 # ==========================================
 # 1. DATA COMPILER
@@ -151,10 +195,10 @@ def plot_population_effect_sizes(df_stats, feature_shades):
     for i in range(len(lfp_order) - 1):
         plt.axvline(i + 0.5, color='grey', linestyle=':', linewidth=1.5, alpha=0.6, zorder=0)
 
-    plt.title("Population Effect Sizes", fontweight="bold", fontsize=15, pad=15)
-    plt.ylabel("Effect Size (Cohen's d)", fontsize=12, fontweight="bold")
-    plt.xlabel("LFP Feature", fontsize=12, fontweight="bold")
-    plt.xticks(rotation=15, ha='right', fontsize=11)
+    plt.title("Population Effect Sizes", fontweight="bold", fontsize=16, pad=15)
+    plt.ylabel("Effect Size (Cohen's d)", fontsize=13, fontweight="bold")
+    plt.xlabel("LFP Feature", fontsize=13, fontweight="bold")
+    plt.xticks(rotation=15, ha='right', fontsize=13)
     
     # Clean up the legend
     handles, labels = ax.get_legend_handles_labels()
@@ -237,7 +281,7 @@ def plot_temporal_significance_density(df_stats, feature_shades, bin_size=0.01):
 
         # Subplot Aesthetics
         ax.axvline(0, color="k", ls="--", lw=2)
-        ax.set_title(f"{target_lfp}", fontweight="bold", fontsize=14)
+        ax.set_title(f"{target_lfp}", fontweight="bold", fontsize=15)
         ax.set_ylabel("Count of Significant Windows")
         ax.grid(axis='x', linestyle='--', alpha=0.6)
         
@@ -246,7 +290,7 @@ def plot_temporal_significance_density(df_stats, feature_shades, bin_size=0.01):
             all_active_spk_feats = df_stats["spike_feature"].unique()
             custom_lines = [Line2D([0], [0], color=feature_shades.get(feat, '#cccccc'), lw=2.5) 
                             for feat in all_active_spk_feats]
-            ax.legend(custom_lines, all_active_spk_feats, title="Clustered By", fontsize=9, loc="upper right")
+            ax.legend(custom_lines, all_active_spk_feats, title="Clustered By", fontsize=11, loc="upper right")
 
     # Clean up any empty subplots in the grid
     for i in range(n_features, len(axes)):
@@ -254,7 +298,7 @@ def plot_temporal_significance_density(df_stats, feature_shades, bin_size=0.01):
 
     # Main Titles and layout adjustments
     plt.suptitle("Temporal Distribution of Significance Across All Features", fontweight="bold", fontsize=18, y=1.02)
-    fig.text(0.5, -0.01, 'Time relative to spike (s)', ha='center', fontsize=14)
+    fig.text(0.5, -0.01, 'Time relative to spike (s)', ha='center', fontsize=15)
     plt.tight_layout()
     plt.show()
 
@@ -343,9 +387,9 @@ def plot_all_grand_average_traces(master_traces, df_stats):
                     grand_sem = np.nanstd(matrix, axis=0) / np.sqrt(matrix.shape[0])
                     
                     c_lower = c_name.lower()
-                    if 'low' in c_lower: color = '#1f77b4'
-                    elif 'high' in c_lower: color = '#ff7f0e'
-                    elif 'mid' in c_lower: color = '#2ca02c'
+                    if 'low' in c_lower: color = '#0072B2'
+                    elif 'high' in c_lower: color = '#D55E00'
+                    elif 'mid' in c_lower: color = '#009E73'
                     else: color = None
                     
                     label_clean = c_name.split(': ')[-1].capitalize() if ':' in c_name else c_name
@@ -354,10 +398,10 @@ def plot_all_grand_average_traces(master_traces, df_stats):
                     lines_plotted += 1
             
             ax.axvline(0, color="k", ls="--", lw=1.5)
-            ax.set_title(spk_feat, fontweight="bold", fontsize=12)
+            ax.set_title(spk_feat, fontweight="bold", fontsize=13)
             
             if lines_plotted > 0:
-                ax.legend(fontsize=8, loc="upper right")
+                ax.legend(fontsize=11, loc="upper right")
             else:
                 ax.text(0.5, 0.5, "No valid arrays found", ha='center', va='center', transform=ax.transAxes, color='gray')
 
@@ -365,8 +409,8 @@ def plot_all_grand_average_traces(master_traces, df_stats):
             fig.delaxes(axes[i])
             
         plt.suptitle(f"Population Grand Average: {lfp_feat}", fontweight="bold", fontsize=18, y=1.02)
-        fig.text(0.5, -0.01, 'Time relative to spike (s)', ha='center', fontsize=14)
-        fig.text(-0.01, 0.5, f'Δ {lfp_feat}', va='center', rotation='vertical', fontsize=14)
+        fig.text(0.5, -0.01, 'Time relative to spike (s)', ha='center', fontsize=15)
+        fig.text(-0.01, 0.5, f'Δ {lfp_feat}', va='center', rotation='vertical', fontsize=15)
         
         plt.tight_layout()
         plt.show()
@@ -477,17 +521,17 @@ def plot_cluster_relationship_heatmap(df_stats, master_traces):
 
     # Aesthetics
     plt.title("Spike-LFP Relationship Matrix", fontweight="bold", fontsize=16, pad=20)
-    plt.xlabel("Spike Feature (Clustering Metric)", fontsize=13, fontweight="bold")
-    plt.ylabel("LFP Feature", fontsize=13, fontweight="bold")
-    plt.xticks(rotation=45, ha='right', fontsize=11)
-    plt.yticks(fontsize=11)
+    plt.xlabel("Spike Feature (Clustering Metric)", fontsize=14, fontweight="bold")
+    plt.ylabel("LFP Feature", fontsize=14, fontweight="bold")
+    plt.xticks(rotation=45, ha='right', fontsize=13)
+    plt.yticks(fontsize=13)
     
     # Text legend without emojis!
     legend_text = (
         "Positive (+ / Red): High cluster is associated with HIGHER LFP values.\n"
         "Negative (- / Blue): High cluster is associated with LOWER LFP values."
     )
-    plt.figtext(0.5, -0.05, legend_text, ha="center", fontsize=11, 
+    plt.figtext(0.5, -0.05, legend_text, ha="center", fontsize=13, 
                 bbox={"facecolor":"#f8f9fa", "edgecolor":"#dee2e6", "pad":8, "boxstyle":"round,pad=0.5"})
     
     plt.tight_layout()
@@ -565,9 +609,9 @@ def plot_significant_yield_heatmap(df_stats, master_traces):
         cbar_kws={'label': '% of Cells with Significant Effect'}
     )
     
-    plt.title("How Consistent is the Effect Across the Population?", fontweight="bold", fontsize=15, pad=15)
-    plt.xlabel("Spike Feature (Clustering Metric)", fontsize=12, fontweight="bold")
-    plt.ylabel("LFP Feature", fontsize=12, fontweight="bold")
+    plt.title("How Consistent is the Effect Across the Population?", fontweight="bold", fontsize=16, pad=15)
+    plt.xlabel("Spike Feature (Clustering Metric)", fontsize=13, fontweight="bold")
+    plt.ylabel("LFP Feature", fontsize=13, fontweight="bold")
     plt.xticks(rotation=45, ha='right')
     
     plt.tight_layout()
@@ -711,9 +755,9 @@ def plot_relationship_timing(df_stats, feature_shades):
     
     plt.axvline(0, color='black', ls='--', lw=2, label='Spike (t=0)')
     
-    plt.title("Temporal Landscape: When do these LFP relationships occur?", fontweight='bold', fontsize=15, pad=15)
-    plt.xlabel("Time relative to spike (seconds)", fontsize=12, fontweight='bold')
-    plt.ylabel("LFP Feature", fontsize=12, fontweight='bold')
+    plt.title("Temporal Landscape: When do these LFP relationships occur?", fontweight='bold', fontsize=16, pad=15)
+    plt.xlabel("Time relative to spike (seconds)", fontsize=13, fontweight='bold')
+    plt.ylabel("LFP Feature", fontsize=13, fontweight='bold')
     
     handles, labels = ax.get_legend_handles_labels()
     num_features = len(master_order)

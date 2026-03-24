@@ -3807,6 +3807,7 @@ def run_master_LFP_spk_analysis(
         Master results dict keyed by feature label, saved to disk as a pickle.
     """
     cell_master_results = {"cell_id": cell_id}
+    per_spike_data      = {"cell_id": cell_id}  # will hold raw per-spike data for permutation testing
 
     for feat_info in features_to_analyze:
         feature_type = feat_info.get("feature")
@@ -3837,13 +3838,54 @@ def run_master_LFP_spk_analysis(
         # Save to master dict
         cell_master_results[label] = sig_report
 
-    # 4. Save file
+        # --- Build per-spike data for permutation testing ---
+        # For each spike_feature (cluster family), pool all spikes across cluster groups,
+        # storing the feature-over-time array and the cluster label per spike.
+        # This allows permutation tests later without re-running specparam.
+        per_spike_data[label] = {}
+        cluster_families = {}
+        for gname in feat_groups:
+            family = gname.split(":")[0].strip() if ":" in gname else "all"
+            cluster_families.setdefault(family, []).append(gname)
+
+        for family, gnames in cluster_families.items():
+            pooled_windows = []
+            pooled_labels  = []
+            time_grid      = None
+
+            for gname in gnames:
+                g = feat_groups[gname]
+                cluster_label = gname.split(":")[-1].strip() if ":" in gname else gname
+                for w, t in zip(g["windows"], g["times_rel"]):
+                    if len(w) < 2:
+                        continue
+                    t_s = t / 1000.0 if np.max(np.abs(t)) > 100 else t
+                    if time_grid is None:
+                        time_grid = t_s.copy()
+                    # interpolate onto common grid
+                    pooled_windows.append(np.interp(time_grid, t_s, np.asarray(w, float)))
+                    pooled_labels.append(cluster_label)
+
+            if len(pooled_windows) > 0:
+                per_spike_data[label][family] = {
+                    "feature_matrix":  np.array(pooled_windows),   # (n_spikes, n_time_bins)
+                    "cluster_labels":  np.array(pooled_labels),     # (n_spikes,)
+                    "time_grid":       time_grid,                   # (n_time_bins,)
+                }
+
+    # 4. Save sliding stats pickle
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"{cell_id}_sliding_stats.pkl")
     with open(save_path, 'wb') as file:
         pickle.dump(cell_master_results, file)
 
+    # 5. Save per-spike data pickle (used for within-cell permutation testing)
+    per_spike_path = os.path.join(save_dir, f"{cell_id}_per_spike_data.pkl")
+    with open(per_spike_path, 'wb') as file:
+        pickle.dump(per_spike_data, file)
+
     print(f"\n✅ All statistical results for {cell_id} successfully saved to: {save_path}")
+    print(f"✅ Per-spike data for permutation testing saved to: {per_spike_path}")
     return cell_master_results
 
 
