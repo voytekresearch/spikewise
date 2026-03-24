@@ -725,46 +725,36 @@ def plot_temporal_structure(df, alpha=0.05):
     Shows whether spike cluster identity drifts over recording time
     (Spearman rho between spike time and ordinal cluster label).
 
-    Panel A: lollipop chart of temporal_rho per cell-feature group,
-             sorted by rho, colored by spike_feature, stars for significant.
-    Panel B: strip/box plot of temporal_rho distribution per spike feature.
+    Panel A: histogram of temporal_rho across all cell-feature groups,
+             with significant groups highlighted.
+    Panel B: box/strip of temporal_rho distribution per spike feature.
     """
     df_plot = df[['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p']].dropna().copy()
     df_plot['temporal_rho'] = pd.to_numeric(df_plot['temporal_rho'], errors='coerce')
     df_plot['temporal_p']   = pd.to_numeric(df_plot['temporal_p'],   errors='coerce')
+    # Deduplicate to one row per cell-feature group
+    df_plot = df_plot.groupby(['cell_id', 'spike_feature'], as_index=False).first()
     df_plot = df_plot.dropna(subset=['temporal_rho'])
-
     df_plot['significant'] = df_plot['temporal_p'] < alpha
-    df_plot['label'] = df_plot['cell_id'] + '\n' + df_plot['spike_feature']
-    df_plot = df_plot.sort_values('temporal_rho').reset_index(drop=True)
 
     # Consistent color per spike feature
     features = sorted(df_plot['spike_feature'].unique())
     palette = dict(zip(features, sns.color_palette('tab10', n_colors=len(features))))
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, max(6, len(df_plot) * 0.28 + 2)),
-                                   gridspec_kw={'width_ratios': [2, 1]})
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-    # --- Panel A: Lollipop ---
-    for i, row in df_plot.iterrows():
-        color = palette[row['spike_feature']]
-        ax1.plot([0, row['temporal_rho']], [i, i], color=color, lw=1.2, alpha=0.6)
-        marker = '*' if row['significant'] else 'o'
-        ms = 10 if row['significant'] else 6
-        ax1.plot(row['temporal_rho'], i, marker=marker, color=color, ms=ms, zorder=3)
-
-    ax1.axvline(0, color='black', lw=1, linestyle='--', alpha=0.5)
-    ax1.set_yticks(range(len(df_plot)))
-    ax1.set_yticklabels(df_plot['label'], fontsize=7)
-    ax1.set_xlabel("Temporal Rho (Spearman)", fontsize=11)
-    ax1.set_title(f"Temporal Drift of Spike Clusters\n(* = p < {alpha})", fontsize=12, fontweight='bold')
-
-    # Legend for spike features
-    handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=palette[f],
-                          markersize=8, label=f) for f in features]
-    handles += [plt.Line2D([0], [0], marker='*', color='gray', markersize=10,
-                           linestyle='None', label=f'p < {alpha}')]
-    ax1.legend(handles=handles, loc='lower right', fontsize=8, frameon=True)
+    # --- Panel A: Histogram ---
+    ax1.hist(df_plot['temporal_rho'], bins=20, color='steelblue', alpha=0.6, edgecolor='white', label='all')
+    sig_vals = df_plot.loc[df_plot['significant'], 'temporal_rho']
+    ax1.hist(sig_vals, bins=20, color='salmon', alpha=0.8, edgecolor='white', label=f'p < {alpha}')
+    ax1.axvline(0, color='black', lw=1.5, linestyle='--', alpha=0.6)
+    ax1.set_xlabel('Temporal Rho (Spearman)', fontsize=11)
+    ax1.set_ylabel('Count', fontsize=11)
+    n_sig = df_plot['significant'].sum()
+    n_total = len(df_plot)
+    ax1.set_title(f'Temporal Drift Distribution\n{n_sig}/{n_total} significant (p < {alpha})',
+                  fontsize=12, fontweight='bold')
+    ax1.legend(fontsize=9, frameon=False)
     ax1.set_xlim(-1.1, 1.1)
     sns.despine(ax=ax1)
 
@@ -777,9 +767,9 @@ def plot_temporal_structure(df, alpha=0.05):
     sns.stripplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
                   palette=feat_palette, alpha=0.5, size=5, ax=ax2)
     ax2.axvline(0, color='black', lw=1, linestyle='--', alpha=0.5)
-    ax2.set_xlabel("Temporal Rho", fontsize=11)
-    ax2.set_ylabel("")
-    ax2.set_title("Distribution by\nSpike Feature", fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Temporal Rho', fontsize=11)
+    ax2.set_ylabel('')
+    ax2.set_title('Distribution by Spike Feature', fontsize=12, fontweight='bold')
     ax2.set_xlim(-1.1, 1.1)
     sns.despine(ax=ax2)
 
