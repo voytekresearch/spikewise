@@ -722,6 +722,47 @@ def plot_relationship_redundancy(df_stats, master_traces):
 
     plt.tight_layout()
     plt.show()
+    return spike_corr, lfp_corr
+
+
+def get_nonredundant_lfp_features(df_stats, lfp_corr, threshold=0.9):
+    """
+    Uses the LFP redundancy correlation matrix from plot_relationship_redundancy
+    to identify and drop redundant LFP features.
+
+    Greedy strategy: rank LFP features by mean Cohen's d (higher = more informative).
+    For each redundant pair (|r| >= threshold), drop the lower-ranked feature.
+
+    Returns the list of LFP features to keep, and prints what was dropped and why.
+    """
+    lfp_feats = list(lfp_corr.columns)
+    mean_d = df_stats.groupby('lfp_feature')['cohens_d'].mean()
+    # Sort by descending effect size — keep the most informative first
+    feats_ranked = (mean_d.reindex(lfp_feats)
+                    .sort_values(ascending=False)
+                    .index.tolist())
+
+    keep, dropped = [], {}
+    for feat in feats_ranked:
+        redundant_with = None
+        for kept in keep:
+            if feat in lfp_corr.index and kept in lfp_corr.columns:
+                if abs(lfp_corr.loc[feat, kept]) >= threshold:
+                    redundant_with = kept
+                    break
+        if redundant_with is None:
+            keep.append(feat)
+        else:
+            dropped[feat] = (redundant_with, abs(lfp_corr.loc[feat, redundant_with]))
+
+    print(f"\nLFP Feature Redundancy Filter  (threshold |r| >= {threshold})")
+    print(f"  Keeping  ({len(keep)}): {keep}")
+    if dropped:
+        for feat, (reason, r) in dropped.items():
+            print(f"  Dropping '{feat}'  —  |r| = {r:.2f} with '{reason}'")
+    else:
+        print("  No features dropped at this threshold.")
+    return keep
 
 
 # ==========================================
