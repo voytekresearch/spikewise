@@ -26,3 +26,15 @@ build/
 
 # Ignore Claude Code internal files
 .claude/
+
+# Ignore large data files (keep only small param/config files)
+*.pickle
+*.pkl
+*.h5
+*.mat
+*.nwb
+
+# Ignore generated figure outputs
+AP_empirical_paper1/datasets/**/*.png
+AP_empirical_paper1/datasets/**/*.pdf
+AP_empirical_paper1/datasets/**/*.svg
