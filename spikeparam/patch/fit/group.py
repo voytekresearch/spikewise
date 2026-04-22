@@ -4,7 +4,7 @@ import warnings
 
 import numpy as np
 
-from spikeparam.patch.window import find_spike_times, window_spike
+from spikeparam.patch.window import find_spike_times, peak_distance_to_samples, window_spike
 from spikeparam.patch.fit import Spike
 
 
@@ -70,7 +70,7 @@ class SpikeGroup(Spike):
         self.spike_inds = []
 
         # Pad around detected peak to find absolute peak
-        pad = int(self.thresh_ms * fs / 1000)
+        pad = peak_distance_to_samples(self.thresh_ms, fs)
 
         # Initalize spike array
         n_samples = int(

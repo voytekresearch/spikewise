@@ -1,14 +1,21 @@
 """Spikeparam setup script."""
 
 import os
+from pathlib import Path
 from setuptools import setup, find_packages
 
 # Get the current version number from inside the module
 with open(os.path.join('spikeparam', 'version.py')) as version_file:
     exec(version_file.read())
 
-# Load the long description from the README
-with open('README.rst') as readme_file:
+# Load the long description from the repo README.
+repo_root = Path(__file__).resolve().parent
+readme_path = repo_root / 'README.md'
+
+if not readme_path.exists():
+    readme_path = repo_root / 'README.rst'
+
+with open(readme_path, encoding='utf-8') as readme_file:
     long_description = readme_file.read()
 
 # Load the required dependencies from the requirements file
@@ -20,6 +27,7 @@ setup(
     version = __version__,
     description = 'Spike waveform parametrization.',
     long_description = long_description,
+    long_description_content_type = 'text/markdown' if readme_path.suffix == '.md' else 'text/x-rst',
     python_requires = '>=3.6',
     author = 'The Voytek Lab',
     author_email = 'voyteklab@gmail.com',

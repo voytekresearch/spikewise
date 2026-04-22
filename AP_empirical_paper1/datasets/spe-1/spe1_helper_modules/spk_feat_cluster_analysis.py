@@ -1434,15 +1434,14 @@ def kmeans_1d_cluster(
     # Sort centers + remap labels
     order = np.argsort(centers)
     centers = centers[order]
-    remap = {old_i: new_i for new_i, old_i in enumerate(order)}
-    assign_sorted = np.vectorize(remap.get)(assign)
+    inverse_order = np.empty_like(order)
+    inverse_order[order] = np.arange(k)
+    assign_sorted = inverse_order[assign]
     cutoffs = (centers[:-1] + centers[1:]) / 2.0
 
     # Write labels back at original indices
     label_array = np.full(x.shape, np.nan, dtype=object)
-    for i in range(k):
-        full_idx = idx_valid[assign_sorted == i]
-        label_array[full_idx] = labels[i]
+    label_array[idx_valid] = np.asarray(labels, dtype=object)[assign_sorted]
     df_out[out_col] = label_array
     colors = [get_cluster_color(lab) for lab in labels]
     if plot:
@@ -2240,8 +2239,10 @@ def extract_lfp_windows(
     pre_ms = pre_s * 1000.0
     post_ms = post_s * 1000.0
 
-    # Build helper for spike→next spike lookup
-    df_sorted = spk_df.sort_values("spk_id").set_index("spk_id")
+    # Build helper for spike→next spike lookup while preserving the historical
+    # "sid + 1 must exist" rule used by the original implementation.
+    next_spike_lookup = spk_df.sort_values("spk_id").set_index("spk_id")["spk_times_ms"].copy()
+    next_spike_lookup.index = next_spike_lookup.index - 1
 
     windows = []
     times_rel_ms = []
@@ -2249,14 +2250,13 @@ def extract_lfp_windows(
     next_spike_times = []
     meta_rows = []
 
-    for _, row in df.iterrows():
-
-        sid = int(row["spk_id"])
-        t0 = float(row["spk_times_ms"])
+    for row in df[["spk_id", "spk_times_ms"]].itertuples(index=False):
+        sid = int(row.spk_id)
+        t0 = float(row.spk_times_ms)
 
         # Lookup next spike
-        if sid + 1 in df_sorted.index:
-            t_next = float(df_sorted.loc[sid + 1, "spk_times_ms"])
+        if sid in next_spike_lookup.index:
+            t_next = float(next_spike_lookup.loc[sid])
         else:
             if requires_next_spike:
                 continue          # ONLY drop for ISI-based analyses
@@ -3964,9 +3964,10 @@ def extract_target_time_spectra_and_aucs(df_clust, specparam_list, cluster_col, 
     spectra_list = []
     auc_list = []
 
-    for idx, row in df_clust.dropna(subset=[cluster_col]).iterrows():
-        spk_idx = int(row['spk_id'])
-        cluster_label = row[cluster_col]
+    df_valid = df_clust.loc[df_clust[cluster_col].notna(), ["spk_id", cluster_col]]
+    for row in df_valid.itertuples(index=False):
+        spk_idx = int(row.spk_id)
+        cluster_label = getattr(row, cluster_col)
         
         if spk_idx >= len(specparam_list): continue
         res = specparam_list[spk_idx]

@@ -4,6 +4,11 @@ import numpy as np
 from scipy.signal import find_peaks
 
 
+def peak_distance_to_samples(thresh_ms, fs):
+    """Convert a minimum peak separation from milliseconds to samples."""
+
+    return max(1, int(thresh_ms * fs / 1000))
+
 
 def find_spike_times(sig, thresh_amp, thresh_ms):
     """Find spikes as peaks.
@@ -15,7 +20,13 @@ def find_spike_times(sig, thresh_amp, thresh_ms):
     thresh_amp : float
         Voltage threshold.
     thresh_ms : float
-        Minimum time between peaks, in ms.
+        Minimum distance between peaks, in samples.
+
+    Notes
+    -----
+    This function passes ``thresh_ms`` directly to ``scipy.signal.find_peaks``
+    as the ``distance`` argument. Callers that think in milliseconds should
+    convert to samples before calling this function.
 
     Returns
     -------

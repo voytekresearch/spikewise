@@ -58,6 +58,15 @@ _INSIG_COL = '#56B4E9'
 # 1. DATA COMPILER
 # ==========================================
 
+def _index_master_traces(master_traces):
+    """Build a lookup for (cell_id, lfp_feature, spike_feature) trace records."""
+
+    indexed = {}
+    for trace in master_traces:
+        key = (trace.get('cell_id'), trace.get('lfp_feature'), trace.get('spike_feature'))
+        indexed.setdefault(key, trace)
+    return indexed
+
 def compile_lfp_stats(pickle_dir="/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spe1_pickles/lfp_spk_group_pickles"):
     """
     Scans a directory for sliding window statistical results (pickle files) and 
@@ -77,7 +86,7 @@ def compile_lfp_stats(pickle_dir="/Users/blancamartin/Desktop/Voytek_Lab/spike_w
         A structured list containing the raw time-series trace arrays (mean, std, n) 
         for every cell and feature, used for plotting population grand averages.
     """
-    all_files = glob.glob(os.path.join(pickle_dir, "*_sliding_stats.pkl"))
+    all_files = sorted(glob.glob(os.path.join(pickle_dir, "*_sliding_stats.pkl")))
     
     master_stats_rows = []
     master_traces = []
@@ -264,14 +273,18 @@ def plot_temporal_significance_density(df_stats, feature_shades, bin_size=0.01):
         
         for spk_feat in unique_spike_features:
             df_sub = df_timing[df_timing["spike_feature"] == spk_feat]
-            sig_counts = np.zeros_like(time_bins)
+            sig_counts = np.zeros_like(time_bins, dtype=float)
             
             # Count the overlapping significant windows per time bin
-            for _, row in df_sub.iterrows():
-                start = row["window_start"]
-                end = row["window_end"]
-                mask = (time_bins >= start) & (time_bins <= end)
-                sig_counts[mask] += 1
+            if not df_sub.empty:
+                diff = np.zeros(len(time_bins) + 1, dtype=float)
+                starts = df_sub["window_start"].to_numpy(dtype=float)
+                ends = df_sub["window_end"].to_numpy(dtype=float)
+                start_idx = np.searchsorted(time_bins, starts, side='left')
+                end_idx = np.searchsorted(time_bins, ends, side='right')
+                np.add.at(diff, start_idx, 1)
+                np.add.at(diff, end_idx, -1)
+                sig_counts = np.cumsum(diff[:-1])
                 
             # Look up the hex color directly from the provided dictionary
             color = feature_shades.get(spk_feat, '#cccccc')
@@ -434,19 +447,17 @@ def plot_cluster_relationship_heatmap(df_stats, master_traces):
     print("Extracting relationship signs from raw traces...")
     df_signed = df_stats.copy()
     signs = []
+    trace_lookup = _index_master_traces(master_traces)
     
     # 1. Recover the sign for every single significant window
-    for _, row in df_signed.iterrows():
-        cell_id = row['cell_id']
-        lfp_feat = row['lfp_feature']
-        spk_feat = row['spike_feature']
-        w_start = row['window_start']
-        w_end = row['window_end']
+    for row in df_signed.itertuples(index=False):
+        cell_id = row.cell_id
+        lfp_feat = row.lfp_feature
+        spk_feat = row.spike_feature
+        w_start = row.window_start
+        w_end = row.window_end
         
-        trace_record = next((t for t in master_traces 
-                             if t['cell_id'] == cell_id and 
-                             t['lfp_feature'] == lfp_feat and 
-                             t['spike_feature'] == spk_feat), None)
+        trace_record = trace_lookup.get((cell_id, lfp_feat, spk_feat))
         
         sign = 1 # Default to Positive (High cluster > Low cluster)
         

@@ -2,6 +2,7 @@
 
 import pytest
 import numpy as np
+import warnings
 
 from spikeparam.patch.fit import Spike
 from spikeparam.tests.utils import plot_test, alt_func, pbar
@@ -90,6 +91,36 @@ def test_spike_gen_fit(sim_patch_spikes):
             assert np.isnan(getattr(sp, i)[0]).all()
         else:
             assert np.isnan(getattr(sp, i)[0])
+
+
+def test_spike_filter_features(sim_patch_spikes):
+
+    sp = sim_patch_spikes['sp']
+
+    filtered = sp.filter_features(inplace=False, min_inflection=-10000, max_inflection=10000)
+
+    assert filtered is not None
+    assert filtered.df_features is not None
+    assert 'log_isi' in filtered.df_features.columns
+    assert 'r_squared_exp' not in filtered.df_features.columns
+    assert 'r_squared_ramp' not in filtered.df_features.columns
+
+
+def test_spike_fit_thresh_ms_uses_sampling_rate():
+
+    fs = 50000
+    sig = np.zeros(5000)
+    peaks = [500, 540, 600, 680, 800, 1000]
+    sig[peaks] = 10
+
+    sp = Spike(thresh_amp=1, thresh_ms=1.0, window_length=(0.2, 0.2))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        with pytest.raises(ValueError):
+            sp.fit(sig, fs, n_jobs=1)
+
+    assert sp.spike_inds.tolist() == [540, 600, 680, 800, 1000]
 
 
 @plot_test

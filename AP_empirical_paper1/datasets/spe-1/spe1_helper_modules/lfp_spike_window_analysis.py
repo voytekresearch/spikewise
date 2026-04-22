@@ -19,7 +19,7 @@ import pandas as pd
 import warnings
 import mne
 import os 
-from typing import List, Tuple, Dict, Union, Literal
+from typing import List, Tuple, Dict, Union, Literal, Optional
 from neurodsp import spectral
 from specparam import SpectralTimeModel
 from specparam import SpectralModel
@@ -34,6 +34,33 @@ from sklearn.model_selection import KFold, cross_val_score
 from sklearn.linear_model import LinearRegression
 
 from spe1_plotting import *
+
+
+def _safe_list_nanmean(values):
+    """Match the historical list-mean behavior while avoiding repeated lambda setup."""
+
+    if not isinstance(values, list):
+        return None
+    if not values:
+        return np.nan
+
+    filtered = [value for value in values if value is not None]
+    if not filtered:
+        return np.nan
+
+    return np.nanmean(filtered)
+
+
+def _blocks_to_mask(times_sec: np.ndarray, blocks: List[Tuple[float, float]]) -> np.ndarray:
+    """Return a boolean mask for times that fall in any block."""
+
+    if not blocks:
+        return np.zeros(times_sec.shape, dtype=bool)
+
+    mask = np.zeros(times_sec.shape, dtype=bool)
+    for start, end in blocks:
+        mask |= (times_sec >= start) & (times_sec < end)
+    return mask
 
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ CODE FOR ALL LFP-PATCH METHODS ------------------------------
@@ -296,14 +323,7 @@ def compute_lfp_feature_means(
     for feat in feats:
         col = f"lfp_{lfp_type}_{feat}"
         if col in df_out.columns:
-            df_out[f"{col}_mean"] = df_out[col].apply(
-                # minimal change: guard nanmean so we don't call it on an effectively empty list
-                lambda x: (
-                    np.nanmean([v for v in x if v is not None])
-                    if isinstance(x, list) and x and any(v is not None for v in x)
-                    else (np.nan if isinstance(x, list) else None)
-                )
-            )
+            df_out[f"{col}_mean"] = [_safe_list_nanmean(values) for values in df_out[col]]
 
     # Only keep columns that actually exist
     mean_cols = [f"lfp_{lfp_type}_{feat}_mean" for feat in feats]
@@ -393,10 +413,6 @@ def label_spikes(
 
     Returns a copy of spike_df with new column 'method_block_label'.
     """
-    def in_block(t: float, blocks: List[Tuple[float, float]]) -> bool:
-        # blocks are in SECONDS; t is in SECONDS
-        return any(s <= t < e for s, e in blocks)
-
     spikes = spike_df.copy()
     spike_times_sec = spikes[time_col].to_numpy(dtype=float) / 1000.0
     labels = np.full(len(spikes), default_label, dtype=object)
@@ -405,32 +421,25 @@ def label_spikes(
 
     if not two_label_mode:
         # ----- Label-vs-rest -----
-        for i, t in enumerate(spike_times_sec):
-            if in_block(t, blocks_a):
-                labels[i] = label_a
+        labels[_blocks_to_mask(spike_times_sec, blocks_a)] = label_a
     else:
         # ----- Two-label mode -----
-        for i, t in enumerate(spike_times_sec):
-            in_a = in_block(t, blocks_a)
-            in_b = in_block(t, blocks_b)
+        mask_a = _blocks_to_mask(spike_times_sec, blocks_a)
+        mask_b = _blocks_to_mask(spike_times_sec, blocks_b)
+        overlap = mask_a & mask_b
+        a_only = mask_a & ~mask_b
+        b_only = mask_b & ~mask_a
 
-            if in_a and in_b:
-                if conflicts == "none":
-                    # both -> default_label
-                    labels[i] = default_label
-                else:
-                    # resolve by priority (legacy behavior)
-                    if priority == "a":
-                        labels[i] = label_a
-                    elif priority == "b":
-                        labels[i] = label_b
-                    else:  # "first": A checked first
-                        labels[i] = label_a
-            elif in_a:
-                labels[i] = label_a
-            elif in_b:
-                labels[i] = label_b
-            # else: keep default_label
+        labels[a_only] = label_a
+        labels[b_only] = label_b
+
+        if conflicts == "priority":
+            if priority == "b":
+                labels[overlap] = label_b
+            else:
+                labels[overlap] = label_a
+        else:
+            labels[overlap] = default_label
 
     spikes["method_block_label"] = labels
     return spikes
@@ -1562,6 +1571,5 @@ def gamma_auc_and_exponent_per_window(
         out.append((i, auc, exponent, r2))
 
     return pd.DataFrame(out, columns=["win_idx", "gamma_auc", "aperiodic_exponent", "r_squared"])
-
 
 

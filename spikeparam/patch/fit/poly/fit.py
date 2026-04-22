@@ -67,8 +67,18 @@ class PolySpike(Spike):
                  exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
         """Initialize object."""
 
-        # Initalize super class
-        super().__init__(self)
+        # Initialize base Spike state with the same settings used below.
+        super().__init__(
+            window_length=window_length,
+            thresh_amp=thresh_amp,
+            thresh_ms=thresh_ms,
+            pre_peak_ms=pre_peak_ms,
+            pre_inflection_ms=pre_inflection_ms,
+            smooth_frac=smooth_frac,
+            exp_shift_right=exp_shift_right,
+            exp_duration=exp_duration,
+            corr_thresh=corr_thresh,
+        )
 
         # Poly settings
         self.degree = degree
@@ -89,20 +99,6 @@ class PolySpike(Spike):
             raise ValueError("Orders must be one less then number of knots.")
 
         self.fill = fill
-
-        # Super settings
-        self.window_length = window_length
-        self.thresh_amp = thresh_amp
-        self.thresh_ms = thresh_ms
-
-        self.pre_peak_ms = pre_peak_ms
-        self.pre_inflection_ms = pre_inflection_ms
-        self.smooth_frac = smooth_frac
-
-        self.exp_shift_right = exp_shift_right
-        self.exp_duration = exp_duration
-
-        self.corr_thresh = corr_thresh
 
         # Poly results
         self.df_poly = None

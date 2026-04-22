@@ -7,6 +7,24 @@ from neurodsp import spectral
 import matplotlib.pyplot as plt
 
 
+def _classify_stimulus(stim_data):
+    """Return the historical stimulus label using the existing correlation rule."""
+
+    stim_nonzero = stim_data.copy()
+    stim_nonzero[0:5000] = 0
+    stim_nonzero = stim_nonzero[stim_nonzero != 0]
+
+    if np.size(stim_nonzero) <= 2:
+        return 'none', stim_nonzero, np.nan
+
+    r, _ = pearsonr(np.arange(np.size(stim_nonzero)), stim_nonzero)
+    if np.isnan(r):
+        return 'constant', stim_nonzero, r
+    if r > 0.95:
+        return 'ramp', stim_nonzero, r
+    return 'pink', stim_nonzero, r
+
+
 
 # load sweeps
 def load_sweep(sweep_number, f, fs):
@@ -104,36 +122,10 @@ def process_pink_type_info(f, fs):
         #load data
         dset, times = load_sweep(i_sweeps, f, fs)
     
-        stim_data = dset[:, 0] # current injection
-        
-    
-        # set the first 25 ms to zero to get rid of mini-pulse at beginning
-        stim_data[0:5000] = 0
-        stim_data = stim_data[stim_data!=0]
-        
-     
-    
-        if np.size(stim_data) > 2:
-            # a pearson correlation between current and time is
-                # nan for constant, near 1.0 for ramp, and low for pink noise
-            r, _ = pearsonr(np.arange(np.size(stim_data)), stim_data)
-  
-            
-    
-            # check stim type
-            if (np.isnan(r)):
-                stim_type = 'constant'
-                pink_type = 'constant'
-            elif (~np.isnan(r) & (r>0.95)):
-                stim_type = 'ramp'
-                pink_type = 'ramp'
-            elif (~np.isnan(r) & (r<0.95)):
-                stim_type = 'pink'
-                plt.plot(stim_data)
-              
-        else:
-            stim_type = 'none'
-            pink_type = 'none'
+        stim_type, stim_data, r = _classify_stimulus(dset[:, 0])
+        pink_type = stim_type
+        if stim_type == 'pink':
+            plt.plot(stim_data)
     
     
         if stim_type == 'pink':
@@ -160,14 +152,10 @@ def process_pink_type_info(f, fs):
 def process_sweeps(num_sweeps,f, one_ms, fs, pink_types, load_sweep, find_spike_times, fit_exp_nonlinear):
     """Processes multiple sweeps, extracting spike features and stimulus characteristics."""
 
+    loaded_sweeps = [load_sweep(i_sweeps, f, fs) for i_sweeps in range(66)]
     all_data = []
     all_times = []
-    for i_sweeps in range(66):
-    
-        #load data
-        dset, times = load_sweep(i_sweeps, f, fs)
-    
-        
+    for dset, times in loaded_sweeps:
         data = dset[:, 1] # ephys data
         all_times.append(times)
         all_data.append(data)
@@ -193,7 +181,7 @@ def process_sweeps(num_sweeps,f, one_ms, fs, pink_types, load_sweep, find_spike_
     all_pink_spks = []
 
     for i_sweeps in range(num_sweeps):
-        dset, times = load_sweep(i_sweeps, f, fs)
+        dset, times = loaded_sweeps[i_sweeps]
         stim = dset[:, 0]  # current injection
         data = dset[:, 1]  # ephys data
 
@@ -203,20 +191,7 @@ def process_sweeps(num_sweeps,f, one_ms, fs, pink_types, load_sweep, find_spike_
         idx_spikes, amp_spikes = find_spike_times(data, thresh_mv, thresh_ms)
 
         # Identify stimulus type
-        stim_data = dset[:, 0]
-        stim_data[:5000] = 0  # Remove early artifact
-        stim_data = stim_data[stim_data != 0]
-
-        if np.size(stim_data) > 2:
-            r, _ = pearsonr(np.arange(np.size(stim_data)), stim_data)
-            if np.isnan(r):
-                stim_type = 'constant'
-            elif r > 0.95:
-                stim_type = 'ramp'
-            else:
-                stim_type = 'pink'
-        else:
-            stim_type = 'none'
+        stim_type, stim_data, _ = _classify_stimulus(stim)
 
         # Process each detected spike
         for i_spikes in range(np.size(idx_spikes)):
@@ -248,7 +223,7 @@ def process_sweeps(num_sweeps,f, one_ms, fs, pink_types, load_sweep, find_spike_
             z_data = (d_smoothed_data - noise_mean) / noise_std
 
             idx_z_peak, _ = find_spike_times(z_data, 40, thresh_ms)
-            idx_spike_peak, _ = find_spike_times(windowed_data, thresh_mv, thresh_ms)
+            idx_spike_peak, spike_peak_amp = find_spike_times(windowed_data, thresh_mv, thresh_ms)
 
             inflection_time = np.abs(z_data[:idx_z_peak[0]] - 40)
             idx_inflection = np.argmin(inflection_time)
@@ -262,7 +237,7 @@ def process_sweeps(num_sweeps,f, one_ms, fs, pink_types, load_sweep, find_spike_
             inflection_mv = windowed_data[idx_inflection]
 
             # Peak voltage and sharpness
-            mv_peak = find_spike_times(windowed_data, thresh_mv, thresh_ms)[1][0]
+            mv_peak = spike_peak_amp[0]
             sharpness_peak = ((windowed_data[idx_spike_peak[0]] - windowed_data[idx_spike_peak[0] - 5]) +
                               (windowed_data[idx_spike_peak[0]] - windowed_data[idx_spike_peak[0] + 5])) / 2
 
@@ -362,7 +337,6 @@ def plot_spike_and_derivative(i_sweeps, f, fs, one_ms):
     plt.plot(d_smoothed_times, (d_smoothed_data*80)-50, 'k', linewidth = 3., label='differenced')
     plt.legend()
     plt.show()
-
 
 
 

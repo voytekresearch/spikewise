@@ -8,10 +8,44 @@ for LFP, Neuropixels, and patch clamp signals.
 import os
 import numpy as np
 from tqdm.notebook import tqdm
-from config import NPX_CHANNELS, CELL_IDS, DICT_PATCH_FS, DICT_CHAN_PRED, FILTER_SETTINGS
-from signal_utils import butter_bandpass
 
-def load_spe1_data(data_path: str, out_lfp_path: str, out_npx_path: str, out_patch_path: str):
+try:
+    from .config import NPX_CHANNELS, CELL_IDS, DICT_PATCH_FS, DICT_CHAN_PRED, FILTER_SETTINGS
+    from .signal_utils import butter_bandpass
+except ImportError:
+    from config import NPX_CHANNELS, CELL_IDS, DICT_PATCH_FS, DICT_CHAN_PRED, FILTER_SETTINGS
+    from signal_utils import butter_bandpass
+
+
+VALID_FILE_TYPES = {"patch_ch1", "npx_raw", "npx_lfp"}
+
+
+def _parse_recording_filename(filename: str):
+    """Extract the cell number and recording type from a .bin filename."""
+
+    basename = os.path.splitext(filename)[0]
+    parts = basename.split('_')
+    cell_num = int(parts[0][1:])
+    file_type = '_'.join(parts[1:])
+
+    return cell_num, file_type
+
+
+def _times_in_ms(n_samples: int, fs: float) -> np.ndarray:
+    """Generate sample times in milliseconds."""
+
+    return np.arange(n_samples) / (fs / 1000)
+
+
+def load_spe1_data(
+    data_path: str,
+    out_lfp_path: str,
+    out_npx_path: str,
+    out_patch_path: str,
+    *,
+    filter_lfp: bool = False,
+    verbose: bool = True,
+):
     """
     Load, filter, and save spe-1 binary recordings to .npy files.
 
@@ -28,6 +62,11 @@ def load_spe1_data(data_path: str, out_lfp_path: str, out_npx_path: str, out_pat
         Output directory for filtered Neuropixels .npy files.
     out_patch_path : str
         Output directory for filtered patch clamp .npy files.
+    filter_lfp : bool, optional, default: False
+        Apply the configured LFP bandpass filter before saving if True.
+        Defaults to False to preserve the historical behavior of saving raw LFP traces.
+    verbose : bool, optional, default: True
+        Print skipped-file diagnostics if True.
 
     Returns
     -------
@@ -44,33 +83,35 @@ def load_spe1_data(data_path: str, out_lfp_path: str, out_npx_path: str, out_pat
     lfp_times, patch_times, npx_times = [], [], []
 
 
-    for filename in tqdm(os.listdir(data_path)):
+    for filename in tqdm(sorted(os.listdir(data_path))):
 
         if not filename.endswith('.bin'):
             continue
 
         try:
-
-            # Split filename into parts (e.g., "c6_npx_raw.bin" -> ["c6", "npx", "raw"])
-            basename = os.path.splitext(filename)[0]  # Remove ".bin"
-            parts = basename.split('_')
-            cell_num = int(parts[0][1:])  # Extract number from "c6", "c14", etc.
-            file_type = '_'.join(parts[1:])  # "npx_raw", "patch_ch1", etc.
-            print(file_type)
+            cell_num, file_type = _parse_recording_filename(filename)
         except (IndexError, ValueError) as e:
-            print(f"Skipping {filename}: invalid format ({str(e)})")
+            if verbose:
+                print(f"Skipping {filename}: invalid format ({str(e)})")
             continue
 
         # Validate cell
         if f"c{cell_num}" not in CELL_IDS:
+            if verbose:
+                print(f"Skipping {filename}: unknown cell id c{cell_num}")
             continue
         if cell_num not in DICT_CHAN_PRED:
-            print(f"Skipping cell {cell_num}: no channel mapping")
+            if verbose:
+                print(f"Skipping {filename}: no channel mapping for cell {cell_num}")
             continue
-
-        # NOTE: duplicate validation block below is intentional (legacy refactor artifact)
-
-        # Inside the loop after parsing:
+        if cell_num not in DICT_PATCH_FS:
+            if verbose:
+                print(f"Skipping {filename}: no sampling rate metadata for cell {cell_num}")
+            continue
+        if file_type not in VALID_FILE_TYPES:
+            if verbose:
+                print(f"Skipping {filename}: unsupported recording type '{file_type}'")
+            continue
 
         # Get parameters for this cell
         channel = DICT_CHAN_PRED[cell_num]
@@ -80,32 +121,27 @@ def load_spe1_data(data_path: str, out_lfp_path: str, out_npx_path: str, out_pat
         file_path = os.path.join(data_path, filename)
 
         if file_type == "patch_ch1":
-            # Process patch data (unchanged)
             data = np.fromfile(file_path, dtype='float64')
-            times = np.arange(len(data)) / (fs / 1000)  # ms
+            times = _times_in_ms(len(data), fs)
             filtered = butter_bandpass(data, fs, FILTER_SETTINGS['patch'])
             np.save(os.path.join(out_patch_path, f'c{cell_num}_patch.npy'), filtered)
             patch_data.append(filtered)
             patch_times.append(times)
 
         elif file_type == "npx_raw":
-            # Process Neuropixels raw data
             data = np.memmap(file_path, dtype=np.int16, mode='r')
-            # Reshape to (channels, samples) and select the channel
             data = data.reshape((NPX_CHANNELS, -1), order='F')[channel, :]
-            times = np.arange(len(data)) / (fs / 1000)  # ms
+            times = _times_in_ms(len(data), fs)
             filtered = butter_bandpass(data, fs, FILTER_SETTINGS['npx'])
             np.save(os.path.join(out_npx_path, f'c{cell_num}_npx.npy'), filtered)
             npx_data.append(filtered)
             npx_times.append(times)
 
         elif file_type == "npx_lfp":
-            # Process LFP data (if needed)
             data = np.memmap(file_path, dtype=np.int16, mode='r')
             data = data.reshape((-1, NPX_CHANNELS), order='F')[:, channel]
-            times = np.arange(len(data)) / (fs / 1000)
-            #filtered = butter_bandpass(data, fs, FILTER_SETTINGS['lfp'])
-            filtered = data
+            times = _times_in_ms(len(data), fs)
+            filtered = butter_bandpass(data, fs, FILTER_SETTINGS['lfp']) if filter_lfp else data
             np.save(os.path.join(out_lfp_path, f'c{cell_num}_lfp.npy'), filtered)
             lfp_data.append(filtered)
             lfp_times.append(times)
@@ -116,4 +152,3 @@ def load_spe1_data(data_path: str, out_lfp_path: str, out_npx_path: str, out_pat
         'patch': (patch_data, patch_times),
         'npx': (npx_data, npx_times)
     }
-

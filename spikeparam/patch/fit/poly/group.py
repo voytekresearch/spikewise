@@ -22,9 +22,20 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
                  corr_thresh=None):
         """Initialize object."""
 
-        # Initalize super classes
-        super(SpikeGroup, self).__init__()
-        super(PolySpikeGroup, self).__init__(degree)
+        # Initialize the shared Spike/SpikeGroup state explicitly to avoid the
+        # multiple-inheritance super chain from reinitializing with mismatched args.
+        SpikeGroup.__init__(
+            self,
+            window_length=window_length,
+            thresh_amp=thresh_amp,
+            thresh_ms=thresh_ms,
+            pre_peak_ms=pre_peak_ms,
+            pre_inflection_ms=pre_inflection_ms,
+            smooth_frac=smooth_frac,
+            exp_shift_right=exp_shift_right,
+            exp_duration=exp_duration,
+            corr_thresh=corr_thresh,
+        )
 
         # Poly settings
         self.degree = degree
@@ -44,20 +55,6 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
             raise ValueError("Orders must be one less then number of knots.")
 
         self.fill = fill
-
-        # Super settings
-        self.window_length = window_length
-        self.thresh_amp = thresh_amp
-        self.thresh_ms = thresh_ms
-
-        self.pre_peak_ms = pre_peak_ms
-        self.pre_inflection_ms = pre_inflection_ms
-        self.smooth_frac = smooth_frac
-
-        self.exp_shift_right = exp_shift_right
-        self.exp_duration = exp_duration
-
-        self.corr_thresh = corr_thresh
 
         # Poly results
         self.df_poly = None
@@ -104,4 +101,3 @@ class PolySpikeGroup(PolySpike, SpikeGroup):
         # Calls PolySpike's fit
         super(PolySpikeGroup, self).fit(None, fs, peak_inds, gen_fits,
                                         gen_indices, n_jobs, progress)
-

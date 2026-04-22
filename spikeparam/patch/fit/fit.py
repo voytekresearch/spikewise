@@ -8,8 +8,9 @@ from functools import partial
 from multiprocessing import Pool, cpu_count
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from spikeparam.patch.gen import gen_fit_ramp, gen_fit_exp
-from spikeparam.patch.window import find_spike_times, window_spike
+from spikeparam.patch.window import find_spike_times, peak_distance_to_samples, window_spike
 from spikeparam.patch.features import compute_features, compute_isi
 from spikeparam.patch.plts import plot_model
 
@@ -69,6 +70,7 @@ class Spike:
         self.df_indices = None
         self.fs = None
         self.group = None
+        self.alt_windows = None
         self.queue = None
         self.queue_group = None
         self._filtered = False  
@@ -79,11 +81,13 @@ class Spike:
             print("Filtering already applied. Create new instance with inplace=False to re-filter.")
             return None if inplace else self
         
+        params = self.default_filter_params.copy()
+
         if filter_params is not None:
-            params = {**filter_params, **kwargs}
-         
-        else:
-            params = {**self.default_filter_params, **kwargs}
+            params.update(filter_params)
+
+        if kwargs:
+            params.update(kwargs)
         
         valid_mask = (
             (self.df_features['inflection_time'] > params['min_inflection']) &
@@ -143,13 +147,14 @@ class Spike:
 
     def _get_filtered_attributes(self, valid_indices):
         """Slice all spike-related arrays."""
+        spike_inds = self.spike_inds[valid_indices]
+        if isinstance(self.spike_inds, list):
+            spike_inds = np.asarray(self.spike_inds, dtype=object)[valid_indices]
+
         return {
-        # Add indices to filtered attributes
-        'indices': self.indices[valid_indices],  
-        'spikes': self.spikes[valid_indices],
-        'spike_inds': self.spike_inds[valid_indices],
+            'indices': self.indices[valid_indices],
             'spikes': self.spikes[valid_indices],
-            'spike_inds': self.spike_inds[valid_indices],
+            'spike_inds': spike_inds,
             'ramp_poly_params': self.ramp_poly_params[valid_indices],
             'ramp_amp': self.ramp_amp[valid_indices],
             'inflection_time': self.inflection_time[valid_indices],
@@ -339,8 +344,8 @@ class Spike:
             
                 # Find spikes
             if spike_inds is None:
-
-                self.spike_inds,  _= find_spike_times(sig, self.thresh_amp,  self.thresh_ms*1000)
+                min_peak_distance = peak_distance_to_samples(self.thresh_ms, fs)
+                self.spike_inds, _ = find_spike_times(sig, self.thresh_amp, min_peak_distance)
                 
                 # Ensure true max (take abs max around 20% of spike around peak)
                 pad = int(sum(self.window_length) * fs / 1000) + 1
@@ -437,8 +442,6 @@ class Spike:
                 iterable = progress(iterable, total=self.n_spikes, desc='Spike')
 
             for i in iterable:
-                print(i)
-
                 # Compute features
                 indices, ramp_params, peak_params, exp_params = \
                     _compute_features(self.spikes[i], fs, **kwargs)
@@ -624,7 +627,9 @@ class Spike:
 
             # Add to dataframe
             for ind in range(len(param_keys)):
-                self.df_features[param_keys[ind]] = params[:, ind].astype(type(params[0, ind]))
+                values = params[:, ind].astype(type(params[0, ind]))
+                self.df_features[param_keys[ind]] = values
+                setattr(self, param_keys[ind], values)
 
         # In parallel
         else:
@@ -674,6 +679,7 @@ class Spike:
             # Add to dataframe
             for ind in range(len(param_keys)):
                 self.df_features[param_keys[ind]] = params[ind]
+                setattr(self, param_keys[ind], params[ind])
 
             # Remove temporary py file
             os.remove('_tmp_funcs_mp.py')

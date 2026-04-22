@@ -73,20 +73,29 @@ _INSIG_COL = '#56B4E9'
 #                                     Aggregate Results                                       #
 # ------------------------------------------------------------------------------------------- #
 
+def _index_experiment_pickles(folder_path):
+    """Map each cell id to its first matching result pickle."""
+
+    indexed = {}
+    for path in sorted(glob.glob(os.path.join(folder_path, "c*_*.pkl"))):
+        cell_id = os.path.basename(path).split("_", 1)[0]
+        indexed.setdefault(cell_id, path)
+    return indexed
+
 def compile_experiment_results(folder_path):
     """
     Iterates through config Cell IDs. Populates num_clusters (0 if missing).
     """
     all_cell_ids = list(config.DICT_CELL_TYPE.keys())
     master_list = []
+    indexed_pickles = _index_experiment_pickles(folder_path)
 
     for cell_num in all_cell_ids:
         cell_id_str = f"c{cell_num}"
-        search_pattern = os.path.join(folder_path, f"{cell_id_str}_*.pkl")
-        matching_files = glob.glob(search_pattern)
+        pickle_path = indexed_pickles.get(cell_id_str)
         
-        if matching_files:
-            df = pd.read_pickle(matching_files[0])
+        if pickle_path:
+            df = pd.read_pickle(pickle_path)
             # Count unique clusters in this specific experiment
             # We assume 'groups' contains the cluster IDs
             n_clusters = df['groups'].nunique()
