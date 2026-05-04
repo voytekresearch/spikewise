@@ -5,7 +5,22 @@ import seaborn as sns
 from sklearn.metrics import ConfusionMatrixDisplay
 import warnings
 
-warnings.filterwarnings('ignore')
+# Suppress seaborn palette deprecation noise only
+warnings.filterwarnings('ignore', category=FutureWarning, module='seaborn')
+warnings.filterwarnings('ignore', message='.*use_inf_as_na.*')
+
+# Shared color mapping for spike waveform features (used across multiple plot functions)
+_FEATURE_COLOR_MAP = {
+    'peak_amp':        'C5',
+    'exp_const':       'C6',
+    'exp_lambda':      'C6',
+    'inflection_amp':  'C3',
+    'ramp_amp':        'C4',
+    'inflection_time': 'C3',
+    'peak_sharpness':  'C5',
+    'peak_width':      'C5',
+    'log_isi':         'C7',
+}
 
 def plot_pink_spikes(sp, indices_to_plot):
     """
@@ -162,20 +177,8 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     
     feature_importance_df = feature_importance_df.sort_values(by='Coefficient', ascending=False)
 
-    color_mapping = {
-        'peak_amp': 'C5',
-        'exp_const': 'C6',
-        'exp_lambda': 'C6',
-        'inflection_amp': 'C3',
-        'ramp_amp': 'C4',
-        'inflection_time': 'C3',
-        'peak_sharpness': 'C5',
-        'peak_width': 'C5',
-        'log_isi': 'C7'
-    }
-    
     feature_importance_df['Color'] = feature_importance_df['Feature'].apply(
-        lambda x: 'hotpink' if x.startswith('stim_') else color_mapping.get(x, 'gray')
+        lambda x: 'hotpink' if x.startswith('stim_') else _FEATURE_COLOR_MAP.get(x, 'gray')
     )
 
     plt.figure(figsize=(10, 6))
@@ -399,18 +402,7 @@ def plot_feature_importance_categorical(best_model, X):
     df_importance = pd.DataFrame({"Feature": feature_names, "Importance": importances})
     df_importance = df_importance.sort_values(by="Importance", ascending=False)
     
-    color_mapping = {
-        'peak_amp': 'C5',
-        'exp_const': 'C6',
-        'exp_lambda': 'C6',
-        'inflection_amp': 'C3',
-        'ramp_amp': 'C4',
-        'inflection_time': 'C3',
-        'peak_sharpness': 'C5',
-        'peak_width': 'C5',
-        'log_isi': 'C7'
-    }
-    df_importance['Color'] = df_importance['Feature'].map(color_mapping).fillna('#8c8c8c')
+    df_importance['Color'] = df_importance['Feature'].map(_FEATURE_COLOR_MAP).fillna('#8c8c8c')
 
     
     plt.figure(figsize=(10, 6))

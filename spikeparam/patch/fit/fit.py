@@ -33,7 +33,7 @@ class Spike:
         self.exp_duration = exp_duration
         self.corr_thresh = corr_thresh
 
-        # Filtering defaults
+        # Filtering defaults - extreme thresholds to only remove extreme outliers as default
         self.default_filter_params = {
             'min_inflection': -10000,
             'max_inflection': 10000,

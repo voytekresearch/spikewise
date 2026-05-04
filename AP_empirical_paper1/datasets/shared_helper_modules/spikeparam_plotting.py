@@ -134,16 +134,13 @@ def plot_corr_heatmap(
     if df_cleaned.empty:
         raise ValueError("After cleaning, no data remains. Check for excessive missing values.")
 
-    # Calculate correlation matrix and extract only spike vs LFP correlations
-    if calculate_corr:
-        correlation_matrix = df_cleaned.corr()
-    else:
-        correlation_matrix = df_features.corr()
+    # Always compute correlation from the cleaned DataFrame to avoid NaN/Inf contamination
+    correlation_matrix = df_cleaned.corr()
 
     # Extract the correct matrix with spikes on Y and LFPs on X
     rho = correlation_matrix.loc[spike_features, lfp_features]
 
-    # Compute p-values using Pearson correlation
+    # Compute p-values using Pearson correlation (always uses cleaned data)
     pval = pd.DataFrame(np.zeros_like(rho), index=spike_features, columns=lfp_features)
     for row in spike_features:
         for col in lfp_features:
@@ -159,7 +156,7 @@ def plot_corr_heatmap(
         elif p < 0.05: return '*'
         else: return ''
     
-    # ✅ Initialize the stars DataFrame with object (string) dtype to avoid warnings
+    # Initialize the stars DataFrame with object (string) dtype to avoid warnings
     stars = pd.DataFrame("", index=rho.index, columns=rho.columns, dtype="object")
 
     # Apply stars using the significance function

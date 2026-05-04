@@ -32,8 +32,52 @@ import gc
 
 
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+from scipy.ndimage import uniform_filter1d
 
 
+# ------------------------------------------------------------------------------------------- #
+# --------------------------------- Cache / IO utilities ------------------------------------ #
+# ------------------------------------------------------------------------------------------- #
+
+def load_or_compute(path: str, compute_fn, force: bool = False, verbose: bool = True):
+    """
+    Load a pickle if it exists and force=False; otherwise call compute_fn(), save, and return.
+
+    Parameters
+    ----------
+    path : str
+        Full path to the pickle file.
+    compute_fn : callable
+        Zero-argument callable whose return value is saved when the cache is missing or stale.
+    force : bool
+        If True, always recompute and overwrite the existing pickle.
+    verbose : bool
+        Print whether the result is loaded from cache or freshly computed.
+
+    Returns
+    -------
+    The cached or freshly-computed result.
+
+    Examples
+    --------
+    df_clust = load_or_compute(
+        path=os.path.join(PICKLE_ROOT, f"{cell_num}_cluster_df.pkl"),
+        compute_fn=lambda: cluster_multimodal_features(df_features, ...),
+        force=FORCE_CLUSTER,
+    )
+    """
+    if not force and os.path.exists(path):
+        if verbose:
+            print(f"  [cache] {os.path.basename(path)}")
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    if verbose:
+        print(f"  [compute] {os.path.basename(path)}")
+    result = compute_fn()
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "wb") as f:
+        pickle.dump(result, f)
+    return result
 
 
 # ------------------------------------------------------------------------------------------- #
@@ -459,115 +503,6 @@ def get_cluster_colors_and_labels(cluster_col, unique_clusters, df=None, cluster
 
 
 
-def compute_cluster_statistics(group_data, alpha=0.05):
-    """
-    Compute statistics for cluster comparisons.
-    """
-    # ADD THESE IMPORTS INSIDE THE FUNCTION
-    from scipy import stats
-    import numpy as np
-    
-    n_groups = len(group_data)
-    
-    # Quick sanity check
-    if any(len(g) < 3 for g in group_data):
-        return {
-            'p_value': None,
-            'significance': None,
-            'test_type': None,
-            'n_groups': n_groups,
-            'eta_squared': None,
-            'error': 'Insufficient data'
-        }
-    
-    test_type = "nonparametric"
-    
-    if n_groups == 2:
-        # Mann-Whitney U test
-        g1, g2 = group_data[0], group_data[1]
-        
-        # Handle edge cases
-        if len(g1) == 0 or len(g2) == 0:
-            return {
-                'p_value': None,
-                'significance': None,
-                'test_type': test_type,
-                'n_groups': n_groups,
-                'eta_squared': None,
-                'error': 'One group has no data'
-            }
-        
-        stat, p = stats.mannwhitneyu(g1, g2)
-        test_name = "Mann-Whitney U"
-        
-        # Direct calculation of η² from data
-        all_data = np.concatenate([g1, g2])
-        grand_mean = np.mean(all_data)
-        
-        # Sum of squares between
-        ss_between = len(g1) * (np.mean(g1) - grand_mean) ** 2 + len(g2) * (np.mean(g2) - grand_mean) ** 2
-        
-        # Sum of squares total
-        ss_total = np.sum((all_data - grand_mean) ** 2)
-        
-        # η² = SS_between / SS_total
-        if ss_total > 0:
-            eta_squared = ss_between / ss_total
-        else:
-            eta_squared = 0
-        
-    else:  # 3+ groups
-        # Kruskal-Wallis test
-        stat, p = stats.kruskal(*group_data)
-        test_name = "Kruskal-Wallis"
-        
-        # Direct ε² calculation (analogous to η²)
-        total_n = sum(len(g) for g in group_data)
-        if total_n > 1:
-            eta_squared = stat / (total_n - 1)
-        else:
-            eta_squared = 0
-    
-    # Handle NaN/Inf values
-    if np.isnan(eta_squared) or np.isinf(eta_squared):
-        eta_squared = 0
-    
-    # Clip to valid range [0, 1]
-    eta_squared = np.clip(eta_squared, 0, 1)
-    
-    # Significance stars
-    if p < 0.001:
-        sig_stars = '***'
-    elif p < 0.01:
-        sig_stars = '**'
-    elif p < 0.05:
-        sig_stars = '*'
-    else:
-        sig_stars = 'ns'
-    
-    # Interpretation
-    if eta_squared < 0.01:
-        interpretation = "Negligible"
-    elif eta_squared < 0.06:
-        interpretation = "Small"
-    elif eta_squared < 0.14:
-        interpretation = "Medium"
-    elif eta_squared < 0.26:
-        interpretation = "Large"
-    else:
-        interpretation = "Very Large"
-    
-    return {
-        'p_value': p,
-        'significance': sig_stars,
-        'test_type': test_type,
-        'n_groups': n_groups,
-        'eta_squared': eta_squared,
-        'interpretation': interpretation,
-        'test_name': test_name
-    }
-
-
 def plot_full_cluster_report(
     df: pd.DataFrame,
     sp,
@@ -870,97 +805,6 @@ def plot_spike_clusters_from_df(
 
 
 
-def get_cluster_colors_and_labels(cluster_col, unique_clusters, df=None, clustered_feature=None):
-    """
-    Get consistent colors and labels for clusters.
-    
-    Returns: (groups, group_names, color_map)
-    """
-    # Check if clusters are already labeled as 'low', 'mid', 'high'
-    has_meaningful_labels = all(str(cluster) in ['low', 'mid', 'high'] for cluster in unique_clusters)
-    n_clusters = len(unique_clusters)
-    
-    if has_meaningful_labels:
-        print(f"  Using existing cluster labels: {sorted(unique_clusters)}")
-        
-        if n_clusters == 2:
-            groups = tuple(sorted(unique_clusters, key=lambda x: 0 if x == 'low' else 1))
-            group_names = ("Low", "High")
-            color_map = {
-                'low': "#1f77b4",   # Blue for Low
-                'high': "#ff7f0e",  # Orange for High
-                "default": "#9467bd"
-            }
-            
-        elif n_clusters == 3:
-            groups = tuple(sorted(unique_clusters, key=lambda x: {'low': 0, 'mid': 1, 'high': 2}[x]))
-            group_names = ("Low", "Mid", "High")
-            color_map = {
-                'low': "#1f77b4",   # Blue for Low
-                'mid': "#2ca02c",   # Green for Mid
-                'high': "#ff7f0e",  # Orange for High
-                "default": "#9467bd"
-            }
-        
-        return groups, group_names, color_map
-        
-    else:
-        # Generic labels - sort by clustered feature value if possible
-        if clustered_feature and df is not None and clustered_feature in df.columns:
-            cluster_means = {}
-            for cluster in unique_clusters:
-                cluster_data = df.loc[df[cluster_col] == cluster, clustered_feature].dropna()
-                if len(cluster_data) > 0:
-                    cluster_means[cluster] = cluster_data.mean()
-            
-            if len(cluster_means) == n_clusters:
-                sorted_clusters = sorted(cluster_means.items(), key=lambda x: x[1])
-                
-                if n_clusters == 2:
-                    low_cluster = sorted_clusters[0][0]
-                    high_cluster = sorted_clusters[1][0]
-                    
-                    groups = (low_cluster, high_cluster)
-                    group_names = ("Low", "High")
-                    color_map = {
-                        low_cluster: "#1f77b4",
-                        high_cluster: "#ff7f0e",
-                        "default": "#9467bd"
-                    }
-                    
-                    print(f"  Assigning by {clustered_feature}: {low_cluster}→'Low' (blue), {high_cluster}→'High' (orange)")
-                    
-                elif n_clusters == 3:
-                    low_cluster = sorted_clusters[0][0]
-                    mid_cluster = sorted_clusters[1][0]
-                    high_cluster = sorted_clusters[2][0]
-                    
-                    groups = (low_cluster, mid_cluster, high_cluster)
-                    group_names = ("Low", "Mid", "High")
-                    color_map = {
-                        low_cluster: "#1f77b4",
-                        mid_cluster: "#2ca02c",
-                        high_cluster: "#ff7f0e",
-                        "default": "#9467bd"
-                    }
-                    
-                    print(f"  Assigning by {clustered_feature}: {low_cluster}→'Low' (blue), {mid_cluster}→'Mid' (green), {high_cluster}→'High' (orange)")
-                    
-                return groups, group_names, color_map
-        
-        # Fallback to alphabetical order
-        groups = tuple(sorted(unique_clusters))
-        group_names = tuple([f"Group {i+1}" for i in range(n_clusters)])
-        import matplotlib.pyplot as plt
-        cmap = plt.cm.get_cmap('tab20', n_clusters)
-        color_map = {groups[i]: cmap(i) for i in range(n_clusters)}
-        color_map["default"] = "#9467bd"
-        
-        return groups, group_names, color_map
-
-
-
-
 def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
     """
     Plot average waveforms with 3 distinct panels per pair.
@@ -996,7 +840,7 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
         rmse = np.sqrt(np.mean((wf1 - wf2)**2))
         
         # B. Max-Scaled (Preserves relative amplitude ratio)
-        global_max = np.max([np.abs(wf1), np.abs(wf2)])
+        global_max = max(np.abs(wf1).max(), np.abs(wf2).max())
         if global_max == 0: global_max = 1e-9
         n_wf1, n_wf2 = wf1 / global_max, wf2 / global_max
         nrmse = np.sqrt(np.mean((n_wf1 - n_wf2)**2))
@@ -2244,62 +2088,62 @@ def extract_lfp_windows(
     next_spike_lookup = spk_df.sort_values("spk_id").set_index("spk_id")["spk_times_ms"].copy()
     next_spike_lookup.index = next_spike_lookup.index - 1
 
-    windows = []
-    times_rel_ms = []
-    spike_times = []
+    sids = df["spk_id"].values
+    t0s  = df["spk_times_ms"].values.astype(float)
+
+    # Vectorised next-spike lookup
+    t_next_arr   = next_spike_lookup.reindex(sids).values.astype(float)  # NaN where missing
+    has_next_vec = np.isfinite(t_next_arr)
+
+    # Vectorised bounds + validity filter
+    t_starts = t0s - pre_ms
+    t_ends   = t0s + post_ms
+    in_bounds = (t_starts >= lfp_times_ms[0]) & (t_ends <= lfp_times_ms[-1])
+    row_valid = in_bounds & (has_next_vec if requires_next_spike else np.ones(len(sids), bool))
+
+    valid_idxs = np.where(row_valid)[0]
+    if len(valid_idxs) == 0:
+        return {"windows": [], "times_rel_ms": [], "spike_times_ms": [],
+                "next_spike_times_ms": [], "meta_df": pd.DataFrame()}
+
+    # Batch searchsorted on the valid subset only
+    idx0s = np.searchsorted(lfp_times_ms, t_starts[valid_idxs])
+    idx1s = np.searchsorted(lfp_times_ms, t_ends[valid_idxs])
+
+    windows          = []
+    times_rel_ms_out = []
+    spike_times      = []
     next_spike_times = []
-    meta_rows = []
+    meta_rows        = []
 
-    for row in df[["spk_id", "spk_times_ms"]].itertuples(index=False):
-        sid = int(row.spk_id)
-        t0 = float(row.spk_times_ms)
+    for k, i in enumerate(valid_idxs):
+        sid    = int(sids[i])
+        t0     = float(t0s[i])
+        t_next = float(t_next_arr[i])
+        idx0, idx1 = int(idx0s[k]), int(idx1s[k])
 
-        # Lookup next spike
-        if sid in next_spike_lookup.index:
-            t_next = float(next_spike_lookup.loc[sid])
-        else:
-            if requires_next_spike:
-                continue          # ONLY drop for ISI-based analyses
-            else:
-                t_next = np.nan   # keep spike
-
-        # Window boundaries
-        t_start = t0 - pre_ms
-        t_end = t0 + post_ms
-
-        # Clip windows to LFP range
-        if t_start < lfp_times_ms[0] or t_end > lfp_times_ms[-1]:
-            continue
-
-        # Index into LFP vector
-        idx0 = np.searchsorted(lfp_times_ms, t_start)
-        idx1 = np.searchsorted(lfp_times_ms, t_end)
-
-        seg = lfp_signal[idx0:idx1]
+        seg   = lfp_signal[idx0:idx1]
         t_seg = lfp_times_ms[idx0:idx1]
-
-        # build relative time (spike = 0)
         t_rel = t_seg - t0
 
         windows.append(seg)
-        times_rel_ms.append(t_rel)
+        times_rel_ms_out.append(t_rel)
         spike_times.append(t0)
         next_spike_times.append(t_next)
-
         meta_rows.append({
-            "spk_id": sid,
-            "spike_time_ms": t0,
+            "spk_id":             sid,
+            "spike_time_ms":      t0,
             "next_spike_time_ms": t_next,
-            "t_start_ms": t_start,
-            "t_end_ms": t_end
+            "t_start_ms":         t_starts[i],
+            "t_end_ms":           t_ends[i],
         })
 
     return {
-        "windows": windows,
-        "times_rel_ms": times_rel_ms,
-        "spike_times_ms": spike_times,
-        "next_spike_times_ms": next_spike_times,
-        "meta_df": pd.DataFrame(meta_rows)
+        "windows":              windows,
+        "times_rel_ms":         times_rel_ms_out,
+        "spike_times_ms":       spike_times,
+        "next_spike_times_ms":  next_spike_times,
+        "meta_df":              pd.DataFrame(meta_rows),
     }
 
 
@@ -3402,7 +3246,8 @@ def lfp_sliding_stats(
     p_threshold=0.05,
     alpha_ci=0.25,
     plot_mode="both",
-    figsize=(14, 6)
+    figsize=(14, 6),
+    plot=True,
 ):
 
 
@@ -3468,12 +3313,32 @@ def lfp_sliding_stats(
                 base_T = next((np.asarray(t, float) for t in g["times_rel"] if len(t) > 1), None)
                 Tgrid = base_T / 1000.0 if time_unit == "ms" else base_T.copy()
             
-            mats = []
-            for w, t in zip(g["windows"], g["times_rel"]):
-                if len(w) != len(t) or len(w) < 2: continue
-                w_demeaned = np.asarray(w, float) - np.nanmean(w)
-                mats.append(np.interp(Tgrid, (t/1000.0 if time_unit=="ms" else t), w_demeaned))
-            if len(mats) >= 2: A_matrices[gname] = np.vstack(mats)
+            # Collect valid (window, time) pairs
+            valid_wt = [
+                (np.asarray(w, float), np.asarray(t, float) / 1000.0 if time_unit == "ms" else np.asarray(t, float))
+                for w, t in zip(g["windows"], g["times_rel"])
+                if len(w) == len(t) and len(w) >= 2
+            ]
+            if len(valid_wt) < 2:
+                continue
+
+            # Fast path: all windows same length → batch demean + vectorised linear interp
+            lengths = [len(w) for w, _ in valid_wt]
+            if len(set(lengths)) == 1:
+                W     = np.array([w for w, _ in valid_wt])        # (n_spikes, n_samples)
+                T_ref = valid_wt[0][1]                             # reference time axis (~identical for all)
+                W    -= np.nanmean(W, axis=1, keepdims=True)       # batch demean
+                # Vectorised linear interpolation: build interp coefficients once, apply to all rows
+                idxs  = np.searchsorted(T_ref, Tgrid, side="left").clip(1, len(T_ref) - 1)
+                lo, hi = idxs - 1, idxs
+                dt     = T_ref[hi] - T_ref[lo]
+                dt     = np.where(dt == 0, 1.0, dt)
+                alpha  = (Tgrid - T_ref[lo]) / dt                 # (n_grid,)
+                A_matrices[gname] = W[:, lo] * (1.0 - alpha) + W[:, hi] * alpha
+            else:
+                # Fallback for variable-length windows (rare)
+                mats = [np.interp(Tgrid, t, w - np.nanmean(w)) for w, t in valid_wt]
+                A_matrices[gname] = np.vstack(mats)
 
         # --- FIX: Save Trace Data organized by `set_name` (the spike feature) ---
         trace_data[set_name] = {"Tgrid": Tgrid, "groups": {}}
@@ -3486,17 +3351,58 @@ def lfp_sliding_stats(
                     "n": np.sum(np.isfinite(A), axis=0)
                 }
 
-        # Sliding Window Math
+        # Sliding Window Math — vectorised across all windows at once
         sig_windows = []
-        for w_start in np.arange(Tgrid[0], Tgrid[-1] - window_width, step_size):
-            amask = (Tgrid >= w_start) & (Tgrid <= w_start + window_width)
-            data_for_test = [np.nanmean(A_matrices[gn][:, amask], axis=1) for gn in group_names if gn in A_matrices]
-            data_for_test = [d[np.isfinite(d)] for d in data_for_test if len(d) > 2]
-            
-            if len(data_for_test) >= 2:
-                p = f_oneway(*data_for_test)[1] if len(data_for_test) > 2 else ttest_ind(data_for_test[0], data_for_test[1], equal_var=False)[1]
-                if p < p_threshold:
-                    sig_windows.append((w_start, w_start + window_width, p))
+        valid_gns = [gn for gn in group_names if gn in A_matrices]
+        if len(valid_gns) >= 2 and Tgrid is not None and len(Tgrid) > 1:
+            dt_grid     = float(np.mean(np.diff(Tgrid)))
+            n_win_samp  = max(1, round(window_width / dt_grid))
+
+            # uniform_filter1d gives the centered box mean at every Tgrid point — one C call per group
+            A_smooth = {gn: uniform_filter1d(A_matrices[gn], size=n_win_samp, axis=1, mode="nearest")
+                        for gn in valid_gns}
+
+            # Window start positions → the index of the window centre in Tgrid
+            w_starts = np.arange(Tgrid[0], Tgrid[-1] - window_width + dt_grid * 0.5, step_size)
+            c_idx    = np.searchsorted(Tgrid, w_starts + window_width / 2).clip(0, len(Tgrid) - 1)
+
+            # Extract per-window per-spike values for each group: (n_spikes, n_wins)
+            G = [A_smooth[gn][:, c_idx] for gn in valid_gns]
+
+            if len(G) == 2:
+                # Vectorised Welch's t-test
+                g1, g2  = G
+                n1  = np.maximum(np.sum(np.isfinite(g1), axis=0), 2)
+                n2  = np.maximum(np.sum(np.isfinite(g2), axis=0), 2)
+                mu1 = np.nanmean(g1, axis=0);  mu2 = np.nanmean(g2, axis=0)
+                v1  = np.nanvar(g1, axis=0, ddof=1); v2 = np.nanvar(g2, axis=0, ddof=1)
+                se2  = v1 / n1 + v2 / n2
+                t_st = (mu1 - mu2) / np.sqrt(se2 + 1e-15)
+                df   = se2 ** 2 / ((v1 / n1) ** 2 / np.maximum(n1 - 1, 1)
+                                   + (v2 / n2) ** 2 / np.maximum(n2 - 1, 1) + 1e-15)
+                from scipy.stats import t as _t_dist
+                p_vals = 2.0 * _t_dist.sf(np.abs(t_st), df)
+            else:
+                # Vectorised one-way F-test
+                k     = len(G)
+                ns    = np.array([np.maximum(np.sum(np.isfinite(g), axis=0), 1) for g in G])  # (k, n_wins)
+                means = np.array([np.nanmean(g, axis=0) for g in G])                           # (k, n_wins)
+                N     = ns.sum(axis=0)
+                grand = np.nansum(means * ns, axis=0) / np.maximum(N, 1)
+                ss_b  = np.nansum(ns * (means - grand) ** 2, axis=0)
+                ss_w  = np.nansum(
+                    [np.nanvar(g, axis=0, ddof=1) * np.maximum(ns[i] - 1, 0) for i, g in enumerate(G)],
+                    axis=0,
+                )
+                f_st  = (ss_b / (k - 1)) / (ss_w / np.maximum(N - k, 1) + 1e-15)
+                from scipy.stats import f as _f_dist
+                p_vals = _f_dist.sf(f_st, k - 1, np.maximum(N - k, 1))
+
+            p_vals = np.where(np.isfinite(p_vals), p_vals, 1.0)
+            sig_windows = [
+                (float(w_starts[i]), float(w_starts[i] + window_width), float(p_vals[i]))
+                for i in np.where(p_vals < p_threshold)[0]
+            ]
 
         merged_regions = []
         if sig_windows:
@@ -3508,11 +3414,37 @@ def lfp_sliding_stats(
                     merged_regions.append((cur_s, cur_e, cur_p)); cur_s, cur_e, cur_p = w
             merged_regions.append((cur_s, cur_e, cur_p))
 
-        # --- PLOTTING ---
+        # --- ALWAYS: pairwise post-hoc stats over significant windows (no matplotlib) ---
+        # Pre-compute box_data per merged window so we can reuse in plotting below
+        window_box_data = {}
+        for s, e, _ in merged_regions:
+            amask = (Tgrid >= s) & (Tgrid <= e)
+            box_data = [np.nanmean(A_matrices[gn][:, amask], axis=1) for gn in group_names if gn in A_matrices]
+            box_data = [d[np.isfinite(d)] for d in box_data]
+            window_box_data[(s, e)] = box_data
+            for i, j in combinations(range(len(box_data)), 2):
+                d1, d2 = box_data[i], box_data[j]
+                if len(d1) < 2 or len(d2) < 2: continue
+                _, p_pair = ttest_ind(d1, d2, equal_var=False)
+                if p_pair < p_threshold:
+                    stats_report.append({
+                        "spike_feature": set_name,
+                        "window_start":  s,
+                        "window_end":    e,
+                        "group_1":       group_names[i],
+                        "group_2":       group_names[j],
+                        "p_value":       p_pair,
+                        "cohens_d":      cohens_d(d1, d2),
+                    })
+
+        if not plot:
+            continue
+
+        # --- PLOTTING (skipped when plot=False) ---
         fig = plt.figure(figsize=figsize)
         has_regions = len(merged_regions) > 0
         master_gs = GridSpec(1, 2, width_ratios=[1.5, 1] if has_regions else [1, 0.01], wspace=0.3)
-        
+
         ax_trace = fig.add_subplot(master_gs[0])
         for gname in group_names:
             if gname not in A_matrices: continue
@@ -3530,24 +3462,24 @@ def lfp_sliding_stats(
 
         if has_regions:
             n_boxes = len(merged_regions)
-            n_cols = 2 if n_boxes > 2 else 1
-            n_rows = (n_boxes + n_cols - 1) // n_cols
-            sub_gs = GridSpecFromSubplotSpec(n_rows, n_cols, subplot_spec=master_gs[1], wspace=0.4, hspace=0.6)
-            
+            n_cols  = 2 if n_boxes > 2 else 1
+            n_rows  = (n_boxes + n_cols - 1) // n_cols
+            sub_gs  = GridSpecFromSubplotSpec(n_rows, n_cols, subplot_spec=master_gs[1], wspace=0.4, hspace=0.6)
+
             for idx, (s, e, _) in enumerate(merged_regions):
-                ax_box = fig.add_subplot(sub_gs[idx])
-                amask = (Tgrid >= s) & (Tgrid <= e)
-                box_data = [np.nanmean(A_matrices[gn][:, amask], axis=1) for gn in group_names if gn in A_matrices]
-                box_data = [d[np.isfinite(d)] for d in box_data]
-                
-                bp = ax_box.boxplot(box_data, labels=[l.split(': ')[-1] for l in group_names], patch_artist=True, medianprops=dict(color="black"))
+                ax_box   = fig.add_subplot(sub_gs[idx])
+                box_data = window_box_data[(s, e)]
+
+                bp = ax_box.boxplot(box_data, labels=[l.split(': ')[-1] for l in group_names],
+                                    patch_artist=True, medianprops=dict(color="black"))
                 for i, box in enumerate(bp['boxes']):
                     box.set_facecolor(colors_dict[group_names[i]])
                     box.set_alpha(0.6)
 
-                y_max, y_min = max([np.max(d) for d in box_data if len(d)>0]), min([np.min(d) for d in box_data if len(d)>0])
-                y_range = y_max - y_min
-                step = y_range * 0.15
+                nonempty = [d for d in box_data if len(d) > 0]
+                if not nonempty: continue
+                y_max, y_min = max(np.max(d) for d in nonempty), min(np.min(d) for d in nonempty)
+                step      = (y_max - y_min) * 0.15 or 0.1
                 current_y = y_max + step
 
                 for i, j in combinations(range(len(box_data)), 2):
@@ -3556,22 +3488,14 @@ def lfp_sliding_stats(
                     _, p_pair = ttest_ind(d1, d2, equal_var=False)
                     if p_pair < p_threshold:
                         d_eff = cohens_d(d1, d2)
-                        
-                        # --- FIX: Track the spike_feature (set_name) directly in the stats! ---
-                        stats_report.append({
-                            "spike_feature": set_name,
-                            "window_start": s,
-                            "window_end": e,
-                            "group_1": group_names[i],
-                            "group_2": group_names[j],
-                            "p_value": p_pair,
-                            "cohens_d": d_eff
-                        })
-                        
                         stars = get_stars(p_pair)
                         p_str = f"p={p_pair:.4f}" if p_pair > 0.0001 else "p<0.0001"
-                        ax_box.plot([i+1, i+1, j+1, j+1], [current_y, current_y+step*0.2, current_y+step*0.2, current_y], lw=1.2, c='k')
-                        ax_box.text((i+j+2)/2, current_y+step*0.2, f"{stars}\n{p_str}\n(d={d_eff:.1f})", ha='center', va='bottom', fontsize=7)
+                        ax_box.plot([i+1, i+1, j+1, j+1],
+                                    [current_y, current_y+step*0.2, current_y+step*0.2, current_y],
+                                    lw=1.2, c='k')
+                        ax_box.text((i+j+2)/2, current_y+step*0.2,
+                                    f"{stars}\n{p_str}\n(d={d_eff:.1f})",
+                                    ha='center', va='bottom', fontsize=7)
                         current_y += step * 2.5
 
                 ax_box.set_ylim(bottom=y_min - step, top=current_y + step)
@@ -3641,47 +3565,68 @@ def compute_simple_lfp_by_spike(
     inner_samples = int(inner_window_s * fs)
     step_samples  = max(1, int(step_s * fs))
 
+    # Precompute fixed frequency quantities shared across all spikes/sub-windows
+    freqs     = np.fft.rfftfreq(inner_samples, d=1.0 / fs)
+    freq_mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
+    has_freq  = np.sum(freq_mask) > 2
+    if has_freq:
+        log_freqs = np.log10(freqs[freq_mask])
+        # Design matrix for batch least-squares: [log_freq, 1]
+        A_fit = np.column_stack([log_freqs, np.ones(len(log_freqs))])
+
     results = []
 
     for raw_win, t_rel_ms in zip(windows_all, times_rel_list):
-        raw_win  = np.asarray(raw_win, float)
-        t_rel_s  = np.asarray(t_rel_ms, float) / 1000.0
+        raw_win = np.asarray(raw_win, float)
+        t_rel_s = np.asarray(t_rel_ms, float) / 1000.0
 
         n = len(raw_win)
         if n < inner_samples:
             results.append(None)
             continue
 
-        t_bins, means, stds, exps = [], [], [], []
+        # Build 2D view of all sub-windows at once — zero-copy stride trick
+        views   = np.lib.stride_tricks.sliding_window_view(raw_win, inner_samples)[::step_samples]
+        n_steps = len(views)  # (n_steps, inner_samples)
 
-        for start in range(0, n - inner_samples + 1, step_samples):
-            end      = start + inner_samples
-            segment  = raw_win[start:end]
-            center   = (start + end) // 2
-            t_center = t_rel_s[center] if center < len(t_rel_s) else t_rel_s[-1]
+        # Batch mean and std across the sample axis
+        means = np.nanmean(views, axis=1)
+        stds  = np.nanstd(views, axis=1)
 
-            means.append(np.nanmean(segment))
-            stds.append(np.nanstd(segment))
+        # Batch spectral exponent via single rfft call on all sub-windows
+        exps = np.full(n_steps, np.nan)
+        if has_freq:
+            fft_vals   = np.fft.rfft(views, axis=1)                    # (n_steps, n_rfft)
+            power      = (np.abs(fft_vals) ** 2) / inner_samples       # (n_steps, n_rfft)
+            pwr_masked = power[:, freq_mask]                            # (n_steps, n_freq)
+            valid_pwr  = pwr_masked > 0
+            log_pwr    = np.where(valid_pwr, np.log10(pwr_masked), np.nan)
 
-            # Spectral exponent: fit line to log-log power spectrum
-            fft_vals = np.fft.rfft(segment)
-            power    = (np.abs(fft_vals) ** 2) / len(segment)
-            freqs    = np.fft.rfftfreq(len(segment), d=1.0 / fs)
+            # Batch lstsq for rows where all freq bins are positive (the common case)
+            all_valid = np.all(valid_pwr, axis=1)
+            if np.any(all_valid):
+                coeffs, _, _, _ = np.linalg.lstsq(A_fit, log_pwr[all_valid].T, rcond=None)
+                exps[all_valid] = -coeffs[0]
 
-            mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1]) & (power > 0)
-            if np.sum(mask) > 2:
-                coeffs = np.polyfit(np.log10(freqs[mask]), np.log10(power[mask]), 1)
-                exps.append(-coeffs[0])  # positive value = steeper 1/f slope
-            else:
-                exps.append(np.nan)
+            # Fall back to per-row polyfit only for the rare partially-invalid rows
+            partial = ~all_valid & (np.sum(valid_pwr, axis=1) > 2)
+            for idx in np.where(partial)[0]:
+                row = log_pwr[idx]
+                vm  = np.isfinite(row)
+                if vm.sum() > 2:
+                    c = np.polyfit(log_freqs[vm], row[vm], 1)
+                    exps[idx] = -c[0]
 
-            t_bins.append(t_center)
+        # Center time for each sub-window
+        starts  = np.arange(n_steps) * step_samples
+        centers = np.minimum(starts + inner_samples // 2, len(t_rel_s) - 1)
+        t_bins  = t_rel_s[centers]
 
         results.append({
-            "t_bins_s":     np.array(t_bins),
-            "lfp_mean":     np.array(means),
-            "lfp_std":      np.array(stds),
-            "lfp_exponent": np.array(exps),
+            "t_bins_s":     t_bins,
+            "lfp_mean":     means,
+            "lfp_std":      stds,
+            "lfp_exponent": exps,
         })
 
     return results
@@ -3761,10 +3706,12 @@ def run_master_LFP_spk_analysis(
     groups,
     features_to_analyze,
     lfp_windows_by_spike=None,
-    save_dir="/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spe1_pickles/lfp_spk_group_pickles",
+    save_dir=None,
     window_width=0.05,
     step_size=0.025,
-    p_threshold=0.05
+    p_threshold=0.05,
+    force_recompute=False,
+    plot=True,
 ):
     """
     Master pipeline: run sliding-window LFP-spike group analysis for all requested features
@@ -3772,7 +3719,7 @@ def run_master_LFP_spk_analysis(
 
     For each feature in features_to_analyze, this function:
       1. Builds per-group feature arrays (specparam or simple LFP)
-      2. Plots a heatmap of the feature over time per group
+      2. Optionally plots a heatmap of the feature over time per group (plot=True)
       3. Runs sliding-window stats to find windows with significant group differences
       4. Saves all results to {save_dir}/{cell_id}_sliding_stats.pkl
 
@@ -3792,31 +3739,57 @@ def run_master_LFP_spk_analysis(
         Simple LFP features ("lfp_mean", "lfp_std", "lfp_exponent") require lfp_windows_by_spike.
     lfp_windows_by_spike : list of dict, optional
         Output of compute_simple_lfp_by_spike. Required for simple LFP features.
-    save_dir : str
-        Directory to save the output pickle.
+    save_dir : str or None
+        Directory to save the output pickle.  Defaults to
+        config.SPE1_PICKLE_ROOT / "lfp_spk_group_pickles".
     window_width : float
         Width of each sliding analysis window in seconds.
     step_size : float
         Step size between consecutive windows in seconds.
     p_threshold : float
         Significance threshold for pairwise stats.
+    force_recompute : bool
+        If True, always rerun the full pipeline even if the output pickle already exists.
+        If False, load and return the cached pickle when available.
+    plot : bool
+        If True (default), render heatmap and sliding-stats figures inline.
+        Set to False for headless / batch runs — statistics are still computed and saved.
 
     Returns
     -------
     dict
         Master results dict keyed by feature label, saved to disk as a pickle.
     """
+    # Resolve save directory
+    if save_dir is None:
+        try:
+            from config import SPE1_PICKLE_ROOT
+        except ImportError:
+            SPE1_PICKLE_ROOT = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                os.pardir, os.pardir, os.pardir, "spe1_pickles",
+            )
+        save_dir = os.path.join(SPE1_PICKLE_ROOT, "lfp_spk_group_pickles")
+
+    os.makedirs(save_dir, exist_ok=True)
+    save_path      = os.path.join(save_dir, f"{cell_id}_sliding_stats.pkl")
+    per_spike_path = os.path.join(save_dir, f"{cell_id}_per_spike_data.pkl")
+
+    # Short-circuit: return cached result if available and not forced
+    if not force_recompute and os.path.exists(save_path):
+        print(f"  [cache] {os.path.basename(save_path)} — skipping recompute (force_recompute=False)")
+        with open(save_path, "rb") as f:
+            return pickle.load(f)
+
     cell_master_results = {"cell_id": cell_id}
-    per_spike_data      = {"cell_id": cell_id}  # will hold raw per-spike data for permutation testing
+    per_spike_data      = {"cell_id": cell_id}
 
     for feat_info in features_to_analyze:
         feature_type = feat_info.get("feature")
-        band = feat_info.get("band", None)
+        band  = feat_info.get("band", None)
         label = feat_info.get("label", feature_type.capitalize())
 
-        print(f"\n" + "="*60)
-        print(f"  RUNNING PIPELINE FOR: {label.upper()}")
-        print("="*60 + "\n")
+        print(f"\n{'='*60}\n  RUNNING PIPELINE FOR: {label.upper()}\n{'='*60}\n")
 
         # 1. Generate Groups
         if feature_type in _SIMPLE_LFP_FEATURES:
@@ -3829,11 +3802,17 @@ def run_master_LFP_spk_analysis(
         else:
             feat_groups = make_specparam_feature_groups(specparam_by_spike, groups, feature=feature_type)
 
-        # 2. Plot Heatmaps
-        _ = plot_window_feature_groups_heatmap(feat_groups, feature_label=label, cmap="viridis", time_unit="s", sort_by="next_rel")
+        # 2. Heatmap (skipped when plot=False)
+        if plot:
+            _ = plot_window_feature_groups_heatmap(feat_groups, feature_label=label, cmap="viridis", time_unit="s", sort_by="next_rel")
 
         # 3. Run Sliding Window Stats
-        sig_report = lfp_sliding_stats(feat_groups, ylabel=f"Δ {label}", window_width=window_width, step_size=step_size, p_threshold=p_threshold, plot_mode="per_cluster")
+        sig_report = lfp_sliding_stats(
+            feat_groups, ylabel=f"Δ {label}",
+            window_width=window_width, step_size=step_size,
+            p_threshold=p_threshold, plot_mode="per_cluster",
+            plot=plot,
+        )
 
         # Save to master dict
         cell_master_results[label] = sig_report
@@ -3874,18 +3853,15 @@ def run_master_LFP_spk_analysis(
                 }
 
     # 4. Save sliding stats pickle
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f"{cell_id}_sliding_stats.pkl")
-    with open(save_path, 'wb') as file:
-        pickle.dump(cell_master_results, file)
+    with open(save_path, "wb") as f:
+        pickle.dump(cell_master_results, f)
 
     # 5. Save per-spike data pickle (used for within-cell permutation testing)
-    per_spike_path = os.path.join(save_dir, f"{cell_id}_per_spike_data.pkl")
-    with open(per_spike_path, 'wb') as file:
-        pickle.dump(per_spike_data, file)
+    with open(per_spike_path, "wb") as f:
+        pickle.dump(per_spike_data, f)
 
-    print(f"\n✅ All statistical results for {cell_id} successfully saved to: {save_path}")
-    print(f"✅ Per-spike data for permutation testing saved to: {per_spike_path}")
+    print(f"\n  Saved: {save_path}")
+    print(f"  Saved: {per_spike_path}")
     return cell_master_results
 
 

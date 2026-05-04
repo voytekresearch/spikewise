@@ -6,10 +6,12 @@ Experiment-wide constants and per-cell metadata for the spe-1 dataset.
 Sections:
   - Priority cells (target cells for LFP analysis)
   - Hardware/experiment parameters
+  - Data and pickle root paths (override via environment variables)
   - Per-cell sampling rates, channel predictions, spike thresholds
   - Per-cell metadata: patch type, cell type, cortical depth,
     dark neuron flag, EAP waveform quality
 """
+import os
 
 # =============================================================================
 # ANALYSIS TARGETS
@@ -28,6 +30,30 @@ CELL_IDS = ["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c10", "c12", "c13",
             "c21", "c22", "c23", "c24", "c25", "c26", "c27", "c28", "c29",
             "c31", "c32", "c33", "c34", "c35", "c36", "c37", "c38",
             "c39", "c40", "c41","c42","c43", "c44", "c45", "c46"]
+
+# =============================================================================
+# DATA AND PICKLE PATHS
+# =============================================================================
+# These default to the current machine's paths but can be overridden without
+# editing this file by setting environment variables before running:
+#
+#   export SPE1_DATA_ROOT="/path/to/Neuropixel Paired Recordings/Recordings"
+#   export SPE1_PICKLE_ROOT="/path/to/spe1_pickles"
+#
+SPE1_DATA_ROOT = os.environ.get(
+    "SPE1_DATA_ROOT",
+    "/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/Neuropixel Paired Recordings/Recordings",
+)
+SPE1_PICKLE_ROOT = os.environ.get(
+    "SPE1_PICKLE_ROOT",
+    "/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spe1_pickles",
+)
+
+# =============================================================================
+# SAMPLING RATES (Hz)
+# =============================================================================
+NPX_FS = 30000   # Neuropixels probe raw sampling rate
+LFP_FS = 2500    # Neuropixels LFP downsampled sampling rate
 
 # =============================================================================
 # FILTER PARAMETERS  (Hz)

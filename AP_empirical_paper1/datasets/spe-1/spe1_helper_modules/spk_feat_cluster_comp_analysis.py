@@ -10,10 +10,8 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 from matplotlib.patches import Circle
-from scipy.stats import pearsonr
-from scipy.stats import spearmanr
-from scipy.stats import chi2_contingency
-from scipy.stats import kruskal
+from scipy.stats import pearsonr, spearmanr, chi2_contingency, kruskal, mannwhitneyu
+from statsmodels.stats.multitest import multipletests
 
 # ------------------------------------------------------------------------------------------- #
 #                                     Environment Setup                                       #
@@ -74,12 +72,11 @@ _INSIG_COL = '#56B4E9'
 # ------------------------------------------------------------------------------------------- #
 
 def _index_experiment_pickles(folder_path):
-    """Map each cell id to its first matching result pickle."""
-
+    """Map each cell id to its cluster report pickle (c{N}_cluster_report.pkl)."""
     indexed = {}
-    for path in sorted(glob.glob(os.path.join(folder_path, "c*_*.pkl"))):
+    for path in sorted(glob.glob(os.path.join(folder_path, "c*_cluster_report.pkl"))):
         cell_id = os.path.basename(path).split("_", 1)[0]
-        indexed.setdefault(cell_id, path)
+        indexed[cell_id] = path
     return indexed
 
 def compile_experiment_results(folder_path):
@@ -96,13 +93,11 @@ def compile_experiment_results(folder_path):
         
         if pickle_path:
             df = pd.read_pickle(pickle_path)
-            # Count unique clusters in this specific experiment
-            # We assume 'groups' contains the cluster IDs
+
+        if pickle_path and 'groups' in df.columns and not df.empty:
             n_clusters = df['groups'].nunique()
             if n_clusters == 1:
                 n_clusters = 2
-
-            # convert to str to convert to categorical variable
             n_clusters = str(n_clusters)
         else:
             # Placeholder for no-pickle cells
@@ -114,7 +109,7 @@ def compile_experiment_results(folder_path):
                 'temporal_rho': [np.nan],
                 'temporal_p': [np.nan]
             })
-            n_clusters = 0 # No pickle = 0 clusters
+            n_clusters = '0'  # No pickle = 0 clusters; string to match real cells
 
         # Map Metadata
         df['cell_id'] = cell_id_str
@@ -150,6 +145,10 @@ def compile_experiment_results(folder_path):
     for c in cols:
         if c not in final_table.columns:
             final_table[c] = np.nan
+
+    # Ensure numeric columns have correct dtype (mixed-type concat can produce object columns)
+    for num_col in ['nRMSE', 'cos_sim', 'temporal_rho', 'temporal_p', 'cortical_depth']:
+        final_table[num_col] = pd.to_numeric(final_table[num_col], errors='coerce')
 
     # Binary flag: 1 if temporal drift is statistically significant (p < 0.05)
     final_table['temporal_component'] = (
@@ -358,92 +357,190 @@ def analyze_waveform_variance(df, N=20):
 
     return final_targets
 
-def analyze_cross_correlations(df, alpha=0.05):
-    # 1. Define Groups
-    metadata_cols = ['patch_type', 'current_type', 'cell_type', 'cortical_depth', 'dark_neuron', 'clear_EAP_waveform']
-    feature_cols = ['num_clusters', 'nRMSE', 'cos_sim', 'temporal_rho']
-    all_cols = metadata_cols + feature_cols
-    
-    # 2. Encode and Clean
-    df_sub = df[all_cols].copy()
-    cat_feats = ['patch_type', 'current_type', 'cell_type', 'dark_neuron', 'clear_EAP_waveform', 'num_clusters']
-    for col in cat_feats:
-        df_sub[col] = df_sub[col].astype('category').cat.codes
-    df_clean = df_sub.dropna()
-    
-    # 3. Calculate Correlation and P-values
-    corr_matrix = df_clean.corr()
-    n_total = len(all_cols)
-    p_values = np.ones((n_total, n_total))
-    significant_cross_pairs = []
-    
-    for i in range(n_total):
-        for j in range(i + 1, n_total):
-            col_a, col_b = all_cols[i], all_cols[j]
-            r, p = pearsonr(df_clean[col_a], df_clean[col_b])
-            p_values[i, j] = p
-            p_values[j, i] = p
-            
-            is_cross = (col_a in metadata_cols and col_b in feature_cols) or \
-                       (col_b in metadata_cols and col_a in feature_cols)
-            
-            if is_cross and p < alpha:
-                significant_cross_pairs.append({
-                    'Metadata': col_a if col_a in metadata_cols else col_b,
-                    'Feature': col_b if col_b in feature_cols else col_a,
-                    'Pearson $r$': round(r, 3),
-                    'p-value': f"{p:.2e}",
-                    'Significance': '***' if p < 0.001 else '**' if p < 0.01 else '*'
-                })
+def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
+    """
+    Test associations between recording metadata and spike cluster difference metrics.
 
-    # 4. Slicing for Plotting
-    corr_sliced = corr_matrix.iloc[1:, :-1]
-    p_sliced = p_values[1:, :-1]
-    mask = np.triu(np.ones_like(corr_sliced, dtype=bool), k=1)
+    Variable types determine the test:
+      Binary categorical (patch_type, current_type, dark_neuron, clear_EAP_waveform)
+          → Mann-Whitney U,  effect = rank-biserial r
+      Multi-level categorical (cell_type)
+          → Kruskal-Wallis,  effect = η²
+      Continuous (cortical_depth)
+          → Spearman ρ
 
-    # 5. Plotting
-    plt.figure(figsize=(14, 12))
-    ax = sns.heatmap(
-        corr_sliced, mask=mask, cmap='PRGn', center=0, 
-        square=True, linewidths=.5, annot=False,
-        cbar_kws={"label": "Pearson Correlation ($r$)"}
+    FDR correction: Benjamini-Hochberg across all cross-pairs.
+    Bootstrap CIs: n_bootstrap resamples (rows = cells) for each effect size.
+
+    df is aggregated to one row per cell (mean for continuous features,
+    mode for num_clusters) before testing to avoid pseudo-replication.
+    """
+    binary_cat  = ['patch_type', 'current_type', 'dark_neuron', 'clear_EAP_waveform']
+    multi_cat   = ['cell_type']
+    cont_meta   = ['cortical_depth']
+    metadata_cols = binary_cat + multi_cat + cont_meta
+    feature_cols  = ['num_clusters', 'nRMSE', 'cos_sim', 'temporal_rho']
+
+    # Aggregate to one row per cell to avoid pseudo-replication
+    agg = {}
+    for c in metadata_cols:
+        agg[c] = 'first'
+    for c in feature_cols:
+        agg[c] = 'mean'
+    df_cell = (df.groupby('cell_id')[metadata_cols + feature_cols]
+                 .agg(agg)
+                 .reset_index(drop=True))
+    for c in feature_cols:
+        df_cell[c] = pd.to_numeric(df_cell[c], errors='coerce')
+
+    rng     = np.random.default_rng(42)
+    results = []
+
+    for meta in metadata_cols:
+        for feat in feature_cols:
+            sub = df_cell[[meta, feat]].dropna()
+            if len(sub) < 5:
+                continue
+            x = sub[meta].values
+            y = sub[feat].values
+
+            if meta in binary_cat:
+                groups = np.unique(x)
+                if len(groups) != 2:
+                    continue
+                g1, g2 = y[x == groups[0]], y[x == groups[1]]
+                if len(g1) < 2 or len(g2) < 2:
+                    continue
+                stat, p = mannwhitneyu(g1, g2, alternative='two-sided')
+                effect = 1.0 - 2.0 * stat / (len(g1) * len(g2))  # rank-biserial r
+                effect_label = 'rank-biserial r'
+                test = 'Mann-Whitney U'
+
+                boot = []
+                for _ in range(n_bootstrap):
+                    idx = rng.integers(0, len(sub), len(sub))
+                    bs  = sub.iloc[idx]
+                    bx, by = bs[meta].values, bs[feat].values
+                    bg1, bg2 = by[bx == groups[0]], by[bx == groups[1]]
+                    if len(bg1) < 2 or len(bg2) < 2:
+                        continue
+                    bs_stat, _ = mannwhitneyu(bg1, bg2, alternative='two-sided')
+                    boot.append(1.0 - 2.0 * bs_stat / (len(bg1) * len(bg2)))
+
+            elif meta in multi_cat:
+                group_vals = {g: y[x == g] for g in np.unique(x)}
+                group_vals = {g: v for g, v in group_vals.items() if len(v) >= 2}
+                if len(group_vals) < 2:
+                    continue
+                stat, p = kruskal(*group_vals.values())
+                n, k = len(sub), len(group_vals)
+                effect = max(0.0, (stat - k + 1) / (n - k))
+                effect_label = 'η²'
+                test = 'Kruskal-Wallis'
+
+                boot = []
+                for _ in range(n_bootstrap):
+                    idx = rng.integers(0, len(sub), len(sub))
+                    bs  = sub.iloc[idx]
+                    bx, by = bs[meta].values, bs[feat].values
+                    bg = {g: by[bx == g] for g in np.unique(bx)}
+                    bg = {g: v for g, v in bg.items() if len(v) >= 2}
+                    if len(bg) < 2:
+                        continue
+                    bs_stat, _ = kruskal(*bg.values())
+                    nb, kb = len(bs), len(bg)
+                    boot.append(max(0.0, (bs_stat - kb + 1) / (nb - kb)))
+
+            else:  # continuous metadata → Spearman
+                rho, p = spearmanr(x, y)
+                effect = rho
+                effect_label = 'ρ'
+                test = 'Spearman'
+
+                boot = []
+                for _ in range(n_bootstrap):
+                    idx = rng.integers(0, len(sub), len(sub))
+                    bs  = sub.iloc[idx]
+                    br, _ = spearmanr(bs[meta].values, bs[feat].values)
+                    boot.append(br)
+
+            ci_lo = float(np.nanpercentile(boot, 2.5))  if boot else np.nan
+            ci_hi = float(np.nanpercentile(boot, 97.5)) if boot else np.nan
+
+            results.append({
+                'Metadata':     meta,
+                'Feature':      feat,
+                'test':         test,
+                'effect_label': effect_label,
+                'Effect_Size':  round(float(effect), 3),
+                'ci_lo':        round(ci_lo, 3),
+                'ci_hi':        round(ci_hi, 3),
+                'p_raw':        float(p),
+            })
+
+    if not results:
+        return pd.DataFrame()
+
+    df_res = pd.DataFrame(results)
+
+    # Benjamini-Hochberg FDR across all cross-pairs
+    reject, p_fdr, _, _ = multipletests(df_res['p_raw'], method='fdr_bh', alpha=alpha)
+    df_res['p_fdr']       = p_fdr
+    df_res['significant'] = reject
+    df_res['Significance'] = df_res['p_fdr'].apply(
+        lambda p: '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
     )
 
-    row_names = corr_sliced.index.tolist()
-    col_names = corr_sliced.columns.tolist()
+    # Forest plot: effect sizes with 95% bootstrap CIs
+    df_plot = df_res.sort_values('Effect_Size', key=abs, ascending=True).reset_index(drop=True)
+    df_plot['label'] = df_plot['Metadata'] + ' × ' + df_plot['Feature']
+    n = len(df_plot)
 
-    for i in range(len(row_names)):
-        for j in range(len(col_names)):
-            if not mask[i, j]:
-                r_val = corr_sliced.iloc[i, j]
-                p_val = p_sliced[i, j]
-                row_feat = row_names[i]
-                col_feat = col_names[j]
-                
-                # Dynamic Text Color: White for dark colors, Black for light colors
-                text_color = "white" if abs(r_val) > 0.45 else "black"
-                
-                is_cross = (row_feat in metadata_cols and col_feat in feature_cols) or \
-                           (col_feat in metadata_cols and row_feat in feature_cols)
-                
-                stars = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else ""
-                
-                ax.text(j + 0.5, i + 0.35, stars, ha='center', va='center', 
-                        color=text_color, fontsize=15, fontweight='bold')
-                ax.text(j + 0.5, i + 0.65, f"{r_val:.2f}", ha='center', va='center', 
-                        color=text_color, fontsize=13)
-                
-                if is_cross and p_val < alpha:
-                    # Circle significant cross-pairs
-                    circle_color = "white" if abs(r_val) > 0.7 else "black"
-                    circle = Circle((j + 0.5, i + 0.5), 0.44, color=circle_color, fill=False, linewidth=2.5)
-                    ax.add_patch(circle)
+    TEST_COLORS = {
+        'Mann-Whitney U': '#0072B2',
+        'Kruskal-Wallis': '#D55E00',
+        'Spearman':       '#009E73',
+    }
+    x_max = max(abs(df_plot['ci_lo'].min()), abs(df_plot['ci_hi'].max())) * 1.1
 
-    plt.xticks(rotation=45, ha='right')
+    fig, ax = plt.subplots(figsize=(9, max(4, n * 0.55)))
+    for i, row in enumerate(df_plot.itertuples()):
+        color = TEST_COLORS.get(row.test, 'gray')
+        alpha_pt = 1.0 if row.significant else 0.35
+        ax.plot([row.ci_lo, row.ci_hi], [i, i], color=color, lw=2.5, alpha=alpha_pt)
+        ax.scatter(row.Effect_Size, i, color=color, s=90, zorder=5, alpha=alpha_pt,
+                   edgecolors='black' if row.significant else color, linewidths=1.5)
+        stars = row.Significance if row.Significance != 'ns' else ''
+        ax.text(x_max + 0.02, i,
+                f"{row.Effect_Size:+.3f}  {stars}", va='center', fontsize=9)
+
+    ax.axvline(0, color='black', lw=1, ls='--', alpha=0.5)
+    ax.set_yticks(range(n))
+    ax.set_yticklabels(df_plot['label'].tolist(), fontsize=9)
+    ax.set_xlim(-x_max * 1.05, x_max * 1.4)
+    ax.set_xlabel('Effect Size  (95% bootstrap CI)', fontsize=11)
+    ax.set_title(
+        'Metadata × Cluster Difference\n(BH-FDR corrected; filled marker = significant)',
+        fontsize=12, fontweight='bold'
+    )
+    from matplotlib.lines import Line2D
+    legend_els = [Line2D([0], [0], color=c, lw=3, label=t) for t, c in TEST_COLORS.items()]
+    ax.legend(handles=legend_els, fontsize=9, frameon=False, loc='lower right')
+    sns.despine(ax=ax)
     plt.tight_layout()
     plt.show()
 
-    return pd.DataFrame(significant_cross_pairs).sort_values('Pearson $r$', key=abs, ascending=False).reset_index(drop=True)
+    # Print summary
+    sig = df_res[df_res['significant']].sort_values('p_fdr')
+    print(f"\n{len(sig)}/{len(df_res)} pairs significant after BH-FDR (α={alpha}, n_bootstrap={n_bootstrap}):")
+    for _, r in sig.iterrows():
+        print(f"  {r['Metadata']:22s} × {r['Feature']:14s} | "
+              f"{r['effect_label']} = {r['Effect_Size']:+.3f}  "
+              f"95% CI [{r['ci_lo']:+.3f}, {r['ci_hi']:+.3f}]  "
+              f"p_fdr={r['p_fdr']:.3e} {r['Significance']}")
+
+    sig['p-value'] = sig['p_fdr'].apply(lambda p: f"{p:.2e}")
+    return sig.reset_index(drop=True)
 
 def plot_sig_feat_pairs(df, sig_pairs_df):
     # Nuke the warnings
@@ -460,7 +557,7 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
 
     for i, (_, row) in enumerate(sig_pairs_df.iterrows()):
         m, f = row['Metadata'], row['Feature']
-        r, p = float(row['Pearson $r$']), float(row['p-value'])
+        r, p = float(row['Effect_Size']), float(row['p_fdr'] if 'p_fdr' in row.index else row['p-value'])
         stars = "***" if p < .001 else "**" if p < .01 else "*" if p < .05 else "ns"
         ax = axes[i]
 
@@ -474,13 +571,20 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
             plot_data[cat_col] = plot_data[cat_col].astype(float).astype(str)
             order = ['0.0', '2.0', '3.0']
             
-            sns.boxplot(data=plot_data, y=cat_col, x=val_col, palette="Paired", 
+            plot_data[val_col] = pd.to_numeric(plot_data[val_col], errors='coerce')
+            plot_data = plot_data.dropna(subset=[val_col])
+            if plot_data.empty:
+                ax.set_visible(False)
+                continue
+
+            sns.boxplot(data=plot_data, y=cat_col, x=val_col, palette="Paired",
                         order=order, showfliers=False, orient='h', ax=ax)
-            sns.stripplot(data=plot_data, y=cat_col, x=val_col, color=".3", 
+            sns.stripplot(data=plot_data, y=cat_col, x=val_col, color=".3",
                           alpha=.3, order=order, orient='h', ax=ax)
-            
+
             x_min, x_max = plot_data[val_col].min(), plot_data[val_col].max()
-            ax.set_xlim(x_min - (x_max - x_min) * 0.1, x_max + (x_max - x_min) * 0.1)
+            pad = (x_max - x_min) * 0.1 if x_max != x_min else 0.1
+            ax.set_xlim(x_min - pad, x_max + pad)
             
             # Explicit Labels
             ax.set_xlabel(val_col.replace('_', ' ').title())
