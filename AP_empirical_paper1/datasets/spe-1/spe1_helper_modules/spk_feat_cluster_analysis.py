@@ -94,6 +94,47 @@ def get_cluster_color(label: str, fallback: str = "black") -> str:
     """Return consistent color for a cluster label."""
     return CLUSTER_COLORS.get(str(label), fallback)
 
+
+def peak_align_waveforms(waveforms) -> np.ndarray:
+    """
+    Shift each waveform so its peak (max |amplitude|) aligns to a common
+    reference position (median peak index across all waveforms).
+
+    This removes threshold-crossing alignment offsets so that shape comparisons
+    between clusters reflect true waveform differences rather than timing shifts.
+
+    Parameters
+    ----------
+    waveforms : list of 1-D array-like
+        Raw spike waveforms, may have slightly different lengths.
+
+    Returns
+    -------
+    np.ndarray, shape (n_spikes, output_len)
+        Peak-aligned waveforms, NaN-padded where a waveform doesn't cover
+        the full output window.
+    """
+    if not waveforms:
+        return np.empty((0, 0))
+
+    wfs = [np.asarray(w, dtype=float) for w in waveforms]
+    peak_idxs = [int(np.argmax(np.abs(w))) for w in wfs]
+    ref = int(np.median(peak_idxs))
+
+    aligned = []
+    for w, pk in zip(wfs, peak_idxs):
+        shift = ref - pk
+        if shift > 0:
+            shifted = np.concatenate([np.full(shift, np.nan), w])
+        elif shift < 0:
+            shifted = w[-shift:]
+        else:
+            shifted = w.copy()
+        aligned.append(shifted)
+
+    min_len = min(len(a) for a in aligned)
+    return np.array([a[:min_len] for a in aligned])
+
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Cluster features that show grouped data --------------------- #
 # ------------------------------------------------------------------------------------------- #
@@ -740,72 +781,68 @@ def plot_spike_clusters_from_df(
     colors=None,
     title=None,
     figsize=(14, 4),
+    peak_align=True,
 ):
     """
-    Plot spike waveforms grouped by clusters using df['spk_id'] to index spikes.
+    Plot spike waveforms grouped by clusters using df[‘spk_id’] to index spikes.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Must contain:
-            cluster_col : cluster labels (e.g. 'peak_width_cluster')
-            'spk_id'    : the true spike index into sp.spikes
+        Must contain cluster_col and ‘spk_id’ (index into sp.spikes).
     sp : Spike
-        The Spike object containing the actual waveforms
+        Spike object containing the waveforms.
     cluster_col : str
-        Cluster feature column name
+        Column name for cluster labels.
+    peak_align : bool
+        If True (default), align all waveforms by peak before plotting so
+        shape differences across clusters are not confounded by timing offsets.
     """
+    labels      = sorted(df[cluster_col].dropna().unique().tolist())
+    color_map   = {lab: get_cluster_color(lab) for lab in labels}
+    if colors:
+        color_map.update(colors)
 
-    # Extract cluster labels
-    labels = sorted(df[cluster_col].dropna().unique().tolist())
-
-
-    # Default color scheme
-    colors = {lab: get_cluster_color(lab) for lab in labels}
-
-
-    # Build index groups based on df['spk_id']
-    ind_groups = []
+    ind_groups  = []
     group_names = []
-
     for lab in labels:
         inds = df.loc[df[cluster_col] == lab, "spk_id"].astype(int).tolist()
-        if len(inds) > 0:
+        if inds:
             ind_groups.append(inds)
             group_names.append(str(lab))
 
-    # Create plot
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Use the Spike class’ existing plotting engine
     sp.plot(
-        inds=None,                   # we supply groups below
+        inds=None,
         mode=mode,
         in_ms=True,
         show_points=False,
         ax=ax,
-        groups=True,                 # activates group overlays
-        ind_groups=ind_groups,       # list of lists of spike indices
+        groups=True,
+        ind_groups=ind_groups,
         group_names=group_names,
         plot_average=plot_average,
         plot_average_std=plot_average_std,
+        peak_align=peak_align,
     )
 
-    # Update average line colors based on cluster colors
+    # Apply cluster color scheme to the plotted lines
     for line in ax.lines:
         lab = line.get_label()
         for cluster_label in labels:
-            if cluster_label in lab:
-                line.set_color(colors[cluster_label])
+            if str(cluster_label) in lab:
+                line.set_color(color_map[cluster_label])
 
-    ax.set_title(title or f"Spike waveforms grouped by {cluster_col}")
+    suffix = " (peak-aligned)" if peak_align else ""
+    ax.set_title(title or f"Spike waveforms grouped by {cluster_col}{suffix}")
     plt.tight_layout()
 
     return fig, ax
 
 
 
-def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
+def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map, peak_align=True):
     """
     Plot average waveforms with 3 distinct panels per pair.
     
@@ -818,19 +855,35 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map):
     avg_waveforms = {}
     waveform_counts = {}
     
-    for i, group in enumerate(groups):
+    # Collect all waveforms across all groups first so peak alignment uses a
+    # shared reference — guarantees all groups end up with the same length.
+    group_raw_wfs = {}
+    all_wfs_flat  = []
+    for group in groups:
         spike_indices = df.loc[df[cluster_col] == group, "spk_id"].astype(int).tolist()
-        if not spike_indices: continue
-        
-        wfs = []
-        for idx in spike_indices:
-            if idx < len(sp.spikes): wfs.append(sp.spikes[idx])
-        if not wfs: continue
-        
-        wfs = np.array(wfs)
-        avg_waveforms[group] = np.mean(wfs, axis=0)
-        waveform_counts[group] = len(wfs)
-    
+        wfs = [sp.spikes[idx] for idx in spike_indices if idx < len(sp.spikes)]
+        group_raw_wfs[group] = wfs
+        all_wfs_flat.extend(wfs)
+
+    if peak_align and all_wfs_flat:
+        all_aligned = peak_align_waveforms(all_wfs_flat)
+        offset = 0
+        for group in groups:
+            n = len(group_raw_wfs[group])
+            if n == 0:
+                continue
+            arr = all_aligned[offset:offset + n]
+            avg_waveforms[group]    = np.nanmean(arr, axis=0)
+            waveform_counts[group]  = n
+            offset += n
+    else:
+        for group in groups:
+            wfs = group_raw_wfs[group]
+            if not wfs:
+                continue
+            avg_waveforms[group]   = np.nanmean(np.array(wfs), axis=0)
+            waveform_counts[group] = len(wfs)
+
     n_groups = len(avg_waveforms)
     if n_groups < 2: return {}
 
