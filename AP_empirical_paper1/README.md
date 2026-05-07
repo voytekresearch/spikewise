@@ -55,7 +55,9 @@ Juxtacellular + Neuropixels LFP recordings (n = 44 cells). Spikes are parameteri
 | `pop_lfp_spk_cluster_comparisons_target_cells.ipynb` | LFP × spike cluster sliding-window analysis — effect sizes (Cohen's d), bootstrap CIs, within-cell permutation, direction and timing |
 | `pop_lfp_spk_cluster_metadata_full_comparisons_target_cells.ipynb` | Does clustering quality predict LFP effect strength? Cross-cell integration |
 
-**Priority cells** (strongest cluster × LFP effects): `[8, 10, 19, 21, 24, 42, 45]`
+**Cell groups** (defined in `config.py`, derived in `pop_spk_waveform_cluster_comparisons.ipynb` § G):
+- `PRIORITY_CELLS = [8, 10, 19, 21, 24, 42, 45]` — top 7 cells by mean nRMSE (largest waveform differences across cluster groups)
+- `HIGH_DIFF_LOW_DRIFT_CELLS = [5, 8, 14]` — top 3 by nRMSE among cells with low temporal drift (|mean ρ| < 0.2), providing a contrast group where cluster differences exist but are not confounded by time-in-recording
 
 ### Helper modules (`spe1_helper_modules/`)
 
