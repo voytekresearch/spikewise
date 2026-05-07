@@ -6,8 +6,10 @@ import numpy as np
 
 def _peak_align(waveforms, times, wght=1):
     """
-    Shift each waveform so its peak (max |amplitude|) aligns to the median
-    peak position across all waveforms.
+    Align each waveform so its own peak (max |amplitude|) falls at t=0.
+
+    Creates a common grid spanning the widest pre-peak and post-peak window
+    across all waveforms. Shorter waveforms are NaN-padded.
 
     Parameters
     ----------
@@ -20,33 +22,27 @@ def _peak_align(waveforms, times, wght=1):
     Returns
     -------
     aligned : np.ndarray, shape (n_spikes, output_len)
-        Peak-aligned waveforms, NaN-padded at edges.
+        Peak-aligned waveforms; peak of every spike is at index `pre`.
     t_axis : np.ndarray
-        Time axis centered at 0 (peak = 0).
+        Time axis in ms (or samples if wght=1), with 0 at the peak.
     """
     if not waveforms:
-        return np.empty((0, len(times))), times * wght
+        return np.empty((0, 0)), np.array([0.0])
 
     wfs       = [np.asarray(w, float) for w in waveforms]
     peak_idxs = [int(np.argmax(np.abs(w))) for w in wfs]
-    ref       = int(np.median(peak_idxs))
 
-    aligned = []
-    for w, pk in zip(wfs, peak_idxs):
-        shift = ref - pk
-        if shift > 0:
-            shifted = np.concatenate([np.full(shift, np.nan), w])
-        elif shift < 0:
-            shifted = w[-shift:]
-        else:
-            shifted = w.copy()
-        aligned.append(shifted)
+    pre   = max(peak_idxs)                                          # samples before peak
+    post  = max(len(w) - pk - 1 for w, pk in zip(wfs, peak_idxs)) # samples after peak
+    total = pre + post + 1
 
-    min_len = min(len(a) for a in aligned)
-    aligned = np.array([a[:min_len] for a in aligned])
+    aligned = np.full((len(wfs), total), np.nan)
+    for k, (w, pk) in enumerate(zip(wfs, peak_idxs)):
+        s = pre - pk                    # where this waveform starts in the grid
+        aligned[k, s:s + len(w)] = w
 
     dt     = float(np.mean(np.diff(times))) if len(times) > 1 else 1.0
-    t_axis = (np.arange(min_len) - ref) * dt * wght
+    t_axis = (np.arange(total) - pre) * dt * wght  # peak = 0
 
     return aligned, t_axis
 
@@ -159,20 +155,21 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
 
     else:
 
-        # Pre-compute peak-aligned waveforms, shared time axis, and per-spike shifts
+        # Pre-compute peak-aligned waveforms and a shared time axis
         valid_inds = [i for i in inds if i not in model.inds_error]
         if peak_align and valid_inds:
-            raw_wfs     = [model.spikes[i] for i in valid_inds]
-            peak_idxs   = [int(np.argmax(np.abs(w))) for w in raw_wfs]
-            ref         = int(np.median(peak_idxs))
+            raw_wfs    = [model.spikes[i] for i in valid_inds]
+            peak_idxs  = [int(np.argmax(np.abs(w))) for w in raw_wfs]
+            pre        = max(peak_idxs)  # samples before peak in the shared grid
             aligned_arr, t_aligned = _peak_align(raw_wfs, model.times, wght)
             aligned_map = {i: aligned_arr[k] for k, i in enumerate(valid_inds)}
-            shift_map   = {i: ref - pk for i, pk in zip(valid_inds, peak_idxs)}
+            # per-spike: original peak index (used to place fits on the shared axis)
+            pk_map = {i: pk for i, pk in zip(valid_inds, peak_idxs)}
         else:
             aligned_map = {}
-            shift_map   = {}
+            pk_map      = {}
             t_aligned   = _times
-            ref         = 0
+            pre         = 0
 
         if mode == 'full':
 
@@ -194,13 +191,13 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                 if i in model.inds_error:
                     continue
 
-                sh = shift_map.get(i, 0)
+                pk_i = pk_map.get(i, 0)
+                dt   = float(np.mean(np.diff(model.times))) if len(model.times) > 1 else 1.0
 
-                # Ramp — shift the time window by the same amount as the waveform
+                # Ramp — time relative to this spike's own peak
                 start, end = model.indices[i][0], model.indices[i][1]
                 if peak_align:
-                    s2, e2 = start + sh, end + sh
-                    t_seg  = t_aligned[max(0, s2):max(0, e2)]
+                    t_seg = (np.arange(start, end) - pk_i) * dt * wght
                 else:
                     t_seg = _times[start:end]
                 if len(t_seg) != len(model.fit_ramp[i]):
@@ -212,8 +209,7 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                 # Exponential
                 start, end = model.indices[i][-2], model.indices[i][-1]
                 if peak_align:
-                    s2, e2 = start + sh, end + sh
-                    t_seg  = t_aligned[max(0, s2):max(0, e2)]
+                    t_seg = (np.arange(start, end) - pk_i) * dt * wght
                 else:
                     t_seg = _times[start:end]
                 if len(t_seg) == len(model.fit_exp[i]):

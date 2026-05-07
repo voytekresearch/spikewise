@@ -97,43 +97,38 @@ def get_cluster_color(label: str, fallback: str = "black") -> str:
 
 def peak_align_waveforms(waveforms) -> np.ndarray:
     """
-    Shift each waveform so its peak (max |amplitude|) aligns to a common
-    reference position (median peak index across all waveforms).
+    Align each waveform so its own peak (max |amplitude|) is at t=0.
 
-    This removes threshold-crossing alignment offsets so that shape comparisons
-    between clusters reflect true waveform differences rather than timing shifts.
+    Creates a common grid spanning the widest pre-peak and post-peak window
+    across all waveforms. Shorter waveforms are NaN-padded.
 
     Parameters
     ----------
     waveforms : list of 1-D array-like
-        Raw spike waveforms, may have slightly different lengths.
+        Raw spike waveforms.
 
     Returns
     -------
     np.ndarray, shape (n_spikes, output_len)
-        Peak-aligned waveforms, NaN-padded where a waveform doesn't cover
-        the full output window.
+        Peak-aligned waveforms; the peak of every spike is at column index `pre`
+        where pre = max(peak_indices).
     """
     if not waveforms:
         return np.empty((0, 0))
 
-    wfs = [np.asarray(w, dtype=float) for w in waveforms]
+    wfs       = [np.asarray(w, dtype=float) for w in waveforms]
     peak_idxs = [int(np.argmax(np.abs(w))) for w in wfs]
-    ref = int(np.median(peak_idxs))
 
-    aligned = []
-    for w, pk in zip(wfs, peak_idxs):
-        shift = ref - pk
-        if shift > 0:
-            shifted = np.concatenate([np.full(shift, np.nan), w])
-        elif shift < 0:
-            shifted = w[-shift:]
-        else:
-            shifted = w.copy()
-        aligned.append(shifted)
+    pre   = max(peak_idxs)
+    post  = max(len(w) - pk - 1 for w, pk in zip(wfs, peak_idxs))
+    total = pre + post + 1
 
-    min_len = min(len(a) for a in aligned)
-    return np.array([a[:min_len] for a in aligned])
+    aligned = np.full((len(wfs), total), np.nan)
+    for k, (w, pk) in enumerate(zip(wfs, peak_idxs)):
+        s = pre - pk
+        aligned[k, s:s + len(w)] = w
+
+    return aligned
 
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Cluster features that show grouped data --------------------- #
@@ -905,6 +900,14 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map, peak
         cos_sim = cosine_similarity(wf1.reshape(1, -1), wf2.reshape(1, -1))[0][0]
         
         return rmse, nrmse, cos_sim, n_wf1, n_wf2, z_wf1, z_wf2
+
+    # Trim all average waveforms to the common non-NaN region so metrics are NaN-free
+    avg_arrays = np.array([avg_waveforms[g] for g in avg_waveforms])
+    valid      = np.all(np.isfinite(avg_arrays), axis=0)
+    if valid.any():
+        lo, hi = int(np.argmax(valid)), int(len(valid) - np.argmax(valid[::-1]))
+        for g in avg_waveforms:
+            avg_waveforms[g] = avg_waveforms[g][lo:hi]
 
     groups_list = list(avg_waveforms.keys())
     rmse_results = {}
