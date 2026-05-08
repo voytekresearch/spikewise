@@ -1304,6 +1304,24 @@ def select_target_cells(
         plt.tight_layout()
         plt.show()
 
+    # Auto-update config.py so PRIORITY_CELLS and HIGH_DIFF_LOW_DRIFT_CELLS
+    # stay in sync with the notebook results — no manual editing needed.
+    import re
+    config_path = Path(__file__).parent / 'config.py'
+    config_src  = config_path.read_text()
+
+    def _replace_list(src, var, new_list):
+        pattern = rf'({re.escape(var)}\s*=\s*)\[.*?\]'
+        replacement = rf'\g<1>{new_list}'
+        return re.sub(pattern, replacement, src, flags=re.DOTALL)
+
+    config_src = _replace_list(config_src, 'PRIORITY_CELLS',            priority_nums)
+    config_src = _replace_list(config_src, 'HIGH_DIFF_LOW_DRIFT_CELLS', nodrift_nums)
+    config_path.write_text(config_src)
+    print(f"\nconfig.py updated automatically:")
+    print(f"  PRIORITY_CELLS           = {priority_nums}")
+    print(f"  HIGH_DIFF_LOW_DRIFT_CELLS = {nodrift_nums}")
+
     return priority_nums, nodrift_nums, df_cell
 
 
@@ -1312,168 +1330,133 @@ def select_target_cells(
 # ----------------------- Population waveform cluster visualization ------------------------- #
 # ------------------------------------------------------------------------------------------- #
 
-def plot_population_waveform_clusters(
-    df,
-    spike_pickle_dir,
-    cluster_pickle_dir,
-    cells_to_plot=None,
+
+# ------------------------------------------------------------------------------------------- #
+# ----------------------- Population waveform cluster visualization ------------------------- #
+# ------------------------------------------------------------------------------------------- #
+
+def plot_population_waveform_grid(
+    wf_dir,
     priority_cells=None,
+    nodrift_cells=None,
+    cells_to_plot=None,
+    xlim=(-200, 200),
     cols=6,
-    figsize_per_cell=(2.8, 2.2),
+    figsize_per_panel=(2.6, 2.0),
 ):
     """
-    Grid of peak-aligned average waveforms per cluster group, one panel per cell.
-    Matches the overlay style from individual cluster report notebooks.
+    Grid of peak-aligned average waveforms by cluster group for all (or selected) cells.
+
+    - Orange border  = priority cell
+    - Green border   = high-diff / low-drift cell
+    - Gray border    = other cell
+    - X-axis label only on bottom row panels
+    - No figure title (avoids overlap with waveforms)
 
     Parameters
     ----------
-    df : pd.DataFrame
-        df_master (used for cell_id list).
-    spike_pickle_dir : str
-        Directory containing c{N}_spike_fit.pkl files.
-    cluster_pickle_dir : str
-        Directory containing c{N}_cluster_df.pkl files.
-    cells_to_plot : list of int, optional
-        Cell numbers to include. None = all cells in df_master.
+    wf_dir : str or Path
+        Directory containing c{N}_cluster_waveforms.pkl files.
     priority_cells : list of int, optional
-        Cell numbers to highlight with an orange border.
-        Defaults to config.PRIORITY_CELLS.
+        Cell numbers to highlight in orange. Defaults to config.PRIORITY_CELLS.
+    nodrift_cells : list of int, optional
+        Cell numbers to highlight in green. Defaults to config.HIGH_DIFF_LOW_DRIFT_CELLS.
+    cells_to_plot : list of int, optional
+        Subset of cell numbers to show. None = all available.
+    xlim : tuple
+        x-axis limits in samples from peak.
     cols : int
-        Columns in the grid.
-    figsize_per_cell : tuple
+        Grid columns.
+    figsize_per_panel : tuple
         (width, height) per panel in inches.
     """
     import pickle
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent))
+    import importlib
     import config as _cfg
+    # Force reload from disk every call so changes to config.py are always picked up
+    importlib.reload(_cfg)
 
     CLUSTER_COLORS = {"low": "#1f77b4", "mid": "#2ca02c", "high": "#ff7f0e"}
-
     if priority_cells is None:
         priority_cells = set(_cfg.PRIORITY_CELLS)
     else:
         priority_cells = set(priority_cells)
-
-    all_cell_ids = sorted(df["cell_id"].unique(), key=lambda c: int(c.lstrip("c")))
-    if cells_to_plot is not None:
-        target = {f"c{n}" for n in cells_to_plot}
-        cell_ids = [c for c in all_cell_ids if c in target]
+    if nodrift_cells is None:
+        nodrift_cells = set(_cfg.HIGH_DIFF_LOW_DRIFT_CELLS)
     else:
-        cell_ids = all_cell_ids
+        nodrift_cells = set(nodrift_cells)
 
-    rows = math.ceil(len(cell_ids) / cols)
+    wf_dir = Path(wf_dir)
+    pkl_files = sorted(wf_dir.glob("c*_cluster_waveforms.pkl"),
+                       key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    # Build panels: (cnum, col, col_data)
+    panels = []
+    for pkl in pkl_files:
+        cnum = int(pkl.stem.split("_")[0].lstrip("c"))
+        if cells_to_plot is not None and cnum not in cells_to_plot:
+            continue
+        wf_data = pickle.load(open(pkl, "rb"))
+        for col, col_data in wf_data.items():
+            if len([k for k in col_data if k != "t_axis"]) >= 2:
+                panels.append((cnum, col, col_data))
+
+    if not panels:
+        print("No waveform panels found — run cluster notebooks first.")
+        return
+
+    rows     = math.ceil(len(panels) / cols)
     fig, axes = plt.subplots(
         rows, cols,
-        figsize=(figsize_per_cell[0] * cols, figsize_per_cell[1] * rows),
+        figsize=(figsize_per_panel[0] * cols, figsize_per_panel[1] * rows),
     )
     axes = np.array(axes).flatten()
+    bottom_row_start = (rows - 1) * cols
 
-    for ax_idx, cell_id in enumerate(cell_ids):
-        ax   = axes[ax_idx]
-        cnum = int(cell_id.lstrip("c"))
-        is_priority = cnum in priority_cells
+    for ax_idx, (cnum, col, col_data) in enumerate(panels):
+        ax      = axes[ax_idx]
+        t_axis  = col_data["t_axis"]
+        is_prio = cnum in priority_cells
+        is_nd   = cnum in nodrift_cells and not is_prio
 
-        sp_path = Path(spike_pickle_dir)   / f"c{cnum}_spike_fit.pkl"
-        cl_path = Path(cluster_pickle_dir) / f"c{cnum}_cluster_df.pkl"
+        for lab, vals in col_data.items():
+            if lab == "t_axis":
+                continue
+            mean  = vals["mean"]
+            std   = vals["std"]
+            color = CLUSTER_COLORS.get(str(lab), "gray")
+            t     = t_axis[:len(mean)]
+            ax.plot(t, mean, color=color, lw=2)
+            ax.fill_between(t, mean - std, mean + std, color=color, alpha=0.15)
 
-        if not sp_path.exists() or not cl_path.exists():
-            ax.text(0.5, 0.5, "no data", ha="center", va="center",
-                    transform=ax.transAxes, fontsize=7, color="gray")
-            ax.set_xticks([]); ax.set_yticks([])
-            _style_ax(ax, cell_id, is_priority)
-            continue
+        ax.axvline(0, color="gray", lw=0.8, ls="--", alpha=0.4)
+        ax.set_xlim(xlim)
+        ax.set_xticks([xlim[0], 0, xlim[1]])
+        ax.tick_params(labelsize=9)
+        ax.set_yticks([])
 
-        try:
-            with open(sp_path,  "rb") as f: sp       = pickle.load(f)
-            with open(cl_path,  "rb") as f: df_clust = pickle.load(f)
+        # X-axis label only on bottom row
+        if ax_idx >= bottom_row_start:
+            ax.set_xlabel("Samples from peak", fontsize=9)
+        else:
+            ax.set_xlabel("")
+            ax.tick_params(labelbottom=False)
 
-            cluster_cols = [c for c in df_clust.columns if c.endswith("_cluster")]
-            # Pick the first feature with >1 group
-            col = next(
-                (c for c in cluster_cols if df_clust[c].dropna().nunique() > 1), None
-            )
-            if col is None:
-                raise ValueError("no multi-group cluster column")
+        feat = col.replace("_cluster", "")
+        ax.set_title(f"c{cnum} | {feat}", fontsize=9,
+                     fontweight="bold" if is_prio else "normal",
+                     color="#D55E00" if is_prio else ("#009E73" if is_nd else "black"))
 
-            labels = sorted(df_clust[col].dropna().unique())
+        border_color = "#D55E00" if is_prio else ("#009E73" if is_nd else "#cccccc")
+        border_lw    = 2.5 if (is_prio or is_nd) else 0.6
+        for spine in ax.spines.values():
+            spine.set_linewidth(border_lw)
+            spine.set_edgecolor(border_color)
 
-            # Gather all waveforms across all groups for shared peak alignment
-            all_wfs, grp_idx = [], {}
-            offset = 0
-            for lab in labels:
-                inds = df_clust.loc[df_clust[col] == lab, "spk_id"].astype(int).tolist()
-                wfs  = [sp.spikes[i] for i in inds if i < len(sp.spikes)]
-                grp_idx[lab] = (offset, offset + len(wfs))
-                all_wfs.extend(wfs)
-                offset += len(wfs)
-
-            if not all_wfs:
-                raise ValueError("no waveforms")
-
-            # Peak-align all waveforms to a shared grid (peak = index `pre`)
-            peak_idxs = [int(np.argmax(np.abs(w))) for w in all_wfs]
-            pre  = max(peak_idxs)
-            post = max(len(w) - pk - 1 for w, pk in zip(all_wfs, peak_idxs))
-            total = pre + post + 1
-
-            aligned = np.full((len(all_wfs), total), np.nan)
-            for k, (w, pk) in enumerate(zip(all_wfs, peak_idxs)):
-                s = pre - pk
-                aligned[k, s:s + len(w)] = w
-
-            t_axis = np.arange(total) - pre  # samples; 0 = peak
-
-            # Plot mean ± std per cluster group
-            for lab in labels:
-                s, e = grp_idx[lab]
-                arr  = aligned[s:e]
-                if arr.shape[0] == 0:
-                    continue
-                mean = np.nanmean(arr, axis=0)
-                std  = np.nanstd(arr, axis=0)
-                color = CLUSTER_COLORS.get(str(lab), "gray")
-                ax.plot(t_axis, mean, color=color, lw=1.8, label=str(lab))
-                ax.fill_between(t_axis, mean - std, mean + std,
-                                color=color, alpha=0.15)
-
-            ax.axvline(0, color="gray", lw=0.8, ls="--", alpha=0.5)
-            ax.set_xticks([]); ax.set_yticks([])
-
-        except Exception as e:
-            ax.text(0.5, 0.5, str(e)[:40], ha="center", va="center",
-                    transform=ax.transAxes, fontsize=6, color="red")
-            ax.set_xticks([]); ax.set_yticks([])
-
-        _style_ax(ax, cell_id, is_priority)
-
-    for ax in axes[len(cell_ids):]:
+    for ax in axes[len(panels):]:
         ax.set_visible(False)
 
-    # Shared legend
-    from matplotlib.lines import Line2D
-    legend_els = [Line2D([0],[0], color=c, lw=2, label=lab)
-                  for lab, c in CLUSTER_COLORS.items()]
-    fig.legend(handles=legend_els, loc="lower right", fontsize=9,
-               frameon=False, ncol=3)
-
-    n_shown = "all" if cells_to_plot is None else str(len(cell_ids))
-    fig.suptitle(
-        f"Peak-aligned spike waveforms by cluster group  ({n_shown} cells)\n"
-        "orange border = priority cell | mean ± SD per group",
-        fontsize=11, fontweight="bold",
-    )
-    plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+    plt.tight_layout(h_pad=0.4, w_pad=0.3)
     plt.show()
-
-
-def _style_ax(ax, cell_id, is_priority):
-    """Apply title and border style to a waveform panel."""
-    ax.set_title(cell_id, fontsize=8,
-                 fontweight="bold" if is_priority else "normal",
-                 color="#D55E00" if is_priority else "black")
-    lw    = 2.5 if is_priority else 0.5
-    color = "#D55E00" if is_priority else "#cccccc"
-    for spine in ax.spines.values():
-        spine.set_linewidth(lw)
-        spine.set_edgecolor(color)
