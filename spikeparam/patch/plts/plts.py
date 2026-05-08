@@ -101,8 +101,9 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
             if plot_average:
                 # Compute shared peak-alignment reference across ALL groups so
                 # they share the same time axis when peak_align=True.
+                n_spikes = len(model.spikes)
                 all_wfs = [model.spikes[i] for grp in ind_groups for i in grp
-                           if i not in model.inds_error]
+                           if i not in model.inds_error and i < n_spikes]
                 if peak_align and all_wfs:
                     _, t_plot = _peak_align(all_wfs, model.times, wght)
                 else:
@@ -111,7 +112,8 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                 offset = 0
                 for idx, group in enumerate(ind_groups):
                     color = colors[idx] if idx < len(colors) else plt.cm.viridis(float(idx) / len(ind_groups))
-                    wfs   = [model.spikes[i] for i in group if i not in model.inds_error]
+                    wfs   = [model.spikes[i] for i in group
+                             if i not in model.inds_error and i < n_spikes]
                     if not wfs:
                         continue
                     if peak_align:
@@ -156,7 +158,7 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
     else:
 
         # Pre-compute peak-aligned waveforms and a shared time axis
-        valid_inds = [i for i in inds if i not in model.inds_error]
+        valid_inds = [i for i in inds if i not in model.inds_error and i < len(model.spikes)]
         if peak_align and valid_inds:
             raw_wfs    = [model.spikes[i] for i in valid_inds]
             peak_idxs  = [int(np.argmax(np.abs(w))) for w in raw_wfs]

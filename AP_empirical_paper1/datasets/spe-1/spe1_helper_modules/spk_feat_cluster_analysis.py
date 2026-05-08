@@ -80,6 +80,71 @@ def load_or_compute(path: str, compute_fn, force: bool = False, verbose: bool = 
     return result
 
 
+def compute_cluster_waveforms(sp, df, cluster_cols):
+    """
+    Compute peak-aligned average waveforms for every cluster group in every
+    cluster column.  Results are saved to a lightweight pickle so the population
+    notebook can visualize them without needing sp.spikes.
+
+    Parameters
+    ----------
+    sp : Spike
+        Fitted Spike object containing the waveforms.
+    df : pd.DataFrame
+        Clustered spike DataFrame (must have 'spk_id' and the cluster columns).
+    cluster_cols : list of str
+        Columns ending in '_cluster' to process.
+
+    Returns
+    -------
+    dict  keyed by cluster_col, each value is a dict:
+        {
+          label_str: {'mean': ndarray, 'std': ndarray, 'n': int},
+          ...
+          't_axis': ndarray   # samples from peak (0 = peak)
+        }
+    """
+    result = {}
+    n_spikes = len(sp.spikes)
+
+    for col in cluster_cols:
+        groups = sorted(df[col].dropna().unique())
+
+        # Gather waveforms for all groups together (shared peak alignment)
+        all_wfs, group_raw = [], {}
+        for lab in groups:
+            inds = df.loc[df[col] == lab, "spk_id"].astype(int).tolist()
+            wfs  = [sp.spikes[i] for i in inds if i < n_spikes]
+            group_raw[lab] = wfs
+            all_wfs.extend(wfs)
+
+        if not all_wfs:
+            continue
+
+        aligned = peak_align_waveforms(all_wfs)  # (n_spikes, total)
+        pre     = max(int(np.argmax(np.abs(w))) for w in all_wfs)
+        total   = aligned.shape[1]
+        t_axis  = np.arange(total) - pre          # samples; 0 = peak
+
+        col_result = {"t_axis": t_axis}
+        offset = 0
+        for lab in groups:
+            n = len(group_raw[lab])
+            if n == 0:
+                continue
+            arr = aligned[offset:offset + n]
+            col_result[str(lab)] = {
+                "mean": np.nanmean(arr, axis=0),
+                "std":  np.nanstd(arr,  axis=0),
+                "n":    n,
+            }
+            offset += n
+
+        result[col] = col_result
+
+    return result
+
+
 # ------------------------------------------------------------------------------------------- #
 # ------------------------------ Global cluster color registry ------------------------------ #
 # ------------------------------------------------------------------------------------------- #
@@ -606,7 +671,9 @@ def plot_full_cluster_report(
     # A) Spike waveforms
     # --------------------------------------------------
     print("\n→ 1. Plotting spike waveforms by cluster")
-    plot_spike_clusters_from_df(df, sp, cluster_col)
+    plot_spike_clusters_from_df(df, sp, cluster_col,
+                                plot_average=True, plot_average_std=True,
+                                peak_align=True)
     
     # --------------------------------------------------
     # A.5) Average waveforms with visual RMSE
