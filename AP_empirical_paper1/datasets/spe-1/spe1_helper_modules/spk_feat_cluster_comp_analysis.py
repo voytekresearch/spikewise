@@ -372,8 +372,9 @@ def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
     FDR correction: Benjamini-Hochberg across all cross-pairs.
     Bootstrap CIs: n_bootstrap resamples (rows = cells) for each effect size.
 
-    df is aggregated to one row per cell (mean for continuous features,
-    mode for num_clusters) before testing to avoid pseudo-replication.
+    Tests run per spike_feature — one row per (cell, spike_feature) pair so n
+    reflects cells where that specific feature clustered, preserving
+    feature-specific biological interpretation without averaging across features.
     """
     binary_cat  = ['patch_type', 'current_type', 'dark_neuron', 'clear_EAP_waveform']
     multi_cat   = ['cell_type']
@@ -381,17 +382,24 @@ def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
     metadata_cols = binary_cat + multi_cat + cont_meta
     feature_cols  = ['num_clusters', 'nRMSE', 'cos_sim', 'temporal_rho']
 
-    # Aggregate to one row per cell to avoid pseudo-replication
-    agg = {}
-    for c in metadata_cols:
-        agg[c] = 'first'
+    # Convert feature cols to numeric (num_clusters stored as str)
+    df_work = df.copy()
     for c in feature_cols:
-        agg[c] = 'mean'
-    df_cell = (df.groupby('cell_id')[metadata_cols + feature_cols]
-                 .agg(agg)
-                 .reset_index(drop=True))
-    for c in feature_cols:
-        df_cell[c] = pd.to_numeric(df_cell[c], errors='coerce')
+        df_work[c] = pd.to_numeric(df_work[c], errors='coerce')
+
+    # One row per (cell_id, spike_feature): metadata is constant per cell,
+    # metrics reflect that specific spike feature's clustering.
+    agg = {c: 'first' for c in metadata_cols}
+    agg.update({c: 'first' for c in feature_cols})  # already one row per (cell, feature)
+    if 'spike_feature' in df_work.columns:
+        df_cell = (df_work.groupby(['cell_id', 'spike_feature'])[metadata_cols + feature_cols]
+                          .agg(agg)
+                          .reset_index(drop=True))
+    else:
+        # Fallback: aggregate to one row per cell
+        df_cell = (df_work.groupby('cell_id')[metadata_cols + feature_cols]
+                          .agg(agg)
+                          .reset_index(drop=True))
 
     rng     = np.random.default_rng(42)
     results = []
@@ -545,9 +553,13 @@ def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
 def plot_sig_feat_pairs(df, sig_pairs_df):
     # Nuke the warnings
     warnings.simplefilter(action='ignore', category=FutureWarning)
-    
+
+    if sig_pairs_df is None or len(sig_pairs_df) == 0:
+        print("No significant pairs to plot.")
+        return
+
     sns.set_theme(style="ticks")
-    
+
     n_plots = len(sig_pairs_df)
     cols = 3
     rows = math.ceil(n_plots / cols)
