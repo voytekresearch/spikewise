@@ -50,6 +50,7 @@ Notes
 import argparse
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
 from multiprocessing import Pool
 
@@ -80,14 +81,17 @@ def run_cluster_nb(args):
     if not nb.exists():
         return (cell_id, f"notebook not found: {nb.name}")
 
-    print(f"  [cluster] c{cnum} …")
+    t0 = datetime.now()
+    print(f"  [cluster] c{cnum} started {t0:%H:%M:%S}")
     try:
         pm.execute_notebook(
             str(nb), str(nb),
             parameters={"FORCE_CLUSTER": opts["force_cluster"]},
             kernel_name="python3",
-            progress_bar=False,
+            progress_bar=opts["workers"] == 1,
         )
+        elapsed = (datetime.now() - t0).seconds // 60
+        print(f"  [cluster] c{cnum} done ({elapsed} min)")
         return (cell_id, "ok")
     except Exception:
         return (cell_id, traceback.format_exc())
@@ -102,7 +106,8 @@ def run_lfp_nb(args):
     if not nb.exists():
         return (cell_id, f"no LFP notebook for c{cnum} (only priority cells have one)")
 
-    print(f"  [LFP]     c{cnum} …")
+    t0 = datetime.now()
+    print(f"  [LFP]     c{cnum} started {t0:%H:%M:%S}")
     try:
         pm.execute_notebook(
             str(nb), str(nb),
@@ -112,8 +117,10 @@ def run_lfp_nb(args):
                 "FORCE_STATS":  opts["force_lfp"],
             },
             kernel_name="python3",
-            progress_bar=False,
+            progress_bar=opts["workers"] == 1,
         )
+        elapsed = (datetime.now() - t0).seconds // 60
+        print(f"  [LFP]     c{cnum} done ({elapsed} min)")
         return (cell_id, "ok")
     except Exception:
         return (cell_id, traceback.format_exc())
@@ -180,7 +187,7 @@ def main():
         if args.run_lfp else []
     )
 
-    opts = {"force_cluster": args.force_cluster, "force_lfp": args.force_lfp}
+    opts = {"force_cluster": args.force_cluster, "force_lfp": args.force_lfp, "workers": args.workers}
 
     if args.lfp_only:
         print(f"LFP analysis: {len(lfp_ids)} cells  {sorted(lfp_ids)}  (clustering skipped)")
