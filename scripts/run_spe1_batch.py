@@ -9,6 +9,8 @@ Two phases:
   Phase 1 — cluster notebooks (all requested cells)
   Phase 2 — LFP analysis notebooks (priority cells, only when --lfp is passed)
 
+Use --lfp-only to skip clustering entirely and run only LFP notebooks.
+
 Parameters (FORCE_CLUSTER, FORCE_LFP, etc.) are injected into each notebook's
 tagged parameters cell, overriding its defaults for that run only.
 
@@ -23,8 +25,11 @@ Usage examples
 # Cluster all cells + run LFP for priority cells:
     python scripts/run_spe1_batch.py --lfp
 
-# LFP only for priority cells (clustering already cached):
-    python scripts/run_spe1_batch.py --priority --lfp
+# LFP only for priority cells (skip clustering):
+    python scripts/run_spe1_batch.py --lfp-only
+
+# LFP only, force-redo even if pickles exist:
+    python scripts/run_spe1_batch.py --lfp-only --force-lfp
 
 # Force-redo everything for priority cells:
     python scripts/run_spe1_batch.py --priority --lfp --force-all
@@ -145,6 +150,8 @@ def main():
                         help="Parallel notebooks (default 1 — see Notes about n_jobs)")
     parser.add_argument("--lfp",      dest="run_lfp",      action="store_true",
                         help="Also run LFP analysis notebooks after clustering (priority cells only)")
+    parser.add_argument("--lfp-only", dest="lfp_only",     action="store_true",
+                        help="Skip clustering; run LFP analysis notebooks only (priority cells)")
     parser.add_argument("--force-cluster", dest="force_cluster", action="store_true",
                         help="Inject FORCE_CLUSTER=True into cluster notebooks")
     parser.add_argument("--force-lfp",     dest="force_lfp",     action="store_true",
@@ -155,6 +162,10 @@ def main():
 
     if args.force_all:
         args.force_cluster = args.force_lfp = True
+
+    # --lfp-only implies --lfp
+    if args.lfp_only:
+        args.run_lfp = True
 
     # Resolve cell lists
     if args.cells:
@@ -171,19 +182,25 @@ def main():
 
     opts = {"force_cluster": args.force_cluster, "force_lfp": args.force_lfp}
 
-    print(f"Clustering : {len(cell_ids)} cells")
-    print(f"LFP analysis: {len(lfp_ids)} cells  {sorted(lfp_ids)}")
+    if args.lfp_only:
+        print(f"LFP analysis: {len(lfp_ids)} cells  {sorted(lfp_ids)}  (clustering skipped)")
+    else:
+        print(f"Clustering : {len(cell_ids)} cells")
+        print(f"LFP analysis: {len(lfp_ids)} cells  {sorted(lfp_ids)}")
     print(f"force_cluster={args.force_cluster}  force_lfp={args.force_lfp}  workers={args.workers}")
 
-    # Phase 1: cluster notebooks
-    cluster_ok, _ = _run_phase(
-        run_cluster_nb,
-        [(cid, opts) for cid in cell_ids],
-        args.workers,
-        "Phase 1: Cluster notebooks",
-    )
+    # Phase 1: cluster notebooks (skipped when --lfp-only)
+    if not args.lfp_only:
+        cluster_ok, _ = _run_phase(
+            run_cluster_nb,
+            [(cid, opts) for cid in cell_ids],
+            args.workers,
+            "Phase 1: Cluster notebooks",
+        )
+    else:
+        cluster_ok = list(cell_ids)  # treat all as ready since clustering already done
 
-    # Phase 2: LFP analysis notebooks (only for cells whose clustering succeeded)
+    # Phase 2: LFP analysis notebooks
     if lfp_ids:
         lfp_ready = [cid for cid in lfp_ids if cid in cluster_ok]
         _run_phase(
