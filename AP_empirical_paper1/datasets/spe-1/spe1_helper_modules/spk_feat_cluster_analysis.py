@@ -3895,6 +3895,7 @@ def run_master_LFP_spk_analysis(
         save_dir = os.path.join(SPE1_PICKLE_ROOT, "lfp_spk_group_pickles")
 
     os.makedirs(save_dir, exist_ok=True)
+    cell_id = f"c{cell_id}" if not str(cell_id).startswith("c") else str(cell_id)
     save_path      = os.path.join(save_dir, f"{cell_id}_sliding_stats.pkl")
     per_spike_path = os.path.join(save_dir, f"{cell_id}_per_spike_data.pkl")
 
