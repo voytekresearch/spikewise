@@ -12,12 +12,17 @@ Main pipeline:
   5. Identify sliding windows with significant group differences (lfp_sliding_stats)
 """
 
+import sys
 import numpy as np
+
+# numpy 2.0 removed trapz → trapezoid; patch for older specparam versions
+if not hasattr(np, 'trapz'):
+    np.trapz = np.trapezoid
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
-from tqdm.auto import tqdm
+from tqdm import tqdm
 import mne
 from specparam import SpectralTimeModel
 from typing import Optional, List, Tuple, Dict, Any, Literal, Callable, Union, Sequence
@@ -464,7 +469,7 @@ def load_chunked_specparam_results(save_dir: str, prefix: str = "c21_specparam")
     # 3. Memory-safe loading
     specparam_by_spike = []
     
-    for file_name in tqdm(all_files, desc="Loading Chunks"):
+    for file_name in tqdm(all_files, desc="Loading Chunks", file=sys.stdout, dynamic_ncols=False):
         file_path = os.path.join(save_dir, file_name)
         
         with open(file_path, 'rb') as f:
@@ -2323,7 +2328,8 @@ def compute_lfp_windows(
     epochs = lfp[np.newaxis, np.newaxis, :]  # (1, 1, n_times)
     tfr = mne.time_frequency.tfr_array_multitaper(
         epochs, sfreq=fs, freqs=freqs, n_cycles=n_cycles,
-        time_bandwidth=tb, output="power", decim=decim_factor, verbose=False
+        time_bandwidth=tb, output="power", decim=decim_factor, verbose=False,
+        n_jobs=1,
     )  # (1,1,n_freqs,n_bins)
     spec = np.squeeze(tfr, axis=(0, 1))      # (n_freqs, n_bins)
     powers = spec.T                           # (n_bins, n_freqs)
@@ -2546,7 +2552,7 @@ def run_time_resolved_specparam_on_window(
 
 import os
 import pickle
-from tqdm.auto import tqdm
+from tqdm import tqdm
 from typing import Optional
 
 def run_time_resolved_specparam_per_spike(
@@ -2575,7 +2581,8 @@ def run_time_resolved_specparam_per_spike(
         for i, (win, t_rel, next_rel) in enumerate(
             tqdm(zip(lfp_windows, times_rel_list, next_rel_list),
                  total=n_spikes,
-                 desc="Specparam per spike")
+                 desc="Specparam per spike",
+                 file=sys.stdout, dynamic_ncols=False)
         ):
             out = run_time_resolved_specparam_on_window(
                 lfp_window=win,
@@ -2617,7 +2624,8 @@ def run_time_resolved_specparam_per_spike(
         print(f"\nProcessing Chunk {chunk_idx} (Spikes {start_idx} to {end_idx - 1})...")
         chunk_results = []
         
-        for i in tqdm(range(start_idx, end_idx), desc=f"Chunk {chunk_idx}/{len(chunk_indices)-1}"):
+        for i in tqdm(range(start_idx, end_idx), desc=f"Chunk {chunk_idx}/{len(chunk_indices)-1}",
+                      file=sys.stdout, dynamic_ncols=False):
             out = run_time_resolved_specparam_on_window(
                 lfp_window=lfp_windows[i],
                 times_rel=times_rel_list[i],
@@ -3910,7 +3918,8 @@ def run_master_LFP_spk_analysis(
 
     try:
         from tqdm import tqdm as _tqdm
-        _feat_iter = _tqdm(features_to_analyze, desc=f"{cell_id} features", unit="feat")
+        _feat_iter = _tqdm(features_to_analyze, desc=f"{cell_id} features", unit="feat",
+                           file=sys.stdout, dynamic_ncols=False)
     except ImportError:
         _feat_iter = features_to_analyze
 

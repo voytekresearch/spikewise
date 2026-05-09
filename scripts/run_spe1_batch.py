@@ -48,6 +48,7 @@ Notes
 """
 
 import argparse
+import logging
 import sys
 import traceback
 from datetime import datetime
@@ -55,6 +56,9 @@ from pathlib import Path
 from multiprocessing import Pool
 
 import papermill as pm
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logging.getLogger("papermill").setLevel(logging.INFO)
 
 # ── Path setup ───────────────────────────────────────────────────────────────
 REPO_ROOT  = Path(__file__).resolve().parent.parent
