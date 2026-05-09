@@ -88,7 +88,8 @@ def run_cluster_nb(args):
             str(nb), str(nb),
             parameters={"FORCE_CLUSTER": opts["force_cluster"]},
             kernel_name="python3",
-            progress_bar=opts["workers"] == 1,
+            progress_bar=False,
+            log_output=opts["workers"] == 1,
         )
         elapsed = (datetime.now() - t0).seconds // 60
         print(f"  [cluster] c{cnum} done ({elapsed} min)")
@@ -117,7 +118,8 @@ def run_lfp_nb(args):
                 "FORCE_STATS":  opts["force_lfp"],
             },
             kernel_name="python3",
-            progress_bar=opts["workers"] == 1,
+            progress_bar=False,
+            log_output=opts["workers"] == 1,
         )
         elapsed = (datetime.now() - t0).seconds // 60
         print(f"  [LFP]     c{cnum} done ({elapsed} min)")

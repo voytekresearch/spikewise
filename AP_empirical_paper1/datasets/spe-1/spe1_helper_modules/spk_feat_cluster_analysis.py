@@ -3908,7 +3908,13 @@ def run_master_LFP_spk_analysis(
     cell_master_results = {"cell_id": cell_id}
     per_spike_data      = {"cell_id": cell_id}
 
-    for feat_info in features_to_analyze:
+    try:
+        from tqdm import tqdm as _tqdm
+        _feat_iter = _tqdm(features_to_analyze, desc=f"{cell_id} features", unit="feat")
+    except ImportError:
+        _feat_iter = features_to_analyze
+
+    for feat_info in _feat_iter:
         feature_type = feat_info.get("feature")
         band  = feat_info.get("band", None)
         label = feat_info.get("label", feature_type.capitalize())
@@ -4098,66 +4104,107 @@ def extract_target_time_spectra_and_aucs(df_clust, specparam_list, cluster_col, 
 # -----------------------------------------------------------------
 #Master Loop Function (Reads the Stats Dictionary)
 # -----------------------------------------------------------------
-def plot_significant_windows_spectra(df_clust, specparam_list, pop_stats_dict):
+def plot_significant_windows_spectra(df_clust, specparam_list, pop_stats_dict, top_n=20):
     """
-    Finds all significant time windows in the stats dictionary and plots 
-    the full SpecParam spectra precisely at the midpoint of those windows.
+    Finds significant time windows in the stats dictionary and plots the full
+    SpecParam spectra at the midpoint of each window.
+
+    Parameters
+    ----------
+    top_n : int
+        Maximum windows to plot per spike feature, ranked by Cohen's d descending.
+        Set to None to plot all.
     """
+    try:
+        import ipywidgets as widgets
+        from IPython.display import display
+        _has_widgets = True
+    except ImportError:
+        _has_widgets = False
+
     cluster_cols = [c for c in df_clust.columns if c.endswith('_cluster')]
     if not cluster_cols:
         print("No cluster columns found!")
         return
 
     for col in cluster_cols:
-        # 1. Gather all significant windows for this specific morphological feature
+        # 1. Gather all significant windows with their best Cohen's d
         sig_windows = []
         for lfp_feat, stats in pop_stats_dict.items():
             if 'pairwise_stats' in stats:
                 for stat in stats['pairwise_stats']:
                     if stat['spike_feature'] == col:
-                        # Save the window and the LFP feature it was significant for
-                        sig_windows.append((stat['window_start'], stat['window_end'], lfp_feat))
-                        
+                        sig_windows.append((
+                            stat['window_start'], stat['window_end'],
+                            lfp_feat,
+                            stat.get('cohens_d', 0.0),
+                        ))
+
         if not sig_windows:
             print(f"No significant windows found for {col}. Skipping.")
             continue
 
-        # 2. Group by exact window to avoid plotting the exact same time twice 
-        # (e.g., if both Gamma and Theta were significant at the same time)
+        # 2. Group by window, keeping max Cohen's d per window
         unique_windows = {}
-        for start, end, feat in sig_windows:
+        for start, end, feat, d in sig_windows:
             w = (start, end)
             if w not in unique_windows:
-                unique_windows[w] = []
-            unique_windows[w].append(feat)
+                unique_windows[w] = {"feats": [], "max_d": 0.0}
+            unique_windows[w]["feats"].append(feat)
+            unique_windows[w]["max_d"] = max(unique_windows[w]["max_d"], d)
 
-        # 3. Extract and Plot for each unique significant window
-        for (start, end), feats in unique_windows.items():
-            # Target the midpoint of the significant window
-            mid_t = (start + end) / 2.0 
-            
-            print(f"\nExtacting {col} at significant window: {start:.3f}s to {end:.3f}s")
-            
+        # 3. Rank by Cohen's d and take top_n
+        ranked = sorted(unique_windows.items(), key=lambda x: x[1]["max_d"], reverse=True)
+        if top_n is not None:
+            ranked = ranked[:top_n]
+        print(f"\n{col}: plotting {len(ranked)} most significant windows (of {len(unique_windows)} total)")
+
+        # 4. Render into a scrollable widget
+        out = widgets.Output() if _has_widgets else None
+
+        for (start, end), info in ranked:
+            mid_t = (start + end) / 2.0
+            print(f"  Extracting window {start:.3f}s – {end:.3f}s  (d={info['max_d']:.3f})")
+
             freqs, spectra_t, df_aucs, exact_time = extract_target_time_spectra_and_aucs(
-                df_clust=df_clust, 
-                specparam_list=specparam_list, 
-                cluster_col=col, 
-                target_t=mid_t
+                df_clust=df_clust,
+                specparam_list=specparam_list,
+                cluster_col=col,
+                target_t=mid_t,
             )
-            
+
             if spectra_t is not None:
                 feature_name_clean = col.replace('_cluster', '').replace('_', ' ').title()
-                
-                # Add a custom subtitle explaining exactly why this window was chosen
-                sig_feats_str = ", ".join(list(set(feats))) # Unique list of significant LFP features
-                title_suffix = f"(Sig. Window: {start:.2f}s to {end:.2f}s | Plotted Midpoint: {exact_time:.2f}s)\n[Significant for: {sig_feats_str}]"
-                
-                plot_cluster_spectra_with_aucs(
-                    freqs=freqs, 
-                    spectra_matrix=spectra_t, 
-                    df_aucs=df_aucs, 
-                    feature_name=feature_name_clean,
-                    title_suffix=title_suffix
+                sig_feats_str = ", ".join(sorted(set(info["feats"])))
+                title_suffix = (
+                    f"(Sig. Window: {start:.2f}s to {end:.2f}s | "
+                    f"Midpoint: {exact_time:.2f}s | d={info['max_d']:.3f})\n"
+                    f"[Significant for: {sig_feats_str}]"
                 )
+                ctx = out if _has_widgets else None
+                if ctx is not None:
+                    with ctx:
+                        plot_cluster_spectra_with_aucs(
+                            freqs=freqs, spectra_matrix=spectra_t, df_aucs=df_aucs,
+                            feature_name=feature_name_clean, title_suffix=title_suffix,
+                        )
+                        plt.show()
+                else:
+                    plot_cluster_spectra_with_aucs(
+                        freqs=freqs, spectra_matrix=spectra_t, df_aucs=df_aucs,
+                        feature_name=feature_name_clean, title_suffix=title_suffix,
+                    )
             else:
-                print(f"  -> Failed to extract valid spectra at t={mid_t}s")
+                print(f"    -> Failed to extract spectra at t={mid_t:.3f}s")
+
+        if _has_widgets and out is not None:
+            display(widgets.Box(
+                [out],
+                layout=widgets.Layout(
+                    height="600px",
+                    overflow_y="auto",
+                    display="flex",
+                    flex_flow="column",
+                    border="1px solid #ccc",
+                ),
+            ))
