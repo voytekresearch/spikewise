@@ -4066,49 +4066,62 @@ def plot_cluster_spectra_with_aucs(freqs, spectra_matrix, df_aucs, feature_name=
 # Extraction Function (Accepts any target_t)
 # -----------------------------------------------------------------
 def extract_target_time_spectra_and_aucs(df_clust, specparam_list, cluster_col, target_t=0.0):
-    """Safely extracts spectra and AUCs for a given cluster column at a SPECIFIC TIME."""
-    valid_res = next((res for res in specparam_list if res is not None and 'model' in res), None)
-    if valid_res is None: return None, None, None, None
-        
-    freqs = valid_res['model'].get_model(ind=0).freqs
-    t_bins = valid_res['t_bins_s']
-    
-    # Find the index closest to our target time!
-    target_index = np.argmin(np.abs(t_bins - target_t))
-    exact_time = t_bins[target_index]
+    """
+    Extract log10 power spectra and band AUCs at a target time for each spike.
+
+    Works with or without the SpectralTimeModel object — uses stored `powers`
+    and `freqs` arrays directly (model is dropped during loading to save memory).
+    """
+    # Find a valid spike to get freqs and t_bins reference
+    valid_res = next((res for res in specparam_list
+                      if res is not None and res.get("freqs") is not None
+                      and res.get("t_bins_s") is not None), None)
+    if valid_res is None:
+        return None, None, None, None
+
+    freqs  = np.asarray(valid_res["freqs"])
+    t_bins = np.asarray(valid_res["t_bins_s"])
+    target_index = int(np.argmin(np.abs(t_bins - target_t)))
+    exact_time   = float(t_bins[target_index])
 
     spectra_list = []
-    auc_list = []
+    auc_list     = []
 
     df_valid = df_clust.loc[df_clust[cluster_col].notna(), ["spk_id", cluster_col]]
     for row in df_valid.itertuples(index=False):
-        spk_idx = int(row.spk_id)
+        spk_idx       = int(row.spk_id)
         cluster_label = getattr(row, cluster_col)
-        
-        if spk_idx >= len(specparam_list): continue
+
+        if spk_idx >= len(specparam_list):
+            continue
         res = specparam_list[spk_idx]
-        if res is None or 'model' not in res: continue
-            
-        time_model = res['model']
-        
+        if res is None:
+            continue
+
         try:
-            sm = time_model.get_model(ind=target_index)
-            full_log = sm.get_model(component="full", space="log")
-            
-            spike_aucs = {'cluster': cluster_label}
-            for band_name, band_array in res.get('band_aucs', {}).items():
-                spike_aucs[band_name] = band_array[target_index]
-            
-            if full_log is not None:
-                spectra_list.append(full_log)
-                auc_list.append(spike_aucs)
-                
+            t_sp = np.asarray(res["t_bins_s"])
+            idx  = int(np.argmin(np.abs(t_sp - target_t)))
+
+            # Log10 power at this time bin (linear → log10)
+            if "powers" in res and res["powers"] is not None:
+                pows = np.asarray(res["powers"])   # (n_bins, n_freqs)
+                full_log = np.log10(pows[idx] + 1e-30)
+            else:
+                continue
+
+            spike_aucs = {"cluster": cluster_label}
+            for band_name, band_array in res.get("band_aucs", {}).items():
+                spike_aucs[band_name] = np.asarray(band_array)[idx]
+
+            spectra_list.append(full_log)
+            auc_list.append(spike_aucs)
+
         except Exception:
             continue
 
     if len(spectra_list) == 0:
         return None, None, None, None
-        
+
     return freqs, np.array(spectra_list), pd.DataFrame(auc_list), exact_time
 
 # -----------------------------------------------------------------
