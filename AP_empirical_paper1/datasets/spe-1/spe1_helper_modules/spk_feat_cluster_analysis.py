@@ -466,8 +466,7 @@ def load_chunked_specparam_results(save_dir: str, prefix: str = "c21_specparam")
     all_files.sort(key=extract_chunk_number)
     print(f"Found {len(all_files)} chunk files. Assembling master list...")
 
-    # 3. Memory-safe loading — drop large fields not needed for analysis
-    _DROP_KEYS = {"model", "powers"}
+    # 3. Memory-safe loading — drop SpectralTimeModel objects (large), keep powers
     specparam_by_spike = []
 
     for file_name in tqdm(all_files, desc="Loading Chunks", file=sys.stdout, dynamic_ncols=False):
@@ -477,8 +476,7 @@ def load_chunked_specparam_results(save_dir: str, prefix: str = "c21_specparam")
             chunk_data = pickle.load(f)
 
         for spike in chunk_data:
-            for k in _DROP_KEYS:
-                spike.pop(k, None)
+            spike.pop("model", None)  # drop fitted model object, keep powers/freqs
 
         specparam_by_spike.extend(chunk_data)
         del chunk_data
@@ -4255,49 +4253,186 @@ def _pp_get_feature(spike_data, feat_key, window):
     return np.nanmean(vals) if np.any(np.isfinite(vals)) else np.nan
 
 
+_PP_MIN_N = 5  # minimum spikes per group to run any test
+
+
+def _hedges_g_correction(n1, n2):
+    """Small-sample correction factor J for Hedges' g from Cohen's d."""
+    df = n1 + n2 - 2
+    # Use exact gamma-based factor; approximate with 1 - 3/(4*df - 1) for df >= 2
+    return 1.0 - 3.0 / (4.0 * df - 1.0) if df >= 2 else np.nan
+
+
+def _rank_biserial_between(g1, g2):
+    """
+    Rank-biserial correlation r = 1 - 2U/(n1*n2) for Mann-Whitney U.
+    Bounded [-1, 1]; equivalent to common language effect size (P(g1 > g2) * 2 - 1).
+    Sign: positive when g1 > g2 on average.
+    """
+    from scipy.stats import mannwhitneyu
+    if len(g1) < 1 or len(g2) < 1:
+        return np.nan
+    U, _ = mannwhitneyu(g1, g2, alternative="greater")
+    return 1.0 - (2.0 * U) / (len(g1) * len(g2))
+
+
+def _rank_biserial_within(diff):
+    """
+    Rank-biserial correlation r for Wilcoxon signed-rank test.
+    r = W+ / (n*(n+1)/2) where W+ is the sum of positive ranks.
+    Bounded [0, 1]; sign given by sign of mean(diff).
+    """
+    n = len(diff)
+    if n < 1:
+        return np.nan
+    ranks = np.argsort(np.argsort(np.abs(diff))) + 1.0   # rank of |diff|
+    W_plus = np.sum(ranks[diff > 0])
+    r = W_plus / (n * (n + 1) / 2.0)
+    return r * np.sign(np.mean(diff))
+
+
 def _pp_bootstrap_between(g1, g2, n_bootstrap=1000):
-    """Permutation p-value + bootstrap 95% CI on Cohen's d between two groups."""
+    """
+    Between-group effect sizes + permutation p-value for independent samples.
+
+    Effect sizes computed
+    ---------------------
+    cohens_d  : (mean1 - mean2) / pooled SD  (Cohen 1988)
+    hedges_g  : cohens_d * J  — small-sample corrected (Hedges 1981)
+    rank_biserial_r : 1 - 2U/(n1*n2)  — effect size for Mann-Whitney U,
+                     bounded [-1,1], positive when g1 > g2 stochastically
+
+    Statistics
+    ----------
+    p-value from permutation test (n_bootstrap permutations).
+    When groups are imbalanced (>3:1 ratio) the permutation null is built
+    from subsampled equal-size groups to avoid power inflation.
+    Bootstrap 95% CI on Cohen's d and Hedges' g.
+    """
     g1 = np.asarray(g1, float); g1 = g1[np.isfinite(g1)]
     g2 = np.asarray(g2, float); g2 = g2[np.isfinite(g2)]
-    if len(g1) < 3 or len(g2) < 3:
-        return dict(p=np.nan, cohens_d=np.nan, ci_lo=np.nan, ci_hi=np.nan, n1=len(g1), n2=len(g2))
+    n1, n2 = len(g1), len(g2)
+    nan_result = dict(p=np.nan, cohens_d=np.nan, hedges_g=np.nan,
+                      rank_biserial_r=np.nan, ci_lo=np.nan, ci_hi=np.nan,
+                      n1=n1, n2=n2, resampled=False, skipped=True)
+    if n1 < _PP_MIN_N or n2 < _PP_MIN_N:
+        return nan_result
 
     def _d(a, b):
-        n1, n2 = len(a), len(b)
-        pooled = np.sqrt(((n1 - 1) * np.var(a, ddof=1) + (n2 - 1) * np.var(b, ddof=1)) / (n1 + n2 - 2))
+        na, nb = len(a), len(b)
+        pooled = np.sqrt(((na-1)*np.var(a, ddof=1) + (nb-1)*np.var(b, ddof=1)) / (na+nb-2))
         return (np.mean(a) - np.mean(b)) / (pooled + 1e-10)
 
-    obs = _d(g1, g2)
-    combined = np.concatenate([g1, g2]); n1 = len(g1)
-    null = [_d(np.random.permutation(combined)[:n1], np.random.permutation(combined)[n1:])
-            for _ in range(n_bootstrap)]
-    p = np.mean(np.abs(null) >= np.abs(obs))
+    obs_d = _d(g1, g2)
+    J     = _hedges_g_correction(n1, n2)
+    obs_g = obs_d * J
+    obs_r = _rank_biserial_between(g1, g2)
 
-    boot = [_d(np.random.choice(g1, len(g1), replace=True),
-               np.random.choice(g2, len(g2), replace=True))
-            for _ in range(n_bootstrap)]
-    ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
-    return dict(p=p, cohens_d=obs, ci_lo=ci_lo, ci_hi=ci_hi, n1=len(g1), n2=len(g2))
+    # Permutation null (with subsampling if imbalanced)
+    resampled = max(n1, n2) / min(n1, n2) > 3
+    n_min = min(n1, n2)
+    if resampled:
+        null = []
+        for _ in range(n_bootstrap):
+            s1 = np.random.choice(g1, n_min, replace=False)
+            s2 = np.random.choice(g2, n_min, replace=False)
+            perm = np.random.permutation(np.concatenate([s1, s2]))
+            null.append(_d(perm[:n_min], perm[n_min:]))
+    else:
+        combined = np.concatenate([g1, g2])
+        null = [_d(np.random.permutation(combined)[:n1],
+                   np.random.permutation(combined)[n1:])
+                for _ in range(n_bootstrap)]
+    p = np.mean(np.abs(null) >= np.abs(obs_d))
+
+    # Bootstrap CI on Cohen's d (and Hedges' g = d * J)
+    boot_d = [_d(np.random.choice(g1, n1, replace=True),
+                 np.random.choice(g2, n2, replace=True))
+              for _ in range(n_bootstrap)]
+    ci_lo, ci_hi = np.percentile(boot_d, [2.5, 97.5])
+
+    return dict(p=p,
+                cohens_d=obs_d, hedges_g=obs_g,
+                rank_biserial_r=obs_r,
+                ci_lo=ci_lo, ci_hi=ci_hi,
+                g_ci_lo=ci_lo * J, g_ci_hi=ci_hi * J,
+                n1=n1, n2=n2, resampled=resampled, skipped=False)
 
 
 def _pp_bootstrap_within(pre, post, n_bootstrap=1000):
-    """Bootstrap 95% CI on mean post-pre difference + Wilcoxon p-value."""
+    """
+    Within-group (paired) effect sizes + Wilcoxon signed-rank p-value.
+
+    Effect sizes computed
+    ---------------------
+    cohens_dz : mean(post-pre) / SD(post-pre)  — paired Cohen's d
+                (equivalent to the d computed on difference scores; Lakens 2013)
+    hedges_gz : cohens_dz * J  — small-sample corrected paired effect size
+    rank_biserial_r : W+ / (n*(n+1)/2) * sign(mean_diff)
+                      effect size for Wilcoxon signed-rank, bounded [-1,1]
+    mean_diff : raw mean of (post - pre) for interpretability
+
+    Statistics
+    ----------
+    Wilcoxon signed-rank p-value (two-sided).
+    Bootstrap 95% CI on cohens_dz and mean_diff.
+    """
     from scipy.stats import wilcoxon
-    pre = np.asarray(pre, float); post = np.asarray(post, float)
+    pre  = np.asarray(pre,  float)
+    post = np.asarray(post, float)
     valid = np.isfinite(pre) & np.isfinite(post)
     pre, post = pre[valid], post[valid]
-    if len(pre) < 5:
-        return dict(p=np.nan, mean_diff=np.nan, ci_lo=np.nan, ci_hi=np.nan, n=len(pre))
-    diff = post - pre
+    n = len(pre)
+    nan_result = dict(p=np.nan, cohens_dz=np.nan, hedges_gz=np.nan,
+                      rank_biserial_r=np.nan, mean_diff=np.nan,
+                      ci_lo=np.nan, ci_hi=np.nan, n=n, skipped=True)
+    if n < _PP_MIN_N:
+        return nan_result
+
+    diff      = post - pre
     mean_diff = np.mean(diff)
+    sd_diff   = np.std(diff, ddof=1)
+
+    if np.allclose(diff, 0) or sd_diff < 1e-10:
+        return dict(p=1.0, cohens_dz=0.0, hedges_gz=0.0,
+                    rank_biserial_r=0.0, mean_diff=0.0,
+                    ci_lo=0.0, ci_hi=0.0, n=n, skipped=False)
+
+    # Cohen's d_z and Hedges' g_z (paired correction uses df = n-1)
+    dz = mean_diff / sd_diff
+    J  = 1.0 - 3.0 / (4.0 * (n - 1) - 1.0) if n > 2 else np.nan
+    gz = dz * J
+
+    # Rank-biserial r for Wilcoxon
+    rb_r = _rank_biserial_within(diff)
+
+    # Wilcoxon p-value
     try:
         _, p = wilcoxon(diff, alternative="two-sided")
     except Exception:
         p = np.nan
-    idx = np.arange(len(diff))
-    boot = [np.mean(diff[np.random.choice(idx, len(idx), replace=True)]) for _ in range(n_bootstrap)]
-    ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
-    return dict(p=p, mean_diff=mean_diff, ci_lo=ci_lo, ci_hi=ci_hi, n=len(pre))
+
+    # Bootstrap CI on d_z and mean_diff
+    idx = np.arange(n)
+    boot_dz   = []
+    boot_diff = []
+    for _ in range(n_bootstrap):
+        b = np.random.choice(idx, n, replace=True)
+        d_ = diff[b]
+        md_ = np.mean(d_); sd_ = np.std(d_, ddof=1)
+        boot_diff.append(md_)
+        boot_dz.append(md_ / sd_ if sd_ > 1e-10 else 0.0)
+
+    ci_lo,    ci_hi    = np.percentile(boot_diff, [2.5, 97.5])
+    dz_ci_lo, dz_ci_hi = np.percentile(boot_dz,  [2.5, 97.5])
+
+    return dict(p=p,
+                cohens_dz=dz, hedges_gz=gz,
+                rank_biserial_r=rb_r,
+                mean_diff=mean_diff,
+                ci_lo=ci_lo, ci_hi=ci_hi,
+                dz_ci_lo=dz_ci_lo, dz_ci_hi=dz_ci_hi,
+                n=n, skipped=False)
 
 
 def compute_pre_post_specparam_comparison(
@@ -4376,16 +4511,40 @@ def compute_pre_post_specparam_comparison(
     pre_vals  = {f["key"]: np.full(n_spikes, np.nan) for f in features}
     post_vals = {f["key"]: np.full(n_spikes, np.nan) for f in features}
 
+    # Detect freq axis from first spike that has powers
+    freqs = next((np.asarray(s["freqs"]) for s in specparam_by_spike if "freqs" in s), None)
+    n_freqs = len(freqs) if freqs is not None else 0
+    pre_spectra  = np.full((n_spikes, n_freqs), np.nan) if n_freqs else None
+    post_spectra = np.full((n_spikes, n_freqs), np.nan) if n_freqs else None
+
     for i, spike in enumerate(tqdm(specparam_by_spike, desc="Extracting pre/post means",
                                     file=sys.stdout, dynamic_ncols=False)):
         for f in features:
             pre_vals[f["key"]][i]  = _pp_get_feature(spike, f["key"], pre_window)
             post_vals[f["key"]][i] = _pp_get_feature(spike, f["key"], post_window)
 
+        # Mean power spectrum within each window
+        if n_freqs and "powers" in spike and "t_bins_s" in spike:
+            t    = np.asarray(spike["t_bins_s"])
+            pows = np.asarray(spike["powers"])   # (n_bins, n_freqs)
+            pre_mask  = (t >= pre_window[0])  & (t <= pre_window[1])
+            post_mask = (t >= post_window[0]) & (t <= post_window[1])
+            if np.any(pre_mask):
+                pre_spectra[i]  = np.nanmean(pows[pre_mask],  axis=0)
+            if np.any(post_mask):
+                post_spectra[i] = np.nanmean(pows[post_mask], axis=0)
+
     results = {}
 
+    # Align df to specparam_by_spike — edge spikes may have been dropped during
+    # window extraction, so df can be slightly longer than specparam_by_spike.
+    df_aligned = df_features_clust.iloc[:n_spikes].reset_index(drop=True)
+    if len(df_features_clust) != n_spikes:
+        print(f"  Note: aligning df ({len(df_features_clust)} spikes) → "
+              f"specparam ({n_spikes} spikes); {len(df_features_clust) - n_spikes} edge spikes dropped.")
+
     for col in cluster_cols:
-        labels = df_features_clust[col].values
+        labels = df_aligned[col].values
         unique  = [l for l in ["low", "mid", "high"] if l in labels]
         if len(unique) < 2:
             continue
@@ -4397,24 +4556,36 @@ def compute_pre_post_specparam_comparison(
             g_pre  = {l: pre_vals[key][labels == l]  for l in unique}
             g_post = {l: post_vals[key][labels == l] for l in unique}
 
-            # Between-group: pre window
+            # Between-group: pre window  (A vs B before spike)
             for l1, l2 in combinations(unique, 2):
                 res = _pp_bootstrap_between(g_pre[l1], g_pre[l2], n_bootstrap)
                 all_tests.append({**res, "feature": label, "feat_key": key,
                                    "comparison": f"{l1} vs {l2}", "window": "pre"})
 
-            # Between-group: post window
+            # Between-group: post window  (A vs B after spike)
             for l1, l2 in combinations(unique, 2):
                 res = _pp_bootstrap_between(g_post[l1], g_post[l2], n_bootstrap)
                 all_tests.append({**res, "feature": label, "feat_key": key,
                                    "comparison": f"{l1} vs {l2}", "window": "post"})
 
-            # Within-group: pre vs post
+            # Within-group: pre vs post  (modulation within each cluster)
             for l in unique:
                 idx = labels == l
                 res = _pp_bootstrap_within(pre_vals[key][idx], post_vals[key][idx], n_bootstrap)
                 all_tests.append({**res, "feature": label, "feat_key": key,
                                    "comparison": f"pre→post ({l})", "window": "within"})
+
+            # Interaction: does the pre→post change differ between groups?
+            # Tests whether spike waveform clusters have different LFP modulation
+            # H0: (A_post - A_pre) == (B_post - B_pre)
+            for l1, l2 in combinations(unique, 2):
+                idx1 = labels == l1; idx2 = labels == l2
+                change1 = post_vals[key][idx1] - pre_vals[key][idx1]
+                change2 = post_vals[key][idx2] - pre_vals[key][idx2]
+                res = _pp_bootstrap_between(change1, change2, n_bootstrap)
+                all_tests.append({**res, "feature": label, "feat_key": key,
+                                   "comparison": f"{l1} vs {l2} Δ(post-pre)",
+                                   "window": "interaction"})
 
         # BH-FDR correction
         pvals = [t["p"] for t in all_tests]
@@ -4430,14 +4601,17 @@ def compute_pre_post_specparam_comparison(
                         else "*" if pf < p_thresh else "ns")
 
         results[col] = {
-            "tests":         all_tests,
-            "pre_vals":      {f["key"]: pre_vals[f["key"]] for f in features},
-            "post_vals":     {f["key"]: post_vals[f["key"]] for f in features},
+            "tests":          all_tests,
+            "pre_vals":       {f["key"]: pre_vals[f["key"]] for f in features},
+            "post_vals":      {f["key"]: post_vals[f["key"]] for f in features},
+            "pre_spectra":    pre_spectra,
+            "post_spectra":   post_spectra,
+            "freqs":          freqs,
             "cluster_labels": labels,
             "unique_labels":  unique,
-            "pre_window":    pre_window,
-            "post_window":   post_window,
-            "cell_id":       cell_id,
+            "pre_window":     pre_window,
+            "post_window":    post_window,
+            "cell_id":        cell_id,
         }
 
         if plot:
@@ -4453,54 +4627,188 @@ def compute_pre_post_specparam_comparison(
 
 
 def _plot_pre_post_specparam(col_results, features, col_name, cell_id, p_thresh):
-    """Violin plots: pre vs post per cluster group, per feature."""
-    unique   = col_results["unique_labels"]
-    labels   = col_results["cluster_labels"]
-    pre_vals = col_results["pre_vals"]
-    post_vals= col_results["post_vals"]
-    tests    = col_results["tests"]
+    """
+    Two plots per cluster column, matching the style of plot_cluster_spectra_with_aucs:
+      1. Mean log10 power spectrum (pre solid, post dashed) per group + specparam fit
+      2. Violin plots of derived features with significance annotations
+    """
+    from specparam import SpectralModel
 
-    COLORS   = {"low": "#1f77b4", "mid": "#2ca02c", "high": "#ff7f0e"}
-    n_feat   = len(features)
-    fig, axes = plt.subplots(1, n_feat, figsize=(3.5 * n_feat, 4.5), sharey=False)
+    unique     = col_results["unique_labels"]
+    labels     = col_results["cluster_labels"]
+    pre_vals   = col_results["pre_vals"]
+    post_vals  = col_results["post_vals"]
+    tests      = col_results["tests"]
+    pre_specs  = col_results.get("pre_spectra")   # (n_spikes, n_freqs) linear power
+    post_specs = col_results.get("post_spectra")
+    freqs      = col_results.get("freqs")
+
+    COLOR_MAP     = {"low": "#1f77b4", "mid": "#2ca02c", "high": "#ff7f0e"}
+    default_colors = plt.cm.tab10.colors
+    feat_name     = col_name.replace("_cluster", "").replace("_", " ").title()
+
+    # ── Plot 1: average spectra + specparam fit ───────────────────────────────
+    if pre_specs is not None and freqs is not None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.set_title(
+            f"Group Average LFP Spectra by {feat_name} — Pre vs Post Spike\n{cell_id}",
+            fontsize=14, fontweight="bold", pad=15)
+
+        stats_lines = ["Average Band AUCs (pre | post):", "-" * 40]
+
+        for i, lbl in enumerate(unique):
+            idx   = labels == lbl
+            color = COLOR_MAP.get(str(lbl).lower(), default_colors[i % len(default_colors)])
+            n     = int(idx.sum())
+
+            for specs, tag, ls in [(pre_specs, "pre", "-"), (post_specs, "post", "--")]:
+                grp = np.log10(specs[idx] + 1e-30)          # linear → log10
+                valid = ~np.isnan(grp).all(axis=1)
+                grp   = grp[valid]
+                if len(grp) == 0:
+                    continue
+                mean_s = np.nanmean(grp, axis=0)
+                std_s  = np.nanstd(grp,  axis=0)
+                ax.plot(freqs, mean_s, color=color, lw=2.5, ls=ls,
+                        label=f"{lbl} {tag} (n={n})")
+                ax.fill_between(freqs, mean_s - std_s, mean_s + std_s,
+                                color=color, alpha=0.10 if tag == "pre" else 0.18)
+
+                # Fit SpectralModel to group-mean spectrum and overlay
+                try:
+                    sm = SpectralModel(verbose=False)
+                    sm.fit(freqs, 10 ** mean_s)          # fit in linear, log internally
+                    fit_log = sm.get_model(component="full", space="log")
+                    rsq     = sm.r_squared_
+                    if fit_log is not None:
+                        ax.plot(freqs, fit_log, color=color, lw=1.2, ls=ls,
+                                alpha=0.6, zorder=3,
+                                label=f"{lbl} {tag} fit (R²={rsq:.3f})")
+                except Exception:
+                    pass
+
+            # AUC + R² text for pre and post
+            auc_keys = [f["key"] for f in features if f["key"].startswith("band_aucs.")]
+            auc_parts = []
+            for fk in auc_keys:
+                band   = fk.split(".", 1)[1]
+                pre_m  = np.nanmean(pre_vals[fk][idx])
+                post_m = np.nanmean(post_vals[fk][idx])
+                auc_parts.append(f"{band.capitalize()}: {pre_m:.3f} | {post_m:.3f}")
+            rsq_pre  = np.nanmean(pre_vals["r_squared"][idx])  if "r_squared" in pre_vals  else np.nan
+            rsq_post = np.nanmean(post_vals["r_squared"][idx]) if "r_squared" in post_vals else np.nan
+            auc_parts.append(f"R²: {rsq_pre:.3f} | {rsq_post:.3f}")
+            stats_lines.append(f"{lbl.upper()} | " + ", ".join(auc_parts))
+
+        props = dict(boxstyle="round", facecolor="white", alpha=0.85, edgecolor="gray")
+        ax.text(0.97, 0.95, "\n".join(stats_lines), transform=ax.transAxes, fontsize=9,
+                verticalalignment="top", horizontalalignment="right",
+                bbox=props, family="monospace")
+        ax.set_xlabel("Frequency (Hz)", fontsize=12, fontweight="bold")
+        ax.set_ylabel("Power (log10)", fontsize=12, fontweight="bold")
+        ax.legend(frameon=False, loc="lower left", fontsize=10)
+        sns.despine()
+        plt.tight_layout()
+        plt.show()
+
+    # ── Helper: draw a significance bracket ──────────────────────────────────
+    def _bracket(ax, x1, x2, y, text, dy=0.03):
+        yrange = ax.get_ylim()
+        h = (yrange[1] - yrange[0]) * dy
+        ax.plot([x1, x1, x2, x2], [y, y + h, y + h, y], lw=0.8, color="black", clip_on=False)
+        ax.text((x1 + x2) / 2, y + h, text, ha="center", va="bottom", fontsize=7)
+
+    def _es_str(t):
+        """Short effect-size string for a test result."""
+        if "cohens_dz" in t and not np.isnan(t.get("cohens_dz", np.nan)):
+            return f"d_z={t['cohens_dz']:.2f}, r={t.get('rank_biserial_r', np.nan):.2f}"
+        return (f"g={t.get('hedges_g', np.nan):.2f}, "
+                f"r={t.get('rank_biserial_r', np.nan):.2f}")
+
+    def _lookup(tests, feat_key, window, comparison_contains):
+        return next((t for t in tests
+                     if t["feat_key"] == feat_key
+                     and t["window"] == window
+                     and comparison_contains in t["comparison"]), None)
+
+    # ── Plot 2: violin plots per feature ──────────────────────────────────────
+    n_feat = len(features)
+    fig, axes = plt.subplots(1, n_feat, figsize=(3.8 * n_feat, 5), sharey=False)
     if n_feat == 1:
         axes = [axes]
-
-    feat_name = col_name.replace("_cluster", "").replace("_", " ").title()
-    fig.suptitle(f"{cell_id}  |  Pre / Post spike — {feat_name}", fontsize=11, y=1.01)
+    fig.suptitle(
+        f"Group LFP Features by {feat_name} — Pre vs Post Spike  |  {cell_id}",
+        fontsize=11, fontweight="bold")
 
     for ax, feat in zip(axes, features):
         key, label = feat["key"], feat["label"]
-        positions, data_parts, colors_v, xticks, xticklabels = [], [], [], [], []
+
+        # Layout: [A_pre, B_pre, (C_pre,)]  |gap|  [A_post, B_post, (C_post,)]
+        # Positions keyed by (window, label)
+        pos_map = {}
         pos = 0
-        for lbl in unique:
-            idx  = labels == lbl
-            col  = COLORS.get(lbl, "gray")
-            pre  = pre_vals[key][idx];  pre  = pre[np.isfinite(pre)]
-            post = post_vals[key][idx]; post = post[np.isfinite(post)]
-            for arr, tag in [(pre, "pre"), (post, "post")]:
-                if len(arr) > 0:
-                    vp = ax.violinplot([arr], positions=[pos], widths=0.7,
+        for win_tag, vals_dict, alpha in [("pre", pre_vals, 0.5), ("post", post_vals, 0.85)]:
+            for i, lbl in enumerate(unique):
+                pos_map[(win_tag, lbl)] = pos
+                idx   = labels == lbl
+                color = COLOR_MAP.get(str(lbl).lower(), default_colors[i % len(default_colors)])
+                arr   = vals_dict[key][idx]; arr = arr[np.isfinite(arr)]
+                if len(arr):
+                    vp = ax.violinplot([arr], [pos], widths=0.65,
                                        showmedians=True, showextrema=False)
                     for pc in vp["bodies"]:
-                        pc.set_facecolor(col)
-                        pc.set_alpha(0.4 if tag == "pre" else 0.8)
-                    vp["cmedians"].set_color(col)
-                xticks.append(pos)
-                xticklabels.append(f"{lbl}\n{tag}")
+                        pc.set_facecolor(color); pc.set_alpha(alpha)
+                    vp["cmedians"].set_color(color)
                 pos += 1
-            pos += 0.4  # gap between groups
+            pos += 0.6  # gap between windows
 
-        ax.set_xticks(xticks)
-        ax.set_xticklabels(xticklabels, fontsize=7)
-        ax.set_title(label, fontsize=9)
-        ax.set_ylabel("")
+        xtick_positions = list(pos_map.values())
+        xtick_labels    = [f"{lbl}\n{win}" for (win, lbl) in pos_map.keys()]
+        ax.set_xticks(xtick_positions)
+        ax.set_xticklabels(xtick_labels, fontsize=7)
 
-        # Significance annotations
-        sig_tests = [t for t in tests if t["feat_key"] == key and t["sig"] != "ns"]
-        for t in sig_tests:
-            ax.set_title(f"{label}\n{t['comparison']} {t['sig']} (FDR)", fontsize=8)
-            break  # just flag first significant result in title for now
+        # Dotted separator between pre and post groups
+        sep_x = (pos_map[("pre", unique[-1])] + pos_map[("post", unique[0])]) / 2
+        ax.axvline(sep_x, color="gray", lw=0.8, ls=":")
+
+        ax.set_title(label, fontsize=9, fontweight="bold")
+        sns.despine(ax=ax)
+
+        # ── Significance brackets ──────────────────────────────────────────
+        ax.autoscale(enable=True, axis="y")
+        plt.draw()  # needed so get_ylim() is current
+        ymax = ax.get_ylim()[1]
+        step = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.07
+
+        bracket_y = ymax
+        for l1, l2 in combinations(unique, 2):
+            for win in ["pre", "post"]:
+                t = _lookup(tests, key, win, f"{l1} vs {l2}")
+                if t is None:
+                    continue
+                x1, x2 = pos_map[(win, l1)], pos_map[(win, l2)]
+                text = f"{t['sig']} [{win}]\n{_es_str(t)}"
+                _bracket(ax, x1, x2, bracket_y, text)
+                bracket_y += step * 2.2
+
+            # pre→post within each group
+            for lbl in [l1, l2]:
+                t = _lookup(tests, key, "within", f"pre→post ({lbl})")
+                if t is None:
+                    continue
+                x1, x2 = pos_map[("pre", lbl)], pos_map[("post", lbl)]
+                text = f"{lbl}: pre→post {t['sig']}\n{_es_str(t)}"
+                _bracket(ax, x1, x2, bracket_y, text)
+                bracket_y += step * 2.2
+
+            # Interaction
+            t = _lookup(tests, key, "interaction", f"{l1} vs {l2}")
+            if t is not None:
+                x1 = (pos_map[("pre", l1)] + pos_map[("pre", l2)]) / 2
+                x2 = (pos_map[("post", l1)] + pos_map[("post", l2)]) / 2
+                text = f"Interaction {t['sig']}\n{_es_str(t)}"
+                _bracket(ax, x1, x2, bracket_y, text)
+                bracket_y += step * 2.2
 
     plt.tight_layout()
     plt.show()
