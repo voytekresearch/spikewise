@@ -466,24 +466,26 @@ def load_chunked_specparam_results(save_dir: str, prefix: str = "c21_specparam")
     all_files.sort(key=extract_chunk_number)
     print(f"Found {len(all_files)} chunk files. Assembling master list...")
 
-    # 3. Memory-safe loading
+    # 3. Memory-safe loading — drop large fields not needed for analysis
+    _DROP_KEYS = {"model", "powers"}
     specparam_by_spike = []
-    
+
     for file_name in tqdm(all_files, desc="Loading Chunks", file=sys.stdout, dynamic_ncols=False):
         file_path = os.path.join(save_dir, file_name)
-        
+
         with open(file_path, 'rb') as f:
             chunk_data = pickle.load(f)
-        
-        # Extend the master list
+
+        for spike in chunk_data:
+            for k in _DROP_KEYS:
+                spike.pop(k, None)
+
         specparam_by_spike.extend(chunk_data)
-        
-        # Free up memory immediately
         del chunk_data
-        gc.collect() 
+        gc.collect()
 
     print(f"Success! Master list assembled with {len(specparam_by_spike)} total spikes.")
-    return specparam_by_spike  
+    return specparam_by_spike
 # Post-process: remove first/last 0.5s epochs
 def trim_edges(results, edge_sec=0.5):
     """
@@ -500,7 +502,8 @@ def trim_edges(results, edge_sec=0.5):
         # Overwrite the arrays IN-PLACE
         out_w["t_bins_s"] = out_w["t_bins_s"][mask]
         out_w["epoch_idx"] = out_w["epoch_idx"][mask]
-        out_w["powers"] = out_w["powers"][mask, :]
+        if "powers" in out_w:
+            out_w["powers"] = out_w["powers"][mask, :]
         out_w["offset"] = out_w["offset"][mask]
         out_w["exponent"] = out_w["exponent"][mask]
         out_w["r_squared"] = out_w["r_squared"][mask]
