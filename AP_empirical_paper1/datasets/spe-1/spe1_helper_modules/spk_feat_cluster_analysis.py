@@ -4220,3 +4220,287 @@ def plot_significant_windows_spectra(df_clust, specparam_list, pop_stats_dict, t
                     border="1px solid #ccc",
                 ),
             ))
+
+
+# =============================================================================
+# PRE / POST SPIKE SPECPARAM COMPARISON
+# =============================================================================
+
+_PREPOST_DEFAULT_FEATURES = [
+    {"key": "exponent",        "label": "Aperiodic Exponent"},
+    {"key": "offset",          "label": "Aperiodic Offset"},
+    {"key": "r_squared",       "label": "R²"},
+    {"key": "band_aucs.theta", "label": "Theta AUC"},
+    {"key": "band_aucs.beta",  "label": "Beta AUC"},
+    {"key": "band_aucs.gamma", "label": "Gamma AUC"},
+]
+
+
+def _pp_get_feature(spike_data, feat_key, window):
+    """Mean of a specparam feature within a time window for one spike."""
+    t = spike_data.get("t_bins_s")
+    if t is None or len(t) == 0:
+        return np.nan
+    mask = (t >= window[0]) & (t <= window[1])
+    if not np.any(mask):
+        return np.nan
+    if "." in feat_key:
+        top, sub = feat_key.split(".", 1)
+        arr = spike_data.get(top, {}).get(sub)
+    else:
+        arr = spike_data.get(feat_key)
+    if arr is None or len(arr) != len(t):
+        return np.nan
+    vals = np.asarray(arr, float)[mask]
+    return np.nanmean(vals) if np.any(np.isfinite(vals)) else np.nan
+
+
+def _pp_bootstrap_between(g1, g2, n_bootstrap=1000):
+    """Permutation p-value + bootstrap 95% CI on Cohen's d between two groups."""
+    g1 = np.asarray(g1, float); g1 = g1[np.isfinite(g1)]
+    g2 = np.asarray(g2, float); g2 = g2[np.isfinite(g2)]
+    if len(g1) < 3 or len(g2) < 3:
+        return dict(p=np.nan, cohens_d=np.nan, ci_lo=np.nan, ci_hi=np.nan, n1=len(g1), n2=len(g2))
+
+    def _d(a, b):
+        n1, n2 = len(a), len(b)
+        pooled = np.sqrt(((n1 - 1) * np.var(a, ddof=1) + (n2 - 1) * np.var(b, ddof=1)) / (n1 + n2 - 2))
+        return (np.mean(a) - np.mean(b)) / (pooled + 1e-10)
+
+    obs = _d(g1, g2)
+    combined = np.concatenate([g1, g2]); n1 = len(g1)
+    null = [_d(np.random.permutation(combined)[:n1], np.random.permutation(combined)[n1:])
+            for _ in range(n_bootstrap)]
+    p = np.mean(np.abs(null) >= np.abs(obs))
+
+    boot = [_d(np.random.choice(g1, len(g1), replace=True),
+               np.random.choice(g2, len(g2), replace=True))
+            for _ in range(n_bootstrap)]
+    ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
+    return dict(p=p, cohens_d=obs, ci_lo=ci_lo, ci_hi=ci_hi, n1=len(g1), n2=len(g2))
+
+
+def _pp_bootstrap_within(pre, post, n_bootstrap=1000):
+    """Bootstrap 95% CI on mean post-pre difference + Wilcoxon p-value."""
+    from scipy.stats import wilcoxon
+    pre = np.asarray(pre, float); post = np.asarray(post, float)
+    valid = np.isfinite(pre) & np.isfinite(post)
+    pre, post = pre[valid], post[valid]
+    if len(pre) < 5:
+        return dict(p=np.nan, mean_diff=np.nan, ci_lo=np.nan, ci_hi=np.nan, n=len(pre))
+    diff = post - pre
+    mean_diff = np.mean(diff)
+    try:
+        _, p = wilcoxon(diff, alternative="two-sided")
+    except Exception:
+        p = np.nan
+    idx = np.arange(len(diff))
+    boot = [np.mean(diff[np.random.choice(idx, len(idx), replace=True)]) for _ in range(n_bootstrap)]
+    ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
+    return dict(p=p, mean_diff=mean_diff, ci_lo=ci_lo, ci_hi=ci_hi, n=len(pre))
+
+
+def compute_pre_post_specparam_comparison(
+    specparam_by_spike,
+    df_features_clust,
+    pre_window=(-0.5, -0.05),
+    post_window=(0.05, 1.0),
+    features=None,
+    n_bootstrap=1000,
+    p_thresh=0.05,
+    plot=True,
+    cell_id="",
+    save_path=None,
+    force=False,
+):
+    """
+    Compare specparam features between cluster groups in pre- and post-spike windows.
+
+    For each cluster column and each feature:
+      - Bootstrap permutation test between cluster groups (pre window, post window)
+      - Bootstrap Wilcoxon test: pre vs post within each group
+      - BH-FDR correction across all tests per cluster column
+      - Violin plots (if plot=True)
+
+    Parameters
+    ----------
+    specparam_by_spike : list of dict
+        Output of load_chunked_specparam_results / run_time_resolved_specparam_per_spike.
+    df_features_clust : pd.DataFrame
+        Spike feature DataFrame with *_cluster columns. Row i corresponds to spike i.
+    pre_window : (float, float)
+        (start_s, end_s) of the pre-spike averaging window relative to spike time.
+    post_window : (float, float)
+        (start_s, end_s) of the post-spike averaging window.
+    features : list of dict, optional
+        Each dict has 'key' (e.g. 'exponent' or 'band_aucs.theta') and 'label'.
+        Defaults to exponent, offset, R², theta/beta/gamma AUC.
+    n_bootstrap : int
+        Bootstrap / permutation iterations.
+    p_thresh : float
+        Significance threshold (after FDR correction) for plot annotations.
+    plot : bool
+        Whether to produce violin plots.
+    cell_id : str
+        Used in plot titles and printed output.
+    save_path : str or None
+        If given, saves the results dict as a pickle.
+
+    Returns
+    -------
+    results : dict
+        Keyed by cluster column. Each value contains 'tests' (list of dicts with
+        p, p_fdr, cohens_d / mean_diff, CIs) and summary arrays for population use.
+    """
+    from itertools import combinations
+    from statsmodels.stats.multitest import multipletests
+
+    if not force and save_path and os.path.exists(save_path):
+        print(f"  [cache] {os.path.basename(save_path)}")
+        with open(save_path, "rb") as fh:
+            results = pickle.load(fh)
+        if plot:
+            if features is None:
+                features = _PREPOST_DEFAULT_FEATURES
+            for col, col_res in results.items():
+                _plot_pre_post_specparam(col_res, features, col, cell_id, p_thresh)
+        return results
+
+    if features is None:
+        features = _PREPOST_DEFAULT_FEATURES
+
+    cluster_cols = [c for c in df_features_clust.columns if c.endswith("_cluster")]
+    n_spikes = len(specparam_by_spike)
+
+    # ── 1. Extract per-spike window means ─────────────────────────────────────
+    pre_vals  = {f["key"]: np.full(n_spikes, np.nan) for f in features}
+    post_vals = {f["key"]: np.full(n_spikes, np.nan) for f in features}
+
+    for i, spike in enumerate(tqdm(specparam_by_spike, desc="Extracting pre/post means",
+                                    file=sys.stdout, dynamic_ncols=False)):
+        for f in features:
+            pre_vals[f["key"]][i]  = _pp_get_feature(spike, f["key"], pre_window)
+            post_vals[f["key"]][i] = _pp_get_feature(spike, f["key"], post_window)
+
+    results = {}
+
+    for col in cluster_cols:
+        labels = df_features_clust[col].values
+        unique  = [l for l in ["low", "mid", "high"] if l in labels]
+        if len(unique) < 2:
+            continue
+
+        all_tests = []
+
+        for feat in features:
+            key, label = feat["key"], feat["label"]
+            g_pre  = {l: pre_vals[key][labels == l]  for l in unique}
+            g_post = {l: post_vals[key][labels == l] for l in unique}
+
+            # Between-group: pre window
+            for l1, l2 in combinations(unique, 2):
+                res = _pp_bootstrap_between(g_pre[l1], g_pre[l2], n_bootstrap)
+                all_tests.append({**res, "feature": label, "feat_key": key,
+                                   "comparison": f"{l1} vs {l2}", "window": "pre"})
+
+            # Between-group: post window
+            for l1, l2 in combinations(unique, 2):
+                res = _pp_bootstrap_between(g_post[l1], g_post[l2], n_bootstrap)
+                all_tests.append({**res, "feature": label, "feat_key": key,
+                                   "comparison": f"{l1} vs {l2}", "window": "post"})
+
+            # Within-group: pre vs post
+            for l in unique:
+                idx = labels == l
+                res = _pp_bootstrap_within(pre_vals[key][idx], post_vals[key][idx], n_bootstrap)
+                all_tests.append({**res, "feature": label, "feat_key": key,
+                                   "comparison": f"pre→post ({l})", "window": "within"})
+
+        # BH-FDR correction
+        pvals = [t["p"] for t in all_tests]
+        finite_mask = np.isfinite(pvals)
+        p_fdr = np.full(len(pvals), np.nan)
+        if finite_mask.any():
+            _, p_adj, _, _ = multipletests(
+                np.where(finite_mask, pvals, 1.0), method="fdr_bh")
+            p_fdr[finite_mask] = p_adj[finite_mask]
+        for t, pf in zip(all_tests, p_fdr):
+            t["p_fdr"] = pf
+            t["sig"] = ("***" if pf < 0.001 else "**" if pf < 0.01
+                        else "*" if pf < p_thresh else "ns")
+
+        results[col] = {
+            "tests":         all_tests,
+            "pre_vals":      {f["key"]: pre_vals[f["key"]] for f in features},
+            "post_vals":     {f["key"]: post_vals[f["key"]] for f in features},
+            "cluster_labels": labels,
+            "unique_labels":  unique,
+            "pre_window":    pre_window,
+            "post_window":   post_window,
+            "cell_id":       cell_id,
+        }
+
+        if plot:
+            _plot_pre_post_specparam(results[col], features, col, cell_id, p_thresh)
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, "wb") as fh:
+            pickle.dump(results, fh)
+        print(f"  Saved: {os.path.basename(save_path)}")
+
+    return results
+
+
+def _plot_pre_post_specparam(col_results, features, col_name, cell_id, p_thresh):
+    """Violin plots: pre vs post per cluster group, per feature."""
+    unique   = col_results["unique_labels"]
+    labels   = col_results["cluster_labels"]
+    pre_vals = col_results["pre_vals"]
+    post_vals= col_results["post_vals"]
+    tests    = col_results["tests"]
+
+    COLORS   = {"low": "#1f77b4", "mid": "#2ca02c", "high": "#ff7f0e"}
+    n_feat   = len(features)
+    fig, axes = plt.subplots(1, n_feat, figsize=(3.5 * n_feat, 4.5), sharey=False)
+    if n_feat == 1:
+        axes = [axes]
+
+    feat_name = col_name.replace("_cluster", "").replace("_", " ").title()
+    fig.suptitle(f"{cell_id}  |  Pre / Post spike — {feat_name}", fontsize=11, y=1.01)
+
+    for ax, feat in zip(axes, features):
+        key, label = feat["key"], feat["label"]
+        positions, data_parts, colors_v, xticks, xticklabels = [], [], [], [], []
+        pos = 0
+        for lbl in unique:
+            idx  = labels == lbl
+            col  = COLORS.get(lbl, "gray")
+            pre  = pre_vals[key][idx];  pre  = pre[np.isfinite(pre)]
+            post = post_vals[key][idx]; post = post[np.isfinite(post)]
+            for arr, tag in [(pre, "pre"), (post, "post")]:
+                if len(arr) > 0:
+                    vp = ax.violinplot([arr], positions=[pos], widths=0.7,
+                                       showmedians=True, showextrema=False)
+                    for pc in vp["bodies"]:
+                        pc.set_facecolor(col)
+                        pc.set_alpha(0.4 if tag == "pre" else 0.8)
+                    vp["cmedians"].set_color(col)
+                xticks.append(pos)
+                xticklabels.append(f"{lbl}\n{tag}")
+                pos += 1
+            pos += 0.4  # gap between groups
+
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xticklabels, fontsize=7)
+        ax.set_title(label, fontsize=9)
+        ax.set_ylabel("")
+
+        # Significance annotations
+        sig_tests = [t for t in tests if t["feat_key"] == key and t["sig"] != "ns"]
+        for t in sig_tests:
+            ax.set_title(f"{label}\n{t['comparison']} {t['sig']} (FDR)", fontsize=8)
+            break  # just flag first significant result in title for now
+
+    plt.tight_layout()
+    plt.show()
