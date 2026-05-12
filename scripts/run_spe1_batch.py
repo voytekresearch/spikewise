@@ -103,18 +103,30 @@ def run_cluster_nb(args):
 
 
 def _run_lfp_notebook(nb_path, label, opts):
-    """Execute an LFP notebook via papermill with no parameter injection.
-    Runs exactly as if opened and run manually in Jupyter."""
+    """
+    Execute an LFP notebook in-place using jupyter nbconvert --execute.
+    Produces output identical to manual Jupyter execution and avoids
+    papermill's markdown-cell validation bug.
+    """
+    import subprocess
     t0 = datetime.now()
     print(f"  [{label}] started {t0:%H:%M:%S}")
     try:
-        pm.execute_notebook(
-            str(nb_path), str(nb_path),
-            parameters={},          # no injection — FORCE flags live in the notebook
-            kernel_name="python3",
-            progress_bar=False,
-            log_output=opts["workers"] == 1,
+        result = subprocess.run(
+            [
+                "jupyter", "nbconvert",
+                "--to", "notebook",
+                "--execute",
+                "--inplace",
+                "--ExecutePreprocessor.timeout=-1",
+                "--ExecutePreprocessor.kernel_name=python3",
+                str(nb_path),
+            ],
+            stdout=None if opts["workers"] == 1 else subprocess.DEVNULL,
+            stderr=None if opts["workers"] == 1 else subprocess.DEVNULL,
         )
+        if result.returncode != 0:
+            return f"nbconvert failed (exit {result.returncode})"
         elapsed = (datetime.now() - t0).seconds // 60
         print(f"  [{label}] done ({elapsed} min)")
         return "ok"
