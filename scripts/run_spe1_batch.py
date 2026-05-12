@@ -7,35 +7,35 @@ per-cell logic, manual clustering thresholds, and plot output.
 
 Two phases:
   Phase 1 — cluster notebooks (all requested cells)
-  Phase 2 — LFP analysis notebooks (priority cells, only when --lfp is passed)
+  Phase 2 — LFP analysis notebooks
 
-Use --lfp-only to skip clustering entirely and run only LFP notebooks.
+LFP notebook variants:
+  --lfp        priority cells  (spe-1_c{N}_LFP_analysis.ipynb)
+  --lfp-np     non-priority cells  (spe-1_c{N}_np_LFP_analysis.ipynb)
 
-Parameters (FORCE_CLUSTER, FORCE_LFP, etc.) are injected into each notebook's
-tagged parameters cell, overriding its defaults for that run only.
+LFP notebooks run exactly as in manual Jupyter execution — FORCE flags are
+controlled inside each notebook's parameters cell, not injected by papermill.
+Cluster notebooks still support --force-cluster injection.
 
 Usage examples
 --------------
-# Cluster ALL cells (loads from cache where pickles exist):
+# Cluster ALL cells:
     python scripts/run_spe1_batch.py
 
-# Cluster all cells, force-redo even if pickles exist:
-    python scripts/run_spe1_batch.py --force-cluster
-
-# Cluster all cells + run LFP for priority cells:
+# Cluster all cells + run priority LFP:
     python scripts/run_spe1_batch.py --lfp
 
-# LFP only for priority cells (skip clustering):
+# LFP only — priority cells (skip clustering):
     python scripts/run_spe1_batch.py --lfp-only
 
-# LFP only, force-redo even if pickles exist:
-    python scripts/run_spe1_batch.py --lfp-only --force-lfp
+# LFP only — non-priority cells:
+    python scripts/run_spe1_batch.py --lfp-np-only
 
-# Force-redo everything for priority cells:
-    python scripts/run_spe1_batch.py --priority --lfp --force-all
+# LFP only — both priority and non-priority:
+    python scripts/run_spe1_batch.py --lfp-only --lfp-np-only
 
-# Specific cells, 4 parallel workers:
-    python scripts/run_spe1_batch.py --cells 21 24 42 --lfp --workers 4
+# Specific cells (np), 2 workers:
+    python scripts/run_spe1_batch.py --lfp-np-only --cells 1 2 6 7 --workers 2
 
 Notes
 -----
@@ -102,34 +102,46 @@ def run_cluster_nb(args):
         return (cell_id, traceback.format_exc())
 
 
-def run_lfp_nb(args):
-    """Execute one LFP analysis notebook via papermill. Returns (cell_id, 'ok'|traceback)."""
-    cell_id, opts = args
-    cnum = _cell_num(cell_id)
-    nb   = NB_DIR / f"spe-1_c{cnum}_LFP_analysis.ipynb"
-
-    if not nb.exists():
-        return (cell_id, f"no LFP notebook for c{cnum} (only priority cells have one)")
-
+def _run_lfp_notebook(nb_path, label, opts):
+    """Execute an LFP notebook via papermill with no parameter injection.
+    Runs exactly as if opened and run manually in Jupyter."""
     t0 = datetime.now()
-    print(f"  [LFP]     c{cnum} started {t0:%H:%M:%S}")
+    print(f"  [{label}] started {t0:%H:%M:%S}")
     try:
         pm.execute_notebook(
-            str(nb), str(nb),
-            parameters={
-                "FORCE_LFP":    opts["force_lfp"],
-                "FORCE_SIMPLE": opts["force_lfp"],
-                "FORCE_STATS":  opts["force_lfp"],
-            },
+            str(nb_path), str(nb_path),
+            parameters={},          # no injection — FORCE flags live in the notebook
             kernel_name="python3",
             progress_bar=False,
             log_output=opts["workers"] == 1,
         )
         elapsed = (datetime.now() - t0).seconds // 60
-        print(f"  [LFP]     c{cnum} done ({elapsed} min)")
-        return (cell_id, "ok")
+        print(f"  [{label}] done ({elapsed} min)")
+        return "ok"
     except Exception:
-        return (cell_id, traceback.format_exc())
+        return traceback.format_exc()
+
+
+def run_lfp_nb(args):
+    """Priority LFP notebook (spe-1_c{N}_LFP_analysis.ipynb)."""
+    cell_id, opts = args
+    cnum = _cell_num(cell_id)
+    nb   = NB_DIR / f"spe-1_c{cnum}_LFP_analysis.ipynb"
+    if not nb.exists():
+        return (cell_id, f"no priority LFP notebook for c{cnum}")
+    result = _run_lfp_notebook(nb, f"LFP c{cnum}", opts)
+    return (cell_id, result)
+
+
+def run_lfp_np_nb(args):
+    """Non-priority LFP notebook (spe-1_c{N}_np_LFP_analysis.ipynb)."""
+    cell_id, opts = args
+    cnum = _cell_num(cell_id)
+    nb   = NB_DIR / f"spe-1_c{cnum}_np_LFP_analysis.ipynb"
+    if not nb.exists():
+        return (cell_id, f"no np LFP notebook for c{cnum}")
+    result = _run_lfp_notebook(nb, f"LFP-np c{cnum}", opts)
+    return (cell_id, result)
 
 
 def _run_phase(fn, job_args, workers, label):
@@ -161,24 +173,31 @@ def main():
                         help="Run only PRIORITY_CELLS from config")
     parser.add_argument("--workers",  type=int, default=1,
                         help="Parallel notebooks (default 1 — see Notes about n_jobs)")
-    parser.add_argument("--lfp",      dest="run_lfp",      action="store_true",
-                        help="Also run LFP analysis notebooks after clustering (priority cells only)")
-    parser.add_argument("--lfp-only", dest="lfp_only",     action="store_true",
-                        help="Skip clustering; run LFP analysis notebooks only (priority cells)")
+    parser.add_argument("--lfp",         dest="run_lfp",     action="store_true",
+                        help="Run priority LFP notebooks (spe-1_c{N}_LFP_analysis.ipynb)")
+    parser.add_argument("--lfp-only",    dest="lfp_only",    action="store_true",
+                        help="Skip clustering; run priority LFP notebooks only")
+    parser.add_argument("--lfp-np",      dest="run_lfp_np",  action="store_true",
+                        help="Run non-priority LFP notebooks (spe-1_c{N}_np_LFP_analysis.ipynb)")
+    parser.add_argument("--lfp-np-only", dest="lfp_np_only", action="store_true",
+                        help="Skip clustering; run non-priority LFP notebooks only")
     parser.add_argument("--force-cluster", dest="force_cluster", action="store_true",
                         help="Inject FORCE_CLUSTER=True into cluster notebooks")
-    parser.add_argument("--force-lfp",     dest="force_lfp",     action="store_true",
-                        help="Inject FORCE_LFP/FORCE_SIMPLE/FORCE_STATS=True into LFP notebooks")
     parser.add_argument("--force-all",     dest="force_all",     action="store_true",
-                        help="Equivalent to --force-cluster --force-lfp")
+                        help="Equivalent to --force-cluster")
     args = parser.parse_args()
 
     if args.force_all:
-        args.force_cluster = args.force_lfp = True
+        args.force_cluster = True
 
-    # --lfp-only implies --lfp
-    if args.lfp_only:
-        args.run_lfp = True
+    # --lfp-only / --lfp-np-only imply their respective run flags
+    if args.lfp_only:    args.run_lfp    = True
+    if args.lfp_np_only: args.run_lfp_np = True
+
+    skip_clustering = args.lfp_only and not args.run_lfp_np or \
+                      args.lfp_np_only and not args.run_lfp or \
+                      (args.lfp_only and args.lfp_np_only)
+    skip_clustering = args.lfp_only or args.lfp_np_only
 
     # Resolve cell lists
     if args.cells:
@@ -188,22 +207,21 @@ def main():
     else:
         cell_ids = list(CELL_IDS)
 
-    lfp_ids = (
-        [cid for cid in cell_ids if cid in PRIORITY_SET]
-        if args.run_lfp else []
-    )
+    lfp_ids    = [cid for cid in cell_ids if cid in PRIORITY_SET]     if args.run_lfp    else []
+    lfp_np_ids = [cid for cid in cell_ids if cid not in PRIORITY_SET] if args.run_lfp_np else []
 
-    opts = {"force_cluster": args.force_cluster, "force_lfp": args.force_lfp, "workers": args.workers}
+    opts = {"force_cluster": args.force_cluster, "workers": args.workers}
+    # Note: force_lfp is no longer injected — set FORCE flags inside each notebook instead
 
-    if args.lfp_only:
-        print(f"LFP analysis: {len(lfp_ids)} cells  {sorted(lfp_ids)}  (clustering skipped)")
-    else:
-        print(f"Clustering : {len(cell_ids)} cells")
-        print(f"LFP analysis: {len(lfp_ids)} cells  {sorted(lfp_ids)}")
-    print(f"force_cluster={args.force_cluster}  force_lfp={args.force_lfp}  workers={args.workers}")
+    if not skip_clustering:
+        print(f"Clustering:      {len(cell_ids)} cells")
+    print(f"LFP (priority):  {len(lfp_ids)} cells  {sorted(lfp_ids)}")
+    print(f"LFP (np):        {len(lfp_np_ids)} cells")
+    print(f"force_cluster={args.force_cluster}  workers={args.workers}")
+    print("Note: LFP FORCE flags are set inside each notebook's parameters cell.")
 
-    # Phase 1: cluster notebooks (skipped when --lfp-only)
-    if not args.lfp_only:
+    # Phase 1: cluster notebooks
+    if not skip_clustering:
         cluster_ok, _ = _run_phase(
             run_cluster_nb,
             [(cid, opts) for cid in cell_ids],
@@ -211,16 +229,26 @@ def main():
             "Phase 1: Cluster notebooks",
         )
     else:
-        cluster_ok = list(cell_ids)  # treat all as ready since clustering already done
+        cluster_ok = list(cell_ids)
 
-    # Phase 2: LFP analysis notebooks
+    # Phase 2: priority LFP notebooks
     if lfp_ids:
         lfp_ready = [cid for cid in lfp_ids if cid in cluster_ok]
         _run_phase(
             run_lfp_nb,
             [(cid, opts) for cid in lfp_ready],
             args.workers,
-            "Phase 2: LFP analysis notebooks",
+            "Phase 2: LFP analysis notebooks (priority)",
+        )
+
+    # Phase 3: non-priority LFP notebooks
+    if lfp_np_ids:
+        np_ready = [cid for cid in lfp_np_ids if cid in cluster_ok]
+        _run_phase(
+            run_lfp_np_nb,
+            [(cid, opts) for cid in np_ready],
+            args.workers,
+            "Phase 3: LFP analysis notebooks (non-priority)",
         )
 
     print("\nDone.")
