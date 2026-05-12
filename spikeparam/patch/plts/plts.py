@@ -106,8 +106,11 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                            if i not in model.inds_error and i < n_spikes]
                 if peak_align and all_wfs:
                     _, t_plot = _peak_align(all_wfs, model.times, wght)
+                    # Global pre = index where t=0 lives in the shared grid
+                    global_pre = int(np.argmin(np.abs(t_plot)))
                 else:
-                    t_plot = _times
+                    t_plot     = _times
+                    global_pre = None
 
                 offset = 0
                 for idx, group in enumerate(ind_groups):
@@ -116,8 +119,21 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                              if i not in model.inds_error and i < n_spikes]
                     if not wfs:
                         continue
-                    if peak_align:
-                        arr, _ = _peak_align(wfs, model.times, wght)
+                    if peak_align and global_pre is not None:
+                        # Align each group using the GLOBAL pre so all groups
+                        # share the same t=0 reference point.
+                        wfs_arr   = [np.asarray(w, float) for w in wfs]
+                        peak_idxs = [int(np.argmax(np.abs(w))) for w in wfs_arr]
+                        global_post = max(len(w) - pk - 1
+                                         for w, pk in zip(wfs_arr, peak_idxs))
+                        total = global_pre + global_post + 1
+                        arr   = np.full((len(wfs_arr), total), np.nan)
+                        for k, (w, pk) in enumerate(zip(wfs_arr, peak_idxs)):
+                            s = global_pre - pk
+                            if s >= 0:
+                                arr[k, s:s + len(w)] = w
+                            else:
+                                arr[k, :len(w) + s] = w[-s:]
                     else:
                         arr = np.array(wfs)
                     n = min(arr.shape[1], len(t_plot))
