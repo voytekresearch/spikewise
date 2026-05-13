@@ -85,18 +85,41 @@ def load_or_compute(path: str, compute_fn, force: bool = False, verbose: bool = 
     return result
 
 
-def _iqr_filter_waveforms(wfs, iqr_thresh=3.0):
-    """Remove waveforms with peak amplitude outside Q1±iqr_thresh*IQR."""
+def _spike_half_width(w):
+    """Number of samples at or above 50% of peak amplitude (half-width proxy)."""
+    w = np.asarray(w, float)
+    peak = np.max(np.abs(w))
+    if peak == 0:
+        return 0
+    return int(np.sum(np.abs(w) >= 0.5 * peak))
+
+
+def _iqr_filter_waveforms(wfs, iqr_thresh=1.5):
+    """
+    Remove waveforms that are outliers in peak amplitude OR half-width.
+    Biologically implausible spikes (e.g. extremely narrow artifacts) are
+    caught by the width filter even when their amplitude looks normal.
+    Both filters use Q1 ± iqr_thresh * IQR per group.
+    """
     if not wfs or iqr_thresh is None:
         return wfs
-    peaks = np.array([np.max(np.abs(w)) for w in wfs])
-    q1, q3 = np.percentile(peaks, [25, 75])
-    iqr = q3 - q1
-    lo, hi = q1 - iqr_thresh * iqr, q3 + iqr_thresh * iqr
-    return [w for w, p in zip(wfs, peaks) if lo <= p <= hi]
+
+    peaks  = np.array([np.max(np.abs(w)) for w in wfs])
+    widths = np.array([_spike_half_width(w) for w in wfs])
+
+    def _bounds(arr):
+        q1, q3 = np.percentile(arr, [25, 75])
+        iqr = q3 - q1
+        return q1 - iqr_thresh * iqr, q3 + iqr_thresh * iqr
+
+    p_lo, p_hi = _bounds(peaks)
+    w_lo, w_hi = _bounds(widths)
+
+    return [w for w, p, wd in zip(wfs, peaks, widths)
+            if p_lo <= p <= p_hi and w_lo <= wd <= w_hi]
 
 
-def compute_cluster_waveforms(sp, df, cluster_cols, outlier_thresh=3.0):
+def compute_cluster_waveforms(sp, df, cluster_cols, outlier_thresh=1.5):
     """
     Compute peak-aligned average waveforms for every cluster group in every
     cluster column.  Results are saved to a lightweight pickle so the population

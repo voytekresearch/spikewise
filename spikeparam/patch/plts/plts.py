@@ -4,19 +4,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def _filter_outlier_spikes(indices, spikes, iqr_thresh=3.0):
+def _half_width(w):
+    w = np.asarray(w, float)
+    peak = np.max(np.abs(w))
+    return int(np.sum(np.abs(w) >= 0.5 * peak)) if peak > 0 else 0
+
+
+def _filter_outlier_spikes(indices, spikes, iqr_thresh=1.5):
     """
-    Return the subset of indices whose peak amplitude is within
-    Q1 - iqr_thresh*IQR .. Q3 + iqr_thresh*IQR of the group.
-    Filtering is per-group so each cluster's own distribution is used.
+    Return indices whose peak amplitude AND half-width are within
+    Q1 ± iqr_thresh*IQR of the group. Catches narrow artifact spikes
+    that have normal amplitude but biologically implausible width.
     """
     if not indices or iqr_thresh is None:
         return indices
-    peaks = np.array([np.max(np.abs(spikes[i])) for i in indices])
-    q1, q3 = np.percentile(peaks, [25, 75])
-    iqr = q3 - q1
-    lo, hi = q1 - iqr_thresh * iqr, q3 + iqr_thresh * iqr
-    return [i for i, p in zip(indices, peaks) if lo <= p <= hi]
+
+    peaks  = np.array([np.max(np.abs(spikes[i])) for i in indices])
+    widths = np.array([_half_width(spikes[i]) for i in indices])
+
+    def _bounds(arr):
+        q1, q3 = np.percentile(arr, [25, 75])
+        iqr = q3 - q1
+        return q1 - iqr_thresh * iqr, q3 + iqr_thresh * iqr
+
+    p_lo, p_hi = _bounds(peaks)
+    w_lo, w_hi = _bounds(widths)
+
+    return [i for i, p, wd in zip(indices, peaks, widths)
+            if p_lo <= p <= p_hi and w_lo <= wd <= w_hi]
 
 
 def _peak_align(waveforms, times, wght=1):
