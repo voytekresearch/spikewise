@@ -1739,3 +1739,258 @@ def plot_validated_directions(df_stats, master_traces, df_conclusions=None):
         )
         plt.tight_layout()
         plt.show()
+
+
+# ============================================================
+# CELL SUBSET UTILITIES
+# ============================================================
+
+def get_cell_subsets(priority_cells, all_cell_ids):
+    """
+    Return three lists of cell ID strings for population analysis.
+
+    Parameters
+    ----------
+    priority_cells : list of int   e.g. [3, 4, 21, 24, 26, 27, 42]
+    all_cell_ids   : list of str   e.g. ['c1', 'c2', ...]
+
+    Returns
+    -------
+    subsets : dict with keys 'priority', 'np', 'all'
+    """
+    priority_str = {f"c{n}" for n in priority_cells}
+    all_str      = set(all_cell_ids)
+    return {
+        "priority": sorted(priority_str & all_str),
+        "np":       sorted(all_str - priority_str),
+        "all":      sorted(all_str),
+    }
+
+
+def filter_df_stats(df_stats, cell_ids):
+    """Filter a compiled stats DataFrame to the given cell IDs."""
+    return df_stats[df_stats["cell_id"].isin(cell_ids)].copy()
+
+
+def filter_traces(master_traces, cell_ids):
+    """Filter a master_traces list to the given cell IDs."""
+    cell_set = set(cell_ids)
+    return [t for t in master_traces if t.get("cell_id") in cell_set]
+
+
+# ============================================================
+# PRE/POST SPECPARAM DATA COMPILER
+# ============================================================
+
+def compile_prepost_stats(
+    pickle_dir=None,
+):
+    """
+    Load all per-cell pre/post specparam pickles and compile into a
+    unified DataFrame for population-level analysis.
+
+    Parameters
+    ----------
+    pickle_dir : str, optional
+        Directory containing c{N}_prepost.pkl files.
+        Defaults to SPE1_PICKLE_ROOT/prepost_specparam_pickles.
+
+    Returns
+    -------
+    df : pd.DataFrame
+        One row per statistical test. Columns include:
+        cell_id, spike_feature, lfp_feature, window,
+        comparison, p, p_fdr, sig,
+        cohens_d / cohens_dz, hedges_g / hedges_gz,
+        rank_biserial_r, ci_lo, ci_hi, n1, n2 / n,
+        resampled, skipped, pre_window, post_window.
+    """
+    if pickle_dir is None:
+        try:
+            import sys, os
+            sys.path.insert(0, os.path.dirname(__file__))
+            from config import SPE1_PICKLE_ROOT
+            pickle_dir = os.path.join(SPE1_PICKLE_ROOT, "prepost_specparam_pickles")
+        except Exception:
+            raise ValueError("pickle_dir is required if SPE1_PICKLE_ROOT is not available.")
+
+    files = sorted(glob.glob(os.path.join(pickle_dir, "*_prepost.pkl")))
+    rows  = []
+
+    for fpath in files:
+        with open(fpath, "rb") as f:
+            cell_data = pickle.load(f)
+
+        for spike_feat, col_res in cell_data.items():
+            cell_id     = col_res.get("cell_id", "unknown")
+            pre_window  = col_res.get("pre_window")
+            post_window = col_res.get("post_window")
+
+            for test in col_res.get("tests", []):
+                if test.get("skipped"):
+                    continue
+                row = {
+                    "cell_id":     cell_id,
+                    "spike_feature": spike_feat,
+                    "lfp_feature":   test.get("feat_key"),
+                    "lfp_label":     test.get("feature"),
+                    "window":        test.get("window"),
+                    "comparison":    test.get("comparison"),
+                    "p":             test.get("p"),
+                    "p_fdr":         test.get("p_fdr"),
+                    "sig":           test.get("sig", "ns"),
+                    # between-group effect sizes
+                    "cohens_d":       test.get("cohens_d"),
+                    "hedges_g":       test.get("hedges_g"),
+                    # within-group (paired) effect sizes
+                    "cohens_dz":      test.get("cohens_dz"),
+                    "hedges_gz":      test.get("hedges_gz"),
+                    # shared
+                    "rank_biserial_r": test.get("rank_biserial_r"),
+                    "mean_diff":       test.get("mean_diff"),
+                    "ci_lo":           test.get("ci_lo"),
+                    "ci_hi":           test.get("ci_hi"),
+                    "n1":              test.get("n1"),
+                    "n2":              test.get("n2"),
+                    "n":               test.get("n"),
+                    "resampled":       test.get("resampled", False),
+                    "pre_window":      str(pre_window),
+                    "post_window":     str(post_window),
+                }
+                rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def plot_prepost_effect_sizes(df_prepost, feature_shades=None, subset_label=""):
+    """
+    Population effect sizes for pre/post specparam analysis.
+
+    Matches the style of plot_population_effect_sizes:
+      - Boxplot + stripplot, x = LFP feature, hue = spike feature
+      - Vertical dotted dividers between LFP features
+      - Separate figure per window (pre, post, within, interaction)
+      - Effect size: Hedges' g for between-group; Cohen's d_z for within-group
+    """
+    warnings.filterwarnings("ignore", category=FutureWarning)
+
+    if feature_shades is None:
+        feature_shades = _SPIKE_FEAT_COLORS
+
+    master_order = list(feature_shades.keys())
+
+    for win in ["pre", "post", "within", "interaction"]:
+        df_w = df_prepost[df_prepost["window"] == win].copy()
+        if df_w.empty:
+            continue
+
+        es_col, es_label = (
+            ("cohens_dz", "Effect Size (Cohen's d_z)")
+            if win == "within"
+            else ("hedges_g", "Effect Size (Hedges' g)")
+        )
+        df_w = df_w.dropna(subset=[es_col])
+        if df_w.empty:
+            continue
+
+        lfp_order    = sorted(df_w["lfp_feature"].unique())
+        hue_order    = [h for h in master_order if h in df_w["spike_feature"].values]
+        palette_used = {k: v for k, v in feature_shades.items() if k in hue_order}
+
+        title = f"Population Pre/Post Effect Sizes  [{win}]"
+        if subset_label:
+            title += f"  —  {subset_label}"
+
+        plt.figure(figsize=(15, 7))
+        ax = sns.boxplot(
+            data=df_w,
+            x="lfp_feature", y=es_col,
+            hue="spike_feature",
+            order=lfp_order, hue_order=hue_order,
+            palette=palette_used,
+            width=0.75, fliersize=0,
+            boxprops={"alpha": 0.4}, zorder=1,
+        )
+        sns.stripplot(
+            data=df_w,
+            x="lfp_feature", y=es_col,
+            hue="spike_feature",
+            order=lfp_order, hue_order=hue_order,
+            palette=palette_used,
+            dodge=True, alpha=0.85, jitter=0.2,
+            size=5, linewidth=0.8, edgecolor="gray",
+            legend=False, ax=ax, zorder=2,
+        )
+        for i in range(len(lfp_order) - 1):
+            plt.axvline(i + 0.5, color="grey", linestyle=":", linewidth=1.5, alpha=0.6, zorder=0)
+        plt.axhline(0, color="black", lw=0.8, ls="--", alpha=0.5)
+
+        plt.title(title, fontweight="bold", fontsize=_FS_TTL, pad=15)
+        plt.ylabel(es_label, fontsize=_FS_AX, fontweight="bold")
+        plt.xlabel("LFP Feature", fontsize=_FS_AX, fontweight="bold")
+        plt.xticks(rotation=15, ha="right", fontsize=_FS_AX)
+
+        handles, labels = ax.get_legend_handles_labels()
+        n = len(hue_order)
+        clean_labels = [l.replace("_cluster", "") for l in labels[:n]]
+        plt.legend(handles[:n], clean_labels, title="Spike Feature",
+                   bbox_to_anchor=(1.02, 1), loc="upper left", frameon=True, shadow=True)
+        plt.tight_layout()
+        plt.show()
+
+
+def plot_prepost_yield(df_prepost, subset_label=""):
+    """
+    Yield heatmap for pre/post specparam analysis.
+
+    Matches the style of plot_significant_yield_heatmap:
+      - YlGnBu colormap, 0–100% scale
+      - Annotated with '% (sig/total cells)'
+      - Separate heatmap per window (pre, post, within, interaction)
+    """
+    for win in ["pre", "post", "within", "interaction"]:
+        df_w = df_prepost[df_prepost["window"] == win]
+        if df_w.empty:
+            continue
+
+        total_cells = df_w["cell_id"].nunique()
+        if total_cells == 0:
+            continue
+
+        sig_counts = (
+            df_w[df_w["sig"] != "ns"]
+            .groupby(["lfp_feature", "spike_feature"])["cell_id"]
+            .nunique()
+            .reset_index(name="sig_cells")
+        )
+        sig_counts["yield_pct"]   = sig_counts["sig_cells"] / total_cells * 100
+        sig_counts["text_label"]  = (sig_counts["sig_cells"].astype(str)
+                                     + "/" + str(total_cells)
+                                     + "\n(" + sig_counts["yield_pct"].round(0).astype(int).astype(str) + "%)")
+
+        pivot_color = sig_counts.pivot(index="lfp_feature", columns="spike_feature",
+                                       values="yield_pct").fillna(0)
+        pivot_text  = sig_counts.pivot(index="lfp_feature", columns="spike_feature",
+                                       values="text_label").fillna("")
+        pivot_color.columns = [c.replace("_cluster", "") for c in pivot_color.columns]
+        pivot_text.columns  = [c.replace("_cluster", "") for c in pivot_text.columns]
+
+        title = f"Pre/Post: % Cells Significant  [{win}]"
+        if subset_label:
+            title += f"  —  {subset_label}"
+
+        plt.figure(figsize=(max(10, pivot_color.shape[1] * 1.4),
+                            max(5,  pivot_color.shape[0] * 0.8)))
+        sns.heatmap(
+            pivot_color,
+            annot=pivot_text, fmt="",
+            cmap="YlGnBu", vmin=0, vmax=100,
+            linewidths=0.5, linecolor="white",
+            cbar_kws={"label": "% of Cells with Significant Effect"},
+        )
+        plt.title(title, fontweight="bold", fontsize=_FS_TTL, pad=15)
+        plt.xlabel("Spike Feature (Clustering Metric)", fontsize=_FS_AX, fontweight="bold")
+        plt.ylabel("LFP Feature", fontsize=_FS_AX, fontweight="bold")
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        plt.show()
