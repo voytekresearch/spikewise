@@ -68,7 +68,7 @@ sys.path.insert(0, str(HELPER_DIR))
 from config import CELL_IDS, PRIORITY_CELLS
 
 NB_DIR      = (REPO_ROOT / "AP_empirical_paper1" / "datasets" / "spe-1"
-               / "spe1_patch_LFP_analysis" / "cluster_analyses")
+               / "spe1_patch_LFP_analysis" / "cluster_analyses" / "cell_analyses")
 PRIORITY_SET = {f"c{n}" for n in PRIORITY_CELLS}
 
 

@@ -4668,14 +4668,19 @@ def compute_pre_post_specparam_comparison(
             "cell_id":        cell_id,
         }
 
-        if plot:
-            _plot_pre_post_specparam(results[col], features, col, cell_id, p_thresh)
-
+    # Save before plotting so a plot crash never prevents the pickle being written
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         with open(save_path, "wb") as fh:
             pickle.dump(results, fh)
         print(f"  Saved: {os.path.basename(save_path)}")
+
+    if plot:
+        for col, col_res in results.items():
+            try:
+                _plot_pre_post_specparam(col_res, features, col, cell_id, p_thresh)
+            except Exception as e:
+                print(f"  [plot warning] {col}: {e}")
 
     return results
 
