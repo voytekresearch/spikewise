@@ -1421,15 +1421,29 @@ def plot_population_waveform_grid(
         is_prio = cnum in priority_cells
         is_nd   = cnum in nodrift_cells and not is_prio
 
-        for lab, vals in col_data.items():
-            if lab == "t_axis":
+        cluster_items = [(lab, v) for lab, v in col_data.items() if lab != "t_axis"]
+
+        # Compute valid peak amplitudes (NaN-safe) for outlier detection
+        peak_amps = []
+        for _, v in cluster_items:
+            p = np.nanmax(np.abs(v["mean"])) if np.any(np.isfinite(v["mean"])) else np.nan
+            peak_amps.append(p)
+        valid_peaks = [p for p in peak_amps if np.isfinite(p)]
+        amp_lo = np.median(valid_peaks) * 0.1 if len(valid_peaks) > 1 else 0.0
+
+        for (lab, vals), peak in zip(cluster_items, peak_amps):
+            mean = vals["mean"]
+            std  = vals["std"]
+            # Skip if mean is degenerate (all NaN or extreme outlier)
+            if not np.isfinite(peak) or peak < amp_lo:
                 continue
-            mean  = vals["mean"]
-            std   = vals["std"]
             color = CLUSTER_COLORS.get(str(lab), "gray")
             t     = t_axis[:len(mean)]
             ax.plot(t, mean, color=color, lw=2)
-            ax.fill_between(t, mean - std, mean + std, color=color, alpha=0.15)
+            # Only show std ribbon if it's not outlier-contaminated
+            # (max std > 2× peak means outlier spikes are blowing up the variance)
+            if np.nanmax(std) <= 2 * peak:
+                ax.fill_between(t, mean - std, mean + std, color=color, alpha=0.15)
 
         ax.axvline(0, color="gray", lw=0.8, ls="--", alpha=0.4)
         ax.set_xlim(xlim)

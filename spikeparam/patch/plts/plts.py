@@ -4,6 +4,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+def _filter_outlier_spikes(indices, spikes, iqr_thresh=3.0):
+    """
+    Return the subset of indices whose peak amplitude is within
+    Q1 - iqr_thresh*IQR .. Q3 + iqr_thresh*IQR of the group.
+    Filtering is per-group so each cluster's own distribution is used.
+    """
+    if not indices or iqr_thresh is None:
+        return indices
+    peaks = np.array([np.max(np.abs(spikes[i])) for i in indices])
+    q1, q3 = np.percentile(peaks, [25, 75])
+    iqr = q3 - q1
+    lo, hi = q1 - iqr_thresh * iqr, q3 + iqr_thresh * iqr
+    return [i for i, p in zip(indices, peaks) if lo <= p <= hi]
+
+
 def _peak_align(waveforms, times, wght=1):
     """
     Align each waveform so its own peak (max |amplitude|) falls at t=0.
@@ -47,7 +62,7 @@ def _peak_align(waveforms, times, wght=1):
     return aligned, t_axis
 
 
-def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None, groups=False, ind_groups=None, group_names=None, plot_average=False, plot_average_std=False, color_spks='C0', peak_align=True):
+def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=None, groups=False, ind_groups=None, group_names=None, plot_average=False, plot_average_std=False, color_spks='C0', peak_align=True, outlier_thresh=3.0):
     """Plot model results.
 
     Parameters
@@ -115,8 +130,10 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                 offset = 0
                 for idx, group in enumerate(ind_groups):
                     color = colors[idx] if idx < len(colors) else plt.cm.viridis(float(idx) / len(ind_groups))
-                    wfs   = [model.spikes[i] for i in group
-                             if i not in model.inds_error and i < n_spikes]
+                    clean_group = _filter_outlier_spikes(
+                        [i for i in group if i not in model.inds_error and i < n_spikes],
+                        model.spikes, outlier_thresh)
+                    wfs   = [model.spikes[i] for i in clean_group]
                     if not wfs:
                         continue
                     if peak_align and global_pre is not None:
@@ -307,7 +324,10 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
             # If plot_average is False, plot individual spikes for each group
             for idx, group in enumerate(ind_groups):
                 color = plt.cm.viridis(float(idx) / len(ind_groups))
-                for i in group:
+                clean_group = _filter_outlier_spikes(
+                    [i for i in group if i not in model.inds_error and i < len(model.spikes)],
+                    model.spikes, outlier_thresh)
+                for i in clean_group:
                     if i in model.inds_error:
                         continue
 

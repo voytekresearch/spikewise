@@ -85,11 +85,25 @@ def load_or_compute(path: str, compute_fn, force: bool = False, verbose: bool = 
     return result
 
 
-def compute_cluster_waveforms(sp, df, cluster_cols):
+def _iqr_filter_waveforms(wfs, iqr_thresh=3.0):
+    """Remove waveforms with peak amplitude outside Q1±iqr_thresh*IQR."""
+    if not wfs or iqr_thresh is None:
+        return wfs
+    peaks = np.array([np.max(np.abs(w)) for w in wfs])
+    q1, q3 = np.percentile(peaks, [25, 75])
+    iqr = q3 - q1
+    lo, hi = q1 - iqr_thresh * iqr, q3 + iqr_thresh * iqr
+    return [w for w, p in zip(wfs, peaks) if lo <= p <= hi]
+
+
+def compute_cluster_waveforms(sp, df, cluster_cols, outlier_thresh=3.0):
     """
     Compute peak-aligned average waveforms for every cluster group in every
     cluster column.  Results are saved to a lightweight pickle so the population
     notebook can visualize them without needing sp.spikes.
+
+    Spikes whose peak amplitude falls outside Q1 ± outlier_thresh*IQR of their
+    group are excluded from the average (plotting only — clustering unchanged).
 
     Parameters
     ----------
@@ -99,6 +113,8 @@ def compute_cluster_waveforms(sp, df, cluster_cols):
         Clustered spike DataFrame (must have 'spk_id' and the cluster columns).
     cluster_cols : list of str
         Columns ending in '_cluster' to process.
+    outlier_thresh : float
+        IQR multiplier for outlier removal (default 3.0). Pass None to disable.
 
     Returns
     -------
@@ -115,21 +131,23 @@ def compute_cluster_waveforms(sp, df, cluster_cols):
     for col in cluster_cols:
         groups = sorted(df[col].dropna().unique())
 
-        # Gather waveforms for all groups together (shared peak alignment)
+        # Gather waveforms per group with outlier removal, then pool for
+        # shared peak alignment so all groups share the same t=0 reference.
         all_wfs, group_raw = [], {}
         for lab in groups:
             inds = df.loc[df[col] == lab, "spk_id"].astype(int).tolist()
             wfs  = [sp.spikes[i] for i in inds if i < n_spikes]
+            wfs  = _iqr_filter_waveforms(wfs, outlier_thresh)
             group_raw[lab] = wfs
             all_wfs.extend(wfs)
 
         if not all_wfs:
             continue
 
-        aligned = peak_align_waveforms(all_wfs)  # (n_spikes, total)
+        aligned = peak_align_waveforms(all_wfs)
         pre     = max(int(np.argmax(np.abs(w))) for w in all_wfs)
         total   = aligned.shape[1]
-        t_axis  = np.arange(total) - pre          # samples; 0 = peak
+        t_axis  = np.arange(total) - pre
 
         col_result = {"t_axis": t_axis}
         offset = 0
