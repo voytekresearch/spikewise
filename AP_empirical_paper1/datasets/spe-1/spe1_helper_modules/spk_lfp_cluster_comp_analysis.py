@@ -1,13 +1,15 @@
 import os
 import glob
 import pickle
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 import math
 import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from matplotlib.lines import Line2D
+from scipy.stats import mannwhitneyu, wilcoxon, spearmanr, kruskal
+from statsmodels.stats.multitest import multipletests
 
 # ============================================================
 # Publication style constants
@@ -1807,8 +1809,8 @@ def compile_prepost_stats(
     """
     if pickle_dir is None:
         try:
-            import sys, os
-            sys.path.insert(0, os.path.dirname(__file__))
+            import sys as _sys
+            _sys.path.insert(0, os.path.dirname(__file__))
             from config import SPE1_PICKLE_ROOT
             pickle_dir = os.path.join(SPE1_PICKLE_ROOT, "prepost_specparam_pickles")
         except Exception:
@@ -1992,5 +1994,417 @@ def plot_prepost_yield(df_prepost, subset_label=""):
         plt.xlabel("Spike Feature (Clustering Metric)", fontsize=_FS_AX, fontweight="bold")
         plt.ylabel("LFP Feature", fontsize=_FS_AX, fontweight="bold")
         plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        plt.show()
+
+
+# ============================================================
+# FEATURE REDUNDANCY & SELECTION
+# ============================================================
+
+# LFP features that are typically redundant with others:
+#   offset   → collinear with exponent (both aperiodic); exponent is preferred
+#   lfp_std  → often scales with lfp_mean; mean is more interpretable
+#   lfp_exponent → simpler version of specparam exponent; drop in favour of exponent
+_REDUNDANT_LFP_FEATURES = {"offset", "lfp_std", "lfp_exponent"}
+
+# Canonical reduced feature set (can be overridden per-analysis)
+LFP_FEATURES_REDUCED = [
+    "exponent",        # aperiodic slope (primary spectral fingerprint)
+    "r_squared",       # specparam goodness-of-fit
+    "band_aucs.theta", # theta oscillation power
+    "band_aucs.gamma", # gamma oscillation power
+    "lfp_mean",        # broadband LFP amplitude
+]
+
+
+def compute_lfp_feature_correlations(df_stats, effect_col="cohens_d",
+                                     agg="max_abs"):
+    """
+    Compute pairwise Spearman ρ between LFP features using their population-level
+    effect sizes, to identify redundant features before downstream analysis.
+
+    For each (cell, spike_feature) pair the effect size for each LFP feature is
+    summarised to a single scalar (default: max |value| across windows).
+
+    Parameters
+    ----------
+    df_stats : pd.DataFrame
+        Output of compile_lfp_stats or compile_prepost_stats.
+    effect_col : str
+        Column to use as the effect-size measure.
+    agg : str
+        'max_abs' — max |effect| per (cell, spike_feature, lfp_feature)
+        'mean'    — mean effect
+
+    Returns
+    -------
+    corr_matrix : pd.DataFrame
+        LFP feature × LFP feature Spearman ρ matrix.
+    """
+    from scipy.stats import spearmanr
+
+    df = df_stats.dropna(subset=[effect_col]).copy()
+    df["_es"] = df[effect_col].abs() if agg == "max_abs" else df[effect_col]
+
+    pivot = (
+        df.groupby(["cell_id", "spike_feature", "lfp_feature"])["_es"]
+        .max()
+        .unstack("lfp_feature")
+        .dropna(how="all")
+    )
+
+    feats = pivot.columns.tolist()
+    n     = len(feats)
+    mat   = pd.DataFrame(np.nan, index=feats, columns=feats)
+
+    for i, f1 in enumerate(feats):
+        for j, f2 in enumerate(feats):
+            if i == j:
+                mat.loc[f1, f2] = 1.0
+                continue
+            valid = pivot[[f1, f2]].dropna()
+            if len(valid) < 5:
+                continue
+            r, _ = spearmanr(valid[f1], valid[f2])
+            mat.loc[f1, f2] = r
+
+    return mat
+
+
+def plot_lfp_feature_correlation_matrix(corr_matrix, title="LFP Feature Redundancy"):
+    """
+    Plot the pairwise Spearman ρ heatmap between LFP features.
+    Highlights known redundant features with a red border.
+    """
+    fig, ax = plt.subplots(figsize=(max(7, len(corr_matrix) * 0.9),
+                                    max(6, len(corr_matrix) * 0.8)))
+    mask = np.eye(len(corr_matrix), dtype=bool)
+    sns.heatmap(
+        corr_matrix.astype(float),
+        annot=True, fmt=".2f", cmap="coolwarm",
+        center=0, vmin=-1, vmax=1,
+        linewidths=0.5, linecolor="white",
+        mask=mask, ax=ax,
+        cbar_kws={"label": "Spearman ρ"},
+    )
+    clean = lambda s: s.replace("band_aucs.", "").replace("_", " ")
+    ax.set_xticklabels([clean(f) for f in corr_matrix.columns],
+                       rotation=40, ha="right", fontsize=_FS_SM)
+    ax.set_yticklabels([clean(f) for f in corr_matrix.index],
+                       rotation=0, fontsize=_FS_SM)
+    ax.set_title(title, fontweight="bold", fontsize=_FS_TTL, pad=12)
+    plt.tight_layout()
+    plt.show()
+
+
+def summarise_cell_lfp_effects(df_stats, effect_col="cohens_d"):
+    """
+    Reduce the per-window sliding stats to one row per (cell, spike_feature,
+    lfp_feature): max |effect size|, % significant windows, and direction.
+
+    Useful as input for correlation analyses.
+    """
+    df = df_stats.copy()
+    df["_abs_es"] = df[effect_col].abs()
+    df["_sig"]    = (df["p_value"] < 0.05).astype(int)
+
+    out = (
+        df.groupby(["cell_id", "spike_feature", "lfp_feature"])
+        .agg(
+            max_abs_cohens_d=("_abs_es", "max"),
+            pct_sig_windows=("_sig", "mean"),
+            mean_cohens_d=(effect_col, "mean"),
+            n_windows=("_abs_es", "count"),
+        )
+        .reset_index()
+    )
+    out["pct_sig_windows"] *= 100
+    return out
+
+
+# ============================================================
+# PRE/POST POPULATION PLOTS (clean notebook-facing functions)
+# ============================================================
+
+def _get_pop_stars(df, es_col, lfp_feat, spk_feat, p_thresh=0.05):
+    """Wilcoxon vs 0 on a slice. Returns stars string."""
+    from scipy.stats import wilcoxon
+    v = df[(df["lfp_feature"]==lfp_feat) & (df["spike_feature"]==spk_feat)][es_col].dropna().values
+    if len(v) < 5 or np.allclose(v, 0): return ""
+    try: _, p = wilcoxon(v, alternative="two-sided")
+    except: return ""
+    return "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else ""
+
+
+def plot_prepost_effect_sizes_pop(df_prepost, feature_shades,
+                                   lfp_features=None, subset_label=""):
+    """
+    Population pre/post effect sizes: boxplot + stripplot per window.
+    Stars above each group = Wilcoxon vs 0 across cells, BH-FDR corrected.
+    One figure per window (pre, post, within, interaction).
+
+    Parameters
+    ----------
+    df_prepost    : compile_prepost_stats() output, pre-filtered to cell subset & lfp_features.
+    feature_shades: spike feature colour palette.
+    lfp_features  : list of LFP features to include (None = all in df).
+    subset_label  : string added to figure title.
+    """
+    from scipy.stats import wilcoxon
+
+    if lfp_features is not None:
+        df_prepost = df_prepost[df_prepost["lfp_feature"].isin(lfp_features)]
+
+    master_order = list(feature_shades.keys())
+
+    for win, es_col, es_label in [
+        ("pre",         "hedges_g",  "Hedges' g"),
+        ("post",        "hedges_g",  "Hedges' g"),
+        ("within",      "cohens_dz", "Cohen's d_z"),
+        ("interaction", "hedges_g",  "Hedges' g"),
+    ]:
+        df_w = df_prepost[df_prepost["window"] == win].dropna(subset=[es_col])
+        if df_w.empty: continue
+
+        lfp_order  = sorted(df_w["lfp_feature"].unique())
+        hue_order  = [h for h in master_order if h in df_w["spike_feature"].values]
+        palette_u  = {k: v for k, v in feature_shades.items() if k in hue_order}
+
+        # BH-FDR corrected Wilcoxon stars per (lfp, spike) combo
+        combos = [(l, s) for l in lfp_order for s in hue_order]
+        pvals  = []
+        for lfp, spk in combos:
+            v = df_w[(df_w["lfp_feature"]==lfp)&(df_w["spike_feature"]==spk)][es_col].dropna().values
+            if len(v) >= 5 and not np.allclose(v, 0):
+                try: _, p = wilcoxon(v, alternative="two-sided")
+                except: p = 1.0
+            else: p = 1.0
+            pvals.append(p)
+        _, pfdr, _, _ = multipletests(pvals, method="fdr_bh")
+        stars_map = {(l,s): ("***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else "")
+                     for (l,s), p in zip(combos, pfdr)}
+
+        plt.figure(figsize=(15, 7))
+        ax = sns.boxplot(data=df_w, x="lfp_feature", y=es_col,
+                         hue="spike_feature", order=lfp_order, hue_order=hue_order,
+                         palette=palette_u, width=0.75, fliersize=0,
+                         boxprops={"alpha": 0.4}, zorder=1)
+        sns.stripplot(data=df_w, x="lfp_feature", y=es_col,
+                      hue="spike_feature", order=lfp_order, hue_order=hue_order,
+                      palette=palette_u, dodge=True, alpha=0.8, jitter=0.2,
+                      size=5, linewidth=0.8, edgecolor="gray", legend=False, ax=ax, zorder=2)
+        ax.axhline(0, color="black", lw=0.8, ls="--", alpha=0.5)
+        for i in range(len(lfp_order)-1):
+            ax.axvline(i+0.5, color="grey", ls=":", lw=1.5, alpha=0.6)
+
+        # Place stars
+        n_hue = len(hue_order)
+        step  = 0.75 / n_hue
+        y_lim_top = ax.get_ylim()[1]
+        y_range   = y_lim_top - ax.get_ylim()[0]
+        for xi, lfp in enumerate(lfp_order):
+            for ji, spk in enumerate(hue_order):
+                stars = stars_map.get((lfp, spk), "")
+                if not stars: continue
+                x_pos = xi + (ji - (n_hue-1)/2) * step
+                y_top = df_w[(df_w["lfp_feature"]==lfp)&
+                             (df_w["spike_feature"]==spk)][es_col].max()
+                ax.text(x_pos, y_top + 0.03 * y_range, stars,
+                        ha="center", va="bottom", fontsize=11,
+                        fontweight="bold", color=_SIG_COL)
+
+        plt.title(f"Pre/Post Effect Sizes [{win}]" +
+                  (f"  —  {subset_label}" if subset_label else ""),
+                  fontweight="bold", fontsize=_FS_TTL, pad=15)
+        plt.ylabel(f"{es_label} ({win} window)", fontsize=_FS_AX, fontweight="bold")
+        plt.xlabel("LFP Feature", fontsize=_FS_AX, fontweight="bold")
+        plt.xticks(rotation=15, ha="right", fontsize=_FS_AX)
+        handles, labels_l = ax.get_legend_handles_labels()
+        n = len(hue_order)
+        plt.legend(handles[:n], [l.replace("_cluster","") for l in labels_l[:n]],
+                   title="Spike Feature", bbox_to_anchor=(1.02,1),
+                   loc="upper left", frameon=True, shadow=True)
+        plt.tight_layout()
+        plt.show()
+
+
+def plot_prepost_cluster_diff(df_prepost, df_spk_metrics,
+                               lfp_features=None, subset_label="",
+                               n_bootstrap=1000):
+    """
+    Spearman ρ (+ bootstrap 95% CI) between waveform cluster difference
+    (nRMSE, cos_sim) and pre/post LFP effect size, per LFP feature.
+
+    df_spk_metrics must have columns: cell_id, spike_feature (no _cluster suffix),
+    nRMSE, cos_sim.
+
+    Horizontal bar chart: orange = significant (BH-FDR < 0.05), blue = ns.
+    Error bars = bootstrap 95% CI on ρ.
+    """
+    from scipy.stats import spearmanr
+
+    if lfp_features is not None:
+        df_prepost = df_prepost[df_prepost["lfp_feature"].isin(lfp_features)]
+
+    # Merge cluster metrics
+    df = df_prepost.copy()
+    df["spike_feature_base"] = df["spike_feature"].str.replace("_cluster","",regex=False)
+    df = df.merge(df_spk_metrics[["cell_id","spike_feature","nRMSE","cos_sim"]].drop_duplicates(),
+                  left_on=["cell_id","spike_feature_base"],
+                  right_on=["cell_id","spike_feature"],
+                  how="left", suffixes=("","_spk"))
+
+    for win, es_col, es_label in [
+        ("pre",         "hedges_g",  "Hedges' g [pre]"),
+        ("post",        "hedges_g",  "Hedges' g [post]"),
+        ("within",      "cohens_dz", "Cohen's d_z [pre→post]"),
+        ("interaction", "hedges_g",  "Hedges' g [interaction]"),
+    ]:
+        df_w = df[df["window"]==win].dropna(subset=[es_col])
+        if df_w.empty: continue
+
+        rows = []
+        for spk_m in ["nRMSE", "cos_sim"]:
+            for lfp in (lfp_features or sorted(df_w["lfp_feature"].unique())):
+                d = df_w[df_w["lfp_feature"]==lfp].dropna(subset=[spk_m, es_col])
+                if len(d) < 5: continue
+                r, p = spearmanr(d[spk_m], d[es_col].abs())
+                boot = []
+                for _ in range(n_bootstrap):
+                    idx = np.random.choice(len(d), len(d), replace=True)
+                    try: boot.append(spearmanr(d[spk_m].iloc[idx], d[es_col].abs().iloc[idx])[0])
+                    except: pass
+                ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5]) if boot else (np.nan, np.nan)
+                rows.append({"metric": spk_m, "lfp": lfp,
+                             "rho": r, "p": p, "ci_lo": ci_lo, "ci_hi": ci_hi})
+
+        if not rows: continue
+        df_r = pd.DataFrame(rows)
+        _, df_r["p_fdr"], _, _ = multipletests(df_r["p"].fillna(1), method="fdr_bh")
+        df_r["sig"] = df_r["p_fdr"].apply(
+            lambda p: "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else "ns")
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        title = f"Waveform Cluster Difference → LFP Modulation [{win}]"
+        if subset_label: title += f"  —  {subset_label}"
+        fig.suptitle(title, fontsize=_FS_TTL, fontweight="bold")
+
+        for ax, spk_m in zip(axes, ["nRMSE", "cos_sim"]):
+            sub = df_r[df_r["metric"]==spk_m].reset_index(drop=True)
+            if sub.empty: ax.set_visible(False); continue
+            colors  = [_SIG_COL if s!="ns" else _INSIG_COL for s in sub["sig"]]
+            y_pos   = np.arange(len(sub))
+            ax.barh(y_pos, sub["rho"], color=colors, alpha=0.8, zorder=2)
+            # Clip CI to be non-negative (rho may land inside CI due to bootstrap noise)
+            xerr_lo = np.clip(sub["rho"] - sub["ci_lo"], 0, None).values
+            xerr_hi = np.clip(sub["ci_hi"] - sub["rho"], 0, None).values
+            ax.errorbar(sub["rho"], y_pos, xerr=[xerr_lo, xerr_hi],
+                        fmt="none", color="black", lw=1.5, capsize=4, zorder=3)
+            ax.axvline(0, color="gray", lw=0.8)
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels([f.replace("band_aucs.","") for f in sub["lfp"]], fontsize=_FS_SM)
+            for y, (_, row) in zip(y_pos, sub.iterrows()):
+                if row["sig"] != "ns":
+                    x_off = 0.02 * (1 if row["rho"] >= 0 else -1)
+                    ax.text(row["rho"] + x_off, y, row["sig"],
+                            va="center", fontsize=11, fontweight="bold", color=_SIG_COL)
+            ax.set_xlabel("Spearman ρ  (95% bootstrap CI)", fontsize=_FS_AX, fontweight="bold")
+            ax.set_title(spk_m, fontsize=_FS_SUB, fontweight="bold")
+            sns.despine(ax=ax)
+        plt.tight_layout()
+        plt.show()
+
+
+def plot_prepost_priority_vs_np(df_prepost, subsets,
+                                 lfp_features=None, subset_label="",
+                                 n_bootstrap=2000):
+    """
+    Priority vs non-priority cells: Mann-Whitney U + bootstrap CI on median difference.
+    Left panel: boxplot + stripplot. Right panel: median diff + 95% bootstrap CI.
+    Stars: BH-FDR corrected Mann-Whitney p-values.
+    Resampling applied when groups are imbalanced (>3:1 ratio).
+    """
+    if lfp_features is not None:
+        df_prepost = df_prepost[df_prepost["lfp_feature"].isin(lfp_features)]
+
+    df_pri = df_prepost[df_prepost["cell_id"].isin(subsets["priority"])].copy()
+    df_np  = df_prepost[df_prepost["cell_id"].isin(subsets["np"])].copy()
+    df_pri["subset"] = "Priority"; df_np["subset"] = "NP"
+    df_compare = pd.concat([df_pri, df_np])
+
+    for win, es_col, es_label in [
+        ("pre",    "hedges_g",  "Hedges' g [pre]"),
+        ("post",   "hedges_g",  "Hedges' g [post]"),
+        ("within", "cohens_dz", "Cohen's d_z [pre→post]"),
+    ]:
+        df_w = df_compare[df_compare["window"]==win].dropna(subset=[es_col])
+        if df_w.empty: continue
+        lfp_order = sorted(df_w["lfp_feature"].unique())
+
+        rows = []
+        for lfp in lfp_order:
+            g1 = df_w[(df_w["lfp_feature"]==lfp)&(df_w["subset"]=="Priority")][es_col].dropna().values
+            g2 = df_w[(df_w["lfp_feature"]==lfp)&(df_w["subset"]=="NP")][es_col].dropna().values
+            if len(g1)<3 or len(g2)<3:
+                rows.append({"lfp":lfp,"p":np.nan,"ci_lo":np.nan,"ci_hi":np.nan,"med_diff":np.nan}); continue
+            n_min = min(len(g1), len(g2))
+            rng   = np.random.default_rng(42)
+            g1u   = rng.choice(g1, n_min, replace=False) if len(g1)/n_min > 3 else g1
+            g2u   = rng.choice(g2, n_min, replace=False) if len(g2)/n_min > 3 else g2
+            _, p  = mannwhitneyu(g1u, g2u, alternative="two-sided")
+            med   = np.median(g1) - np.median(g2)
+            boot  = [np.median(np.random.choice(g1,len(g1),replace=True)) -
+                     np.median(np.random.choice(g2,len(g2),replace=True))
+                     for _ in range(n_bootstrap)]
+            ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
+            rows.append({"lfp":lfp,"p":p,"ci_lo":ci_lo,"ci_hi":ci_hi,"med_diff":med})
+
+        df_r = pd.DataFrame(rows)
+        _, df_r["p_fdr"],_,_ = multipletests(df_r["p"].fillna(1), method="fdr_bh")
+        df_r["sig"] = df_r["p_fdr"].apply(
+            lambda p: "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else "ns")
+
+        fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+        fig.suptitle(f"Priority vs NP — {es_label}", fontsize=_FS_TTL, fontweight="bold")
+
+        ax = axes[0]
+        sns.boxplot(data=df_w, x="lfp_feature", y=es_col, hue="subset",
+                    order=lfp_order, palette={"Priority":_CB_PALETTE[0],"NP":_CB_PALETTE[1]},
+                    width=0.65, fliersize=0, boxprops={"alpha":0.45}, ax=ax)
+        sns.stripplot(data=df_w, x="lfp_feature", y=es_col, hue="subset",
+                      order=lfp_order, palette={"Priority":_CB_PALETTE[0],"NP":_CB_PALETTE[1]},
+                      dodge=True, alpha=0.7, jitter=0.15, size=4, legend=False, ax=ax)
+        ax.axhline(0, color="black", lw=0.8, ls="--", alpha=0.5)
+        for i in range(len(lfp_order)-1):
+            ax.axvline(i+0.5, color="grey", ls=":", lw=1.2, alpha=0.5)
+        y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+        for i, (_, row) in enumerate(df_r.iterrows()):
+            if row["sig"] != "ns":
+                y_top = df_w[df_w["lfp_feature"]==row["lfp"]][es_col].max()
+                ax.text(i, y_top + 0.03*y_range, row["sig"],
+                        ha="center", fontsize=11, fontweight="bold", color=_SIG_COL)
+        ax.set_xlabel("LFP Feature", fontsize=_FS_AX, fontweight="bold")
+        ax.set_ylabel(es_label, fontsize=_FS_AX, fontweight="bold")
+        ax.set_xticklabels([x.replace("band_aucs.","") for x in lfp_order], rotation=15, ha="right")
+        sns.despine(ax=ax)
+
+        ax2 = axes[1]
+        colors = [_SIG_COL if s!="ns" else _INSIG_COL for s in df_r["sig"]]
+        y_pos  = np.arange(len(df_r))
+        ax2.barh(y_pos, df_r["med_diff"].fillna(0), color=colors, alpha=0.8)
+        xerr_lo = np.clip(df_r["med_diff"] - df_r["ci_lo"], 0, None).values
+        xerr_hi = np.clip(df_r["ci_hi"] - df_r["med_diff"], 0, None).values
+        valid   = np.isfinite(df_r["med_diff"]).values
+        ax2.errorbar(df_r["med_diff"].fillna(0)[valid], y_pos[valid],
+                     xerr=[xerr_lo[valid], xerr_hi[valid]],
+                     fmt="none", color="black", lw=1.5, capsize=4)
+        ax2.axvline(0, color="gray", lw=0.8)
+        ax2.set_yticks(y_pos)
+        ax2.set_yticklabels([f.replace("band_aucs.","") for f in df_r["lfp"]])
+        ax2.set_xlabel("Median difference (Priority − NP)\n95% bootstrap CI",
+                       fontsize=_FS_AX, fontweight="bold")
+        ax2.set_title("Effect size difference + CI", fontsize=_FS_SUB)
+        sns.despine(ax=ax2)
         plt.tight_layout()
         plt.show()
