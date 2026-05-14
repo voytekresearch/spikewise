@@ -84,6 +84,23 @@ The grid shows the full picture across all 43 cells. Priority cells (orange bord
 
 ---
 
+## I. Within-cell vs Between-cell Waveform Distances
+
+A key context question: how does within-cell cluster variability compare to the variability between completely different neurons?
+
+| | nRMSE (median) | nRMSE IQR | cos_sim (median) |
+|---|---|---|---|
+| Within-cell clusters | 0.049 | [0.022, 0.091] | 0.980 |
+| Between-cell pairs | 0.264 | [0.189, 0.318] | 0.763 |
+
+**Within-cell cluster differences are ~5× smaller than between-cell differences in amplitude (nRMSE) and sit at much higher cosine similarity.** On average, the clusters within a neuron look far more like each other than two different neurons do.
+
+This is an important calibration: the waveform clusters are capturing **sub-neuronal variability**, not cell-identity-scale differences. The clusters are statistically real and functionally meaningful (as the LFP results show), but their morphological footprint is small relative to what separates distinct neurons.
+
+The exception is the top priority cells. The highest within-cell nRMSE values (c42, c27, c21: nRMSE 0.13–0.20) overlap with the **lower tail of the between-cell distribution** (25th percentile ≈ 0.189). For these cells, within-cell cluster separation reaches the floor of between-cell distinguishability — the waveform variability within those neurons is comparable to the difference between some pairs of distinct neurons.
+
+---
+
 ## Summary
 
 | Finding | Strength |
@@ -96,3 +113,4 @@ The grid shows the full picture across all 43 cells. Priority cells (orange bord
 | Temporal drift is near-universal | **Strong** — 87% of cell-feature pairs |
 | Drift direction is feature-specific (amplitude decreases, timing increases) | **Very strong** — Kruskal-Wallis p < 0.0001 |
 | Temporal drift inflates waveform differences | **None** — ρ ≈ 0, ns |
+| Within-cell cluster differences comparable to between-cell distances | **No** — ~5× smaller on average; only top priority cells approach the between-cell floor |

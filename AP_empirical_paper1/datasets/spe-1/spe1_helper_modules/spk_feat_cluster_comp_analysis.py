@@ -1473,4 +1473,218 @@ def plot_population_waveform_grid(
         ax.set_visible(False)
 
     plt.tight_layout(h_pad=0.4, w_pad=0.3)
+
+
+# ------------------------------------------------------------------------------------------- #
+#                          Within-cell vs Between-cell Waveform Distances                     #
+# ------------------------------------------------------------------------------------------- #
+
+def _peak_align_and_trim(mean_wf, t_axis, half_win=75):
+    """
+    Find the sample with the largest absolute value (the peak), return the
+    waveform trimmed to [peak-half_win : peak+half_win].
+
+    Returns (trimmed_wf, peak_idx_in_t_axis).  If the peak is too close to
+    the edge to fit the full window, None is returned.
+    """
+    peak_idx = int(np.argmax(np.abs(mean_wf)))
+    lo = peak_idx - half_win
+    hi = peak_idx + half_win
+    if lo < 0 or hi > len(mean_wf):
+        return None, None
+    trimmed = mean_wf[lo:hi].copy()
+    return trimmed, peak_idx
+
+
+def _nrmse_cossim(a, b):
+    """Normalised RMSE and cosine similarity between two equal-length 1-D arrays."""
+    denom = max(np.max(np.abs(a)), np.max(np.abs(b)))
+    nrmse = np.sqrt(np.mean((a - b) ** 2)) / denom if denom > 0 else np.nan
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    cos_sim = float(np.dot(a, b) / (norm_a * norm_b)) if (norm_a > 0 and norm_b > 0) else np.nan
+    return nrmse, cos_sim
+
+
+def compute_between_cell_waveform_distances(wf_dir, half_win=75):
+    """
+    For each cell compute an overall mean waveform (weighted average of cluster
+    means), peak-align it, then compute all pairwise nRMSE / cos_sim between
+    cells.
+
+    Parameters
+    ----------
+    wf_dir : str or Path
+        Directory containing c{N}_cluster_waveforms.pkl files.
+    half_win : int
+        Half-window (in samples) around the peak for alignment / trimming.
+
+    Returns
+    -------
+    df_between : pd.DataFrame
+        One row per (cell_i, cell_j) pair.  Columns: cell_i, cell_j, nRMSE, cos_sim.
+    cell_mean_wfs : dict {cell_id -> trimmed mean wf array}
+    """
+    import pickle
+    from pathlib import Path
+
+    wf_dir = Path(wf_dir)
+    pkl_files = sorted(wf_dir.glob("c*_cluster_waveforms.pkl"),
+                       key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    cell_mean_wfs = {}
+    for pkl in pkl_files:
+        cnum = int(pkl.stem.split("_")[0].lstrip("c"))
+        cell_id = f"c{cnum}"
+        wf_data = pickle.load(open(pkl, "rb"))
+
+        # Pool cluster means across all features to get one overall mean per cell.
+        # Strategy: take the first available feature and compute n-weighted mean.
+        pooled_sum = None
+        pooled_n   = 0
+        for feat, col_data in wf_data.items():
+            t_axis = col_data.get("t_axis", None)
+            for grp, vals in col_data.items():
+                if grp == "t_axis" or not isinstance(vals, dict):
+                    continue
+                mean_wf = vals.get("mean")
+                n       = vals.get("n", 1)
+                if mean_wf is None or not np.all(np.isfinite(mean_wf)):
+                    continue
+                if pooled_sum is None:
+                    pooled_sum = np.zeros_like(mean_wf, dtype=float)
+                if len(mean_wf) == len(pooled_sum):
+                    pooled_sum += mean_wf * n
+                    pooled_n   += n
+
+        if pooled_sum is None or pooled_n == 0:
+            continue
+        overall_mean = pooled_sum / pooled_n
+
+        trimmed, _ = _peak_align_and_trim(overall_mean, None, half_win=half_win)
+        if trimmed is None:
+            continue
+        cell_mean_wfs[cell_id] = trimmed
+
+    # All pairwise distances
+    cell_ids = sorted(cell_mean_wfs.keys(), key=lambda c: int(c.lstrip("c")))
+    rows = []
+    for i, ci in enumerate(cell_ids):
+        for j, cj in enumerate(cell_ids):
+            if j <= i:
+                continue
+            nrmse, cos_sim = _nrmse_cossim(cell_mean_wfs[ci], cell_mean_wfs[cj])
+            rows.append({"cell_i": ci, "cell_j": cj, "nRMSE": nrmse, "cos_sim": cos_sim})
+
+    return pd.DataFrame(rows), cell_mean_wfs
+
+
+def plot_within_vs_between_neuron_distances(df_master, wf_dir, half_win=75,
+                                            n_bootstrap=2000, alpha=0.05):
+    """
+    Compare within-neuron waveform cluster differences (nRMSE, cos_sim from
+    df_master) to between-neuron waveform differences (pairwise cell mean wf
+    distances).
+
+    Shows:
+      Left  — nRMSE distributions (within vs between)
+      Right — cos_sim distributions (within vs between)
+    Plus a Mann-Whitney U test and bootstrap median difference with 95% CI.
+
+    Parameters
+    ----------
+    df_master : pd.DataFrame  (from compile_experiment_results)
+    wf_dir    : str or Path   (cluster_pickle_dir)
+    half_win  : int           (samples around peak for alignment)
+    n_bootstrap : int
+    alpha     : float
+    """
+    from scipy.stats import mannwhitneyu as _mwu
+
+    df_between, _ = compute_between_cell_waveform_distances(wf_dir, half_win=half_win)
+    if df_between.empty:
+        print("No between-cell distances computed — check wf_dir.")
+        return
+
+    within_nrmse   = df_master["nRMSE"].dropna().values
+    within_cossim  = df_master["cos_sim"].dropna().values
+    between_nrmse  = df_between["nRMSE"].dropna().values
+    between_cossim = df_between["cos_sim"].dropna().values
+
+    rng = np.random.default_rng(42)
+
+    def _bootstrap_median_diff(a, b, n=n_bootstrap):
+        diffs = np.array([
+            np.median(rng.choice(a, len(a), replace=True)) -
+            np.median(rng.choice(b, len(b), replace=True))
+            for _ in range(n)
+        ])
+        return np.median(a) - np.median(b), np.percentile(diffs, [2.5, 97.5])
+
+    def _rank_biserial(a, b):
+        stat, _ = _mwu(a, b)
+        return 1 - 2 * stat / (len(a) * len(b))
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle("Within-cell cluster differences vs Between-cell waveform distances",
+                 fontsize=_FS_TTL, fontweight="bold")
+
+    for ax, (within, between, metric, better_dir) in zip(
+        axes,
+        [
+            (within_nrmse,  between_nrmse,  "nRMSE (amplitude difference)",   "higher = more different"),
+            (within_cossim, between_cossim, "Cos Sim (shape similarity)",     "lower = more different"),
+        ]
+    ):
+        # Violin + strip
+        plot_data = pd.DataFrame({
+            "value":  np.concatenate([within, between]),
+            "group":  (["Within-cell\n(cluster pairs)"] * len(within) +
+                       ["Between-cell\n(neuron pairs)"] * len(between)),
+        })
+        palette = {"Within-cell\n(cluster pairs)": _CB_PALETTE[0],
+                   "Between-cell\n(neuron pairs)":  _CB_PALETTE[1]}
+        sns.violinplot(data=plot_data, x="group", y="value", palette=palette,
+                       inner=None, cut=0, ax=ax, alpha=0.5)
+        sns.stripplot(data=plot_data, x="group", y="value", palette=palette,
+                      size=3, alpha=0.4, jitter=True, ax=ax)
+
+        # Medians
+        for xi, vals in enumerate([within, between]):
+            ax.plot(xi, np.median(vals), "D", color="black", ms=7, zorder=5)
+
+        # Stats
+        stat_mw, p_mw = _mwu(within, between, alternative="two-sided")
+        p_str = f"p={p_mw:.3f}" if p_mw >= 0.001 else f"p={p_mw:.2e}"
+        rb    = _rank_biserial(within, between)
+        med_diff, ci = _bootstrap_median_diff(within, between)
+        ci_str = f"Δmedian={med_diff:+.3f} [{ci[0]:+.3f}, {ci[1]:+.3f}]"
+
+        sig_star = "***" if p_mw < 0.001 else ("**" if p_mw < 0.01 else
+                   ("*" if p_mw < alpha else "ns"))
+        y_top = ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else max(np.max(within), np.max(between))
+        ax.annotate(f"{sig_star}  {p_str}\nr_rb={rb:+.3f}\n{ci_str}",
+                    xy=(0.5, 0.97), xycoords="axes fraction",
+                    ha="center", va="top", fontsize=_FS_SM,
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+
+        ax.set_xlabel("")
+        ax.set_ylabel(metric, fontsize=_FS_AX)
+        ax.tick_params(labelsize=_FS_SM)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Print summary
+    print("\n── Within-cell vs Between-cell Distance Summary ────────────────")
+    print(f"  Within-cell  nRMSE  : median={np.median(within_nrmse):.3f}  "
+          f"IQR=[{np.percentile(within_nrmse,25):.3f}, {np.percentile(within_nrmse,75):.3f}]  "
+          f"n={len(within_nrmse)}")
+    print(f"  Between-cell nRMSE  : median={np.median(between_nrmse):.3f}  "
+          f"IQR=[{np.percentile(between_nrmse,25):.3f}, {np.percentile(between_nrmse,75):.3f}]  "
+          f"n={len(between_nrmse)}")
+    print(f"  Within-cell  cos_sim: median={np.median(within_cossim):.3f}  "
+          f"IQR=[{np.percentile(within_cossim,25):.3f}, {np.percentile(within_cossim,75):.3f}]")
+    print(f"  Between-cell cos_sim: median={np.median(between_cossim):.3f}  "
+          f"IQR=[{np.percentile(between_cossim,25):.3f}, {np.percentile(between_cossim,75):.3f}]")
     plt.show()
