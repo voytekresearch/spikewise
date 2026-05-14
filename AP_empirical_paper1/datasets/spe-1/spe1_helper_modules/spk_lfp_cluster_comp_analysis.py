@@ -141,83 +141,74 @@ def compile_lfp_stats(pickle_dir="/Users/blancamartin/Desktop/Voytek_Lab/spike_w
 
 def plot_population_effect_sizes(df_stats, feature_shades):
     """
-    Generates a statistical summary table and plots the population distribution 
-    of effect sizes (Cohen's d) for each LFP feature.
-    Includes vertical dividers to cleanly separate LFP features.
+    Population distribution of effect sizes (Cohen's d) per LFP × spike feature.
+    Stars above each group = Wilcoxon signed-rank vs 0, BH-FDR corrected.
+    'ns' shown explicitly for non-significant groups.
     """
     warnings.filterwarnings('ignore', category=FutureWarning)
 
-    print("=== SIGNIFICANT HITS SUMMARY ===")
-    summary_table = (
-        df_stats.groupby(['lfp_feature', 'spike_feature'])
-        .agg(
-            sig_windows_count=('cohens_d', 'size'),      
-            median_cohens_d=('cohens_d', 'median')       
-        )
-        .reset_index()
-        .sort_values(by='median_cohens_d', ascending=False) 
-        .reset_index(drop=True)
-    )
-    display(summary_table)
+    master_order = list(feature_shades.keys())
+    lfp_order    = sorted(df_stats['lfp_feature'].unique())
+    hue_order    = [h for h in master_order if h in df_stats['spike_feature'].values]
+
+    # Wilcoxon vs 0 for every (lfp, spike) combo + BH-FDR
+    combos = [(l, s) for l in lfp_order for s in hue_order]
+    pvals  = []
+    for lfp, spk in combos:
+        v = df_stats[(df_stats['lfp_feature']==lfp) &
+                     (df_stats['spike_feature']==spk)]['cohens_d'].dropna().values
+        if len(v) >= 5 and not np.allclose(v, 0):
+            try:
+                from scipy.stats import wilcoxon as _wc
+                _, p = _wc(v, alternative='two-sided')
+            except Exception: p = 1.0
+        else: p = 1.0
+        pvals.append(p)
+    _, pfdr, _, _ = multipletests(pvals, method='fdr_bh')
+    stars_map = {(l, s): ('***' if p < 0.001 else '**' if p < 0.01
+                          else '*' if p < 0.05 else 'ns')
+                 for (l, s), p in zip(combos, pfdr)}
 
     plt.figure(figsize=(15, 7))
+    ax = sns.boxplot(data=df_stats, x='lfp_feature', y='cohens_d',
+                     hue='spike_feature', order=lfp_order, hue_order=hue_order,
+                     palette=feature_shades, width=0.75, fliersize=0,
+                     boxprops={'alpha': 0.4}, zorder=1)
+    sns.stripplot(data=df_stats, x='lfp_feature', y='cohens_d',
+                  hue='spike_feature', order=lfp_order, hue_order=hue_order,
+                  palette=feature_shades, dodge=True, alpha=0.9, jitter=0.2,
+                  size=6, linewidth=1, edgecolor='gray', legend=False,
+                  ax=ax, zorder=2)
 
-    # Force the exact order so the dodging aligns perfectly
-    master_order = list(feature_shades.keys())
-    lfp_order = sorted(df_stats['lfp_feature'].unique())
-
-    # 1. Plot the boxes
-    ax = sns.boxplot(
-        data=df_stats, 
-        x="lfp_feature", 
-        y="cohens_d", 
-        hue="spike_feature", 
-        order=lfp_order,
-        hue_order=master_order,
-        palette=feature_shades, 
-        width=0.75,
-        fliersize=0,
-        boxprops={'alpha': 0.4},
-        zorder=1
-    )
-
-    # 2. Plot the raw data DOTS
-    sns.stripplot(
-        data=df_stats, 
-        x="lfp_feature", 
-        y="cohens_d", 
-        hue="spike_feature",
-        order=lfp_order,
-        hue_order=master_order,
-        palette=feature_shades,   
-        dodge=True,             
-        alpha=0.9, 
-        jitter=0.2,             
-        size=6,                   
-        linewidth=1,              
-        edgecolor='gray',
-        legend=False,
-        ax=ax,
-        zorder=2                  
-    )
-
-    # 3. ADD VISUAL ANCHORS (Vertical Fences Only)
-    # Add vertical dotted lines exactly halfway between each categorical tick
     for i in range(len(lfp_order) - 1):
         plt.axvline(i + 0.5, color='grey', linestyle=':', linewidth=1.5, alpha=0.6, zorder=0)
 
-    plt.title("Population Effect Sizes", fontweight="bold", fontsize=16, pad=15)
-    plt.ylabel("Effect Size (Cohen's d)", fontsize=13, fontweight="bold")
-    plt.xlabel("LFP Feature", fontsize=13, fontweight="bold")
-    plt.xticks(rotation=15, ha='right', fontsize=13)
-    
-    # Clean up the legend
+    # Add stars / ns above each group
+    n_hue   = len(hue_order)
+    step    = 0.75 / n_hue
+    y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+    for xi, lfp in enumerate(lfp_order):
+        for ji, spk in enumerate(hue_order):
+            label = stars_map.get((lfp, spk), 'ns')
+            x_pos = xi + (ji - (n_hue - 1) / 2) * step
+            vals  = df_stats[(df_stats['lfp_feature']==lfp) &
+                             (df_stats['spike_feature']==spk)]['cohens_d'].dropna()
+            y_top = vals.max() if len(vals) else ax.get_ylim()[1]
+            color = _SIG_COL if label != 'ns' else '#888888'
+            fs    = 10 if label != 'ns' else 7
+            ax.text(x_pos, y_top + 0.02 * y_range, label,
+                    ha='center', va='bottom', fontsize=fs,
+                    fontweight='bold', color=color)
+
+    plt.title('Population Effect Sizes', fontweight='bold', fontsize=_FS_TTL, pad=15)
+    plt.ylabel('Effect Size (Cohen\'s d)', fontsize=_FS_AX, fontweight='bold')
+    plt.xlabel('LFP Feature', fontsize=_FS_AX, fontweight='bold')
+    plt.xticks(rotation=15, ha='right', fontsize=_FS_AX)
     handles, labels = ax.get_legend_handles_labels()
-    num_features = len(master_order)
-    clean_labels = [l.replace('_cluster', '') for l in labels[:num_features]]
-    plt.legend(handles[:num_features], clean_labels, title="Spike Feature",
+    n = len(hue_order)
+    clean_labels = [l.replace('_cluster', '') for l in labels[:n]]
+    plt.legend(handles[:n], clean_labels, title='Spike Feature',
                bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True, shadow=True)
-    
     plt.tight_layout()
     plt.show()
 
@@ -1945,15 +1936,15 @@ def plot_prepost_effect_sizes(df_prepost, feature_shades=None, subset_label=""):
         plt.show()
 
 
-def plot_prepost_yield(df_prepost, subset_label=""):
+def plot_prepost_yield(df_prepost, subset_label="", alpha=0.05):
     """
     Yield heatmap for pre/post specparam analysis.
-
-    Matches the style of plot_significant_yield_heatmap:
-      - YlGnBu colormap, 0–100% scale
-      - Annotated with '% (sig/total cells)'
-      - Separate heatmap per window (pre, post, within, interaction)
+    YlGnBu colormap, annotated with n_sig/n_total (%).
+    Cells where binomial test (yield > alpha by chance) is significant
+    are marked with * in the annotation.
     """
+    from scipy.stats import binom_test
+
     for win in ["pre", "post", "within", "interaction"]:
         df_w = df_prepost[df_prepost["window"] == win]
         if df_w.empty:
@@ -1969,31 +1960,36 @@ def plot_prepost_yield(df_prepost, subset_label=""):
             .nunique()
             .reset_index(name="sig_cells")
         )
-        sig_counts["yield_pct"]   = sig_counts["sig_cells"] / total_cells * 100
-        sig_counts["text_label"]  = (sig_counts["sig_cells"].astype(str)
-                                     + "/" + str(total_cells)
-                                     + "\n(" + sig_counts["yield_pct"].round(0).astype(int).astype(str) + "%)")
+        sig_counts["yield_pct"] = sig_counts["sig_cells"] / total_cells * 100
+
+        # Binomial test: is yield above chance (alpha)?
+        sig_counts["binom_p"] = sig_counts["sig_cells"].apply(
+            lambda k: binom_test(k, total_cells, alpha, alternative="greater"))
+        sig_counts["binom_star"] = sig_counts["binom_p"].apply(
+            lambda p: " *" if p < 0.05 else "")
+
+        sig_counts["text_label"] = (
+            sig_counts["sig_cells"].astype(str) + "/" + str(total_cells)
+            + "\n(" + sig_counts["yield_pct"].round(0).astype(int).astype(str) + "%)"
+            + sig_counts["binom_star"])
 
         pivot_color = sig_counts.pivot(index="lfp_feature", columns="spike_feature",
                                        values="yield_pct").fillna(0)
         pivot_text  = sig_counts.pivot(index="lfp_feature", columns="spike_feature",
-                                       values="text_label").fillna("")
+                                       values="text_label").fillna("0/" + str(total_cells) + "\n(0%)")
         pivot_color.columns = [c.replace("_cluster", "") for c in pivot_color.columns]
         pivot_text.columns  = [c.replace("_cluster", "") for c in pivot_text.columns]
 
-        title = f"Pre/Post: % Cells Significant  [{win}]"
+        title = f"Pre/Post: % Cells Significant  [{win}]  (* = above chance, binomial)"
         if subset_label:
             title += f"  —  {subset_label}"
 
         plt.figure(figsize=(max(10, pivot_color.shape[1] * 1.4),
                             max(5,  pivot_color.shape[0] * 0.8)))
-        sns.heatmap(
-            pivot_color,
-            annot=pivot_text, fmt="",
-            cmap="YlGnBu", vmin=0, vmax=100,
-            linewidths=0.5, linecolor="white",
-            cbar_kws={"label": "% of Cells with Significant Effect"},
-        )
+        sns.heatmap(pivot_color, annot=pivot_text, fmt="",
+                    cmap="YlGnBu", vmin=0, vmax=100,
+                    linewidths=0.5, linecolor="white",
+                    cbar_kws={"label": "% of Cells with Significant Effect"})
         plt.title(title, fontweight="bold", fontsize=_FS_TTL, pad=15)
         plt.xlabel("Spike Feature (Clustering Metric)", fontsize=_FS_AX, fontweight="bold")
         plt.ylabel("LFP Feature", fontsize=_FS_AX, fontweight="bold")
@@ -2412,3 +2408,325 @@ def plot_prepost_priority_vs_np(df_prepost, subsets,
         sns.despine(ax=ax2)
         plt.tight_layout()
         plt.show()
+
+
+# ============================================================
+# METADATA × LFP ANALYSIS (notebook-facing functions)
+# ============================================================
+
+def build_cell_lfp_metadata(df_pop_stats, lfp_features,
+                             dict_cell_type, dict_patch_type,
+                             dict_cort_depth, dict_dark_neurons, dict_eap_wav):
+    """
+    Reduce sliding-window stats to one row per (cell, lfp_feature) and
+    attach cell metadata.
+
+    Returns a DataFrame with columns:
+      cell_id, lfp_feature, max_abs_cohens_d, mean_cohens_d,
+      pct_sig_windows, n_windows,
+      cell_type, recording_type, clamp_mode, cort_depth,
+      dark_neuron, eap_visible.
+    """
+    df = summarise_cell_lfp_effects(
+        df_pop_stats[df_pop_stats["lfp_feature"].isin(lfp_features)])
+
+    df["cell_num"]       = df["cell_id"].str.lstrip("c").astype(int)
+    df["cell_type"]      = df["cell_num"].map(dict_cell_type)
+    df["recording_type"] = df["cell_num"].map(dict_patch_type).str.split(",").str[0].str.strip()
+    df["clamp_mode"]     = df["cell_num"].map(dict_patch_type).str.split(",").str[-1].str.strip()
+    df["cort_depth"]     = df["cell_num"].map(dict_cort_depth)
+    df["dark_neuron"]    = df["cell_num"].map(dict_dark_neurons).map({True:"Dark",False:"Visible"})
+    df["eap_visible"]    = df["cell_num"].map(dict_eap_wav).map({True:"Visible",False:"Not visible"})
+    return df
+
+
+def plot_metadata_x_lfp(df_meta, cat_vars, num_vars, lfp_features,
+                          effect_col="max_abs_cohens_d", n_bootstrap=2000):
+    """
+    Metadata × LFP effect strength.
+
+    For categorical variables: Kruskal-Wallis + BH-FDR + bootstrap CI on group medians.
+    For numerical variables: Spearman ρ + BH-FDR + bootstrap CI.
+
+    Produces:
+      - One boxplot figure per categorical variable (panels = LFP features)
+      - One scatter/bar figure for cortical depth
+
+    Parameters
+    ----------
+    df_meta      : output of build_cell_lfp_metadata, filtered to cell subset.
+    cat_vars     : list of categorical metadata column names.
+    num_vars     : list of numerical metadata column names.
+    lfp_features : list of LFP feature label strings.
+    effect_col   : which effect-size column to use.
+    n_bootstrap  : bootstrap iterations for CIs.
+    """
+    all_rows = []
+
+    # ── Categorical ────────────────────────────────────────────────────────────
+    for meta in cat_vars:
+        rows = []
+        for lfp in lfp_features:
+            d = df_meta[df_meta["lfp_feature"] == lfp].dropna(subset=[meta, effect_col])
+            groups = d.groupby(meta)[effect_col].apply(list)
+            if len(groups) < 2 or any(len(g) < 3 for g in groups.values):
+                rows.append({"meta": meta, "lfp": lfp, "stat": np.nan, "p": 1.0})
+                continue
+            stat, p = kruskal(*groups.values)
+            rows.append({"meta": meta, "lfp": lfp, "stat": stat, "p": p})
+
+        if not rows: continue
+        df_r = pd.DataFrame(rows)
+        _, df_r["p_fdr"], _, _ = multipletests(df_r["p"].fillna(1), method="fdr_bh")
+        df_r["sig"] = df_r["p_fdr"].apply(
+            lambda p: "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else "ns")
+        all_rows.append(df_r)
+
+        n_lfp = len(lfp_features)
+        fig, axes = plt.subplots(1, n_lfp, figsize=(4 * n_lfp, 5), sharey=False)
+        if n_lfp == 1: axes = [axes]
+        fig.suptitle(f"Metadata: {meta} × LFP Effect Strength",
+                     fontsize=_FS_TTL, fontweight="bold")
+
+        for ax, lfp, (_, row) in zip(axes, lfp_features,
+                                      df_r.set_index("lfp").iterrows()):
+            d = df_meta[df_meta["lfp_feature"] == lfp].dropna(subset=[meta, effect_col])
+            order = sorted(d[meta].unique())
+            colors = [_CB_PALETTE[i % len(_CB_PALETTE)] for i in range(len(order))]
+
+            sns.boxplot(data=d, x=meta, y=effect_col, order=order,
+                        palette=dict(zip(order, colors)),
+                        width=0.55, fliersize=0, boxprops={"alpha": 0.5}, ax=ax)
+            sns.stripplot(data=d, x=meta, y=effect_col, order=order,
+                          palette=dict(zip(order, colors)),
+                          alpha=0.7, jitter=0.15, size=5, legend=False, ax=ax)
+
+            # Bootstrap CI on group medians + error bars
+            for gi, grp in enumerate(order):
+                vals = d[d[meta] == grp][effect_col].dropna().values
+                if len(vals) < 3: continue
+                boot = [np.median(np.random.choice(vals, len(vals), replace=True))
+                        for _ in range(n_bootstrap)]
+                ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
+                med = np.median(vals)
+                ax.errorbar(gi, med,
+                            yerr=[[med - ci_lo], [ci_hi - med]],
+                            fmt="D", color="black", ms=5, lw=1.5, capsize=4, zorder=5)
+
+            # Stars or ns — always shown
+            sig_label = row["sig"]
+            color = _SIG_COL if sig_label != "ns" else "#888888"
+            fs    = 12 if sig_label != "ns" else 8
+            y_max   = d[effect_col].max()
+            y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+            ax.text(len(order) / 2 - 0.5, y_max + 0.05 * y_range,
+                    sig_label, ha="center", fontsize=fs,
+                    fontweight="bold", color=color)
+
+            ax.set_title(f"{lfp}\np_fdr={row['p_fdr']:.3f}",
+                         fontsize=_FS_SM)
+            ax.set_xlabel(meta, fontsize=_FS_SM)
+            ax.set_ylabel("|Cohen's d|" if ax == axes[0] else "", fontsize=_FS_SM)
+            ax.set_xticklabels(order, rotation=20, ha="right", fontsize=9)
+            sns.despine(ax=ax)
+        plt.tight_layout()
+        plt.show()
+
+    # ── Numerical ──────────────────────────────────────────────────────────────
+    for meta in num_vars:
+        rows = []
+        for lfp in lfp_features:
+            d = df_meta[df_meta["lfp_feature"] == lfp].dropna(subset=[meta, effect_col])
+            if len(d) < 5: continue
+            r, p = spearmanr(d[meta], d[effect_col])
+            boot = [spearmanr(
+                np.random.choice(d[meta], len(d), replace=True),
+                np.random.choice(d[effect_col], len(d), replace=True))[0]
+                for _ in range(n_bootstrap)]
+            ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
+            rows.append({"lfp": lfp, "rho": r, "p": p,
+                         "ci_lo": ci_lo, "ci_hi": ci_hi})
+        if not rows: continue
+        df_r = pd.DataFrame(rows)
+        _, df_r["p_fdr"], _, _ = multipletests(df_r["p"].fillna(1), method="fdr_bh")
+        df_r["sig"] = df_r["p_fdr"].apply(
+            lambda p: "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else "ns")
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        fig.suptitle(f"Metadata: {meta} × LFP Effect Strength (Spearman ρ)",
+                     fontsize=_FS_TTL, fontweight="bold")
+        colors = [_SIG_COL if s != "ns" else _INSIG_COL for s in df_r["sig"]]
+        y_pos  = np.arange(len(df_r))
+        ax.barh(y_pos, df_r["rho"], color=colors, alpha=0.8)
+        xerr_lo = np.clip(df_r["rho"] - df_r["ci_lo"], 0, None).values
+        xerr_hi = np.clip(df_r["ci_hi"] - df_r["rho"], 0, None).values
+        ax.errorbar(df_r["rho"], y_pos, xerr=[xerr_lo, xerr_hi],
+                    fmt="none", color="black", lw=1.5, capsize=4)
+        ax.axvline(0, color="gray", lw=0.8)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(df_r["lfp"], fontsize=_FS_SM)
+        ax.set_xlabel("Spearman ρ  (95% bootstrap CI)", fontsize=_FS_AX, fontweight="bold")
+        ax.set_title(meta, fontsize=_FS_SUB)
+        sns.despine(ax=ax)
+        plt.tight_layout()
+        plt.show()
+
+    return pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
+
+
+def plot_metadata_x_lfp_x_spike(df_meta, df_pop_stats, cat_var,
+                                  lfp_features, feature_shades,
+                                  effect_col="max_abs_cohens_d"):
+    """
+    Three-way: metadata × LFP × spike feature.
+
+    For each (LFP feature × spike feature) combination, does the LFP effect
+    size differ by metadata group?
+
+    Produces a heatmap of p_fdr values (BH-corrected Kruskal-Wallis) per
+    (spike feature × LFP feature), one per metadata group split.
+    Significant cells are starred.
+    """
+    # Per-cell-per-(lfp, spike) effect size
+    df_spk = summarise_cell_lfp_effects(
+        df_pop_stats[df_pop_stats["lfp_feature"].isin(lfp_features)])
+    df_spk["cell_num"] = df_spk["cell_id"].str.lstrip("c").astype(int)
+
+    # Merge metadata
+    meta_map = df_meta.drop_duplicates("cell_id")[["cell_id", cat_var]].set_index("cell_id")
+    df_spk[cat_var] = df_spk["cell_id"].map(meta_map[cat_var])
+
+    spike_feats = sorted(df_spk["spike_feature"].unique())
+    rows = []
+    for lfp in lfp_features:
+        for spk in spike_feats:
+            d = df_spk[(df_spk["lfp_feature"]==lfp) &
+                       (df_spk["spike_feature"]==spk)].dropna(subset=[cat_var, effect_col])
+            groups = d.groupby(cat_var)[effect_col].apply(list)
+            if len(groups) < 2 or any(len(g) < 3 for g in groups.values):
+                rows.append({"lfp": lfp, "spike": spk, "p": 1.0}); continue
+            _, p = kruskal(*groups.values)
+            rows.append({"lfp": lfp, "spike": spk, "p": p})
+
+    if not rows: return
+    df_r = pd.DataFrame(rows)
+    _, df_r["p_fdr"], _, _ = multipletests(df_r["p"].fillna(1), method="fdr_bh")
+    df_r["sig"] = df_r["p_fdr"].apply(
+        lambda p: "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else "")
+
+    pivot_p   = df_r.pivot(index="lfp", columns="spike", values="p_fdr").fillna(1)
+    pivot_sig = df_r.pivot(index="lfp", columns="spike", values="sig").fillna("")
+    pivot_p.columns   = [c.replace("_cluster","") for c in pivot_p.columns]
+    pivot_sig.columns = [c.replace("_cluster","") for c in pivot_sig.columns]
+
+    fig, ax = plt.subplots(figsize=(max(10, pivot_p.shape[1]*1.3),
+                                    max(4,  pivot_p.shape[0]*0.9)))
+    sns.heatmap(-np.log10(pivot_p + 1e-10), annot=pivot_sig, fmt="",
+                cmap="YlOrRd", linewidths=0.5, linecolor="white",
+                cbar_kws={"label": "−log₁₀(p_fdr)"}, ax=ax)
+    ax.set_title(f"{cat_var} × LFP × Spike Feature  (Kruskal-Wallis, BH-FDR)",
+                 fontsize=_FS_TTL, fontweight="bold", pad=12)
+    ax.set_xlabel("Spike Feature", fontsize=_FS_AX, fontweight="bold")
+    ax.set_ylabel("LFP Feature",   fontsize=_FS_AX, fontweight="bold")
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=40, ha="right")
+    plt.tight_layout()
+    plt.show()
+
+    # For significant cells: show the actual distributions
+    sig_combos = df_r[df_r["p_fdr"] < 0.05]
+    for _, row in sig_combos.iterrows():
+        d = df_spk[(df_spk["lfp_feature"]==row["lfp"]) &
+                   (df_spk["spike_feature"]==row["spike"])].dropna(
+                   subset=[cat_var, effect_col])
+        order = sorted(d[cat_var].unique())
+        fig, ax = plt.subplots(figsize=(6, 4))
+        colors = [_CB_PALETTE[i % len(_CB_PALETTE)] for i in range(len(order))]
+        sns.boxplot(data=d, x=cat_var, y=effect_col, order=order,
+                    palette=dict(zip(order, colors)),
+                    width=0.5, fliersize=0, boxprops={"alpha":0.5}, ax=ax)
+        sns.stripplot(data=d, x=cat_var, y=effect_col, order=order,
+                      palette=dict(zip(order, colors)),
+                      alpha=0.7, jitter=0.15, size=6, legend=False, ax=ax)
+        ax.set_title(f"{cat_var} × {row['lfp']} × {row['spike'].replace('_cluster','')}\n"
+                     f"p_fdr={row['p_fdr']:.3f} {row['sig']}",
+                     fontsize=_FS_SUB, fontweight="bold")
+        ax.set_ylabel("|Cohen's d|", fontsize=_FS_AX, fontweight="bold")
+        sns.despine(ax=ax)
+        plt.tight_layout()
+        plt.show()
+
+
+def plot_lfp_directionality_by_metadata(df_pop_stats, df_meta_map,
+                                         lfp_feature, spike_feature,
+                                         cat_var, feature_shades=None):
+    """
+    For a specific (LFP × spike) combination, show the SIGNED Cohen's d
+    distribution broken down by a metadata variable.
+
+    Addresses the key question from the sliding window findings:
+    what predicts whether high-cluster spikes occur with higher vs lower LFP?
+    """
+    df = df_pop_stats[
+        (df_pop_stats["lfp_feature"] == lfp_feature) &
+        (df_pop_stats["spike_feature"] == spike_feature)
+    ].copy()
+
+    df["cell_num"] = df["cell_id"].str.lstrip("c").astype(int)
+    df[cat_var]    = df["cell_id"].map(df_meta_map)
+
+    # Per-cell signed mean Cohen's d
+    df_cell = (df.groupby(["cell_id", cat_var])["cohens_d"]
+               .mean().reset_index(name="mean_cohens_d"))
+
+    order  = sorted(df_cell[cat_var].dropna().unique())
+    colors = [_CB_PALETTE[i % len(_CB_PALETTE)] for i in range(len(order))]
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    sns.boxplot(data=df_cell, x=cat_var, y="mean_cohens_d", order=order,
+                palette=dict(zip(order, colors)),
+                width=0.5, fliersize=0, boxprops={"alpha":0.5}, ax=ax)
+    sns.stripplot(data=df_cell, x=cat_var, y="mean_cohens_d", order=order,
+                  palette=dict(zip(order, colors)),
+                  alpha=0.8, jitter=0.15, size=7, legend=False, ax=ax)
+    ax.axhline(0, color="black", lw=0.8, ls="--", alpha=0.5)
+
+    # Bootstrap CI on group medians + error bars
+    for gi, grp in enumerate(order):
+        vals = df_cell[df_cell[cat_var]==grp]["mean_cohens_d"].dropna().values
+        if len(vals) < 3: continue
+        boot = [np.median(np.random.choice(vals, len(vals), replace=True))
+                for _ in range(2000)]
+        ci_lo, ci_hi = np.percentile(boot, [2.5, 97.5])
+        med = np.median(vals)
+        ax.errorbar(gi, med, yerr=[[med - ci_lo], [ci_hi - med]],
+                    fmt="D", color="black", ms=5, lw=1.5, capsize=4, zorder=5)
+
+    # Mann-Whitney + always show stars or ns
+    sig_label = "ns"
+    if len(order) == 2:
+        g1 = df_cell[df_cell[cat_var]==order[0]]["mean_cohens_d"].dropna()
+        g2 = df_cell[df_cell[cat_var]==order[1]]["mean_cohens_d"].dropna()
+        if len(g1) >= 3 and len(g2) >= 3:
+            _, p = mannwhitneyu(g1, g2, alternative="two-sided")
+            sig_label = "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else "ns"
+    elif len(order) > 2:
+        groups = df_cell.dropna(subset=[cat_var]).groupby(cat_var)["mean_cohens_d"].apply(list)
+        if all(len(g) >= 3 for g in groups.values):
+            _, p = kruskal(*groups.values)
+            sig_label = "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else "ns"
+
+    y_top   = df_cell["mean_cohens_d"].max()
+    y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+    color = _SIG_COL if sig_label != "ns" else "#888888"
+    fs    = 13 if sig_label != "ns" else 9
+    ax.text(len(order)/2 - 0.5, y_top + 0.05*y_range, sig_label,
+            ha="center", fontsize=fs, fontweight="bold", color=color)
+
+    ax.set_title(f"Direction of LFP Effect by {cat_var}\n"
+                 f"{lfp_feature} × {spike_feature.replace('_cluster','')}",
+                 fontsize=_FS_SUB, fontweight="bold")
+    ax.set_ylabel("Signed Cohen's d\n(positive = high cluster > low cluster)",
+                  fontsize=_FS_SM)
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    plt.show()
