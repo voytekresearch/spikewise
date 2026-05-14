@@ -1538,15 +1538,19 @@ def summarize_significant_combos(df_stats, master_traces, boot_results, perm_sum
     df_combos = df_combos.merge(
         _clean(boot_results, ['all_robust', 'd_robust']),
         on=['lfp_feature', 'spike_feature_clean'], how='left')
-    df_combos = df_combos.merge(
-        _clean(perm_summary, ['perm_yield_pct', 'n_perm_sig', 'n_cells_tested']),
-        on=['lfp_feature', 'spike_feature_clean'], how='left')
+    if perm_summary is not None:
+        df_combos = df_combos.merge(
+            _clean(perm_summary, ['perm_yield_pct', 'n_perm_sig', 'n_cells_tested']),
+            on=['lfp_feature', 'spike_feature_clean'], how='left')
     if binom_results is not None:
         df_combos = df_combos.merge(
             _clean(binom_results, ['sig']).rename(columns={'sig': 'binom_sig'}),
             on=['lfp_feature', 'spike_feature_clean'], how='left')
 
-    df_combos['perm_sig']  = df_combos['perm_yield_pct'].fillna(0) >= perm_yield_threshold
+    if 'perm_yield_pct' in df_combos.columns:
+        df_combos['perm_sig'] = df_combos['perm_yield_pct'].fillna(0) >= perm_yield_threshold
+    else:
+        df_combos['perm_sig'] = False
     df_combos['validated'] = df_combos['all_robust'].fillna(False) | df_combos['perm_sig']
     df_sig = (df_combos[df_combos['validated']]
               .sort_values('peak_d', ascending=False)
