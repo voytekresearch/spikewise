@@ -3953,7 +3953,28 @@ def run_master_LFP_spk_analysis(
     if not force_recompute and os.path.exists(save_path):
         print(f"  [cache] {os.path.basename(save_path)} — skipping recompute (force_recompute=False)")
         with open(save_path, "rb") as f:
-            return pickle.load(f)
+            cached = pickle.load(f)
+        if plot:
+            for feat_info in features_to_analyze:
+                feature_type = feat_info.get("feature")
+                band  = feat_info.get("band", None)
+                label = feat_info.get("label", feature_type.capitalize())
+                if feature_type in _SIMPLE_LFP_FEATURES:
+                    if lfp_windows_by_spike is None:
+                        continue
+                    feat_groups = make_simple_lfp_feature_groups(lfp_windows_by_spike, groups, feature=feature_type)
+                elif feature_type == "band" and band is not None:
+                    feat_groups = make_specparam_feature_groups(specparam_by_spike, groups, feature=feature_type, band=band)
+                else:
+                    feat_groups = make_specparam_feature_groups(specparam_by_spike, groups, feature=feature_type)
+                _ = plot_window_feature_groups_heatmap(feat_groups, feature_label=label, cmap="viridis", time_unit="s", sort_by="next_rel")
+                lfp_sliding_stats(
+                    feat_groups, ylabel=f"Δ {label}",
+                    window_width=window_width, step_size=step_size,
+                    p_threshold=p_threshold, plot_mode="per_cluster",
+                    plot=True,
+                )
+        return cached
 
     cell_master_results = {"cell_id": cell_id}
     per_spike_data      = {"cell_id": cell_id}
