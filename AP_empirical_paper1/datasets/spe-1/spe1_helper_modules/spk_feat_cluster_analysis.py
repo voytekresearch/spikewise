@@ -3421,6 +3421,7 @@ def lfp_sliding_stats(
     plot_mode="both",
     figsize=(14, 6),
     plot=True,
+    baseline_window=(-0.75, -0.5),
 ):
 
 
@@ -3495,12 +3496,16 @@ def lfp_sliding_stats(
             if len(valid_wt) < 2:
                 continue
 
-            # Fast path: all windows same length → batch demean + vectorised linear interp
+            # Fast path: all windows same length → baseline correct + vectorised linear interp
             lengths = [len(w) for w, _ in valid_wt]
             if len(set(lengths)) == 1:
                 W     = np.array([w for w, _ in valid_wt])        # (n_spikes, n_samples)
                 T_ref = valid_wt[0][1]                             # reference time axis (~identical for all)
-                W    -= np.nanmean(W, axis=1, keepdims=True)       # batch demean
+                bl_mask = (T_ref >= baseline_window[0]) & (T_ref <= baseline_window[1])
+                if bl_mask.any():
+                    W -= np.nanmean(W[:, bl_mask], axis=1, keepdims=True)
+                else:
+                    W -= np.nanmean(W, axis=1, keepdims=True)      # fallback: whole-epoch demean
                 # Vectorised linear interpolation: build interp coefficients once, apply to all rows
                 idxs  = np.searchsorted(T_ref, Tgrid, side="left").clip(1, len(T_ref) - 1)
                 lo, hi = idxs - 1, idxs
@@ -3510,7 +3515,11 @@ def lfp_sliding_stats(
                 A_matrices[gname] = W[:, lo] * (1.0 - alpha) + W[:, hi] * alpha
             else:
                 # Fallback for variable-length windows (rare)
-                mats = [np.interp(Tgrid, t, w - np.nanmean(w)) for w, t in valid_wt]
+                def _bl_correct(w, t):
+                    mask = (t >= baseline_window[0]) & (t <= baseline_window[1])
+                    bl = np.nanmean(w[mask]) if mask.any() else np.nanmean(w)
+                    return w - bl
+                mats = [np.interp(Tgrid, t, _bl_correct(w, t)) for w, t in valid_wt]
                 A_matrices[gname] = np.vstack(mats)
 
         # --- FIX: Save Trace Data organized by `set_name` (the spike feature) ---
@@ -3884,6 +3893,7 @@ def run_master_LFP_spk_analysis(
     step_size=0.025,
     p_threshold=0.05,
     force_recompute=False,
+    baseline_window=(-0.75, -0.5),
     plot=True,
 ):
     """
@@ -3972,7 +3982,7 @@ def run_master_LFP_spk_analysis(
                     feat_groups, ylabel=f"Δ {label}",
                     window_width=window_width, step_size=step_size,
                     p_threshold=p_threshold, plot_mode="per_cluster",
-                    plot=True,
+                    plot=True, baseline_window=baseline_window,
                 )
         return cached
 
@@ -4013,7 +4023,7 @@ def run_master_LFP_spk_analysis(
             feat_groups, ylabel=f"Δ {label}",
             window_width=window_width, step_size=step_size,
             p_threshold=p_threshold, plot_mode="per_cluster",
-            plot=plot,
+            plot=plot, baseline_window=baseline_window,
         )
 
         # Save to master dict
