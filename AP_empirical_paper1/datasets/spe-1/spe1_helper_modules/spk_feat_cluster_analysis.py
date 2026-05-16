@@ -3502,10 +3502,13 @@ def lfp_sliding_stats(
                 W     = np.array([w for w, _ in valid_wt])        # (n_spikes, n_samples)
                 T_ref = valid_wt[0][1]                             # reference time axis (~identical for all)
                 bl_mask = (T_ref >= baseline_window[0]) & (T_ref <= baseline_window[1])
-                if bl_mask.any():
-                    W -= np.nanmean(W[:, bl_mask], axis=1, keepdims=True)
-                else:
-                    W -= np.nanmean(W, axis=1, keepdims=True)      # fallback: whole-epoch demean
+                if not bl_mask.any():
+                    # Specified window not available — use all pre-spike data up to −50 ms
+                    bl_mask = (T_ref >= T_ref.min()) & (T_ref <= -0.05)
+                if not bl_mask.any():
+                    # Last resort: earliest single time point
+                    bl_mask = T_ref == T_ref.min()
+                W -= np.nanmean(W[:, bl_mask], axis=1, keepdims=True)
                 # Vectorised linear interpolation: build interp coefficients once, apply to all rows
                 idxs  = np.searchsorted(T_ref, Tgrid, side="left").clip(1, len(T_ref) - 1)
                 lo, hi = idxs - 1, idxs
@@ -3517,8 +3520,11 @@ def lfp_sliding_stats(
                 # Fallback for variable-length windows (rare)
                 def _bl_correct(w, t):
                     mask = (t >= baseline_window[0]) & (t <= baseline_window[1])
-                    bl = np.nanmean(w[mask]) if mask.any() else np.nanmean(w)
-                    return w - bl
+                    if not mask.any():
+                        mask = (t >= t.min()) & (t <= -0.05)
+                    if not mask.any():
+                        mask = t == t.min()
+                    return w - np.nanmean(w[mask])
                 mats = [np.interp(Tgrid, t, _bl_correct(w, t)) for w, t in valid_wt]
                 A_matrices[gname] = np.vstack(mats)
 
@@ -3636,6 +3642,17 @@ def lfp_sliding_stats(
             ax_trace.fill_between(Tgrid, mean-ci, mean+ci, color=colors_dict[gname], alpha=alpha_ci, lw=0)
 
         for s, e, _ in merged_regions: ax_trace.axvspan(s, e, color='gold', alpha=0.15)
+
+        # Shade the actual baseline window used (light blue) and draw y=0 reference
+        _bl_test = (Tgrid >= baseline_window[0]) & (Tgrid <= baseline_window[1])
+        if _bl_test.any():
+            _bl_start, _bl_end = baseline_window[0], baseline_window[1]
+        else:
+            _bl_start = float(Tgrid.min())
+            _bl_end   = min(-0.05, float(Tgrid[Tgrid <= -0.05].max()) if np.any(Tgrid <= -0.05) else float(Tgrid.min()))
+        ax_trace.axvspan(_bl_start, _bl_end, color='steelblue', alpha=0.15, zorder=0, label='baseline')
+        ax_trace.axhline(0, color='gray', ls=':', lw=1, zorder=0)
+
         ax_trace.axvline(0, color="k", ls="--", lw=1.5)
         ax_trace.set_title(f"Temporal Dynamics: {set_name}", fontweight='bold')
         ax_trace.set_ylabel(ylabel)

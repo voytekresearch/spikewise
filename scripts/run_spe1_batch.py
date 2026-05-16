@@ -119,7 +119,7 @@ def _run_lfp_notebook(nb_path, label, opts):
                 "--execute",
                 "--inplace",
                 "--ExecutePreprocessor.timeout=-1",
-                "--ExecutePreprocessor.kernel_name=python3",
+                "--ExecutePreprocessor.kernel_name=spikeparam",
                 str(nb_path),
             ],
             stdout=None if opts["workers"] == 1 else subprocess.DEVNULL,
