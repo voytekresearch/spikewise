@@ -107,10 +107,12 @@ def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
     """
     Build predictor (X) and target (Y) matrices.
 
-    Targets (15 total):
-      5 pre absolute  — LFP state just before spike
-      5 pre−BL        — pre minus baseline (LFP change from baseline to pre)
-      5 delta         — post minus pre (spike-triggered change)
+    Targets (25 total, 5 groups × 5 features):
+      Group 0 — pre absolute   : LFP state just before spike
+      Group 1 — pre−BL         : pre minus baseline (LFP ramp into spike)
+      Group 2 — post absolute  : LFP state just after spike
+      Group 3 — post−BL        : post minus baseline (spike-triggered response)
+      Group 4 — delta (post−pre): net spike-triggered change
 
     Returns
     -------
@@ -124,23 +126,27 @@ def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
     X_both     = np.hstack([X_waveform, X_log_isi])
 
     target_names = (
-        [f'pre_{k}'   for k in FEAT_KEYS] +
-        [f'prebc_{k}' for k in FEAT_KEYS] +
-        [f'delta_{k}' for k in FEAT_KEYS]
+        [f'pre_{k}'    for k in FEAT_KEYS] +
+        [f'prebc_{k}'  for k in FEAT_KEYS] +
+        [f'post_{k}'   for k in FEAT_KEYS] +
+        [f'postbc_{k}' for k in FEAT_KEYS] +
+        [f'delta_{k}'  for k in FEAT_KEYS]
     )
     target_labels = (
-        [f'Pre {l}'    for l in FEAT_LABELS] +
-        [f'Pre−BL {l}' for l in FEAT_LABELS] +
-        [f'Δ {l}'      for l in FEAT_LABELS]
+        [f'Pre {l}'      for l in FEAT_LABELS] +
+        [f'Pre−BL {l}'   for l in FEAT_LABELS] +
+        [f'Post {l}'     for l in FEAT_LABELS] +
+        [f'Post−BL {l}'  for l in FEAT_LABELS] +
+        [f'Δ {l}'        for l in FEAT_LABELS]
     )
 
-    Y = np.full((n, 15), np.nan)
+    Y = np.full((n, 25), np.nan)
 
     for i in range(n):
         sp        = specparam_by_spike[i]
         sw        = lfp_windows_by_spike[i]
-        t_sp      = sp.get('t_bins_s')     if sp else None
-        t_sw      = sw['t_bins_s']         if sw is not None else None
+        t_sp      = sp.get('t_bins_s')      if sp else None
+        t_sw      = sw['t_bins_s']          if sw is not None else None
         band_aucs = sp.get('band_aucs', {}) if sp else {}
 
         def _sp(k): return sp.get(k) if sp else None
@@ -171,7 +177,10 @@ def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
         Y[i,  0: 5] = pre_vals
         Y[i,  5:10] = [p - b if np.isfinite(p) and np.isfinite(b) else np.nan
                        for p, b in zip(pre_vals, bl_vals)]
-        Y[i, 10:15] = [po - pr if np.isfinite(po) and np.isfinite(pr) else np.nan
+        Y[i, 10:15] = post_vals
+        Y[i, 15:20] = [po - b if np.isfinite(po) and np.isfinite(b) else np.nan
+                       for po, b in zip(post_vals, bl_vals)]
+        Y[i, 20:25] = [po - pr if np.isfinite(po) and np.isfinite(pr) else np.nan
                        for po, pr in zip(post_vals, pre_vals)]
 
     nan_pct = np.isnan(Y).mean(axis=0) * 100
@@ -248,6 +257,7 @@ def run_ridge_regression(Y, predictor_sets, target_names, n_perm, rng_seed, alph
 
             ridge_full = Ridge(alpha=best_alpha, fit_intercept=True)
             ridge_full.fit(X_z, y_z)
+            y_pred_z = ridge_full.predict(X_z)
 
             results[tname][pname] = dict(
                 r2_cv=float(cv_score), p_val=float(p_val),
@@ -257,6 +267,9 @@ def run_ridge_regression(Y, predictor_sets, target_names, n_perm, rng_seed, alph
                 beta=dict(zip(plabels, ridge_full.coef_)),
                 n_valid=n_valid,
                 p_val_fdr=np.nan, sig_fdr=False,
+                # scatter data: full-data z-scored actual + predicted (for pop scatter)
+                y_actual=y_z.astype(np.float32),
+                y_pred=y_pred_z.astype(np.float32),
             )
             pbar.update(1)
 
@@ -345,7 +358,7 @@ def plot_ridge_results(cell_num, results, target_names, target_labels,
     vmax = max(abs(np.nanmax(r2_mat)), abs(np.nanmin(r2_mat)), 0.01)
 
     # ── Heatmap ──
-    fig, ax = plt.subplots(figsize=(8, 9))
+    fig, ax = plt.subplots(figsize=(8, 12))
     im = ax.imshow(r2_mat, aspect='auto', vmin=-vmax, vmax=vmax, cmap='RdBu_r')
     ax.set_xticks(range(n_p)); ax.set_xticklabels(pred_names, rotation=20, ha='right', fontsize=10)
     ax.set_yticks(range(n_t)); ax.set_yticklabels(target_labels, fontsize=9)
@@ -357,26 +370,28 @@ def plot_ridge_results(cell_num, results, target_names, target_labels,
                 tc   = 'white' if abs(v) > vmax * 0.6 else 'black'
                 ax.text(c, r, f'{v:+.3f}{star}', ha='center', va='center',
                         fontsize=7, color=tc, fontweight='bold' if star else 'normal')
-    for d in [4.5, 9.5]: ax.axhline(d, color='white', lw=2, linestyle='--')
-    ax.text(-0.8,  2.0, 'Pre\n(abs)',   va='center', ha='right', fontsize=8, color='gray')
-    ax.text(-0.8,  7.0, 'Pre\n−BL',    va='center', ha='right', fontsize=8, color='gray')
-    ax.text(-0.8, 12.0, 'Δ\npost−pre', va='center', ha='right', fontsize=8, color='gray')
-    plt.colorbar(im, ax=ax, label='CV R²', shrink=0.6)
+    _grp_dividers = [4.5, 9.5, 14.5, 19.5]
+    _grp_labels   = [(2.0, 'Pre\n(abs)'), (7.0, 'Pre\n−BL'),
+                     (12.0,'Post\n(abs)'),(17.0,'Post\n−BL'),(22.0,'Δ\npost−pre')]
+    for d in _grp_dividers: ax.axhline(d, color='white', lw=2, linestyle='--')
+    for y, lbl in _grp_labels:
+        ax.text(-0.8, y, lbl, va='center', ha='right', fontsize=8, color='gray')
+    plt.colorbar(im, ax=ax, label='CV R²', shrink=0.5)
     ax.set_title(f'c{cell_num} – 5-fold CV R²: Spike Features → LFP  (* FDR q<0.05)', fontsize=11)
     fig.tight_layout(); plt.show()
 
     # ── Bar chart ──
     x, bw = np.arange(n_t), 0.25
-    fig, ax = plt.subplots(figsize=(14, 4.5))
+    fig, ax = plt.subplots(figsize=(20, 4.5))
     for p_idx, (pn, col) in enumerate(zip(pred_names, ['#1976D2', '#E53935', '#43A047'])):
         bars = ax.bar(x + (p_idx - 1) * bw, r2_mat[:, p_idx], width=bw,
                       label=pn, color=col, alpha=0.85)
         for b_i, bar in enumerate(bars):
             if sig_mat[b_i, p_idx]:
                 bar.set_edgecolor('black'); bar.set_linewidth(2.0)
-    ax.set_xticks(x); ax.set_xticklabels(target_labels, rotation=35, ha='right', fontsize=9)
+    ax.set_xticks(x); ax.set_xticklabels(target_labels, rotation=35, ha='right', fontsize=8)
     ax.axhline(0, color='k', lw=1.2)
-    for d in [4.5, 9.5]: ax.axvline(d, color='gray', lw=1, linestyle='--')
+    for d in _grp_dividers: ax.axvline(d, color='gray', lw=1, linestyle='--')
     ax.set_ylabel('5-fold CV R²'); ax.legend(frameon=False, fontsize=9)
     ax.set_title(f'c{cell_num} – CV R² by predictor set  (bold border = FDR q<0.05)', fontsize=11)
     fig.tight_layout(); plt.show()
