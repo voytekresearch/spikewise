@@ -271,6 +271,25 @@ def run_ridge_regression(Y, predictor_sets, target_names, n_perm, rng_seed, alph
     return results
 
 
+# ── Prediction helper (for population scatter) ────────────────────────────────
+
+def get_predictions(Y_col, X_raw, best_alpha):
+    """
+    Full-data Ridge predictions for one (target, cell) combination.
+    Returns (y_actual_z, y_pred_z) — both z-scored within cell — or (None, None).
+    """
+    valid = np.isfinite(X_raw).all(axis=1) & np.isfinite(Y_col)
+    if valid.sum() < 20:
+        return None, None
+    X, y = X_raw[valid], Y_col[valid]
+    X_z      = StandardScaler().fit_transform(X)
+    scaler_y = StandardScaler()
+    y_z      = scaler_y.fit_transform(y.reshape(-1, 1)).ravel()
+    ridge    = Ridge(alpha=best_alpha, fit_intercept=True)
+    ridge.fit(X_z, y_z)
+    return y_z, ridge.predict(X_z)
+
+
 # ── FDR correction ────────────────────────────────────────────────────────────
 
 def apply_fdr(results, target_names, predictor_sets, q=0.05):
