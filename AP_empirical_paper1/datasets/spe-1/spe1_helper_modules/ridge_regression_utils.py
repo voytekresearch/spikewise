@@ -184,17 +184,30 @@ def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
 
 # ── Regression ────────────────────────────────────────────────────────────────
 
-def run_ridge_regression(Y, predictor_sets, target_names, n_perm, rng_seed, alphas):
+def run_ridge_regression(Y, predictor_sets, target_names, n_perm, rng_seed, alphas,
+                         save_path=None, force_recompute=False):
     """
     For each (target, predictor_set):
       1. Tune alpha via RidgeCV on full data
       2. 5-fold shuffled-CV permutation test with fixed alpha
       3. Store full-data beta weights for visualization
 
+    Parameters
+    ----------
+    save_path : str or None
+        Path to save/load results pickle. If None, no caching.
+    force_recompute : bool
+        If False and save_path exists, load from cache.
+
     Returns
     -------
     results : dict  results[tname][pname] = {r2_cv, p_val, best_alpha, beta, n_valid, ...}
     """
+    if save_path and not force_recompute and os.path.exists(save_path):
+        print(f'  [cache] {os.path.basename(save_path)}')
+        with open(save_path, 'rb') as f:
+            return pickle.load(f)
+
     results = {tname: {} for tname in target_names}
     cv_splitter = KFold(n_splits=5, shuffle=True, random_state=rng_seed)
     n_total = len(target_names) * len(predictor_sets)
@@ -248,6 +261,13 @@ def run_ridge_regression(Y, predictor_sets, target_names, n_perm, rng_seed, alph
             pbar.update(1)
 
     pbar.close()
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, 'wb') as f:
+            pickle.dump(results, f)
+        print(f'  Saved: {os.path.basename(save_path)}')
+
     return results
 
 
