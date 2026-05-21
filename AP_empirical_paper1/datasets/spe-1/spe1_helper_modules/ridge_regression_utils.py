@@ -3,18 +3,91 @@ ridge_regression_utils.py
 --------------------------
 Helper functions for the per-cell spike-waveform → LFP ridge regression analysis.
 
-Main entry point
-----------------
-build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
-                     pre_win, post_win, baseline_win)
-    → X_waveform, X_log_isi, X_both, waveform_labels,
-      Y, target_names, target_labels
+Typical notebook usage
+----------------------
+    from ridge_regression_utils import (
+        load_cell_data, build_ridge_matrices,
+        run_ridge_regression, apply_fdr, plot_ridge_results,
+    )
+
+    df_reg, sp, lfp_win = load_cell_data(cell_num)
+
+    X_wv, X_isi, X_both, wv_labels, Y, tnames, tlabels = build_ridge_matrices(
+        df_reg, sp, lfp_win, PRE_WIN, POST_WIN, BASELINE_WIN)
+
+    predictor_sets = {
+        'Waveform only':      (X_wv,   wv_labels),
+        'Log ISI only':       (X_isi,  ['Log ISI']),
+        'Waveform + Log ISI': (X_both, wv_labels + ['Log ISI']),
+    }
+
+    results = run_ridge_regression(Y, predictor_sets, tnames, N_PERM, RNG_SEED, ALPHAS)
+    results = apply_fdr(results, tnames, predictor_sets)
+    plot_ridge_results(cell_num, results, tnames, tlabels, predictor_sets, wv_labels, Y, X_wv)
 """
 
+import os
+import math
+import pickle
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.linear_model import Ridge, RidgeCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.model_selection import permutation_test_score, KFold
+from statsmodels.stats.multitest import fdrcorrection
+from tqdm import tqdm
 
 
-# ── Low-level helpers ─────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+WAVEFORM_COLS = [
+    'ramp_amp', 'inflection_time', 'inflection_amp', 'peak_amp',
+    'peak_width', 'peak_sharpness', 'exp_lambda', 'exp_const',
+]
+WAVEFORM_LABELS = [
+    'Ramp Amp', 'Infl. Time', 'Infl. Amp', 'Peak Amp',
+    'Peak Width', 'Sharpness', 'Decay λ', 'Decay Const',
+]
+FEAT_KEYS   = ['lfp_amp', 'lfp_std', 'gamma_auc', 'exponent', 'theta_auc']
+FEAT_LABELS = ['LFP Amp', 'LFP Std', 'Gamma AUC', 'Exponent', 'Theta AUC']
+
+
+# ── Data loading ──────────────────────────────────────────────────────────────
+
+def load_cell_data(cell_num):
+    """
+    Load cluster_df, simple_lfp, and trimmed specparam for one cell.
+
+    Returns
+    -------
+    df_reg : pd.DataFrame  (aligned to specparam length)
+    specparam_by_spike : list of dict
+    lfp_windows_by_spike : list of dict
+    """
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from config import SPE1_PICKLE_ROOT
+    from spk_feat_cluster_analysis import load_chunked_specparam_results, trim_edges
+
+    cluster_df = pickle.load(open(
+        os.path.join(SPE1_PICKLE_ROOT, 'cluster_pickles', f'c{cell_num}_cluster_df.pkl'), 'rb'))
+    simple_lfp = pickle.load(open(
+        os.path.join(SPE1_PICKLE_ROOT, 'simple_lfp_pickles', f'c{cell_num}_simple_lfp.pkl'), 'rb'))
+
+    chunk_dir = os.path.join(SPE1_PICKLE_ROOT, 'multitaper_pickles', f'c{cell_num}')
+    sp = load_chunked_specparam_results(save_dir=chunk_dir, prefix=f'c{cell_num}_specparam')
+    sp = trim_edges(sp, edge_sec=0.5)
+
+    n = len(sp)
+    df_reg = cluster_df.iloc[:n].reset_index(drop=True)
+    simple_lfp = simple_lfp[:n]
+
+    print(f'c{cell_num}: {n} spikes loaded')
+    return df_reg, sp, simple_lfp
+
+
+# ── Matrix builder ────────────────────────────────────────────────────────────
 
 def win_avg(t_bins, arr, window):
     """Mean of a 1-D array over a time window (seconds). Returns NaN if no data."""
@@ -29,55 +102,27 @@ def win_avg(t_bins, arr, window):
     return float(np.nanmean(vals)) if np.any(np.isfinite(vals)) else np.nan
 
 
-# ── Matrix builder ────────────────────────────────────────────────────────────
-
-WAVEFORM_COLS = [
-    'ramp_amp', 'inflection_time', 'inflection_amp', 'peak_amp',
-    'peak_width', 'peak_sharpness', 'exp_lambda', 'exp_const',
-]
-WAVEFORM_LABELS = [
-    'Ramp Amp', 'Infl. Time', 'Infl. Amp', 'Peak Amp',
-    'Peak Width', 'Sharpness', 'Decay λ', 'Decay Const',
-]
-
-FEAT_KEYS   = ['lfp_amp', 'lfp_std', 'gamma_auc', 'exponent', 'theta_auc']
-FEAT_LABELS = ['LFP Amp', 'LFP Std', 'Gamma AUC', 'Exponent', 'Theta AUC']
-
-
 def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
                          pre_win, post_win, baseline_win):
     """
-    Build predictor (X) and target (Y) matrices for the per-cell ridge regression.
+    Build predictor (X) and target (Y) matrices.
 
-    Parameters
-    ----------
-    df_reg : pd.DataFrame
-        Spike feature dataframe (aligned to specparam_by_spike length).
-    specparam_by_spike : list of dict
-        Trimmed per-spike specparam results.
-    lfp_windows_by_spike : list of dict
-        Per-spike simple LFP results (lfp_mean, lfp_std, t_bins_s).
-    pre_win, post_win, baseline_win : (float, float)
-        Time windows in seconds.
+    Targets (15 total):
+      5 pre absolute  — LFP state just before spike
+      5 pre−BL        — pre minus baseline (LFP change from baseline to pre)
+      5 delta         — post minus pre (spike-triggered change)
 
     Returns
     -------
-    X_waveform : ndarray (n, 8)
-    X_log_isi  : ndarray (n, 1)
-    X_both     : ndarray (n, 9)
-    waveform_labels : list[str]
-    Y           : ndarray (n, 15)  — 5 pre abs + 5 pre−BL + 5 delta
-    target_names  : list[str]
-    target_labels : list[str]
+    X_waveform, X_log_isi, X_both, waveform_labels,
+    Y, target_names, target_labels
     """
     n = len(specparam_by_spike)
 
-    # ── Predictors ──
     X_waveform = df_reg[WAVEFORM_COLS].values.astype(float)
     X_log_isi  = df_reg[['log_isi']].values.astype(float)
     X_both     = np.hstack([X_waveform, X_log_isi])
 
-    # ── Target names / labels ──
     target_names = (
         [f'pre_{k}'   for k in FEAT_KEYS] +
         [f'prebc_{k}' for k in FEAT_KEYS] +
@@ -89,18 +134,17 @@ def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
         [f'Δ {l}'      for l in FEAT_LABELS]
     )
 
-    # ── Build Y ──
     Y = np.full((n, 15), np.nan)
 
     for i in range(n):
         sp        = specparam_by_spike[i]
         sw        = lfp_windows_by_spike[i]
-        t_sp      = sp.get('t_bins_s')       if sp else None
-        t_sw      = sw['t_bins_s']            if sw is not None else None
-        band_aucs = sp.get('band_aucs', {})   if sp else {}
+        t_sp      = sp.get('t_bins_s')     if sp else None
+        t_sw      = sw['t_bins_s']         if sw is not None else None
+        band_aucs = sp.get('band_aucs', {}) if sp else {}
 
-        def _sp(key):  return sp.get(key) if sp else None
-        def _ba(band): return band_aucs.get(band)
+        def _sp(k): return sp.get(k) if sp else None
+        def _ba(b): return band_aucs.get(b)
 
         pre_vals = [
             win_avg(t_sw, sw['lfp_mean'] if sw else None, pre_win),
@@ -130,5 +174,229 @@ def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
         Y[i, 10:15] = [po - pr if np.isfinite(po) and np.isfinite(pr) else np.nan
                        for po, pr in zip(post_vals, pre_vals)]
 
-    return (X_waveform, X_log_isi, X_both, WAVEFORM_LABELS,
-            Y, target_names, target_labels)
+    nan_pct = np.isnan(Y).mean(axis=0) * 100
+    print('Target NaN %:')
+    for tl, pct in zip(target_labels, nan_pct):
+        print(f'  {tl:22s}  {pct:.1f}%')
+
+    return X_waveform, X_log_isi, X_both, WAVEFORM_LABELS, Y, target_names, target_labels
+
+
+# ── Regression ────────────────────────────────────────────────────────────────
+
+def run_ridge_regression(Y, predictor_sets, target_names, n_perm, rng_seed, alphas):
+    """
+    For each (target, predictor_set):
+      1. Tune alpha via RidgeCV on full data
+      2. 5-fold shuffled-CV permutation test with fixed alpha
+      3. Store full-data beta weights for visualization
+
+    Returns
+    -------
+    results : dict  results[tname][pname] = {r2_cv, p_val, best_alpha, beta, n_valid, ...}
+    """
+    results = {tname: {} for tname in target_names}
+    cv_splitter = KFold(n_splits=5, shuffle=True, random_state=rng_seed)
+    n_total = len(target_names) * len(predictor_sets)
+    pbar = tqdm(total=n_total, desc='ridge CV', unit='model')
+
+    for t_idx, tname in enumerate(target_names):
+        y_raw = Y[:, t_idx]
+
+        for p_idx, (pname, (X_raw, plabels)) in enumerate(predictor_sets.items()):
+            pbar.set_postfix(target=tname[:12], pred=pname[:10])
+            valid   = np.isfinite(X_raw).all(axis=1) & np.isfinite(y_raw)
+            n_valid = int(valid.sum())
+
+            if n_valid < 20:
+                results[tname][pname] = dict(r2_cv=np.nan, p_val=np.nan,
+                                             null_mean=np.nan, null_std=np.nan,
+                                             best_alpha=np.nan, beta=None,
+                                             n_valid=n_valid, p_val_fdr=np.nan,
+                                             sig_fdr=False)
+                pbar.update(1)
+                continue
+
+            X, y = X_raw[valid], y_raw[valid]
+            X_z  = StandardScaler().fit_transform(X)
+            y_z  = StandardScaler().fit_transform(y.reshape(-1, 1)).ravel()
+
+            alpha_cv   = RidgeCV(alphas=alphas, fit_intercept=True)
+            alpha_cv.fit(X_z, y_z)
+            best_alpha = float(alpha_cv.alpha_)
+
+            pipe = make_pipeline(StandardScaler(), Ridge(alpha=best_alpha, fit_intercept=True))
+            cv_score, perm_scores, p_val = permutation_test_score(
+                pipe, X_z, y_z, cv=cv_splitter,
+                n_permutations=n_perm, scoring='r2',
+                random_state=rng_seed * 100 + t_idx * 10 + p_idx,
+                n_jobs=1,
+            )
+
+            ridge_full = Ridge(alpha=best_alpha, fit_intercept=True)
+            ridge_full.fit(X_z, y_z)
+
+            results[tname][pname] = dict(
+                r2_cv=float(cv_score), p_val=float(p_val),
+                null_mean=float(np.mean(perm_scores)),
+                null_std=float(np.std(perm_scores)),
+                best_alpha=best_alpha,
+                beta=dict(zip(plabels, ridge_full.coef_)),
+                n_valid=n_valid,
+                p_val_fdr=np.nan, sig_fdr=False,
+            )
+            pbar.update(1)
+
+    pbar.close()
+    return results
+
+
+# ── FDR correction ────────────────────────────────────────────────────────────
+
+def apply_fdr(results, target_names, predictor_sets, q=0.05):
+    """Apply Benjamini-Hochberg FDR correction across all tests for this cell."""
+    test_keys  = [(tn, pn) for tn in target_names for pn in predictor_sets.keys()]
+    raw_pvals  = np.array([results[tn][pn].get('p_val', np.nan) for tn, pn in test_keys])
+    pvals_in   = np.where(np.isfinite(raw_pvals), raw_pvals, 1.0)
+    rejected, pvals_fdr = fdrcorrection(pvals_in, alpha=q, method='indep')
+
+    for (tn, pn), pfdr, rej in zip(test_keys, pvals_fdr, rejected):
+        results[tn][pn]['p_val_fdr'] = float(pfdr)
+        results[tn][pn]['sig_fdr']   = bool(rej)
+
+    n_raw = int(np.sum(raw_pvals < 0.05))
+    n_fdr = int(np.sum(rejected))
+    print(f'FDR (BH, q={q}): {n_raw}/{len(test_keys)} raw p<0.05 → {n_fdr}/{len(test_keys)} after correction')
+
+    # Summary table
+    pred_names = list(predictor_sets.keys())
+    col_w = 22
+    header = f'{"Target":<22}' + ''.join(f'{p:>{col_w}}' for p in pred_names)
+    print(f'\n{header}')
+    print('-' * len(header))
+    for tname in target_names:
+        def _fmt(pn):
+            r = results[tname][pn].get('r2_cv', np.nan)
+            if not np.isfinite(r): return 'NaN'
+            mk = '*' if results[tname][pn].get('sig_fdr') else \
+                 ('~' if results[tname][pn].get('p_val', 1) < 0.05 else ' ')
+            ba = results[tname][pn].get('best_alpha', np.nan)
+            return f'{r:+.4f}{mk} α={ba:.2g}'
+        print(f'{tname:<22}' + ''.join(f'{_fmt(p):>{col_w}}' for p in pred_names))
+    print('* FDR q<0.05  ~ raw p<0.05 only')
+    return results
+
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
+
+def plot_ridge_results(cell_num, results, target_names, target_labels,
+                       predictor_sets, waveform_labels, Y, X_waveform):
+    """Heatmap, bar chart, beta weights (waveform only), and scatter plots."""
+    pred_names = list(predictor_sets.keys())
+    n_t = len(target_names)
+    n_p = len(pred_names)
+
+    r2_mat  = np.full((n_t, n_p), np.nan)
+    sig_mat = np.zeros((n_t, n_p), dtype=bool)
+    for t_idx, tn in enumerate(target_names):
+        for p_idx, pn in enumerate(pred_names):
+            r2_mat[t_idx, p_idx]  = results[tn][pn].get('r2_cv', np.nan)
+            sig_mat[t_idx, p_idx] = results[tn][pn].get('sig_fdr', False)
+
+    vmax = max(abs(np.nanmax(r2_mat)), abs(np.nanmin(r2_mat)), 0.01)
+
+    # ── Heatmap ──
+    fig, ax = plt.subplots(figsize=(8, 9))
+    im = ax.imshow(r2_mat, aspect='auto', vmin=-vmax, vmax=vmax, cmap='RdBu_r')
+    ax.set_xticks(range(n_p)); ax.set_xticklabels(pred_names, rotation=20, ha='right', fontsize=10)
+    ax.set_yticks(range(n_t)); ax.set_yticklabels(target_labels, fontsize=9)
+    for r in range(n_t):
+        for c in range(n_p):
+            v = r2_mat[r, c]
+            if np.isfinite(v):
+                star = '*' if sig_mat[r, c] else ''
+                tc   = 'white' if abs(v) > vmax * 0.6 else 'black'
+                ax.text(c, r, f'{v:+.3f}{star}', ha='center', va='center',
+                        fontsize=7, color=tc, fontweight='bold' if star else 'normal')
+    for d in [4.5, 9.5]: ax.axhline(d, color='white', lw=2, linestyle='--')
+    ax.text(-0.8,  2.0, 'Pre\n(abs)',   va='center', ha='right', fontsize=8, color='gray')
+    ax.text(-0.8,  7.0, 'Pre\n−BL',    va='center', ha='right', fontsize=8, color='gray')
+    ax.text(-0.8, 12.0, 'Δ\npost−pre', va='center', ha='right', fontsize=8, color='gray')
+    plt.colorbar(im, ax=ax, label='CV R²', shrink=0.6)
+    ax.set_title(f'c{cell_num} – 5-fold CV R²: Spike Features → LFP  (* FDR q<0.05)', fontsize=11)
+    fig.tight_layout(); plt.show()
+
+    # ── Bar chart ──
+    x, bw = np.arange(n_t), 0.25
+    fig, ax = plt.subplots(figsize=(14, 4.5))
+    for p_idx, (pn, col) in enumerate(zip(pred_names, ['#1976D2', '#E53935', '#43A047'])):
+        bars = ax.bar(x + (p_idx - 1) * bw, r2_mat[:, p_idx], width=bw,
+                      label=pn, color=col, alpha=0.85)
+        for b_i, bar in enumerate(bars):
+            if sig_mat[b_i, p_idx]:
+                bar.set_edgecolor('black'); bar.set_linewidth(2.0)
+    ax.set_xticks(x); ax.set_xticklabels(target_labels, rotation=35, ha='right', fontsize=9)
+    ax.axhline(0, color='k', lw=1.2)
+    for d in [4.5, 9.5]: ax.axvline(d, color='gray', lw=1, linestyle='--')
+    ax.set_ylabel('5-fold CV R²'); ax.legend(frameon=False, fontsize=9)
+    ax.set_title(f'c{cell_num} – CV R² by predictor set  (bold border = FDR q<0.05)', fontsize=11)
+    fig.tight_layout(); plt.show()
+
+    # ── Beta weights (Waveform only) ──
+    pname_wv = 'Waveform only'
+    n_beta   = len(waveform_labels)
+    ncols    = 5
+    nrows    = math.ceil(n_t / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.5, nrows * 3.2))
+    axes = axes.flatten()
+    fig.suptitle(f'c{cell_num} – Beta weights (Waveform only, full-data fit)', fontsize=11)
+    for t_idx, (tn, tl) in enumerate(zip(target_names, target_labels)):
+        ax   = axes[t_idx]
+        res  = results[tn].get(pname_wv, {})
+        beta = res.get('beta')
+        r2   = res.get('r2_cv', np.nan)
+        sig  = res.get('sig_fdr', False)
+        if beta is None:
+            ax.text(0.5, 0.5, 'no data', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=8, color='gray')
+            ax.axis('off'); continue
+        vals     = [beta.get(l, np.nan) for l in waveform_labels]
+        colors_b = ['#E53935' if v > 0 else '#1976D2' for v in vals]
+        ax.barh(range(n_beta), vals, color=colors_b, alpha=0.85)
+        ax.set_yticks(range(n_beta)); ax.set_yticklabels(waveform_labels, fontsize=7)
+        ax.axvline(0, color='k', lw=0.8)
+        ax.set_title(f'{tl}\nCV R²={r2:+.3f}{"*" if sig else ""}', fontsize=8,
+                     fontweight='bold' if sig else 'normal')
+        ax.set_xlabel('β (std units)', fontsize=7)
+    for i in range(n_t, len(axes)): axes[i].set_visible(False)
+    fig.tight_layout(); plt.show()
+
+    # ── Scatter: FDR-significant waveform-only targets ──
+    sig_targets = [(i, tn, tl) for i, (tn, tl) in enumerate(zip(target_names, target_labels))
+                   if results[tn].get(pname_wv, {}).get('sig_fdr', False)]
+    if not sig_targets:
+        print('No FDR-significant targets for Waveform only model.')
+        return
+    ncols = min(len(sig_targets), 5)
+    nrows = math.ceil(len(sig_targets) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.5, nrows * 3.5))
+    axes = np.array(axes).flatten() if len(sig_targets) > 1 else [axes]
+    fig.suptitle(f'c{cell_num} – Actual vs Predicted (Waveform only, FDR q<0.05)', fontsize=11)
+    for ax, (t_idx, tn, tl) in zip(axes, sig_targets):
+        res   = results[tn][pname_wv]
+        alpha = res.get('best_alpha', 1.0)
+        y_raw = Y[:, t_idx]
+        valid = np.isfinite(X_waveform).all(axis=1) & np.isfinite(y_raw)
+        X, y  = X_waveform[valid], y_raw[valid]
+        X_z   = StandardScaler().fit_transform(X)
+        sc_y  = StandardScaler()
+        y_z   = sc_y.fit_transform(y.reshape(-1, 1)).ravel()
+        rr    = Ridge(alpha=alpha, fit_intercept=True); rr.fit(X_z, y_z)
+        yp    = sc_y.inverse_transform(rr.predict(X_z).reshape(-1, 1)).ravel()
+        ax.scatter(y, yp, alpha=0.15, s=3, rasterized=True, color='#1976D2')
+        lo, hi = min(y.min(), yp.min()), max(y.max(), yp.max())
+        ax.plot([lo, hi], [lo, hi], 'k--', lw=1)
+        ax.set_xlabel('Actual', fontsize=8); ax.set_ylabel('Predicted', fontsize=8)
+        ax.set_title(f'{tl}\nCV R²={res["r2_cv"]:+.3f}, p_fdr={res["p_val_fdr"]:.3f}', fontsize=8)
+    for i in range(len(sig_targets), len(axes)): axes[i].set_visible(False)
+    fig.tight_layout(); plt.show()
