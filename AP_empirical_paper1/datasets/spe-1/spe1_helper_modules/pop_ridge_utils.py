@@ -154,13 +154,6 @@ _GRP_COLS = {'Pre (abs)': '#1976D2', 'Pre − BL': '#43A047', 'Δ post−pre': '
 
 def _heatmap_dividers(ax):
     for d in [4.5, 9.5, 14.5, 19.5]: ax.axhline(d, color='white', lw=2.5, ls='--')
-    for y, lbl in [(2.0,  'Pre\n(abs)'),
-                   (7.0,  'Pre\n−BL'),
-                   (12.0, 'Post\n(abs)'),
-                   (17.0, 'Post\n−BL'),
-                   (22.0, 'Δ\npost−pre')]:
-        ax.text(-0.9, y, lbl, va='center', ha='right', fontsize=9,
-                fontweight='bold', color='#555')
 
 
 def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
