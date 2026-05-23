@@ -1,6 +1,6 @@
 # spikeparam
 
-Spike waveform parameterization and analysis for juxtacellular and patch-clamp recordings.
+Spike waveform parameterization and analysis for intracellular and extracellular recordings.
 
 ---
 
