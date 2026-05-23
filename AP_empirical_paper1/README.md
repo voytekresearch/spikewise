@@ -88,9 +88,9 @@ spe1_pickles/
 
 ---
 
-## pvc-6 — Controlled stimulation, cat primary visual cortex
+## pvc-6 — Controlled stimulation, mouse visual cortex (in vitro)
 
-Patch-clamp recordings from cat V1 ([CRCNS PVC-6](http://crcns.org/data-sets/vc/pvc-6)). Constant current, ramp, and pink (1/f) noise stimuli. Tests whether spike waveform features vary with input drive and can decode stimulus type.
+Whole-cell current clamp slice recordings from mouse visual cortex ([CRCNS PVC-6](http://crcns.org/data-sets/vc/pvc-6)). Constant current, ramp, and pink (1/f) noise stimuli. Tests whether spike waveform features vary with input drive and can decode stimulus type.
 
 | Notebook | What it does |
 |---|---|
