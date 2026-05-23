@@ -76,4 +76,4 @@ See [`scripts/README.md`](scripts/README.md) for full flag reference and path ov
 
 ## Funding
 
-Supported by NIH award R01 GM134363 (NIGMS).
+Supported by 
