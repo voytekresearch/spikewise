@@ -1,11 +1,14 @@
-from sklearn.model_selection import GridSearchCV, KFold, cross_val_score, cross_val_predict
-from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.model_selection import GridSearchCV, KFold, cross_val_score, cross_val_predict, permutation_test_score
+from sklearn.linear_model import LogisticRegression, Ridge, RidgeCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
 from sklearn.metrics import accuracy_score
 from sklearn.utils import resample
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from scipy.stats import ttest_1samp, pearsonr
 from scipy.signal import find_peaks
+from statsmodels.stats.multitest import fdrcorrection
 import numpy as np
 
 import warnings
@@ -62,44 +65,73 @@ def random_forest_stim(X, y, X_train, X_test, y_train, y_test):
 
 # ── Continuous stimulus regression ───────────────────────────────────────────
 
-def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=1000):
+def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=1000,
+                                n_perm=1000, alphas=None):
     """
-    K-fold Ridge regression with bootstrapped coefficient CIs and p-values.
+    K-fold Ridge regression — aligned with the spe-1 pipeline for paper consistency.
 
-    Returns dict with CV predictions, coefficients, R², adjusted R²,
-    bootstrapped CIs, standard errors, and p-values.
+    Changes vs original:
+      - Features Z-scored (StandardScaler) so beta weights are in comparable units
+      - Alpha tuned via RidgeCV instead of fixed α=1
+      - Permutation test (n_perm) for model-level significance
+      - Bootstrapped 95% CIs on coefficients and R² retained
+
+    Returns dict — all original keys preserved; new keys added:
+      best_alpha, p_val_perm, null_mean, null_std
     """
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    if alphas is None:
+        alphas = np.logspace(-3, 3, 100)
 
-    model = Ridge()
-    y_pred_cv = cross_val_predict(model, X, y, cv=kf)
-    model.fit(X, y)
+    kf        = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    n_samples = X.shape[0]
+    n_features = X.shape[1]
 
-    coefficients  = model.coef_
-    feature_names = X.columns
+    # ── Tune alpha on Z-scored features ──────────────────────────────────────
+    X_z        = StandardScaler().fit_transform(X)
+    alpha_cv   = RidgeCV(alphas=alphas, fit_intercept=True)
+    alpha_cv.fit(X_z, y)
+    best_alpha = float(alpha_cv.alpha_)
 
-    scores             = cross_val_score(model, X, y, cv=kf, scoring='r2')
-    n_samples          = X.shape[0]
-    n_features         = X.shape[1]
+    # ── Pipeline (scaler inside CV folds to prevent leakage) ─────────────────
+    pipe = make_pipeline(StandardScaler(), Ridge(alpha=best_alpha, fit_intercept=True))
+
+    y_pred_cv          = cross_val_predict(pipe, X, y, cv=kf)
+    scores             = cross_val_score(pipe, X, y, cv=kf, scoring='r2')
     adjusted_r2_scores = 1 - ((1 - scores) * (n_samples - 1) / (n_samples - n_features - 1))
 
     print(f"Cross-validated R-squared scores: {scores}")
     print(f"Average R-squared: {scores.mean():.3f} ± {scores.std():.3f}")
     print(f"Adjusted R-squared scores: {adjusted_r2_scores}")
     print(f"Average Adjusted R-squared: {adjusted_r2_scores.mean():.3f} ± {adjusted_r2_scores.std():.3f}")
+    print(f"Best alpha: {best_alpha:.4g}")
 
-    bootstrapped_coefs        = []
-    bootstrapped_r2           = []
-    bootstrapped_adjusted_r2  = []
+    # ── Permutation test for model significance ───────────────────────────────
+    cv_score, perm_scores, p_val_perm = permutation_test_score(
+        pipe, X, y, cv=kf, n_permutations=n_perm,
+        scoring='r2', random_state=random_state, n_jobs=1,
+    )
+    print(f"Permutation p-value: {p_val_perm:.4f}")
+
+    # ── Full-data fit on Z-scored X for coefficient extraction ────────────────
+    model = Ridge(alpha=best_alpha, fit_intercept=True)
+    model.fit(X_z, y)
+    coefficients  = model.coef_
+    feature_names = X.columns
+
+    # ── Bootstrap for coefficient CIs ────────────────────────────────────────
+    bootstrapped_coefs       = []
+    bootstrapped_r2          = []
+    bootstrapped_adjusted_r2 = []
 
     for _ in range(bootstraps):
-        X_resampled, y_resampled = resample(X, y, random_state=None)
-        model.fit(X_resampled, y_resampled)
+        X_res, y_res = resample(X, y, random_state=None)
+        X_res_z = StandardScaler().fit_transform(X_res)
+        model.fit(X_res_z, y_res)
         bootstrapped_coefs.append(model.coef_)
-        r2           = model.score(X_resampled, y_resampled)
-        adjusted_r2  = 1 - ((1 - r2) * (n_samples - 1) / (n_samples - n_features - 1))
+        r2         = model.score(X_res_z, y_res)
+        adj_r2     = 1 - ((1 - r2) * (n_samples - 1) / (n_samples - n_features - 1))
         bootstrapped_r2.append(r2)
-        bootstrapped_adjusted_r2.append(adjusted_r2)
+        bootstrapped_adjusted_r2.append(adj_r2)
 
     bootstrapped_coefs       = np.array(bootstrapped_coefs)
     bootstrapped_r2          = np.array(bootstrapped_r2)
@@ -117,23 +149,68 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
     adjusted_r2_ci   = np.percentile(bootstrapped_adjusted_r2, [2.5, 97.5])
 
     return {
-        "y_pred_cv":              y_pred_cv,
-        "coefficients":           coefficients,
-        "feature_names":          feature_names,
-        "r2_scores":              scores,
-        "adjusted_r2_scores":     adjusted_r2_scores,
-        "bootstrapped_coefs":     bootstrapped_coefs,
-        "bootstrapped_r2":        bootstrapped_r2,
-        "bootstrapped_adjusted_r2": bootstrapped_adjusted_r2,
-        "ci_lower":               lower_bound,
-        "ci_upper":               upper_bound,
-        "standard_errors":        standard_errors,
-        "p_values":               p_values,
-        "r2_mean":                r2_mean,
-        "r2_ci":                  r2_ci,
-        "adjusted_r2_mean":       adjusted_r2_mean,
-        "adjusted_r2_ci":         adjusted_r2_ci,
+        # ── original keys (unchanged for backward compat) ──
+        "y_pred_cv":                  y_pred_cv,
+        "coefficients":               coefficients,
+        "feature_names":              feature_names,
+        "r2_scores":                  scores,
+        "adjusted_r2_scores":         adjusted_r2_scores,
+        "bootstrapped_coefs":         bootstrapped_coefs,
+        "bootstrapped_r2":            bootstrapped_r2,
+        "bootstrapped_adjusted_r2":   bootstrapped_adjusted_r2,
+        "ci_lower":                   lower_bound,
+        "ci_upper":                   upper_bound,
+        "standard_errors":            standard_errors,
+        "p_values":                   p_values,
+        "r2_mean":                    r2_mean,
+        "r2_ci":                      r2_ci,
+        "adjusted_r2_mean":           adjusted_r2_mean,
+        "adjusted_r2_ci":             adjusted_r2_ci,
+        # ── new keys aligned with spe-1 ──
+        "best_alpha":                 best_alpha,
+        "p_val_perm":                 float(p_val_perm),
+        "null_mean":                  float(np.mean(perm_scores)),
+        "null_std":                   float(np.std(perm_scores)),
     }
+
+
+def apply_fdr_pvc6(results_dict, q=0.05):
+    """
+    Benjamini-Hochberg FDR correction across a set of ridge regression results.
+    Mirrors spe-1's apply_fdr().
+
+    Parameters
+    ----------
+    results_dict : dict
+        name → ridge_results (output of run_ridge_regression_kfold).
+        E.g. {'stim_exp': r1, 'stim_mean': r2, 'stim_std': r3}
+    q : float
+        FDR threshold (default 0.05)
+
+    Returns
+    -------
+    results_dict with 'p_val_fdr' and 'sig_fdr' added in-place.
+    """
+    keys      = list(results_dict.keys())
+    raw_pvals = np.array([results_dict[k].get('p_val_perm', np.nan) for k in keys])
+    pvals_in  = np.where(np.isfinite(raw_pvals), raw_pvals, 1.0)
+    rejected, pvals_fdr = fdrcorrection(pvals_in, alpha=q, method='indep')
+
+    for k, pfdr, rej in zip(keys, pvals_fdr, rejected):
+        results_dict[k]['p_val_fdr'] = float(pfdr)
+        results_dict[k]['sig_fdr']   = bool(rej)
+
+    n_raw = int(np.sum(raw_pvals < 0.05))
+    n_fdr = int(np.sum(rejected))
+    print(f"FDR (BH, q={q}): {n_raw}/{len(keys)} raw p<0.05 → {n_fdr}/{len(keys)} after correction")
+    for k in keys:
+        r2   = results_dict[k].get('r2_mean', np.nan)
+        p    = results_dict[k].get('p_val_perm', np.nan)
+        pfdr = results_dict[k].get('p_val_fdr', np.nan)
+        sig  = '*' if results_dict[k].get('sig_fdr') else ' '
+        print(f"  {k:<15}  R²={r2:.3f}  p_perm={p:.3f}  p_fdr={pfdr:.3f} {sig}")
+
+    return results_dict
 
 
 # ── Stimulus onset analysis ───────────────────────────────────────────────────
