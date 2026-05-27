@@ -23,13 +23,7 @@ _FEATURE_COLOR_MAP = {
 }
 
 def plot_pink_spikes(sp, indices_to_plot):
-    """
-    Plots pink spikes with specified indices.
-
-    Args:
-        sp: Spike data.
-        indices_to_plot: Indices of spikes to plot.
-    """
+    """Plot pink noise spike waveforms for the given spike indices."""
     sp.plot(indices_to_plot, color='hotpink', mode='full', show_points=True)
     fig = plt.gcf()
     ax = plt.gca()
@@ -49,12 +43,7 @@ def plot_pink_spikes(sp, indices_to_plot):
     plt.show()
 
 def plot_correlation_scatter(df_pink_filtered):
-    """
-    Plots correlation scatter plots for specified features.
-
-    Args:
-        df_pink_filtered: DataFrame containing the data.
-    """
+    """Scatter plots: exp_const vs stim_mean, peak_sharpness vs stim_mean, stim_mean vs log ISI."""
     fig, axs = plt.subplots(1, 3, figsize=(19, 6))
     
     axs[0].plot(df_pink_filtered['exp_const'], df_pink_filtered['stim_mean'], '.C6', markersize=20)
@@ -72,8 +61,8 @@ def plot_correlation_scatter(df_pink_filtered):
     axs[1].tick_params(axis='both', labelsize=20)
     
     axs[2].plot(df_pink_filtered['stim_mean'], df_pink_filtered['log_isi'], '.C7', markersize=20)
-    axs[2].set_xlabel('Log isi', fontsize=30)
-    axs[2].set_ylabel('Stim mean', fontsize=30)
+    axs[2].set_xlabel('Stim mean', fontsize=30)
+    axs[2].set_ylabel('Log ISI', fontsize=30)
     axs[2].spines['top'].set_visible(False)
     axs[2].spines['right'].set_visible(False)
     axs[2].tick_params(axis='both', labelsize=20)
@@ -82,14 +71,7 @@ def plot_correlation_scatter(df_pink_filtered):
     plt.show()
 
 def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_spks):
-    """
-    Plots average waveforms for different stimulus types.
-
-    Args:
-        all_constant_spks: Constant spike data.
-        all_ramp_spks: Ramp spike data.
-        all_pink_spks: Pink spike data.
-    """
+    """Mean ± SD spike waveform derivative for each stimulus type (constant / ramp / pink)."""
     mean_constant_spks = np.mean(all_constant_spks, axis=0)
     std_constant_spks = np.std(all_constant_spks, axis=0)
     
@@ -119,14 +101,7 @@ def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_sp
 
 
 def plot_confusion_matrix(best_model, X_test, y_test):
-    """
-    Plots confusion matrix for a model.
-
-    Args:
-        best_model: Trained model.
-        X_test: Test feature set.
-        y_test: Test labels.
-    """
+    """Confusion matrix for a trained classifier on test data."""
     conf_matrix = ConfusionMatrixDisplay.from_estimator(best_model, X_test, y_test)
     
     plt.figure(figsize=(8, 6))
@@ -144,14 +119,7 @@ def plot_confusion_matrix(best_model, X_test, y_test):
     plt.show()
 
 def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
-    """
-    Plots results of ridge regression.
-
-    Args:
-        y: Actual values.
-        ridge_results: Dictionary containing ridge regression results.
-        title: Plot title.
-    """
+    """Actual vs predicted scatter, coefficient bar chart, bootstrapped distributions for ridge results."""
     y_pred_cv = ridge_results["y_pred_cv"]
     coefficients = ridge_results["coefficients"]
     feature_names = ridge_results["feature_names"]
@@ -195,7 +163,7 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
 
     plt.figure(figsize=(10, 6))
     sns.barplot(
-        x='Coefficient', y='Feature', data=feature_importance_df, palette=feature_importance_df['Color']
+        x='Coefficient', y='Feature', data=feature_importance_df, palette=feature_importance_df['Color'].tolist()
     )
 
     plt.title('Feature Importance (Ridge Regression)', fontsize=20)
@@ -221,16 +189,19 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     coef_df = coef_df.melt(var_name='Feature', value_name='Coefficient Value')
     
     coef_df['Color'] = coef_df['Feature'].apply(
-        lambda x: 'hotpink' if x.startswith('stim_') else color_mapping.get(x, 'gray')
+        lambda x: 'hotpink' if x.startswith('stim_') else _FEATURE_COLOR_MAP.get(x, 'gray')
     )
     
+    color_dict = coef_df.groupby('Feature')['Color'].first().to_dict()
     sns.violinplot(
-        x='Feature', 
-        y='Coefficient Value', 
-        data=coef_df, 
-        palette=coef_df['Color'].unique(), 
-        inner="point", 
-        scale="width"
+        x='Feature',
+        y='Coefficient Value',
+        data=coef_df,
+        hue='Feature',
+        palette=color_dict,
+        inner="point",
+        density_norm="width",
+        legend=False
     )
     
     plt.xticks(rotation=45)
@@ -435,5 +406,55 @@ def plot_bootstrap_histograms(bootstrapped_results, model_names):
         plt.ylabel("Frequency", fontsize=16)
         plt.legend()
     plt.tight_layout()
+    plt.show()
+
+
+def plot_stim_lag_correlations(lag_centers, r_vals, p_vals, features,
+                                alpha=0.05, title=''):
+    """
+    Line plot of Pearson r vs pre-inflection lag for each waveform feature.
+    Shaded region = p < alpha. Vertical dotted line marks the fixed 5ms window
+    used in the main analysis.
+    """
+    n_feats = len(features)
+    ncols   = 3
+    nrows   = int(np.ceil(n_feats / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(ncols * 3.2, nrows * 3.0),
+                             sharey=False)
+    axes = np.array(axes).flatten()
+
+    sup = 'Stimulus onset: Pearson r vs pre-spike lag'
+    if title:
+        sup += f'  |  {title}'
+    fig.suptitle(sup, fontsize=11, y=1.02)
+
+    for fi, (feat, ax) in enumerate(zip(features, axes)):
+        col = _FEATURE_COLOR_MAP.get(feat, 'gray')
+        r   = r_vals[:, fi]
+        p   = p_vals[:, fi]
+
+        ax.plot(lag_centers, r, color=col, lw=2)
+        ax.axhline(0, color='k', lw=0.8, ls='--', alpha=0.5)
+        # dotted line = current fixed window centre (0–5ms → 2.5ms)
+        ax.axvline(2.5, color='#999', lw=1, ls=':', alpha=0.8,
+                   label='current window')
+
+        sig = p < alpha
+        ax.fill_between(lag_centers, r, 0, where=sig,
+                        color=col, alpha=0.3, label=f'p<{alpha}')
+
+        ax.set_xlabel('ms before inflection', fontsize=9)
+        ax.set_title(feat, fontsize=9, fontweight='bold')
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.tick_params(labelsize=8)
+        if fi == 0:
+            ax.set_ylabel('Pearson r', fontsize=9)
+            ax.legend(fontsize=7, frameon=False)
+
+    for ax in axes[n_feats:]:
+        ax.set_visible(False)
+
+    fig.tight_layout()
     plt.show()
 

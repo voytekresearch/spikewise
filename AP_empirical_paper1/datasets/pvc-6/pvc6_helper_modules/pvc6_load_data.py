@@ -94,18 +94,6 @@ def fit_exp_nonlinear(times, data, initial_guesses, bounds):
     
     
 
-def autolabel(rects):
-    """Attach a text label above each bar displaying its height, formatted to three decimal places."""
-    for rect in rects:
-        height = rect.get_height()
-        ax.annotate(f'{height:.3f}',
-                    xy=(rect.get_x() + rect.get_width() / 2, height),
-                    xytext=(0, 3),  # 3 points vertical offset
-                    textcoords="offset points",
-                    ha='center', va='bottom', fontsize=16, fontweight='bold')
-
-
-
 def process_pink_type_info(f, fs):
     #generate dict with info of pink noise variations
     all_pink_noise = {}

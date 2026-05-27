@@ -60,7 +60,7 @@ def _peak_align(waveforms, times, wght=1):
         return np.empty((0, 0)), np.array([0.0])
 
     wfs       = [np.asarray(w, float) for w in waveforms]
-    peak_idxs = [int(np.argmax(np.abs(w))) for w in wfs]
+    peak_idxs = [int(np.argmax(w)) for w in wfs]
 
     pre   = max(peak_idxs)                                          # samples before peak
     post  = max(len(w) - pk - 1 for w, pk in zip(wfs, peak_idxs)) # samples after peak
@@ -209,7 +209,7 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
         valid_inds = [i for i in inds if i not in model.inds_error and i < len(model.spikes)]
         if peak_align and valid_inds:
             raw_wfs    = [model.spikes[i] for i in valid_inds]
-            peak_idxs  = [int(np.argmax(np.abs(w))) for w in raw_wfs]
+            peak_idxs  = [int(np.argmax(w)) for w in raw_wfs]
             pre        = max(peak_idxs)  # samples before peak in the shared grid
             aligned_arr, t_aligned = _peak_align(raw_wfs, model.times, wght)
             aligned_map = {i: aligned_arr[k] for k, i in enumerate(valid_inds)}
