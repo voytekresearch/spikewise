@@ -296,6 +296,90 @@ def compute_stim_lag_correlations(f, fs, df_pink_raw, one_ms,
     return lag_centers, r_vals, p_vals, features
 
 
+def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50):
+    """
+    Re-extract pre-inflection stimulus statistics for each pink-noise spike
+    using a configurable window width.  Use this after the main processing
+    pipeline to test whether a wider window improves stim → waveform prediction.
+
+    The original processing uses window_ms=5 (5 samples before the inflection
+    point).  The lag analysis shows that stim_mean correlations with waveform
+    features grow up to ~50 ms before the spike, motivating this expansion.
+
+    Parameters
+    ----------
+    f            : open h5py.File handle for the recording
+    fs           : sampling rate (Hz)
+    df_pink_raw  : pink-noise rows from df — must retain 'sweep', 'spike_num',
+                   'inflection_time', and all waveform feature columns
+    one_ms       : samples per millisecond (= fs // 1000)
+    window_ms    : window width in ms, ending at the spike inflection point
+
+    Returns
+    -------
+    pd.DataFrame indexed identically to df_pink_raw with columns:
+        stim_mean_<W>ms, stim_std_<W>ms, stim_exp_<W>ms
+    """
+    import pandas as _pd
+    from scipy.signal import find_peaks as _find_peaks
+    from neurodsp import spectral as _spectral
+
+    thresh_mv = -10
+    thresh_ms = one_ms * 1
+
+    n = len(df_pink_raw)
+    mean_vals = np.full(n, np.nan)
+    std_vals  = np.full(n, np.nan)
+    exp_vals  = np.full(n, np.nan)
+
+    idx_to_pos = {idx: pos for pos, idx in enumerate(df_pink_raw.index)}
+
+    for sweep_id, sweep_group in df_pink_raw.groupby('sweep'):
+        dset = f['Sweep_' + str(int(sweep_id))]
+        stim = np.array(dset[:, 0])
+        data = np.array(dset[:, 1])
+
+        idx_peaks, _ = _find_peaks(data, height=thresh_mv, distance=thresh_ms)
+
+        for orig_idx, row in sweep_group.iterrows():
+            spike_num = int(row['spike_num'])
+            if spike_num >= len(idx_peaks):
+                continue
+
+            peak_idx = idx_peaks[spike_num]
+            infl_idx = peak_idx - int(row['inflection_time'] * one_ms)
+            pos      = idx_to_pos[orig_idx]
+
+            end   = infl_idx
+            start = end - int(window_ms * one_ms)
+            if start < 0 or end > len(stim):
+                continue
+
+            w_stim = stim[start:end]
+            mean_vals[pos] = np.mean(w_stim)
+            std_vals[pos]  = np.std(w_stim)
+
+            try:
+                fxx, pxx = _spectral.compute_spectrum(
+                    w_stim, fs, method='welch',
+                    window='hann', nperseg=len(w_stim),
+                )
+                fxx, pxx = fxx[1:], pxx[1:]
+                if len(fxx) > 2:
+                    slope, _ = np.polyfit(np.log10(fxx), np.log10(pxx), 1)
+                    exp_vals[pos] = -slope
+            except Exception:
+                pass
+
+    suffix = f'{window_ms}ms'
+    return _pd.DataFrame(
+        {f'stim_mean_{suffix}': mean_vals,
+         f'stim_std_{suffix}':  std_vals,
+         f'stim_exp_{suffix}':  exp_vals},
+        index=df_pink_raw.index,
+    )
+
+
 def f_test_r2(r2_small, r2_big, p_small, p_big, n):
     """F-test whether the larger model explains significantly more variance than the smaller one."""
     import scipy.stats as stats

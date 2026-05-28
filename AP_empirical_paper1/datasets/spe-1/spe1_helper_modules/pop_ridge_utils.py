@@ -720,10 +720,10 @@ def plot_r2_distributions(r2_pop, sig_pop, target_names, target_labels,
 def save_population_results(pickle_dir, r2_pop, sig_pop, beta_pop, df_tests,
                              mean_r2, frac_sig, mean_beta_mat, sig_beta_mat,
                              target_names, target_labels, predictor_sets, cell_ids,
-                             df_frac=None):
+                             df_frac=None, df_r2=None):
     path = os.path.join(pickle_dir, 'population_ridge_results.pkl')
     payload = dict(
-        df_tests=df_tests, df_frac=df_frac,
+        df_tests=df_tests, df_frac=df_frac, df_r2=df_r2,
         r2_pop=r2_pop, sig_pop=sig_pop, beta_pop=beta_pop,
         mean_r2=mean_r2, frac_sig=frac_sig,
         mean_beta_mat=mean_beta_mat, sig_beta_mat=sig_beta_mat,

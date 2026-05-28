@@ -35,7 +35,7 @@ AP_empirical_paper1/
 
 ## spe-1 — Spontaneous variability, rat somatosensory cortex
 
-Juxtacellular + Neuropixels LFP recordings (n = 44 cells). Spikes are parameterized and clustered into Low / Mid / High groups by waveform feature. Main question: do spikes from different waveform clusters occur during different LFP network states?
+Juxtacellular + Neuropixels LFP recordings (n = 43 cells). Spikes are parameterized and clustered into Low / Mid / High groups by waveform feature. Main question: do spikes from different waveform clusters occur during different LFP network states?
 
 ### Notebooks
 
@@ -51,39 +51,50 @@ Juxtacellular + Neuropixels LFP recordings (n = 44 cells). Spikes are parameteri
 
 | Notebook | What it does |
 |---|---|
-| `pop_spk_waveform_cluster_comparisons.ipynb` | Clustering prevalence across all cells; metadata confounds (recording type, depth, cell type); temporal drift |
-| `pop_lfp_spk_cluster_comparisons_target_cells.ipynb` | LFP × spike cluster sliding-window analysis — effect sizes (Cohen's d), bootstrap CIs, within-cell permutation, direction and timing |
-| `pop_lfp_spk_cluster_metadata_full_comparisons_target_cells.ipynb` | Does clustering quality predict LFP effect strength? Cross-cell integration |
+| `pop_spk_waveform_clusters.ipynb` | Clustering prevalence across all cells; metadata confounds (recording type, depth, cell type); temporal drift; select priority cells |
+| `pop_lfp_spk_sliding_window.ipynb` | LFP × spike cluster sliding-window analysis — effect sizes (Cohen's d), bootstrap CIs, within-cell permutation, direction and timing |
+| `pop_lfp_spk_prepost.ipynb` | Pre/post-spike LFP differences per cluster group; interaction test; priority vs. non-priority cell comparison |
+| `pop_lfp_spk_metadata.ipynb` | Does clustering quality or cell identity predict LFP effect strength? Three-way metadata × LFP × spike-feature analysis |
+| `pop_ridge_regression.ipynb` | Pool per-cell ridge regression results; population R² tests; beta consistency; fraction-significant binomial tests |
+| `pop_ridge_metadata.ipynb` | Which cells drive waveform→LFP predictability? Cell identity × R² and beta-direction analyses |
 
-**Cell groups** (defined in `config.py`, derived in `pop_spk_waveform_cluster_comparisons.ipynb` § G):
-- `PRIORITY_CELLS = [8, 10, 19, 21, 24, 42, 45]` — top 7 cells by mean nRMSE (largest waveform differences across cluster groups)
-- `HIGH_DIFF_LOW_DRIFT_CELLS = [5, 8, 14]` — top 3 by nRMSE among cells with low temporal drift (|mean ρ| < 0.2), providing a contrast group where cluster differences exist but are not confounded by time-in-recording
+**Cell groups** (defined in `config.py`, derived in `pop_spk_waveform_clusters.ipynb` § G):
+- `PRIORITY_CELLS = [3, 4, 21, 24, 26, 27, 42]` — top 7 cells by mean nRMSE (largest waveform differences across cluster groups)
+- `HIGH_DIFF_LOW_DRIFT_CELLS = [8, 14, 26]` — top 3 by nRMSE among cells with low temporal drift (|mean ρ| < 0.2), providing a contrast group where cluster differences exist but are not confounded by time-in-recording
 
 ### Helper modules (`spe1_helper_modules/`)
 
 | Module | Purpose |
 |---|---|
 | `config.py` | Per-cell metadata, sampling rates, `SPE1_DATA_ROOT`, `SPE1_PICKLE_ROOT`, `LFP_FS`, `NPX_FS` |
+| `data_loader.py` | Load spe-1 binary recordings → `.npy` |
+| `signal_utils.py` | Butterworth LFP filtering |
 | `spk_feat_cluster_analysis.py` | Per-cell clustering, LFP windowing, specparam, sliding-window stats, `load_or_compute` |
 | `spk_feat_cluster_comp_analysis.py` | Population clustering QC — prevalence, metadata associations, temporal drift |
 | `spk_lfp_cluster_comp_analysis.py` | Population LFP-spike comparison — Cohen's d, bootstrap, within-cell permutation |
-| `data_loader.py` | Load spe-1 binary recordings → `.npy` |
-| `signal_utils.py` | Butterworth LFP filtering |
 | `lfp_spike_window_analysis.py` | Peri-spike LFP windowing, sensitivity analysis |
 | `spe1_plotting.py` | Dataset-specific plotting utilities |
+| `ridge_regression_utils.py` | Per-cell 5-fold ridge regression, feature extraction, LFP target construction |
+| `spe1_ridge_utils.py` | spe-1-specific ridge helpers (window constants, `FEAT_LABELS`) |
+| `pop_ridge_utils.py` | Load/aggregate population ridge results, population tests, save population pickle |
+| `pop_metadata_utils.py` | Build metadata DataFrame; plots for cell-level R², alpha, and beta×metadata analyses |
 
 ### Pickle layout (under `SPE1_PICKLE_ROOT`)
 
 ```
 spe1_pickles/
-├── spike_fit_pickles/     c{N}_spike_fit.pkl
-├── cluster_pickles/       c{N}_cluster_df.pkl        ← df_features_clust (LFP pipeline)
-│                          c{N}_cluster_report.pkl    ← master_report_df (population QC)
-├── lfp_window_pickles/    c{N}_lfp_windows.pkl
-├── simple_lfp_pickles/    c{N}_simple_lfp.pkl
-├── multitaper_pickles/    c{N}/                      ← specparam chunks (pre-computed)
-└── lfp_spk_group_pickles/ c{N}_sliding_stats.pkl
-                           c{N}_per_spike_data.pkl
+├── spike_fit_pickles/       c{N}_spike_fit.pkl
+├── cluster_pickles/         c{N}_cluster_df.pkl        ← df_features_clust (LFP pipeline)
+│                            c{N}_cluster_report.pkl    ← master_report_df (population QC)
+├── lfp_window_pickles/      c{N}_lfp_windows.pkl
+├── simple_lfp_pickles/      c{N}_simple_lfp.pkl
+├── multitaper_pickles/      c{N}/                      ← specparam chunks (pre-computed)
+├── lfp_spk_group_pickles/   c{N}_sliding_stats.pkl
+│                            c{N}_per_spike_data.pkl
+└── ridge_regression_pickles/
+    ├── c{N}_ridge_results.pkl        ← per-cell CV R², betas, significance
+    └── population_ridge_results.pkl  ← aggregated r2_pop, sig_pop, beta_pop,
+                                         df_tests, df_frac, df_r2, mean_beta_mat
 ```
 
 ---
@@ -94,9 +105,8 @@ Whole-cell current clamp slice recordings from mouse visual cortex ([CRCNS PVC-6
 
 | Notebook | What it does |
 |---|---|
-| `spk_waveform_stim_predictors_cell1.ipynb` | Feature extraction, Ridge regression, stimulus decoding — cell 1 |
-| `spk_waveform_stim_predictors_cell2.ipynb` | Same for cell 2 |
-| `spk_waveform_pink_noise_analysis_cell2.ipynb` | Exploratory pink noise analysis — cell 2 |
+| `spk_waveform_stim_predictors_cell1_main.ipynb` | Feature extraction, ridge regression, stimulus decoding — cell 1 |
+| `spk_waveform_stim_predictors_cell2.ipynb` | Same pipeline for cell 2 (note: class imbalance limits stimulus classification) |
 
 **Helper modules** (`pvc6_helper_modules/`): `pvc6_load_data.py`, `pvc6_stim_analysis.py`, `pvc6_plotting.py`
 
@@ -113,6 +123,9 @@ Whole-cell current clamp slice recordings from mouse visual cortex ([CRCNS PVC-6
 | Within-cell LFP specificity | Permutation test (n=500 label shuffles) | % cells significant | — |
 | Metadata × cluster difference | Mann-Whitney U / Kruskal-Wallis / Spearman | rank-biserial r / η² / ρ | BH-FDR |
 | Classifier accuracy (pvc-6) | Bootstrap (n=1000 train/test splits) | accuracy | — |
+| Waveform → LFP ridge regression (spe-1) | 5-fold CV ridge; Wilcoxon median R²>0 (population) | CV R² | BH-FDR |
+| Beta consistency across cells (spe-1) | One-sample Wilcoxon signed-rank on betas | — | BH-FDR |
+| Cell metadata × R² / beta direction | Kruskal-Wallis (categorical) / Spearman (continuous) | η² / ρ | BH-FDR |
 
 ---
 

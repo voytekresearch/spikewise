@@ -458,3 +458,81 @@ def plot_stim_lag_correlations(lag_centers, r_vals, p_vals, features,
     fig.tight_layout()
     plt.show()
 
+
+def plot_window_expansion(results_by_window, windows_ms,
+                          targets=('stim_mean', 'stim_std', 'stim_exp'),
+                          target_labels=('stim mean', 'stim std', 'stim exp'),
+                          title=''):
+    """
+    Compare ridge regression R² (bootstrap mean + 95 % CI) across pre-inflection
+    window sizes for one or more stimulus targets.
+
+    Parameters
+    ----------
+    results_by_window : dict
+        Keyed as '{W}ms_{target}', e.g. '5ms_stim_mean'.
+        Values are dicts returned by run_ridge_regression_kfold.
+    windows_ms  : list of int   – window sizes tested (x-axis)
+    targets     : tuple of str  – target names (separate subplots)
+    target_labels : tuple of str – display labels for targets
+    title       : str           – figure suptitle suffix
+    """
+    n_targets = len(targets)
+    fig, axes = plt.subplots(1, n_targets, figsize=(4 * n_targets, 4), sharey=False)
+    if n_targets == 1:
+        axes = [axes]
+
+    sup = 'Window expansion: R² vs pre-inflection window'
+    if title:
+        sup += f'  |  {title}'
+    fig.suptitle(sup, fontsize=11, y=1.02)
+
+    for ax, tgt, tgt_lbl in zip(axes, targets, target_labels):
+        r2s, lo, hi, sigs = [], [], [], []
+        for wms in windows_ms:
+            key = f'{wms}ms_{tgt}'
+            if key not in results_by_window:
+                r2s.append(np.nan); lo.append(np.nan); hi.append(np.nan); sigs.append(False)
+                continue
+            res = results_by_window[key]
+            r2s.append(res['r2_mean'])
+            lo.append(res['r2_ci'][0])
+            hi.append(res['r2_ci'][1])
+            sigs.append(res.get('sig_fdr', False))
+
+        r2s  = np.array(r2s,  dtype=float)
+        lo   = np.array(lo,   dtype=float)
+        hi   = np.array(hi,   dtype=float)
+        xs   = np.arange(len(windows_ms))
+
+        colors = ['#D55E00' if s else '#888888' for s in sigs]
+        ax.bar(xs, r2s, color=colors, alpha=0.8, width=0.6)
+        ax.errorbar(xs, r2s,
+                    yerr=[r2s - lo, hi - r2s],
+                    fmt='none', color='k', capsize=4, lw=1.5)
+        ax.axhline(0, color='k', lw=0.8, ls='--', alpha=0.5)
+
+        ax.set_xticks(xs)
+        ax.set_xticklabels([f'{w} ms' for w in windows_ms], fontsize=9)
+        ax.set_xlabel('Window width', fontsize=10)
+        ax.set_ylabel('Bootstrap R² (mean ± 95 % CI)', fontsize=9)
+        ax.set_title(tgt_lbl, fontsize=10, fontweight='bold')
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.tick_params(labelsize=8)
+
+        # annotate significance
+        for xi, (r2, sig) in enumerate(zip(r2s, sigs)):
+            if sig:
+                ax.text(xi, r2 + (hi[xi] - r2) + 0.002, '*',
+                        ha='center', va='bottom', fontsize=12, color='#D55E00')
+
+    # legend
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor='#D55E00', alpha=0.8, label='FDR sig.'),
+                       Patch(facecolor='#888888', alpha=0.8, label='not sig.')]
+    axes[-1].legend(handles=legend_elements, fontsize=8, frameon=False,
+                    loc='upper left')
+
+    fig.tight_layout()
+    plt.show()
+
