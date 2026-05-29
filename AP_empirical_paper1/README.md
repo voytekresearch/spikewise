@@ -39,13 +39,18 @@ Juxtacellular + Neuropixels LFP recordings (n = 43 cells). Spikes are parameteri
 
 ### Notebooks
 
-**Per-cell clustering** (`spe1_patch_LFP_analysis/cluster_analyses/spe-1_c{N}_clusters.ipynb`):
-- Spike fitting → feature extraction → clustering → cluster quality report → saves pickles
-- `FORCE_CLUSTER = False` at top — set `True` to rerun even if cluster pickle exists
+**Per-cell cluster + LFP analyses** (`spe1_patch_LFP_analysis/cluster_analyses/cell_analyses/cluster_feature_analyses/`):
 
-**Per-cell LFP analysis** (priority cells only, `spe-1_c{N}_LFP_analysis.ipynb`):
-- Loads cluster pickle → extracts peri-spike LFP windows → loads pre-computed specparam → runs sliding-window stats
-- `FORCE_LFP`, `FORCE_SIMPLE`, `FORCE_STATS` flags at top
+| Notebook pattern | What it does |
+|---|---|
+| `spe-1_c{N}_clusters.ipynb` | Spike fitting → feature extraction → clustering → cluster quality report → saves pickles |
+| `spe-1_c{N}_LFP_analysis.ipynb` | Priority cells only: loads cluster pickle → peri-spike LFP windows → specparam → sliding-window stats |
+| `spe-1_c{N}_np_LFP_analysis.ipynb` | All cells: same pipeline via Neuropixels LFP channel |
+
+`FORCE_CLUSTER / FORCE_LFP / FORCE_SIMPLE / FORCE_STATS` flags at top of each notebook — set `True` to rerun even if pickle exists.
+
+**Per-cell ridge regression** (`cell_analyses/ridge_regression_analyses/spe-1_c{N}_spk_to_lfp_ridge.ipynb`):
+- Loads cluster pickle → extracts LFP features in pre/post windows → 5-fold CV ridge regression → saves per-cell pickle
 
 **Population-level** (`spe1_patch_LFP_analysis/cluster_analyses/population_analyses/`):
 
