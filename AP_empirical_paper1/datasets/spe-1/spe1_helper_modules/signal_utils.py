@@ -29,3 +29,19 @@ def butter_bandpass(data: np.ndarray, fs: float, filt_freq: list, order: int = 4
 
     sos = butter(order, [low, high], btype='band', output='sos')
     return sosfiltfilt(sos, data)
+
+
+def butter_highpass(data: np.ndarray, fs: float, cutoff: float, order: int = 4) -> np.ndarray:
+    """
+    Apply a zero-phase highpass Butterworth filter.
+
+    Parameters
+    ----------
+    data   : 1-D signal
+    fs     : sampling rate (Hz)
+    cutoff : highpass cutoff frequency (Hz)
+    order  : filter order (default 4)
+    """
+    nyq = 0.5 * fs
+    sos = butter(order, cutoff / nyq, btype='high', output='sos')
+    return sosfiltfilt(sos, data)

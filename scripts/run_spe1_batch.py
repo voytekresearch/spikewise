@@ -69,6 +69,7 @@ from config import CELL_IDS, PRIORITY_CELLS
 
 NB_DIR      = (REPO_ROOT / "AP_empirical_paper1" / "datasets" / "spe-1"
                / "spe1_patch_LFP_analysis" / "cluster_analyses" / "cell_analyses")
+RIDGE_NB_DIR = NB_DIR / "ridge_regression_analyses"
 PRIORITY_SET = {f"c{n}" for n in PRIORITY_CELLS}
 
 
@@ -156,6 +157,17 @@ def run_lfp_np_nb(args):
     return (cell_id, result)
 
 
+def run_ridge_nb(args):
+    """Ridge regression notebook (spe-1_c{N}_spk_to_lfp_ridge.ipynb)."""
+    cell_id, opts = args
+    cnum = _cell_num(cell_id)
+    nb   = RIDGE_NB_DIR / f"spe-1_c{cnum}_spk_to_lfp_ridge.ipynb"
+    if not nb.exists():
+        return (cell_id, f"no ridge notebook for c{cnum}")
+    result = _run_lfp_notebook(nb, f"ridge c{cnum}", opts)
+    return (cell_id, result)
+
+
 def _run_phase(fn, job_args, workers, label):
     print(f"\n{'='*60}")
     print(f"{label} ({len(job_args)} cells, {workers} worker(s))")
@@ -193,6 +205,10 @@ def main():
                         help="Run non-priority LFP notebooks (spe-1_c{N}_np_LFP_analysis.ipynb)")
     parser.add_argument("--lfp-np-only", dest="lfp_np_only", action="store_true",
                         help="Skip clustering; run non-priority LFP notebooks only")
+    parser.add_argument("--ridge",      dest="run_ridge",   action="store_true",
+                        help="Run ridge regression notebooks (spe-1_c{N}_spk_to_lfp_ridge.ipynb)")
+    parser.add_argument("--ridge-only", dest="ridge_only",  action="store_true",
+                        help="Skip clustering/LFP; run ridge notebooks only")
     parser.add_argument("--force-cluster", dest="force_cluster", action="store_true",
                         help="Inject FORCE_CLUSTER=True into cluster notebooks")
     parser.add_argument("--force-all",     dest="force_all",     action="store_true",
@@ -202,14 +218,12 @@ def main():
     if args.force_all:
         args.force_cluster = True
 
-    # --lfp-only / --lfp-np-only imply their respective run flags
+    # --*-only flags imply their respective run flags and skip clustering
     if args.lfp_only:    args.run_lfp    = True
     if args.lfp_np_only: args.run_lfp_np = True
+    if args.ridge_only:  args.run_ridge  = True
 
-    skip_clustering = args.lfp_only and not args.run_lfp_np or \
-                      args.lfp_np_only and not args.run_lfp or \
-                      (args.lfp_only and args.lfp_np_only)
-    skip_clustering = args.lfp_only or args.lfp_np_only
+    skip_clustering = args.lfp_only or args.lfp_np_only or args.ridge_only
 
     # Resolve cell lists
     if args.cells:
@@ -221,16 +235,18 @@ def main():
 
     lfp_ids    = [cid for cid in cell_ids if cid in PRIORITY_SET]     if args.run_lfp    else []
     lfp_np_ids = [cid for cid in cell_ids if cid not in PRIORITY_SET] if args.run_lfp_np else []
+    ridge_ids  = list(cell_ids)                                        if args.run_ridge  else []
 
     opts = {"force_cluster": args.force_cluster, "workers": args.workers}
-    # Note: force_lfp is no longer injected — set FORCE flags inside each notebook instead
+    # Note: force flags are set inside each notebook's parameters cell
 
     if not skip_clustering:
         print(f"Clustering:      {len(cell_ids)} cells")
     print(f"LFP (priority):  {len(lfp_ids)} cells  {sorted(lfp_ids)}")
     print(f"LFP (np):        {len(lfp_np_ids)} cells")
+    print(f"Ridge:           {len(ridge_ids)} cells")
     print(f"force_cluster={args.force_cluster}  workers={args.workers}")
-    print("Note: LFP FORCE flags are set inside each notebook's parameters cell.")
+    print("Note: FORCE flags are set inside each notebook's parameters cell.")
 
     # Phase 1: cluster notebooks
     if not skip_clustering:
@@ -261,6 +277,15 @@ def main():
             [(cid, opts) for cid in np_ready],
             args.workers,
             "Phase 3: LFP analysis notebooks (non-priority)",
+        )
+
+    # Phase 4: ridge regression notebooks
+    if ridge_ids:
+        _run_phase(
+            run_ridge_nb,
+            [(cid, opts) for cid in ridge_ids],
+            args.workers,
+            "Phase 4: Ridge regression notebooks",
         )
 
     print("\nDone.")

@@ -64,6 +64,10 @@ def load_cell_data(cell_num):
     df_reg : pd.DataFrame  (aligned to specparam length)
     specparam_by_spike : list of dict
     lfp_windows_by_spike : list of dict
+
+    To also load HPF-detrended LFP windows call load_hpf_lfp_windows(cell_num)
+    separately and trim to len(specparam_by_spike), then pass as
+    hpf_lfp_by_spike to build_ridge_matrices.
     """
     import sys
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -102,8 +106,62 @@ def win_avg(t_bins, arr, window):
     return float(np.nanmean(vals)) if np.any(np.isfinite(vals)) else np.nan
 
 
+def win_std(t_bins, arr, window):
+    """Std of a 1-D array over a time window (seconds). Returns NaN if no data."""
+    if t_bins is None or arr is None:
+        return np.nan
+    t = np.asarray(t_bins, float)
+    a = np.asarray(arr, float)
+    mask = (t >= window[0]) & (t <= window[1])
+    if not np.any(mask):
+        return np.nan
+    vals = a[mask]
+    return float(np.nanstd(vals)) if np.any(np.isfinite(vals)) else np.nan
+
+
+def load_hpf_lfp_windows(cell_num, hpf_cutoff=0.1):
+    """
+    Load raw per-spike LFP windows, apply a zero-phase highpass filter, and
+    return a list of dicts compatible with lfp_windows_by_spike but at full
+    LFP resolution (not the 25ms-binned simple_lfp).
+
+    Used by build_ridge_matrices when hpf_lfp_by_spike is supplied, so that
+    lfp_mean and lfp_std targets are computed from HPF-detrended traces rather
+    than the baseline-corrected simple_lfp values.
+
+    Parameters
+    ----------
+    cell_num   : int
+    hpf_cutoff : float  highpass cutoff in Hz (default 1.0)
+
+    Returns
+    -------
+    list of dict, one per spike:
+        {'t_bins_s': ndarray (n_samples,), 'lfp_hpf': ndarray (n_samples,)}
+    """
+    from config import SPE1_PICKLE_ROOT, LFP_FS
+    from signal_utils import butter_highpass
+
+    win_path = os.path.join(
+        SPE1_PICKLE_ROOT, 'lfp_window_pickles', f'c{cell_num}_lfp_windows.pkl'
+    )
+    with open(win_path, 'rb') as f:
+        d = pickle.load(f)
+
+    windows      = d['windows']        # list of (n_samples,) arrays
+    times_rel_ms = d['times_rel_ms']   # (n_spikes, n_samples) in ms
+
+    result = []
+    for raw, t_ms in zip(windows, times_rel_ms):
+        hpf = butter_highpass(np.asarray(raw, float), LFP_FS, hpf_cutoff)
+        result.append({'t_bins_s': np.asarray(t_ms, float) / 1000.0,
+                       'lfp_hpf':  hpf})
+    return result
+
+
 def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
-                         pre_win, post_win, baseline_win):
+                         pre_win, post_win, baseline_win,
+                         hpf_lfp_by_spike=None):
     """
     Build predictor (X) and target (Y) matrices.
 
@@ -152,26 +210,38 @@ def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
         def _sp(k): return sp.get(k) if sp else None
         def _ba(b): return band_aucs.get(b)
 
+        # HPF-detrended amp/std targets (if HPF data supplied) —
+        # use full-resolution raw trace; win_avg → mean, win_std → variability
+        if hpf_lfp_by_spike is not None:
+            hw     = hpf_lfp_by_spike[i]
+            t_hpf  = hw['t_bins_s']
+            hpf    = hw['lfp_hpf']
+            _amp   = lambda win: win_avg(t_hpf, hpf, win)
+            _std   = lambda win: win_std(t_hpf, hpf, win)
+        else:
+            _amp   = lambda win: win_avg(t_sw, sw['lfp_mean'] if sw else None, win)
+            _std   = lambda win: win_avg(t_sw, sw['lfp_std']  if sw else None, win)
+
         pre_vals = [
-            win_avg(t_sw, sw['lfp_mean'] if sw else None, pre_win),
-            win_avg(t_sw, sw['lfp_std']  if sw else None, pre_win),
-            win_avg(t_sp, _ba('gamma'),                   pre_win),
-            win_avg(t_sp, _sp('exponent'),                pre_win),
-            win_avg(t_sp, _ba('theta'),                   pre_win),
+            _amp(pre_win),
+            _std(pre_win),
+            win_avg(t_sp, _ba('gamma'),    pre_win),
+            win_avg(t_sp, _sp('exponent'), pre_win),
+            win_avg(t_sp, _ba('theta'),    pre_win),
         ]
         bl_vals = [
-            win_avg(t_sw, sw['lfp_mean'] if sw else None, baseline_win),
-            win_avg(t_sw, sw['lfp_std']  if sw else None, baseline_win),
-            win_avg(t_sp, _ba('gamma'),                   baseline_win),
-            win_avg(t_sp, _sp('exponent'),                baseline_win),
-            win_avg(t_sp, _ba('theta'),                   baseline_win),
+            _amp(baseline_win),
+            _std(baseline_win),
+            win_avg(t_sp, _ba('gamma'),    baseline_win),
+            win_avg(t_sp, _sp('exponent'), baseline_win),
+            win_avg(t_sp, _ba('theta'),    baseline_win),
         ]
         post_vals = [
-            win_avg(t_sw, sw['lfp_mean'] if sw else None, post_win),
-            win_avg(t_sw, sw['lfp_std']  if sw else None, post_win),
-            win_avg(t_sp, _ba('gamma'),                   post_win),
-            win_avg(t_sp, _sp('exponent'),                post_win),
-            win_avg(t_sp, _ba('theta'),                   post_win),
+            _amp(post_win),
+            _std(post_win),
+            win_avg(t_sp, _ba('gamma'),    post_win),
+            win_avg(t_sp, _sp('exponent'), post_win),
+            win_avg(t_sp, _ba('theta'),    post_win),
         ]
 
         Y[i,  0: 5] = pre_vals
