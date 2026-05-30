@@ -83,7 +83,8 @@ def _sig_str(p):
 
 def build_metadata_df(all_results, cell_ids, target_names, target_labels,
                        predictor_sets, dict_cell_type, dict_patch_type,
-                       dict_cort_depth, dict_dark_neurons, dict_eap_wav):
+                       dict_cort_depth, dict_dark_neurons, dict_eap_wav,
+                       dict_firing_rate=None, dict_rec_duration=None):
     """
     Build a per-cell DataFrame combining cell metadata with ridge regression stats.
 
@@ -97,13 +98,15 @@ def build_metadata_df(all_results, cell_ids, target_names, target_labels,
     dict_cell_type, dict_patch_type, dict_cort_depth,
     dict_dark_neurons, dict_eap_wav : dict {cell_num → value}
         Cell property lookup tables (from spe-1 config).
+    dict_firing_rate  : dict {cell_num → float} Hz, optional
+    dict_rec_duration : dict {cell_num → float} minutes, optional
 
     Returns
     -------
     df : pd.DataFrame
         One row per cell.  Columns:
           cell_id, cell_num, cell_type, patch_type, cort_depth, dark_neuron,
-          eap_visible, n_spikes, mean_r2_wv,
+          eap_visible, n_spikes, firing_rate_hz, rec_duration_min, mean_r2_wv,
           n_sig_<pset> for each predictor set,
           r2_<target>, sig_<target>, alpha_<target> (Waveform only) per target.
     """
@@ -113,15 +116,17 @@ def build_metadata_df(all_results, cell_ids, target_names, target_labels,
         res = all_results[cid]
 
         row = dict(
-            cell_id     = cid,
-            cell_num    = cell_num,
-            cell_type   = dict_cell_type.get(cell_num, 'unknown'),
-            patch_type  = dict_patch_type.get(cell_num, 'unknown'),
-            cort_depth  = dict_cort_depth.get(cell_num, np.nan),
-            dark_neuron = str(dict_dark_neurons.get(cell_num, np.nan)),
-            eap_visible = str(dict_eap_wav.get(cell_num, np.nan)),
-            n_spikes    = res[target_names[0]]['Waveform only'].get('n_valid', np.nan),
-            mean_r2_wv  = float(np.nanmean([
+            cell_id          = cid,
+            cell_num         = cell_num,
+            cell_type        = dict_cell_type.get(cell_num, 'unknown'),
+            patch_type       = dict_patch_type.get(cell_num, 'unknown'),
+            cort_depth       = dict_cort_depth.get(cell_num, np.nan),
+            dark_neuron      = str(dict_dark_neurons.get(cell_num, np.nan)),
+            eap_visible      = str(dict_eap_wav.get(cell_num, np.nan)),
+            n_spikes         = res[target_names[0]]['Waveform only'].get('n_valid', np.nan),
+            firing_rate_hz   = dict_firing_rate.get(cell_num, np.nan)  if dict_firing_rate  else np.nan,
+            rec_duration_min = dict_rec_duration.get(cell_num, np.nan) if dict_rec_duration else np.nan,
+            mean_r2_wv       = float(np.nanmean([
                 res[tn]['Waveform only'].get('r2_cv', np.nan)
                 for tn in target_names
             ])),
@@ -492,52 +497,192 @@ def plot_metadata_vs_mean_r2(df):
 
 def plot_n_spikes_confound(df):
     """
-    Spearman correlation between n_spikes and mean CV R² (Waveform-only model).
+    Check whether n_spikes, firing rate, or recording duration confound mean CV R².
 
-    Points coloured by number of FDR-significant targets so you can see whether
-    more spikes predicts model significance independently of effect size.
+    n_spikes = firing_rate × recording_duration, so it conflates cell activity
+    with how long the cell was recorded. Three panels show each separately so
+    you can tell which (if either) is the real driver.
+
+    Points coloured by number of FDR-significant targets.
 
     Parameters
     ----------
-    df : output of build_metadata_df
+    df : output of build_metadata_df  (must include firing_rate_hz,
+         rec_duration_min if those confounds are to be tested; if absent,
+         those panels are skipped)
     """
     import seaborn as sns
 
     wv_cols   = [c for c in df.columns if 'waveform_only' in c and c.startswith('n_sig_')]
     n_sig_col = wv_cols[0] if wv_cols else df.columns[df.columns.str.startswith('n_sig_')][0]
 
-    d = df[['n_spikes', 'mean_r2_wv', n_sig_col]].dropna()
-    rho, p   = stats.spearmanr(d['n_spikes'], d['mean_r2_wv'])
-    sig      = _sig_str(p)
-    line_col = _SIG_COL if p < 0.05 else _NSG_COL
+    panels = [('n_spikes', 'N spikes\n(firing rate × duration)')]
+    if 'firing_rate_hz' in df.columns and df['firing_rate_hz'].notna().sum() > 3:
+        panels.append(('firing_rate_hz', 'Firing rate (Hz)'))
+    if 'rec_duration_min' in df.columns and df['rec_duration_min'].notna().sum() > 3:
+        panels.append(('rec_duration_min', 'Recording duration (min)'))
 
-    fig, ax = plt.subplots(figsize=(5.5, 4.5))
-    sc = ax.scatter(d['n_spikes'], d['mean_r2_wv'],
-                    c=d[n_sig_col], cmap='YlOrRd', s=65,
-                    alpha=0.85, edgecolors='white', lw=0.5, vmin=0)
-    plt.colorbar(sc, ax=ax, label='N FDR-sig. targets', shrink=0.7)
-    ax.axhline(0, color='gray', lw=1, ls='--', alpha=0.6)
+    fig, axes = plt.subplots(1, len(panels), figsize=(5.5 * len(panels), 4.5),
+                             constrained_layout=True)
+    if len(panels) == 1:
+        axes = [axes]
 
-    m, b = np.polyfit(d['n_spikes'], d['mean_r2_wv'], 1)
-    xs   = np.linspace(d['n_spikes'].min(), d['n_spikes'].max(), 100)
-    ax.plot(xs, m * xs + b, color=line_col, lw=2,
-            ls='-' if p < 0.05 else '--')
-
-    ax.set_xlabel('Number of spikes (recording length proxy)', fontsize=_FS_LABEL)
-    ax.set_ylabel('Mean CV R²  (Waveform-only)', fontsize=_FS_LABEL)
-    ax.set_title(
-        f'Sample size vs model performance\n'
-        f'Spearman ρ = {rho:+.3f}   p = {p:.3f}   {sig}',
-        fontsize=_FS_TITLE, color=line_col
+    fig.suptitle(
+        'Sample size confound check  (Waveform-only model)\n'
+        'n_spikes = firing rate × recording duration — shown separately to\n'
+        'distinguish cell activity from recording length as confounds',
+        fontsize=_FS_TITLE
     )
-    sns.despine(ax=ax)
-    fig.tight_layout()
+
+    for ax, (xcol, xlabel) in zip(axes, panels):
+        d = df[[xcol, 'mean_r2_wv', n_sig_col]].dropna()
+        rho, p   = stats.spearmanr(d[xcol], d['mean_r2_wv'])
+        sig      = _sig_str(p)
+        line_col = _SIG_COL if p < 0.05 else _NSG_COL
+
+        sc = ax.scatter(d[xcol], d['mean_r2_wv'],
+                        c=d[n_sig_col], cmap='YlOrRd', s=65,
+                        alpha=0.85, edgecolors='white', lw=0.5, vmin=0)
+        plt.colorbar(sc, ax=ax, label='N FDR-sig. targets', shrink=0.7)
+        ax.axhline(0, color='gray', lw=1, ls='--', alpha=0.6)
+
+        m, b = np.polyfit(d[xcol], d['mean_r2_wv'], 1)
+        xs   = np.linspace(d[xcol].min(), d[xcol].max(), 100)
+        ax.plot(xs, m * xs + b, color=line_col, lw=2,
+                ls='-' if p < 0.05 else '--')
+
+        ax.set_xlabel(xlabel, fontsize=_FS_LABEL)
+        ax.set_ylabel('Mean CV R²  (Waveform-only)', fontsize=_FS_LABEL)
+        ax.set_title(
+            f'Spearman ρ = {rho:+.3f}   p = {p:.3f}   {sig}',
+            fontsize=_FS_TICK + 1, color=line_col
+        )
+        sns.despine(ax=ax)
+
+        flag = '⚠  potential confound' if p < 0.05 else '✓  not a confound'
+        print(f'{xcol:20s}  rho={rho:+.3f}  p={p:.3f}  {sig}  {flag}')
+
     plt.show()
 
-    if p < 0.05:
-        print('⚠  N spikes significantly predicts R² — potential confound.')
-    else:
-        print('✓  N spikes does not significantly predict R² — not a confound.')
+
+# ── 6b. Recording duration and firing rate × metadata ────────────────────────
+
+def plot_duration_rate_vs_metadata(df):
+    """
+    Test whether recording duration and firing rate are correlated with the
+    same cell metadata variables used in the R² analysis.
+
+    If duration or firing rate correlates with cell type / patch type / etc.,
+    those metadata effects on R² could be driven by recording differences
+    rather than biology — a methodological confound worth flagging.
+
+    Layout: two rows (duration, firing rate) × N metadata variables.
+    Categorical: Kruskal-Wallis, box + strip.  Continuous: Spearman scatter.
+    Significant panels (p < 0.05, uncorrected) highlighted in orange.
+
+    Parameters
+    ----------
+    df : output of build_metadata_df  (must contain firing_rate_hz and
+         rec_duration_min columns)
+    """
+    import seaborn as sns
+
+    outcomes = []
+    if 'rec_duration_min' in df.columns and df['rec_duration_min'].notna().sum() > 3:
+        outcomes.append(('rec_duration_min', 'Recording duration (min)'))
+    if 'firing_rate_hz' in df.columns and df['firing_rate_hz'].notna().sum() > 3:
+        outcomes.append(('firing_rate_hz', 'Firing rate (Hz)'))
+
+    if not outcomes:
+        print('No firing_rate_hz or rec_duration_min columns — run build_metadata_df '
+              'with dict_firing_rate and dict_rec_duration.')
+        return
+
+    cat_vars = {
+        'Cell type':   'cell_type',
+        'Patch type':  'patch_type',
+        'Dark neuron': 'dark_neuron',
+        'EAP visible': 'eap_visible',
+    }
+    cont_vars = {'Cort. depth': 'cort_depth'}
+    all_vars  = list(cat_vars.items()) + list(cont_vars.items())
+
+    n_rows = len(outcomes)
+    n_cols = len(all_vars)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(4.5 * n_cols, 4.8 * n_rows),
+                             constrained_layout=True)
+    if n_rows == 1:
+        axes = axes[np.newaxis, :]
+
+    fig.suptitle(
+        'Are recording duration and firing rate confounded with cell metadata?\n'
+        'Significant associations (p<0.05) would mean metadata × R² effects '
+        'could be driven by recording differences, not biology.',
+        fontsize=_FS_TITLE
+    )
+
+    for r, (ycol, ylabel) in enumerate(outcomes):
+        for c, (label, xcol) in enumerate(all_vars):
+            ax = axes[r, c]
+            d  = df[[ycol, xcol]].dropna()
+
+            if label in cat_vars:
+                order = sorted(d[xcol].unique())
+                if len(order) < 2:
+                    ax.set_visible(False)
+                    continue
+                pal = dict(zip(order, _CB[:len(order)]))
+                trans_x = ax.get_xaxis_transform()
+
+                sns.boxplot(data=d, x=xcol, y=ycol, order=order, palette=pal,
+                            width=0.5, ax=ax, fliersize=0,
+                            boxprops={'alpha': 0.45},
+                            medianprops=dict(color='k', lw=2))
+                sns.stripplot(data=d, x=xcol, y=ycol, order=order, palette=pal,
+                              alpha=0.75, jitter=0.18, size=7, ax=ax, zorder=4)
+
+                groups = [d[d[xcol] == g][ycol].values for g in order]
+                valid  = [g for g in groups if len(g) >= 3]
+                if len(valid) >= 2:
+                    _, p = stats.kruskal(*valid)
+                    sig  = _sig_str(p)
+                else:
+                    p, sig = 1.0, 'ns'
+
+                col = _SIG_COL if p < 0.05 else _NSG_COL
+                for i, (g, grp) in enumerate(zip(order, groups)):
+                    ax.text(i, -0.10, f'n={len(grp)}', ha='center', va='top',
+                            fontsize=_FS_SMALL, color='#555', transform=trans_x)
+                ax.set_xticklabels(order, fontsize=_FS_TICK)
+
+            else:
+                # continuous: Spearman scatter
+                rho, p = stats.spearmanr(d[xcol], d[ycol])
+                sig    = _sig_str(p)
+                col    = _SIG_COL if p < 0.05 else _NSG_COL
+
+                ax.scatter(d[xcol], d[ycol], color=_CB[0], s=55,
+                           alpha=0.8, edgecolors='white', lw=0.5)
+                if len(d) >= 4:
+                    m_, b_ = np.polyfit(d[xcol], d[ycol], 1)
+                    xs = np.linspace(d[xcol].min(), d[xcol].max(), 100)
+                    ax.plot(xs, m_ * xs + b_, color=col, lw=2,
+                            ls='-' if p < 0.05 else '--')
+                ax.set_xlabel(label, fontsize=_FS_ANNOT)
+                ax.text(0.97, 0.97, f'ρ={rho:+.2f}\np={p:.3f}',
+                        transform=ax.transAxes, ha='right', va='top',
+                        fontsize=_FS_SMALL, color=col,
+                        bbox=dict(boxstyle='round,pad=0.3', fc='white',
+                                  ec='#ccc', alpha=0.9))
+
+            ax.set_title(f'{label}  [{sig}]', fontsize=_FS_TICK + 1,
+                         fontweight='bold', color=col, pad=6)
+            ax.set_xlabel(label if label in cont_vars else '', fontsize=_FS_ANNOT)
+            ax.set_ylabel(ylabel if c == 0 else '', fontsize=_FS_LABEL)
+            sns.despine(ax=ax)
+
+    plt.show()
 
 
 # ── 7. Beta direction × metadata ──────────────────────────────────────────────
