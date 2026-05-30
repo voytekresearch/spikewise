@@ -116,15 +116,26 @@ def aggregate_population(all_results, cell_ids, target_names, predictor_sets):
 
 # ── Population tests: betas ───────────────────────────────────────────────────
 
-def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, fdr_q=0.05):
+def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, fdr_q=0.05,
+                          sig_r2_targets=None):
     """
     For each (target, waveform feature) pair test whether betas are consistently
     non-zero across cells using two complementary tests:
 
-      t-test          : one-sample, mean beta ≠ 0 (parametric, sensitive to magnitude)
-      Wilcoxon signed-rank : median beta ≠ 0 (non-parametric, robust; primary test)
+      t-test              : one-sample, mean beta ≠ 0 (parametric)
+      Wilcoxon signed-rank: median beta ≠ 0 (non-parametric; primary test)
 
-    Both FDR-corrected (BH) across all pairs.
+    FDR-corrected (BH) across tested pairs only.
+
+    Parameters
+    ----------
+    sig_r2_targets : list[str] or None
+        If provided, only test (target, feature) pairs where the target is in
+        this list (i.e. targets that survived the R² > 0 test). This reduces
+        the FDR correction burden from n_targets×8 to n_sig×8 pairs, which is
+        the scientifically correct hierarchical approach — only ask "which
+        features drive prediction?" for targets where prediction was established.
+        If None, all targets are tested (fully exploratory mode).
 
     Returns
     -------
@@ -132,8 +143,17 @@ def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, fdr
         Columns include p_val / p_val_fdr / sig_fdr (t-test)
                         p_wilcox / p_wilcox_fdr / sig_wilcox (Wilcoxon — use this)
     """
+    test_targets = sig_r2_targets if sig_r2_targets is not None else target_names
+    tl_map       = dict(zip(target_names, target_labels))
+
+    if sig_r2_targets is not None:
+        print(f'Beta tests restricted to {len(sig_r2_targets)} R²-significant targets '
+              f'({len(sig_r2_targets) * len(WAVEFORM_LABELS)} pairs vs '
+              f'{len(target_names) * len(WAVEFORM_LABELS)} if all targets used)')
+
     rows = []
-    for tn, tl in zip(target_names, target_labels):
+    for tn in test_targets:
+        tl = tl_map[tn]
         for wl in WAVEFORM_LABELS:
             valid = beta_pop[tn][wl]
             valid = valid[np.isfinite(valid)]
