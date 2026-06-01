@@ -572,9 +572,13 @@ def plot_duration_rate_vs_metadata(df):
     Test whether recording duration and firing rate are correlated with the
     same cell metadata variables used in the R² analysis.
 
-    If duration or firing rate correlates with cell type / patch type / etc.,
-    those metadata effects on R² could be driven by recording differences
-    rather than biology — a methodological confound worth flagging.
+    Not all associations mean the same thing:
+    - Duration/rate × patch type: methodological — WC sessions may be shorter
+      for non-biological reasons, confounding patch-type comparisons.
+    - Duration/rate × cell type or cortical depth: biologically meaningful in
+      itself, but still relevant — if INs are recorded shorter on average, PC vs IN
+      R² differences could partly reflect recording length rather than cell-type
+      biology per se.
 
     Layout: two rows (duration, firing rate) × N metadata variables.
     Categorical: Kruskal-Wallis, box + strip.  Continuous: Spearman scatter.
@@ -616,9 +620,9 @@ def plot_duration_rate_vs_metadata(df):
         axes = axes[np.newaxis, :]
 
     fig.suptitle(
-        'Are recording duration and firing rate confounded with cell metadata?\n'
-        'Significant associations (p<0.05) would mean metadata × R² effects '
-        'could be driven by recording differences, not biology.',
+        'Recording duration and firing rate × cell metadata\n'
+        'Orange = p<0.05 (uncorrected); interpretation depends on variable — '
+        'see notebook for patch type vs cell type distinction',
         fontsize=_FS_TITLE
     )
 
