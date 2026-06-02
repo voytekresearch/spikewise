@@ -145,8 +145,12 @@ def merge_hpf_targets(pickle_dir, feat_labels):
                 out[cid] = pickle.load(f)
         return out
 
-    res_raw = _load('')
-    res_hpf = _load('_hpf')
+    res_raw   = _load('')
+    res_hpf   = _load('_hpf')
+    res_hpf05 = _load('_hpf05')
+    has_hpf05 = len(res_hpf05) > 0
+    if not has_hpf05:
+        print('⚠  No _hpf05 pickles found — HPF 0.05 Hz targets will be omitted')
 
     cell_ids = sorted(set(res_raw.keys()) & set(res_hpf.keys()))
     if len(cell_ids) < len(res_raw):
@@ -169,24 +173,32 @@ def merge_hpf_targets(pickle_dir, feat_labels):
             target_labels.append(f'{win_label} {feat_lbl}')
             if feat_key in ('lfp_amp', 'lfp_std'):
                 target_names.append(f'{tn}_hpf')
-                target_labels.append(f'{win_label} {feat_lbl} (HPF)')
+                target_labels.append(f'{win_label} {feat_lbl} (HPF 0.1 Hz)')
+                if has_hpf05:
+                    target_names.append(f'{tn}_hpf05')
+                    target_labels.append(f'{win_label} {feat_lbl} (HPF 0.05 Hz)')
 
     # Merge into one results dict per cell
     all_results = {}
     for cid in cell_ids:
         merged = {}
-        raw_cell = res_raw.get(cid, {})
-        hpf_cell = res_hpf.get(cid, {})
+        raw_cell   = res_raw.get(cid, {})
+        hpf_cell   = res_hpf.get(cid, {})
+        hpf05_cell = res_hpf05.get(cid, {}) if has_hpf05 else {}
         for tn in target_names:
-            if tn.endswith('_hpf'):
+            if tn.endswith('_hpf05'):
+                base = tn[:-6]
+                merged[tn] = hpf05_cell.get(base, raw_cell.get(base, {}))
+            elif tn.endswith('_hpf'):
                 base = tn[:-4]
                 merged[tn] = hpf_cell.get(base, raw_cell.get(base, {}))
             else:
                 merged[tn] = raw_cell.get(tn, {})
         all_results[cid] = merged
 
+    n_hpf_vars = 2 if has_hpf05 else 1
     print(f'Merged: {len(all_results)} cells  |  {len(target_names)} targets '
-          f'(Pre+Post abs + HPF amp/std, no BL-corrected or Δ)')
+          f'(Pre+Post abs + {n_hpf_vars} HPF variant(s) for amp/std)')
     return all_results, cell_ids, target_names, target_labels, predictor_sets
 
 
