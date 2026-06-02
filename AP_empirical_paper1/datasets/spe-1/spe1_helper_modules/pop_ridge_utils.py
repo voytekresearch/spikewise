@@ -277,14 +277,14 @@ def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, alp
             if len(valid) < min_cells:
                 continue
 
-            # parametric: one-sample t-test, mean ≠ 0
+            # one-sample t-test: is mean beta ≠ 0?
             t_stat, p_ttest = stats.ttest_1samp(valid, popmean=0)
 
-            # non-parametric: Wilcoxon signed-rank, median ≠ 0
+            # Wilcoxon signed-rank: is median beta ≠ 0?
             if len(valid) >= 10 and len(np.unique(valid)) > 1:
-                w_stat, p_wilcox = stats.wilcoxon(valid, alternative='two-sided')
+                _, p_wilcox = stats.wilcoxon(valid, alternative='two-sided')
             else:
-                w_stat, p_wilcox = np.nan, np.nan
+                p_wilcox = np.nan
 
             rows.append(dict(
                 target=tn, target_label=tl, feature=wl,
@@ -294,52 +294,21 @@ def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, alp
                 sem_beta=float(stats.sem(valid)),
                 t_stat=float(t_stat),
                 p_val=float(p_ttest),
-                w_stat=float(w_stat) if np.isfinite(w_stat) else np.nan,
                 p_wilcox=float(p_wilcox) if np.isfinite(p_wilcox) else np.nan,
             ))
 
     df = pd.DataFrame(rows)
-
-    # Correction within each target (8 features) (8 features per target).
-    # Correcting across all targets simultaneously was too conservative —
-    # each target is an independent scientific question.
-    p_val_adj   = np.ones(len(df))
-    sig_corrected     = np.zeros(len(df), dtype=bool)
-    p_wilcx_adj = np.full(len(df), np.nan)
-    sig_wilcox  = np.zeros(len(df), dtype=bool)
-
-    for tn in df['target'].unique():
-        idx = df.index[df['target'] == tn].tolist()
-
-        # t-test correction within target
-        ps_t = df.loc[idx, 'p_val'].values
-        rej_t, p_fdr_t = fdrcorrection(ps_t, alpha=alpha, method='indep')
-        p_val_adj[idx] = p_fdr_t
-        sig_corrected[idx]   = rej_t
-
-        # Wilcoxon correction within target
-        ps_w = df.loc[idx, 'p_wilcox'].values.copy()
-        fm   = np.isfinite(ps_w)
-        ps_w_in = np.where(fm, ps_w, 1.0)
-        rej_w, p_fdr_w = fdrcorrection(ps_w_in, alpha=alpha, method='indep')
-        rej_w = rej_w & fm
-        p_wilcx_adj[idx] = np.where(fm, p_fdr_w, np.nan)
-        sig_wilcox[idx]  = rej_w
-
-    df['p_val_adj']    = p_val_adj
-    df['sig_corrected']      = sig_corrected
-    df['p_wilcox_adj'] = p_wilcx_adj
-    df['sig_wilcox']   = sig_wilcox
-
+    # No correction — each test assessed at raw alpha independently
+    df['sig_ttest']    = df['p_val'].fillna(1.0) < alpha
+    df['sig_wilcox']   = df['p_wilcox'].fillna(1.0) < alpha
     df['stars_ttest']  = df['p_val'].apply(_stars)
     df['stars_wilcox'] = df['p_wilcox'].apply(_stars)
-    df['p_str']        = df['p_val'].apply(_fmt_p)
+    df['p_str']        = df['p_wilcox'].apply(_fmt_p)
 
-    n_sig_t = sig_corrected.sum()
-    n_sig_w = sig_wilcox.sum()
-    print(f'Beta tests: {len(df)} pairs across {df["target"].nunique()} targets  |  '
-          f't-test raw p<0.05: {(df.p_val < 0.05).sum()}  p<{alpha}: {n_sig_t}  |  '
-          f'Wilcoxon raw p<0.05: {int((df["p_wilcox"].fillna(1) < 0.05).sum())}  p<{alpha}: {n_sig_w}')
+    n_sig_t = int(df['sig_ttest'].sum())
+    n_sig_w = int(df['sig_wilcox'].sum())
+    print(f'Beta consistency: {len(df)} pairs across {df["target"].nunique()} targets  |  '
+          f't-test p<{alpha}: {n_sig_t}  |  Wilcoxon p<{alpha}: {n_sig_w}')
     if n_sig_w:
         print(df[df.sig_wilcox][
             ['target_label', 'feature', 'n', 'median_beta', 'p_str', 'stars_wilcox']
@@ -407,7 +376,7 @@ _GRP_COLS = {'Pre (abs)': '#1976D2', 'Pre − BL': '#43A047', 'Δ post−pre': '
 
 
 def _heatmap_dividers(ax):
-    for d in [4.5, 9.5, 14.5, 19.5]: ax.axhline(d, color='white', lw=2.5, ls='--')
+    pass  # dividers removed — target list is dynamic, no fixed group boundaries
 
 
 def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
@@ -448,12 +417,12 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
             # primary significance marker = Wilcoxon; fall back to t-test if unavailable
             if not row.empty:
                 sig_beta_mat[t_idx, w_idx] = bool(
-                    row.iloc[0].get('sig_wilcox', row.iloc[0]['sig_corrected'])
+                    row.iloc[0].get('sig_wilcox', row.iloc[0]['sig_ttest'])
                 )
 
     # ── Heatmap 1: mean R² ──
     vmax = max(abs(np.nanmax(mean_r2)), abs(np.nanmin(mean_r2)), 0.005)
-    fig, ax = plt.subplots(figsize=(9, 10))
+    fig, ax = plt.subplots(figsize=(max(7, n_p * 3), max(4, n_t * 0.55 + 2)))
     im = ax.imshow(mean_r2, aspect='auto', vmin=-vmax, vmax=vmax, cmap='RdBu_r')
     ax.set_xticks(range(n_p))
     ax.set_xticklabels(predictor_sets, rotation=20, ha='right', fontsize=11)
@@ -486,30 +455,45 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
                  fontsize=12, pad=12)
     fig.tight_layout(); plt.show()
 
-    # ── Heatmap 2: mean beta weights ──
-    vmax2 = max(abs(np.nanmax(mean_beta_mat)), abs(np.nanmin(mean_beta_mat)), 0.01)
-    fig, ax = plt.subplots(figsize=(11, 10))
-    im = ax.imshow(mean_beta_mat, aspect='auto', vmin=-vmax2, vmax=vmax2, cmap='RdBu_r')
+    # ── Heatmap 2: one-sample t-statistic per (target × waveform feature) ──
+    # Build t-stat matrix from df_tests
+    t_stat_mat = np.full((n_t, len(WAVEFORM_LABELS)), np.nan)
+    p_val_mat  = np.full((n_t, len(WAVEFORM_LABELS)), np.nan)
+    wl_idx     = {wl: i for i, wl in enumerate(WAVEFORM_LABELS)}
+    tn_idx     = {tn: i for i, tn in enumerate(target_names)}
+    for _, row in df_tests.iterrows():
+        r = tn_idx.get(row['target'])
+        c = wl_idx.get(row['feature'])
+        if r is not None and c is not None:
+            t_stat_mat[r, c] = row.get('t_stat', np.nan)
+            p_val_mat[r, c]  = row.get('p_val', np.nan)
+
+    vmax2 = max(np.nanmax(np.abs(t_stat_mat)), 2.0)
+    fig, ax = plt.subplots(figsize=(max(9, len(WAVEFORM_LABELS) * 1.2), max(4, n_t * 0.55 + 2)))
+    im = ax.imshow(t_stat_mat, aspect='auto', vmin=-vmax2, vmax=vmax2, cmap='RdBu_r')
     ax.set_xticks(range(len(WAVEFORM_LABELS)))
     ax.set_xticklabels(WAVEFORM_LABELS, rotation=35, ha='right', fontsize=10)
     ax.set_yticks(range(n_t))
     ax.set_yticklabels(target_labels, fontsize=10)
     for r in range(n_t):
         for c in range(len(WAVEFORM_LABELS)):
-            v = mean_beta_mat[r, c]
-            if np.isfinite(v):
-                star = '*' if sig_beta_mat[r, c] else ''
-                tc   = 'white' if abs(v) > vmax2 * 0.6 else 'black'
-                ax.text(c, r, f'{v:+.3f}{star}', ha='center', va='center',
-                        fontsize=8, color=tc, fontweight='bold' if star else 'normal')
-    _heatmap_dividers(ax)
-    plt.colorbar(im, ax=ax, label='Mean β across cells', shrink=0.55, pad=0.02)
-    ax.set_title('Population – Mean Beta Weights (Waveform only)\n'
-                 '(* p<0.05, Wilcoxon signed-rank vs 0)', fontsize=12, pad=12)
+            t = t_stat_mat[r, c]
+            p = p_val_mat[r, c]
+            if np.isfinite(t):
+                star = _stars(p) if np.isfinite(p) else ''
+                tc   = 'white' if abs(t) > vmax2 * 0.6 else 'black'
+                label = f'{t:+.2f}' + (f'\n{star}' if star and star != 'ns' else '')
+                ax.text(c, r, label, ha='center', va='center',
+                        fontsize=7.5, color=tc,
+                        fontweight='bold' if (star and star != 'ns') else 'normal')
+    plt.colorbar(im, ax=ax, label='t-statistic (one-sample vs 0)', shrink=0.55, pad=0.02)
+    ax.set_title('Population – Beta weight consistency (one-sample t-test, Waveform only)\n'
+                 'Colour = t-statistic direction & magnitude  |  stars = p < 0.05',
+                 fontsize=12, pad=12)
     fig.tight_layout(); plt.show()
 
     # ── Rainclouds: significant (target, feature) pairs ──
-    sig_pairs = df_tests[df_tests.sig_corrected][['target','target_label','feature']].values.tolist()
+    sig_pairs = df_tests[df_tests.sig_wilcox][['target','target_label','feature']].values.tolist()
     if not sig_pairs:
         print('No population-level significant pairs.')
         return mean_r2, frac_sig, mean_beta_mat, sig_beta_mat
@@ -749,7 +733,7 @@ def plot_beta_distributions(beta_pop, df_tests, target_names, target_labels,
                  'black ◆ = pop. Wilcoxon sig  |  grey ◆ = not sig)',
                  fontsize=11, y=1.02)
 
-    pop_sig_col = 'sig_wilcox' if 'sig_wilcox' in df_tests.columns else 'sig_corrected'
+    pop_sig_col = 'sig_wilcox' if 'sig_wilcox' in df_tests.columns else 'sig_ttest'
 
     for ax_idx, (ax, feat) in enumerate(zip(axes, features)):
         is_left_col = (ax_idx % ncols == 0)
@@ -894,11 +878,11 @@ def save_population_results(pickle_dir, r2_pop, sig_pop, beta_pop, df_tests,
     with open(path, 'wb') as f:
         pickle.dump(payload, f)
     print(f'Saved: {os.path.basename(path)}')
-    sig_col = 'sig_wilcox' if 'sig_wilcox' in df_tests.columns else 'sig_corrected'
+    sig_col = 'sig_wilcox' if 'sig_wilcox' in df_tests.columns else 'sig_ttest'
     if df_tests[sig_col].any():
-        print(df_tests[df_tests[sig_col]][
-            ['target_label','feature','n','median_beta','p_wilcox_adj']
-        ].to_string(index=False))
+        show_cols = [c for c in ['target_label','feature','n','median_beta','p_wilcox','p_val']
+                     if c in df_tests.columns]
+        print(df_tests[df_tests[sig_col]][show_cols].to_string(index=False))
 
 
 # ── Focused beta table ───────────────────────────────────────────────────────
@@ -930,15 +914,15 @@ def show_beta_tables(df_tests, sig_r2_targets, target_names, target_labels,
         tl = tl_map.get(tn, tn)
         sub = (
             df_tests[df_tests['target'] == tn]
-            [['feature', 'n', 'mean_beta', 'sem_beta', 't_stat', 'p_val']]
-            .sort_values('p_val')
+            [['feature', 'n', 'mean_beta', 'sem_beta', 'p_wilcox']]
+            .sort_values('p_wilcox')
             .reset_index(drop=True)
         )
         if sub.empty:
             continue
-        sub['sig'] = sub['p_val'].apply(_stars)
-        sub['p_val'] = sub['p_val'].apply(_fmt_p)
-        sub.columns = ['Feature', 'N cells', 'Mean β', 'SEM β', 't', 'p (raw)', 'sig']
+        sub['sig'] = sub['p_wilcox'].apply(_stars)
+        sub['p_wilcox'] = sub['p_wilcox'].apply(_fmt_p)
+        sub.columns = ['Feature', 'N cells', 'Mean β', 'SEM β', 'p (Wilcoxon)', 'sig']
 
         # Build caption with CV R² summary if available
         r2_info = ''
@@ -1011,23 +995,26 @@ def plot_r2_summary(r2_pop, df_r2, target_names, target_labels,
         else:
             bar_cols.append('#888')
 
-    fig, ax = plt.subplots(figsize=(max(12, len(target_names) * 0.85), 5))
+    fig, ax = plt.subplots(figsize=(max(12, len(target_names) * 0.85), 5.5))
+
+    y_top  = float(np.nanmax(means + np.where(np.isfinite(sems), sems, 0)))
+    y_star = y_top * 1.12   # fixed height above all bars — no overlap with ticks
+
     ax.bar(x, means, yerr=sems, color=bar_cols, alpha=0.75, width=0.7,
            error_kw=dict(lw=1.5, capsize=4, capthick=1.5, ecolor='#333'),
            edgecolor='white')
+    ax.set_ylim(top=y_star * 1.15)   # make room for stars above
 
-    y_top  = float(np.nanmax(means + np.where(np.isfinite(sems), sems, 0)))
-    offset = max(y_top * 0.06, 0.002)
     for i, (p, sig) in enumerate(zip(pvals, sig_flags)):
         s = _stars(p)
         if s != 'ns' and sig:
-            ax.text(i, means[i] + (sems[i] if np.isfinite(sems[i]) else 0) + offset,
-                    s, ha='center', va='bottom', fontsize=13,
+            ax.text(i, y_star, s, ha='center', va='bottom', fontsize=13,
                     color='#D55E00', fontweight='bold')
 
     ax.axhline(0, color='gray', lw=1, ls='--', alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(target_labels, rotation=40, ha='right', fontsize=9)
+    fig.subplots_adjust(bottom=0.28)   # extra space for rotated labels
     ax.set_ylabel('Mean CV R²  (± SEM,  n=37 cells)', fontsize=11)
     ax.set_title(
         f'Population CV R²  —  {predictor_set}\n'
