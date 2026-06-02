@@ -77,6 +77,95 @@ def load_population_results(pickle_dir):
     return all_results, cell_ids, target_names, predictor_sets
 
 
+def merge_hpf_targets(pickle_dir, feat_labels):
+    """
+    Load both no-HPF and HPF per-cell results and build a clean merged analysis.
+
+    - Keeps only Pre and Post absolute-window targets (removes Pre-BL, Post-BL, Δ).
+    - Adds HPF variants of amp and std targets with '_hpf' suffix.
+    - Returns a unified all_results dict and matching target_names / target_labels
+      ready to pass directly to aggregate_population and downstream functions.
+
+    Target order (14 total):
+        Pre LFP Amp, Pre LFP Amp (HPF),
+        Pre LFP Std, Pre LFP Std (HPF),
+        Pre Gamma AUC, Pre Exponent, Pre Theta AUC,
+        Post LFP Amp, Post LFP Amp (HPF),
+        Post LFP Std, Post LFP Std (HPF),
+        Post Gamma AUC, Post Exponent, Post Theta AUC
+
+    Parameters
+    ----------
+    pickle_dir  : str  path to ridge_regression_pickles/
+    feat_labels : list[str]  e.g. FEAT_LABELS = ['LFP Amp','LFP Std','Gamma AUC','Exponent','Theta AUC']
+
+    Returns
+    -------
+    all_results    : dict  {cell_id → merged results dict}
+    cell_ids       : list[str]
+    target_names   : list[str]  14 names
+    target_labels  : list[str]  14 display labels
+    predictor_sets : list[str]
+    """
+    import glob
+
+    HPF_AMP_STD = {'pre_lfp_amp', 'pre_lfp_std', 'post_lfp_amp', 'post_lfp_std'}
+
+    def _load(suffix):
+        pkls = sorted(glob.glob(os.path.join(pickle_dir, f'c*_ridge_results{suffix}.pkl')))
+        pkls = [p for p in pkls if 'population' not in os.path.basename(p)]
+        out = {}
+        for p in pkls:
+            cid = os.path.basename(p).replace(f'_ridge_results{suffix}.pkl', '')
+            with open(p, 'rb') as f:
+                out[cid] = pickle.load(f)
+        return out
+
+    res_raw = _load('')
+    res_hpf = _load('_hpf')
+
+    cell_ids = sorted(set(res_raw.keys()) & set(res_hpf.keys()))
+    if len(cell_ids) < len(res_raw):
+        missing = sorted(set(res_raw.keys()) - set(res_hpf.keys()))
+        print(f'⚠  HPF pickles missing for {missing} — using raw only for those cells')
+
+    first          = next(iter(res_raw.values()))
+    predictor_sets = list(first[list(first.keys())[0]].keys())
+
+    # Build target name/label list: Pre window first, then Post
+    target_names  = []
+    target_labels = []
+    for window, win_label in [('pre', 'Pre'), ('post', 'Post')]:
+        for feat_key, feat_lbl in zip(
+            ['lfp_amp', 'lfp_std', 'gamma_auc', 'exponent', 'theta_auc'],
+            feat_labels,
+        ):
+            tn = f'{window}_{feat_key}'
+            target_names.append(tn)
+            target_labels.append(f'{win_label} {feat_lbl}')
+            if feat_key in ('lfp_amp', 'lfp_std'):
+                target_names.append(f'{tn}_hpf')
+                target_labels.append(f'{win_label} {feat_lbl} (HPF)')
+
+    # Merge into one results dict per cell
+    all_results = {}
+    for cid in cell_ids:
+        merged = {}
+        raw_cell = res_raw.get(cid, {})
+        hpf_cell = res_hpf.get(cid, {})
+        for tn in target_names:
+            if tn.endswith('_hpf'):
+                base = tn[:-4]
+                merged[tn] = hpf_cell.get(base, raw_cell.get(base, {}))
+            else:
+                merged[tn] = raw_cell.get(tn, {})
+        all_results[cid] = merged
+
+    print(f'Merged: {len(all_results)} cells  |  {len(target_names)} targets '
+          f'(Pre+Post abs + HPF amp/std, no BL-corrected or Δ)')
+    return all_results, cell_ids, target_names, target_labels, predictor_sets
+
+
 # ── Aggregate ─────────────────────────────────────────────────────────────────
 
 def aggregate_population(all_results, cell_ids, target_names, predictor_sets):
@@ -479,20 +568,27 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
 # ── Population tests: R² > 0 ────────────────────────────────────────────────
 
 def run_r2_tests(r2_pop, target_names, target_labels, predictor_sets,
-                  min_cells=5, fdr_q=0.05):
+                  min_cells=5, alpha=0.05):
     """
     One-sided Wilcoxon signed-rank test: is median CV R² > 0 across cells?
 
-    This is the most direct test of whether the model actually works at the
-    population level. Unlike the binomial fraction-sig test, it requires the
-    effect to have a non-trivial effect size (median R² shifted above zero),
-    not just that more cells pass their individual FDR threshold.
+    Each LFP target represents a distinct scientific question (amplitude,
+    variability, gamma power, aperiodic slope, theta power) and is tested
+    independently — no cross-target correction is applied.  Each test is
+    assessed against alpha directly.
 
-    FDR-corrected (BH) across all (target × predictor_set) pairs.
+    If multiple predictor sets are passed, they are shown for context but
+    significance is evaluated per (target, predictor_set) independently.
+
+    Parameters
+    ----------
+    alpha : float  significance threshold (default 0.05, uncorrected per target)
 
     Returns
     -------
     df_r2 : pd.DataFrame
+        Columns: target, target_label, predictor_set, n_cells,
+                 median_r2, mean_r2, sem_r2, p_wilcox, sig_r2
     """
     rows = []
     for tn, tl in zip(target_names, target_labels):
@@ -506,7 +602,6 @@ def run_r2_tests(r2_pop, target_names, target_labels, predictor_sets,
             mean_r2   = float(np.mean(valid))
             sem_r2    = float(stats.sem(valid))
 
-            # one-sided Wilcoxon: median > 0
             if len(valid) >= 10 and len(np.unique(valid)) > 1:
                 w_stat, p_wilcox = stats.wilcoxon(valid, alternative='greater')
             else:
@@ -521,23 +616,14 @@ def run_r2_tests(r2_pop, target_names, target_labels, predictor_sets,
             ))
 
     df = pd.DataFrame(rows)
+    df['sig_r2'] = df['p_wilcox'].fillna(1.0) < alpha
 
-    # FDR correction
-    wilcox_raw  = df['p_wilcox'].values.copy()
-    finite_mask = np.isfinite(wilcox_raw)
-    wilcox_in   = np.where(finite_mask, wilcox_raw, 1.0)
-    rejected, p_fdr = fdrcorrection(wilcox_in, alpha=fdr_q, method='indep')
-    rejected = rejected & finite_mask
-    df['p_wilcox_fdr'] = np.where(finite_mask, p_fdr, np.nan)
-    df['sig_r2']       = rejected
-
-    n_raw = int((df['p_wilcox'].fillna(1) < 0.05).sum())
-    n_fdr = int(rejected.sum())
+    n_sig = int(df['sig_r2'].sum())
     print(f'R² > 0 Wilcoxon tests: {len(df)} (target × predictor_set) pairs  |  '
-          f'raw p<0.05: {n_raw}  |  FDR q<{fdr_q}: {n_fdr}')
-    if n_fdr:
+          f'p<{alpha}: {n_sig}  (each target tested independently, no cross-target correction)')
+    if n_sig:
         print(df[df.sig_r2][
-            ['target_label','predictor_set','n_cells','median_r2','mean_r2','p_wilcox_fdr']
+            ['target_label', 'predictor_set', 'n_cells', 'median_r2', 'mean_r2', 'p_wilcox']
         ].to_string(index=False))
 
     return df
@@ -758,6 +844,52 @@ def save_population_results(pickle_dir, r2_pop, sig_pop, beta_pop, df_tests,
         print(df_tests[df_tests[sig_col]][
             ['target_label','feature','n','median_beta','p_wilcox_fdr']
         ].to_string(index=False))
+
+
+# ── Focused beta table ───────────────────────────────────────────────────────
+
+def show_beta_tables(df_tests, sig_r2_targets, target_names, target_labels):
+    """
+    Display one styled table per R²-significant target showing per-waveform-feature
+    one-sample t-test p-values (uncorrected), sorted by raw p-value.
+
+    Parameters
+    ----------
+    df_tests         : output of run_population_tests (restricted to sig targets)
+    sig_r2_targets   : list[str]  target names that survived R² testing
+    target_names     : list[str]
+    target_labels    : list[str]
+    """
+    try:
+        from IPython.display import display, HTML
+    except ImportError:
+        display = print
+        HTML = lambda x: x
+
+    tl_map = dict(zip(target_names, target_labels))
+    for tn in sig_r2_targets:
+        tl = tl_map.get(tn, tn)
+        sub = (
+            df_tests[df_tests['target'] == tn]
+            [['feature', 'n', 'mean_beta', 'sem_beta', 't_stat', 'p_val']]
+            .sort_values('p_val')
+            .reset_index(drop=True)
+        )
+        if sub.empty:
+            continue
+        sub.columns = ['Feature', 'N cells', 'Mean β', 'SEM β', 't', 'p (raw)']
+        styled = (
+            sub.style
+            .format({'Mean β': '{:+.4f}', 'SEM β': '{:.4f}',
+                     't': '{:+.3f}', 'p (raw)': '{:.4f}'})
+            .background_gradient(subset=['p (raw)'], cmap='YlOrRd_r', vmin=0, vmax=0.5)
+            .set_caption(f'{tl} — one-sample t-test on β (n cells={sub["N cells"].iloc[0]}, uncorrected)')
+            .set_table_styles([{'selector': 'caption',
+                                'props': [('font-size', '13px'), ('font-weight', 'bold'),
+                                          ('text-align', 'left')]}])
+        )
+        display(styled)
+        display(HTML('<br/>'))
 
 
 # ── HPF vs no-HPF comparison ─────────────────────────────────────────────────
