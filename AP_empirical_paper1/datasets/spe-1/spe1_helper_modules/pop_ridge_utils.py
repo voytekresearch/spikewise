@@ -572,7 +572,9 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
     for c_idx, cid in enumerate(cell_ids):
         for tn in target_names:
             cell_res = all_results.get(cid, {}).get(tn, {}).get('Waveform only', {})
-            if not cell_res.get('sig_corrected', False):
+            # Use raw p < 0.05 — consistent with sig_pop (pickles store sig_fdr, not used here)
+            p_raw = cell_res.get('p_val', 1.0)
+            if p_raw is None or float(p_raw) >= 0.05:
                 continue
             y_actual = cell_res.get('y_actual')
             y_pred   = cell_res.get('y_pred')
