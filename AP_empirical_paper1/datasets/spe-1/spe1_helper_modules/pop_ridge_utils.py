@@ -758,3 +758,162 @@ def save_population_results(pickle_dir, r2_pop, sig_pop, beta_pop, df_tests,
         print(df_tests[df_tests[sig_col]][
             ['target_label','feature','n','median_beta','p_wilcox_fdr']
         ].to_string(index=False))
+
+
+# ── HPF vs no-HPF comparison ─────────────────────────────────────────────────
+
+def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
+                          predictor_sets, min_cells=5, fdr_q=0.05):
+    """
+    Load both no-HPF (c{N}_ridge_results.pkl) and HPF (c{N}_ridge_results_hpf.pkl)
+    per-cell results, run R² population tests on each, and produce a side-by-side
+    comparison table + bar chart for the four LFP amplitude/std targets.
+
+    Parameters
+    ----------
+    pickle_dir    : str  path to ridge_regression_pickles/
+    cell_ids      : list[str]
+    target_names  : list[str]
+    target_labels : list[str]
+    predictor_sets: list[str]
+    min_cells     : int
+    fdr_q         : float
+
+    Returns
+    -------
+    df_r2_raw, df_r2_hpf : pd.DataFrame  R² test results for both versions
+    """
+    import glob
+    import seaborn as sns
+
+    def _load(suffix):
+        pkls = sorted(glob.glob(os.path.join(pickle_dir, f'c*_ridge_results{suffix}.pkl')))
+        pkls = [p for p in pkls if 'population' not in os.path.basename(p)]
+        out = {}
+        for p in pkls:
+            cid = os.path.basename(p).replace(f'_ridge_results{suffix}.pkl', '')
+            with open(p, 'rb') as f:
+                out[cid] = pickle.load(f)
+        return out
+
+    res_raw = _load('')
+    res_hpf = _load('_hpf')
+
+    missing_raw = set(cell_ids) - set(res_raw.keys())
+    missing_hpf = set(cell_ids) - set(res_hpf.keys())
+    if missing_raw or missing_hpf:
+        print(f'⚠  Missing no-HPF pickles: {sorted(missing_raw)}')
+        print(f'⚠  Missing HPF pickles:    {sorted(missing_hpf)}')
+        return None, None
+
+    print(f'No-HPF: {len(res_raw)} cells  |  HPF 0.1 Hz: {len(res_hpf)} cells')
+
+    r2_raw, _, _ = aggregate_population(res_raw, cell_ids, target_names, predictor_sets)
+    r2_hpf, _, _ = aggregate_population(res_hpf, cell_ids, target_names, predictor_sets)
+
+    df_r2_raw = run_r2_tests(r2_raw, target_names, target_labels, predictor_sets,
+                              min_cells=min_cells, fdr_q=fdr_q)
+    df_r2_hpf = run_r2_tests(r2_hpf, target_names, target_labels, predictor_sets,
+                              min_cells=min_cells, fdr_q=fdr_q)
+
+    # ── Comparison table ──────────────────────────────────────────────────────
+    AMP_STD = [('pre_lfp_amp',  'Pre LFP Amp'),
+               ('pre_lfp_std',  'Pre LFP Std'),
+               ('post_lfp_amp', 'Post LFP Amp'),
+               ('post_lfp_std', 'Post LFP Std')]
+
+    rows = []
+    for tn, tl in AMP_STD:
+        raw_row = df_r2_raw[(df_r2_raw['target'] == tn) &
+                            (df_r2_raw['predictor_set'] == 'Waveform only')]
+        hpf_row = df_r2_hpf[(df_r2_hpf['target'] == tn) &
+                            (df_r2_hpf['predictor_set'] == 'Waveform only')]
+        if not len(raw_row) or not len(hpf_row):
+            continue
+        r, h = raw_row.iloc[0], hpf_row.iloc[0]
+        ratio = float(h['median_r2'] / r['median_r2']) if r['median_r2'] > 0 else float('nan')
+        for label, row in [('No HPF', r), ('HPF 0.1 Hz', h)]:
+            rows.append(dict(
+                Target=tl, Version=label, N=int(row['n_cells']),
+                median_r2=row['median_r2'], mean_r2=row['mean_r2'],
+                sig='✓' if row['sig_r2'] else '✗',
+                p_fdr=row['p_wilcox_fdr'],
+                **({'HPF/raw': ratio} if label == 'HPF 0.1 Hz' else {}),
+            ))
+
+    df_cmp = pd.DataFrame(rows)
+
+    try:
+        from IPython.display import display
+        styled = (
+            df_cmp.style
+            .format({'median_r2': '{:.4f}', 'mean_r2': '{:.4f}',
+                     'p_fdr': '{:.4f}', 'HPF/raw': '{:.2f}'})
+            .set_caption(
+                'R² comparison: no HPF vs HPF 0.1 Hz  |  Waveform-only predictor set\n'
+                'HPF/raw < 1 = signal attenuated by detrending; '
+                '✓ = FDR-significant population R² > 0'
+            )
+            .set_table_styles([{'selector': 'caption',
+                                'props': [('font-size', '12px'), ('font-weight', 'bold'),
+                                          ('text-align', 'left'), ('white-space', 'pre-line')]}])
+        )
+        display(styled)
+    except Exception:
+        print(df_cmp.to_string(index=False))
+
+    # ── Bar chart ─────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(9, 4))
+    x, width = range(len(AMP_STD)), 0.35
+    palette = {'No HPF': '#0072B2', 'HPF 0.1 Hz': '#D55E00'}
+
+    for i, (label, col) in enumerate(palette.items()):
+        vals = [df_cmp[(df_cmp['Target'] == tl) & (df_cmp['Version'] == label)]['median_r2'].values[0]
+                for _, tl in AMP_STD]
+        sigs = [df_cmp[(df_cmp['Target'] == tl) & (df_cmp['Version'] == label)]['sig'].values[0]
+                for _, tl in AMP_STD]
+        bars = ax.bar([xi + i * width for xi in x], vals, width,
+                      label=label, color=col, alpha=0.75, edgecolor='white')
+        for b, s in zip(bars, sigs):
+            if s == '✓':
+                ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 0.0003,
+                        '*', ha='center', va='bottom', fontsize=14, color=col)
+
+    ax.set_xticks([xi + width / 2 for xi in x])
+    ax.set_xticklabels([tl for _, tl in AMP_STD], fontsize=10)
+    ax.set_ylabel('Median CV R²  (Waveform only)', fontsize=11)
+    ax.set_title('Effect of 0.1 Hz HPF detrending on LFP amplitude/std targets\n'
+                 '* = FDR-significant  |  bars show median R² across 37 cells', fontsize=11)
+    ax.legend(fontsize=10, frameon=False)
+    ax.axhline(0, color='gray', lw=1, ls='--', alpha=0.5)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    sig_raw = df_r2_raw[df_r2_raw['sig_r2'] & (df_r2_raw['predictor_set'] == 'Waveform only')]['target'].tolist()
+    sig_hpf = df_r2_hpf[df_r2_hpf['sig_r2'] & (df_r2_hpf['predictor_set'] == 'Waveform only')]['target'].tolist()
+    print(f'\nNo-HPF significant (Waveform only):    {sig_raw}')
+    print(f'HPF 0.1 Hz significant (Waveform only): {sig_hpf}')
+    print(f'Surviving HPF: {sorted(set(sig_raw) & set(sig_hpf))}')
+    print(f'Lost to HPF:   {sorted(set(sig_raw) - set(sig_hpf))}')
+
+    # Also return aggregated HPF data so the notebook can run the full plot suite
+    r2_hpf_full, sig_hpf_full, beta_hpf_full = aggregate_population(
+        res_hpf, cell_ids, target_names, predictor_sets
+    )
+    sig_hpf_targets = df_r2_hpf[
+        df_r2_hpf['sig_r2'] & (df_r2_hpf['predictor_set'] == 'Waveform only')
+    ]['target'].tolist()
+    df_tests_hpf = run_population_tests(
+        beta_hpf_full, target_names, target_labels,
+        min_cells=min_cells, fdr_q=fdr_q,
+        sig_r2_targets=sig_hpf_targets,
+    )
+
+    return dict(
+        df_r2_raw=df_r2_raw, df_r2_hpf=df_r2_hpf,
+        r2_hpf=r2_hpf_full, sig_hpf=sig_hpf_full, beta_hpf=beta_hpf_full,
+        df_tests_hpf=df_tests_hpf, sig_r2_targets_hpf=sig_hpf_targets,
+        res_hpf=res_hpf,
+    )
