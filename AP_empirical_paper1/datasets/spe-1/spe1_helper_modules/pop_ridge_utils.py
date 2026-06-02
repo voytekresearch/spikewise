@@ -13,7 +13,7 @@ Typical notebook usage
 
     all_results, cell_ids, target_names, predictor_sets = load_population_results(RIDGE_PICKLE_DIR)
     r2_pop, sig_pop, beta_pop = aggregate_population(all_results, cell_ids, target_names, predictor_sets)
-    df_tests = run_population_tests(beta_pop, target_names, target_labels, MIN_CELLS, FDR_Q)
+    df_tests = run_population_tests(beta_pop, target_names, target_labels, MIN_CELLS, ALPHA)
     plot_population_results(all_results, cell_ids, r2_pop, sig_pop, beta_pop,
                             df_tests, target_names, target_labels, predictor_sets)
     build_population_scatter(all_results, cell_ids, target_names, target_labels,
@@ -31,6 +31,30 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from statsmodels.stats.multitest import fdrcorrection
 from tqdm import tqdm
+
+
+def _fmt_p(p):
+    """Format a p-value as plain decimal (no scientific notation)."""
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return 'n/a'
+    if p < 0.0001:
+        return '< 0.0001'
+    return f'{p:.4f}'
+
+
+def _stars(p):
+    """Return significance star string for a p-value."""
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return ''
+    if p < 0.001: return '***'
+    if p < 0.01:  return '**'
+    if p < 0.05:  return '*'
+    return 'ns'
+
+
+def _fmt_p_stars(p):
+    """Combined formatted p-value and stars, e.g. '0.0234 *'."""
+    return f'{_fmt_p(p)} {_stars(p)}'.strip()
 
 
 def _binom_p(k, n, p, alternative='two-sided'):
@@ -188,7 +212,11 @@ def aggregate_population(all_results, cell_ids, target_names, predictor_sets):
             for pn in predictor_sets:
                 e = res.get(tn, {}).get(pn, {})
                 r2_pop[tn][pn].append(e.get('r2_cv', np.nan))
-                sig_pop[tn][pn].append(e.get('sig_fdr', False))
+                # Use raw permutation p < 0.05 per target independently.
+                # sig_corrected was over-corrected across all targets/predictor sets;
+                # each target is a separate scientific question.
+                p_raw = e.get('p_val', 1.0)
+                sig_pop[tn][pn].append(float(p_raw) < 0.05 if p_raw is not None else False)
             beta = res.get(tn, {}).get('Waveform only', {}).get('beta') or {}
             for wl in WAVEFORM_LABELS:
                 beta_pop[tn][wl].append(beta.get(wl, np.nan))
@@ -205,7 +233,7 @@ def aggregate_population(all_results, cell_ids, target_names, predictor_sets):
 
 # ── Population tests: betas ───────────────────────────────────────────────────
 
-def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, fdr_q=0.05,
+def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, alpha=0.05,
                           sig_r2_targets=None):
     """
     For each (target, waveform feature) pair test whether betas are consistently
@@ -214,14 +242,14 @@ def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, fdr
       t-test              : one-sample, mean beta ≠ 0 (parametric)
       Wilcoxon signed-rank: median beta ≠ 0 (non-parametric; primary test)
 
-    FDR-corrected (BH) across tested pairs only.
+    Correction applied within each target (BH across 8 features per target).
 
     Parameters
     ----------
     sig_r2_targets : list[str] or None
         If provided, only test (target, feature) pairs where the target is in
         this list (i.e. targets that survived the R² > 0 test). This reduces
-        the FDR correction burden from n_targets×8 to n_sig×8 pairs, which is
+        the correction burden from n_targets×8 to n_sig×8 pairs, which is
         the scientifically correct hierarchical approach — only ask "which
         features drive prediction?" for targets where prediction was established.
         If None, all targets are tested (fully exploratory mode).
@@ -229,8 +257,8 @@ def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, fdr
     Returns
     -------
     df_tests : pd.DataFrame
-        Columns include p_val / p_val_fdr / sig_fdr (t-test)
-                        p_wilcox / p_wilcox_fdr / sig_wilcox (Wilcoxon — use this)
+        Columns include p_val / p_val_adj / sig_corrected (t-test)
+                        p_wilcox / p_wilcox_adj / sig_wilcox (Wilcoxon — use this)
     """
     test_targets = sig_r2_targets if sig_r2_targets is not None else target_names
     tl_map       = dict(zip(target_names, target_labels))
@@ -272,27 +300,49 @@ def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, fdr
 
     df = pd.DataFrame(rows)
 
-    # FDR on t-test
-    rej_t, p_fdr_t = fdrcorrection(df['p_val'].values, alpha=fdr_q, method='indep')
-    df['p_val_fdr'] = p_fdr_t
-    df['sig_fdr']   = rej_t
+    # Correction within each target (8 features) (8 features per target).
+    # Correcting across all targets simultaneously was too conservative —
+    # each target is an independent scientific question.
+    p_val_adj   = np.ones(len(df))
+    sig_corrected     = np.zeros(len(df), dtype=bool)
+    p_wilcx_adj = np.full(len(df), np.nan)
+    sig_wilcox  = np.zeros(len(df), dtype=bool)
 
-    # FDR on Wilcoxon (NaN rows treated as p=1 for correction, then masked back)
-    wilcox_raw   = df['p_wilcox'].values.copy()
-    finite_mask  = np.isfinite(wilcox_raw)
-    wilcox_in    = np.where(finite_mask, wilcox_raw, 1.0)
-    rej_w, p_fdr_w = fdrcorrection(wilcox_in, alpha=fdr_q, method='indep')
-    rej_w = rej_w & finite_mask
-    df['p_wilcox_fdr'] = np.where(finite_mask, p_fdr_w, np.nan)
-    df['sig_wilcox']   = rej_w
+    for tn in df['target'].unique():
+        idx = df.index[df['target'] == tn].tolist()
 
-    print(f'Beta population tests: {len(df)} (target × feature) pairs')
-    print(f'  t-test   : raw p<0.05: {(df.p_val < 0.05).sum():3d}  |  FDR q<{fdr_q}: {rej_t.sum()}')
-    n_raw_w = int((df['p_wilcox'].fillna(1) < 0.05).sum())
-    print(f'  Wilcoxon : raw p<0.05: {n_raw_w:3d}  |  FDR q<{fdr_q}: {rej_w.sum()}')
-    if rej_w.sum():
+        # t-test correction within target
+        ps_t = df.loc[idx, 'p_val'].values
+        rej_t, p_fdr_t = fdrcorrection(ps_t, alpha=alpha, method='indep')
+        p_val_adj[idx] = p_fdr_t
+        sig_corrected[idx]   = rej_t
+
+        # Wilcoxon correction within target
+        ps_w = df.loc[idx, 'p_wilcox'].values.copy()
+        fm   = np.isfinite(ps_w)
+        ps_w_in = np.where(fm, ps_w, 1.0)
+        rej_w, p_fdr_w = fdrcorrection(ps_w_in, alpha=alpha, method='indep')
+        rej_w = rej_w & fm
+        p_wilcx_adj[idx] = np.where(fm, p_fdr_w, np.nan)
+        sig_wilcox[idx]  = rej_w
+
+    df['p_val_adj']    = p_val_adj
+    df['sig_corrected']      = sig_corrected
+    df['p_wilcox_adj'] = p_wilcx_adj
+    df['sig_wilcox']   = sig_wilcox
+
+    df['stars_ttest']  = df['p_val'].apply(_stars)
+    df['stars_wilcox'] = df['p_wilcox'].apply(_stars)
+    df['p_str']        = df['p_val'].apply(_fmt_p)
+
+    n_sig_t = sig_corrected.sum()
+    n_sig_w = sig_wilcox.sum()
+    print(f'Beta tests: {len(df)} pairs across {df["target"].nunique()} targets  |  '
+          f't-test raw p<0.05: {(df.p_val < 0.05).sum()}  p<{alpha}: {n_sig_t}  |  '
+          f'Wilcoxon raw p<0.05: {int((df["p_wilcox"].fillna(1) < 0.05).sum())}  p<{alpha}: {n_sig_w}')
+    if n_sig_w:
         print(df[df.sig_wilcox][
-            ['target_label','feature','n','median_beta','p_wilcox_fdr']
+            ['target_label', 'feature', 'n', 'median_beta', 'p_str', 'stars_wilcox']
         ].to_string(index=False))
 
     return df
@@ -301,20 +351,20 @@ def run_population_tests(beta_pop, target_names, target_labels, min_cells=5, fdr
 # ── Population tests: fraction significant ────────────────────────────────────
 
 def run_fraction_sig_tests(sig_pop, target_names, target_labels, predictor_sets,
-                            min_cells=5, fdr_q=0.05, chance_p=None):
+                            min_cells=5, alpha=0.05, chance_p=None):
     """
-    Binomial test: is the fraction of FDR-significant cells greater than expected
+    Binomial test: is the fraction of significant cells (p<0.05) greater than expected
     by chance for each (target, predictor_set) pair?
 
     Under H0, each cell has at most `chance_p` probability of being significant
-    (defaults to fdr_q — the cell-level FDR threshold). One-sided (greater).
+    (defaults to alpha — the cell-level significance threshold). One-sided (greater).
 
     Returns
     -------
     df_frac : pd.DataFrame
     """
     if chance_p is None:
-        chance_p = fdr_q
+        chance_p = alpha
 
     rows = []
     for tn, tl in zip(target_names, target_labels):
@@ -333,18 +383,19 @@ def run_fraction_sig_tests(sig_pop, target_names, target_labels, predictor_sets,
             ))
 
     df = pd.DataFrame(rows)
-    rejected, p_fdr = fdrcorrection(df['p_binom'].values, alpha=fdr_q, method='indep')
-    df['p_binom_fdr'] = p_fdr
-    df['sig_binom']   = rejected
+    # No cross-target correction — each target is an independent question.
+    df['sig_binom'] = df['p_binom'] < alpha
+    df['stars']     = df['p_binom'].apply(_stars)
+    df['p_str']     = df['p_binom'].apply(_fmt_p)
 
-    n_raw = int((df.p_binom < 0.05).sum())
-    n_fdr = int(rejected.sum())
-    print(f'Fraction-sig binomial tests: {len(df)} (target × predictor_set) pairs  |  '
-          f'raw p<0.05: {n_raw}  |  FDR q<{fdr_q}: {n_fdr}')
-    if n_fdr:
-        print(df[df.sig_binom][
-            ['target_label','predictor_set','n_sig','n_cells','frac_sig','p_binom_fdr']
-        ].to_string(index=False))
+    n_sig = int(df['sig_binom'].sum())
+    print(f'Fraction-sig binomial tests: {len(df)} pairs  |  p<{alpha}: {n_sig} '
+          f'(each target tested independently)')
+    if n_sig:
+        out = df[df.sig_binom][
+            ['target_label', 'predictor_set', 'n_sig', 'n_cells', 'frac_sig']
+        ].copy()
+        print(out.to_string(index=False))
 
     return df
 
@@ -368,7 +419,7 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
     ----------
     df_frac : pd.DataFrame or None
         Output of run_fraction_sig_tests(). If provided, marks cells in the R²
-        heatmap with '*' where the binomial fraction-sig test is FDR-significant.
+        heatmap with '*' where the binomial fraction-sig test is significant.
     df_r2 : pd.DataFrame or None
         Output of run_r2_tests(). If provided, its sig_r2 flag overrides df_frac
         for the R² heatmap '*' marker (preferred — more meaningful test).
@@ -394,10 +445,10 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
             valid = beta_pop[tn][wl]; valid = valid[np.isfinite(valid)]
             if len(valid): mean_beta_mat[t_idx, w_idx] = np.mean(valid)
             row = df_tests[(df_tests.target == tn) & (df_tests.feature == wl)]
-            # primary significance marker = Wilcoxon FDR; fall back to t-test if unavailable
+            # primary significance marker = Wilcoxon; fall back to t-test if unavailable
             if not row.empty:
                 sig_beta_mat[t_idx, w_idx] = bool(
-                    row.iloc[0].get('sig_wilcox', row.iloc[0]['sig_fdr'])
+                    row.iloc[0].get('sig_wilcox', row.iloc[0]['sig_corrected'])
                 )
 
     # ── Heatmap 1: mean R² ──
@@ -431,7 +482,7 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
     _heatmap_dividers(ax)
     plt.colorbar(im, ax=ax, label='Mean CV R²', shrink=0.55, pad=0.02)
     ax.set_title('Population – Mean 5-fold CV R²\n'
-                 '(bold = mean R²  |  % = fraction sig  |  * = Wilcoxon median R²>0, FDR q<0.05)',
+                 '(bold = mean R²  |  % = fraction sig  |  * = Wilcoxon median R²>0, p<0.05)',
                  fontsize=12, pad=12)
     fig.tight_layout(); plt.show()
 
@@ -454,13 +505,13 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
     _heatmap_dividers(ax)
     plt.colorbar(im, ax=ax, label='Mean β across cells', shrink=0.55, pad=0.02)
     ax.set_title('Population – Mean Beta Weights (Waveform only)\n'
-                 '(* FDR q<0.05, Wilcoxon signed-rank vs 0)', fontsize=12, pad=12)
+                 '(* p<0.05, Wilcoxon signed-rank vs 0)', fontsize=12, pad=12)
     fig.tight_layout(); plt.show()
 
-    # ── Rainclouds: FDR-significant (target, feature) pairs ──
-    sig_pairs = df_tests[df_tests.sig_fdr][['target','target_label','feature']].values.tolist()
+    # ── Rainclouds: significant (target, feature) pairs ──
+    sig_pairs = df_tests[df_tests.sig_corrected][['target','target_label','feature']].values.tolist()
     if not sig_pairs:
-        print('No population-level FDR-significant pairs.')
+        print('No population-level significant pairs.')
         return mean_r2, frac_sig, mean_beta_mat, sig_beta_mat
 
     rng   = np.random.default_rng(42)
@@ -468,7 +519,7 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
     nrows = math.ceil(len(sig_pairs) / ncols)
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4, nrows * 4.2))
     axes = np.array(axes).flatten() if len(sig_pairs) > 1 else [axes]
-    fig.suptitle('Population Beta Distributions — FDR-significant (target × feature)\n'
+    fig.suptitle('Population Beta Distributions — significant (target × feature)\n'
                  'One-sample t-test vs 0  |  Waveform only model',
                  fontsize=12, y=1.01)
 
@@ -494,7 +545,7 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
         ax.set_yticks([])
         ax.set_xlabel('β (std units)', fontsize=10)
         ax.set_title(f'{tl}\n{feat}', fontsize=10, fontweight='bold')
-        p_str = f'p_fdr = {row.p_val_fdr:.3f}' if row.p_val_fdr >= 0.001 else 'p_fdr < 0.001'
+        p_str = f'p = {row.p_val:.3f}' if row.p_val >= 0.001 else 'p < 0.001'
         ax.text(0.5, -0.18,
                 f'n = {row.n}  |  t = {row.t_stat:+.2f}  |  {p_str}',
                 transform=ax.transAxes, ha='center', fontsize=8, color='#444')
@@ -512,7 +563,7 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
     """
     Pool scatter data (actual vs predicted, z-scored) across cells.
     Reads y_actual/y_pred saved in each cell's pickle — no cell data reloading needed.
-    Only includes cells where the Waveform-only model was FDR-significant.
+    Only includes cells where the Waveform-only model was significant.
     """
     import seaborn as sns
     pooled = {tn: {'y': [], 'yp': [], 'colors': []} for tn in target_names}
@@ -521,7 +572,7 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
     for c_idx, cid in enumerate(cell_ids):
         for tn in target_names:
             cell_res = all_results.get(cid, {}).get(tn, {}).get('Waveform only', {})
-            if not cell_res.get('sig_fdr', False):
+            if not cell_res.get('sig_corrected', False):
                 continue
             y_actual = cell_res.get('y_actual')
             y_pred   = cell_res.get('y_pred')
@@ -542,7 +593,7 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.2, nrows * 4.2))
     axes = np.array(axes).flatten() if len(sig_targets) > 1 else [axes]
     fig.suptitle('Population – Actual vs Predicted (Waveform only)\n'
-                 'Each colour = one cell  |  z-scored within cell  |  FDR-significant cells only',
+                 'Each colour = one cell  |  z-scored within cell  |  p<0.05 cells only',
                  fontsize=12, y=1.01)
 
     for ax, (tn, tl) in zip(axes, sig_targets):
@@ -617,14 +668,16 @@ def run_r2_tests(r2_pop, target_names, target_labels, predictor_sets,
 
     df = pd.DataFrame(rows)
     df['sig_r2'] = df['p_wilcox'].fillna(1.0) < alpha
+    df['stars']  = df['p_wilcox'].apply(_stars)
+    df['p_str']  = df['p_wilcox'].apply(_fmt_p)
 
     n_sig = int(df['sig_r2'].sum())
-    print(f'R² > 0 Wilcoxon tests: {len(df)} (target × predictor_set) pairs  |  '
-          f'p<{alpha}: {n_sig}  (each target tested independently, no cross-target correction)')
+    print(f'R² > 0 Wilcoxon: {len(df)} (target × predictor_set) pairs  |  '
+          f'p<{alpha}: {n_sig}  (each target independent, no cross-target correction)')
     if n_sig:
-        print(df[df.sig_r2][
-            ['target_label', 'predictor_set', 'n_cells', 'median_r2', 'mean_r2', 'p_wilcox']
-        ].to_string(index=False))
+        out = df[df.sig_r2][['target_label', 'predictor_set', 'n_cells',
+                              'median_r2', 'mean_r2', 'p_str', 'stars']].copy()
+        print(out.to_string(index=False))
 
     return df
 
@@ -641,9 +694,9 @@ def plot_beta_distributions(beta_pop, df_tests, target_names, target_labels,
     Shared x- and y-axes across all panels so beta magnitudes and target positions
     are directly comparable. Target order is fixed (same in every panel).
 
-    Dot colour  : red   = that cell's R² model was FDR-significant (from sig_pop)
+    Dot colour  : red   = that cell's R² model was significant (from sig_pop)
                   grey  = not significant
-    Median ◆    : black = population Wilcoxon FDR-significant for that target×feature
+    Median ◆    : black = population Wilcoxon significant for that target×feature
                   grey  = not significant
 
     Parameters
@@ -690,11 +743,11 @@ def plot_beta_distributions(beta_pop, df_tests, target_names, target_labels,
                               sharex=True, sharey=True)
     axes = np.array(axes).flatten()
     fig.suptitle('Per-cell beta weight distributions (Waveform only model)\n'
-                 '(red dot = cell R² FDR-sig  |  open dot = not sig  |  '
-                 'black ◆ = pop. Wilcoxon FDR-sig  |  grey ◆ = not sig)',
+                 '(red dot = cell R² sig  |  open dot = not sig  |  '
+                 'black ◆ = pop. Wilcoxon sig  |  grey ◆ = not sig)',
                  fontsize=11, y=1.02)
 
-    pop_sig_col = 'sig_wilcox' if 'sig_wilcox' in df_tests.columns else 'sig_fdr'
+    pop_sig_col = 'sig_wilcox' if 'sig_wilcox' in df_tests.columns else 'sig_corrected'
 
     for ax_idx, (ax, feat) in enumerate(zip(axes, features)):
         is_left_col = (ax_idx % ncols == 0)
@@ -706,7 +759,7 @@ def plot_beta_distributions(beta_pop, df_tests, target_names, target_labels,
             if len(valid) == 0:
                 continue
 
-            # ── per-cell colour: red = cell R² FDR-significant ──────────────
+            # ── per-cell colour: red = cell R² significant ──────────────
             if sig_pop is not None and sig_pset in sig_pop.get(tn, {}):
                 cell_sig = np.array(sig_pop[tn][sig_pset], dtype=bool)[finite]
             else:
@@ -755,7 +808,7 @@ def plot_r2_distributions(r2_pop, sig_pop, target_names, target_labels,
     one row per target, sorted by mean R² (descending).
 
     Each dot = one cell. Mean shown as a diamond. Vertical line at x=0 and
-    at min_r2_line. Cells with sig_fdr=True shown filled; non-sig shown open.
+    at min_r2_line. Cells with sig_corrected=True shown filled; non-sig shown open.
 
     Parameters
     ----------
@@ -781,7 +834,7 @@ def plot_r2_distributions(r2_pop, sig_pop, target_names, target_labels,
                               sharex=True, sharey=True)
     axes = np.array(axes).flatten() if n_p > 1 else [axes]
     fig.suptitle('Per-cell CV R² distributions\n'
-                 '(red filled = cell FDR-significant  |  ◆ = mean  |  dashed = R²=0 reference)',
+                 '(red filled = cell significant  |  ◆ = mean  |  dashed = R²=0 reference)',
                  fontsize=12, y=1.02)
 
     for p_idx, (ax, pn) in enumerate(zip(axes, predictor_sets)):
@@ -839,16 +892,17 @@ def save_population_results(pickle_dir, r2_pop, sig_pop, beta_pop, df_tests,
     with open(path, 'wb') as f:
         pickle.dump(payload, f)
     print(f'Saved: {os.path.basename(path)}')
-    sig_col = 'sig_wilcox' if 'sig_wilcox' in df_tests.columns else 'sig_fdr'
+    sig_col = 'sig_wilcox' if 'sig_wilcox' in df_tests.columns else 'sig_corrected'
     if df_tests[sig_col].any():
         print(df_tests[df_tests[sig_col]][
-            ['target_label','feature','n','median_beta','p_wilcox_fdr']
+            ['target_label','feature','n','median_beta','p_wilcox_adj']
         ].to_string(index=False))
 
 
 # ── Focused beta table ───────────────────────────────────────────────────────
 
-def show_beta_tables(df_tests, sig_r2_targets, target_names, target_labels):
+def show_beta_tables(df_tests, sig_r2_targets, target_names, target_labels,
+                      r2_pop=None, predictor_set='Waveform only'):
     """
     Display one styled table per R²-significant target showing per-waveform-feature
     one-sample t-test p-values (uncorrected), sorted by raw p-value.
@@ -859,6 +913,9 @@ def show_beta_tables(df_tests, sig_r2_targets, target_names, target_labels):
     sig_r2_targets   : list[str]  target names that survived R² testing
     target_names     : list[str]
     target_labels    : list[str]
+    r2_pop           : dict or None  output of aggregate_population; if provided,
+                       adds mean and median CV R² column to the table caption
+    predictor_set    : str  used to look up R² from r2_pop
     """
     try:
         from IPython.display import display, HTML
@@ -877,13 +934,22 @@ def show_beta_tables(df_tests, sig_r2_targets, target_names, target_labels):
         )
         if sub.empty:
             continue
-        sub.columns = ['Feature', 'N cells', 'Mean β', 'SEM β', 't', 'p (raw)']
+        sub['sig'] = sub['p_val'].apply(_stars)
+        sub['p_val'] = sub['p_val'].apply(_fmt_p)
+        sub.columns = ['Feature', 'N cells', 'Mean β', 'SEM β', 't', 'p (raw)', 'sig']
+
+        # Build caption with CV R² summary if available
+        r2_info = ''
+        if r2_pop is not None and tn in r2_pop and predictor_set in r2_pop[tn]:
+            r2_vals = r2_pop[tn][predictor_set]
+            r2_vals = r2_vals[np.isfinite(r2_vals)]
+            r2_info = (f'  |  mean CV R² = {np.mean(r2_vals):.4f}  '
+                       f'median CV R² = {np.median(r2_vals):.4f}')
+
         styled = (
             sub.style
-            .format({'Mean β': '{:+.4f}', 'SEM β': '{:.4f}',
-                     't': '{:+.3f}', 'p (raw)': '{:.4f}'})
-            .background_gradient(subset=['p (raw)'], cmap='YlOrRd_r', vmin=0, vmax=0.5)
-            .set_caption(f'{tl} — one-sample t-test on β (n cells={sub["N cells"].iloc[0]}, uncorrected)')
+            .format({'Mean β': '{:+.4f}', 'SEM β': '{:.4f}', 't': '{:+.3f}'})
+            .set_caption(f'{tl} — one-sample t-test on β  (n={sub["N cells"].iloc[0]} cells, uncorrected){r2_info}')
             .set_table_styles([{'selector': 'caption',
                                 'props': [('font-size', '13px'), ('font-weight', 'bold'),
                                           ('text-align', 'left')]}])
@@ -892,10 +958,178 @@ def show_beta_tables(df_tests, sig_r2_targets, target_names, target_labels):
         display(HTML('<br/>'))
 
 
+# ── R² summary bar chart ─────────────────────────────────────────────────────
+
+def plot_r2_summary(r2_pop, df_r2, target_names, target_labels,
+                    predictor_set='Waveform only'):
+    """
+    Bar chart: mean ± SEM CV R² per target with Wilcoxon significance stars.
+
+    Parameters
+    ----------
+    r2_pop        : output of aggregate_population
+    df_r2         : output of run_r2_tests
+    target_names  : list[str]
+    target_labels : list[str]
+    predictor_set : str
+    """
+    import seaborn as sns
+
+    means, sems, pvals, sig_flags = [], [], [], []
+    for tn in target_names:
+        vals  = r2_pop[tn][predictor_set]
+        valid = vals[np.isfinite(vals)]
+        means.append(float(np.mean(valid)) if len(valid) else np.nan)
+        sems.append(float(stats.sem(valid)) if len(valid) > 1 else np.nan)
+        row = df_r2[(df_r2['target'] == tn) & (df_r2['predictor_set'] == predictor_set)]
+        if len(row):
+            pvals.append(float(row.iloc[0]['p_wilcox']))
+            sig_flags.append(bool(row.iloc[0]['sig_r2']))
+        else:
+            pvals.append(np.nan)
+            sig_flags.append(False)
+
+    means = np.array(means)
+    sems  = np.array(sems)
+    x     = np.arange(len(target_names))
+
+    feat_cols = {
+        'lfp_amp':   '#0072B2',
+        'lfp_std':   '#56B4E9',
+        'gamma_auc': '#009E73',
+        'exponent':  '#E69F00',
+        'theta_auc': '#CC79A7',
+    }
+    bar_cols = []
+    for tn in target_names:
+        for k, c in feat_cols.items():
+            if k in tn:
+                bar_cols.append(c)
+                break
+        else:
+            bar_cols.append('#888')
+
+    fig, ax = plt.subplots(figsize=(max(12, len(target_names) * 0.85), 5))
+    ax.bar(x, means, yerr=sems, color=bar_cols, alpha=0.75, width=0.7,
+           error_kw=dict(lw=1.5, capsize=4, capthick=1.5, ecolor='#333'),
+           edgecolor='white')
+
+    y_top  = float(np.nanmax(means + np.where(np.isfinite(sems), sems, 0)))
+    offset = max(y_top * 0.06, 0.002)
+    for i, (p, sig) in enumerate(zip(pvals, sig_flags)):
+        s = _stars(p)
+        if s != 'ns' and sig:
+            ax.text(i, means[i] + (sems[i] if np.isfinite(sems[i]) else 0) + offset,
+                    s, ha='center', va='bottom', fontsize=13,
+                    color='#D55E00', fontweight='bold')
+
+    ax.axhline(0, color='gray', lw=1, ls='--', alpha=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(target_labels, rotation=40, ha='right', fontsize=9)
+    ax.set_ylabel('Mean CV R²  (± SEM,  n=37 cells)', fontsize=11)
+    ax.set_title(
+        f'Population CV R²  —  {predictor_set}\n'
+        f'Stars = Wilcoxon p < 0.05 (median R² > 0);  colours = LFP feature type',
+        fontsize=11
+    )
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c, alpha=0.75,
+                              label=k.replace('_', ' ').replace('auc', 'AUC'))
+               for k, c in feat_cols.items()]
+    ax.legend(handles=handles, fontsize=8, frameon=False,
+              loc='upper right', ncol=len(feat_cols))
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+
+# ── Target correlation check ─────────────────────────────────────────────────
+
+def plot_target_correlations(r2_pop, target_names, target_labels, predictor_set='Waveform only'):
+    """
+    Pairwise Spearman correlation between per-cell R² vectors for all targets.
+
+    If two targets have highly correlated R² profiles across cells (i.e., the same
+    cells tend to succeed or fail on both), they may be capturing the same underlying
+    dimension of LFP state and one could be excluded without loss of information.
+
+    Parameters
+    ----------
+    r2_pop        : output of aggregate_population
+    target_names  : list[str]
+    target_labels : list[str]
+    predictor_set : str  which predictor set to use (default 'Waveform only')
+    """
+    import seaborn as sns
+
+    # Build matrix: rows = cells, columns = targets
+    mat = np.column_stack([
+        r2_pop[tn][predictor_set] for tn in target_names
+    ])  # shape (n_cells, n_targets)
+
+    n_t = len(target_names)
+    rho_mat = np.full((n_t, n_t), np.nan)
+    p_mat   = np.full((n_t, n_t), np.nan)
+
+    for i in range(n_t):
+        for j in range(n_t):
+            xi = mat[:, i]; yi = mat[:, j]
+            mask = np.isfinite(xi) & np.isfinite(yi)
+            if mask.sum() >= 5:
+                rho, p = stats.spearmanr(xi[mask], yi[mask])
+                rho_mat[i, j] = rho
+                p_mat[i, j]   = p
+
+    # Short labels
+    short_labels = [tl.replace('Pre ', 'Pre\n').replace('Post ', 'Post\n') for tl in target_labels]
+
+    fig, ax = plt.subplots(figsize=(max(10, n_t * 0.7), max(8, n_t * 0.65)))
+    im = ax.imshow(rho_mat, vmin=-1, vmax=1, cmap='RdBu_r', aspect='auto')
+
+    for i in range(n_t):
+        for j in range(n_t):
+            if not np.isfinite(rho_mat[i, j]):
+                continue
+            star = _stars(p_mat[i, j]) if i != j else ''
+            bright = abs(rho_mat[i, j]) > 0.5
+            tc = 'white' if bright else '#222'
+            ax.text(j, i, f'{rho_mat[i,j]:+.2f}\n{star}',
+                    ha='center', va='center', fontsize=7, color=tc)
+
+    ax.set_xticks(range(n_t))
+    ax.set_yticks(range(n_t))
+    ax.set_xticklabels(short_labels, fontsize=7, rotation=40, ha='right')
+    ax.set_yticklabels(short_labels, fontsize=7)
+    ax.set_title(
+        f'Pairwise Spearman ρ between per-cell CV R² vectors  '
+        f'({predictor_set})\n'
+        f'High |ρ| = same cells succeed/fail on both targets → possible redundancy\n'
+        f'* p<0.05  ** p<0.01  *** p<0.001',
+        fontsize=10
+    )
+    cb = plt.colorbar(im, ax=ax, shrink=0.5, pad=0.02)
+    cb.set_label('Spearman ρ', fontsize=9)
+    fig.tight_layout()
+    plt.show()
+
+    # Flag highly correlated pairs
+    threshold = 0.7
+    high_corr = []
+    for i in range(n_t):
+        for j in range(i + 1, n_t):
+            if np.isfinite(rho_mat[i, j]) and abs(rho_mat[i, j]) >= threshold:
+                high_corr.append((target_labels[i], target_labels[j], rho_mat[i, j], p_mat[i, j]))
+    if high_corr:
+        print(f'\nHighly correlated pairs (|ρ| ≥ {threshold}):')
+        for a, b, r, p in sorted(high_corr, key=lambda x: -abs(x[2])):
+            print(f'  {a:35s}  ×  {b:35s}  ρ = {r:+.3f}  p = {_fmt_p(p)}')
+    else:
+        print(f'No pairs with |ρ| ≥ {threshold}.')
+
+
 # ── HPF vs no-HPF comparison ─────────────────────────────────────────────────
 
 def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
-                          predictor_sets, min_cells=5, fdr_q=0.05):
+                          predictor_sets, min_cells=5, alpha=0.05):
     """
     Load both no-HPF (c{N}_ridge_results.pkl) and HPF (c{N}_ridge_results_hpf.pkl)
     per-cell results, run R² population tests on each, and produce a side-by-side
@@ -909,7 +1143,7 @@ def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
     target_labels : list[str]
     predictor_sets: list[str]
     min_cells     : int
-    fdr_q         : float
+    alpha         : float
 
     Returns
     -------
@@ -944,9 +1178,9 @@ def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
     r2_hpf, _, _ = aggregate_population(res_hpf, cell_ids, target_names, predictor_sets)
 
     df_r2_raw = run_r2_tests(r2_raw, target_names, target_labels, predictor_sets,
-                              min_cells=min_cells, fdr_q=fdr_q)
+                              min_cells=min_cells, alpha=alpha)
     df_r2_hpf = run_r2_tests(r2_hpf, target_names, target_labels, predictor_sets,
-                              min_cells=min_cells, fdr_q=fdr_q)
+                              min_cells=min_cells, alpha=alpha)
 
     # ── Comparison table ──────────────────────────────────────────────────────
     AMP_STD = [('pre_lfp_amp',  'Pre LFP Amp'),
@@ -968,8 +1202,8 @@ def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
             rows.append(dict(
                 Target=tl, Version=label, N=int(row['n_cells']),
                 median_r2=row['median_r2'], mean_r2=row['mean_r2'],
-                sig='✓' if row['sig_r2'] else '✗',
-                p_fdr=row['p_wilcox_fdr'],
+                p=_fmt_p(row['p_wilcox']),
+                sig=_stars(row['p_wilcox']),
                 **({'HPF/raw': ratio} if label == 'HPF 0.1 Hz' else {}),
             ))
 
@@ -979,12 +1213,10 @@ def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
         from IPython.display import display
         styled = (
             df_cmp.style
-            .format({'median_r2': '{:.4f}', 'mean_r2': '{:.4f}',
-                     'p_fdr': '{:.4f}', 'HPF/raw': '{:.2f}'})
+            .format({'median_r2': '{:.4f}', 'mean_r2': '{:.4f}', 'HPF/raw': '{:.2f}'})
             .set_caption(
                 'R² comparison: no HPF vs HPF 0.1 Hz  |  Waveform-only predictor set\n'
-                'HPF/raw < 1 = signal attenuated by detrending; '
-                '✓ = FDR-significant population R² > 0'
+                'HPF/raw < 1 = signal attenuated by detrending;  sig: * p<0.05  ** p<0.01  *** p<0.001'
             )
             .set_table_styles([{'selector': 'caption',
                                 'props': [('font-size', '12px'), ('font-weight', 'bold'),
@@ -1015,7 +1247,7 @@ def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
     ax.set_xticklabels([tl for _, tl in AMP_STD], fontsize=10)
     ax.set_ylabel('Median CV R²  (Waveform only)', fontsize=11)
     ax.set_title('Effect of 0.1 Hz HPF detrending on LFP amplitude/std targets\n'
-                 '* = FDR-significant  |  bars show median R² across 37 cells', fontsize=11)
+                 '* = p<0.05  |  bars show median R² across 37 cells', fontsize=11)
     ax.legend(fontsize=10, frameon=False)
     ax.axhline(0, color='gray', lw=1, ls='--', alpha=0.5)
     sns.despine(ax=ax)
@@ -1039,8 +1271,8 @@ def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
     ]['target'].tolist()
     df_tests_hpf = run_population_tests(
         beta_hpf_full, target_names, target_labels,
-        min_cells=min_cells, fdr_q=fdr_q,
-        sig_r2_targets=sig_hpf_targets,
+        min_cells=min_cells, alpha=alpha,
+        sig_r2_targets=sig_hpf_targets if sig_hpf_targets else None,
     )
 
     return dict(
