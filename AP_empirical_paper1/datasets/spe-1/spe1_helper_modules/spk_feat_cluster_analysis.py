@@ -718,9 +718,12 @@ def plot_full_cluster_report(
     # A) Spike waveforms
     # --------------------------------------------------
     print("\n→ 1. Plotting spike waveforms by cluster")
-    plot_spike_clusters_from_df(df, sp, cluster_col,
-                                plot_average=True, plot_average_std=True,
-                                peak_align=True)
+    _, ax_wf = plot_spike_clusters_from_df(df, sp, cluster_col,
+                                           plot_average=True, plot_average_std=True,
+                                           peak_align=True)
+    ax_wf.set_xlim(-4, 4)
+    ax_wf.axvline(0, color='gray', lw=0.8, ls='--', alpha=0.5)
+    plt.tight_layout(); plt.show()
     
     # --------------------------------------------------
     # A.5) Average waveforms with visual RMSE
@@ -1040,8 +1043,44 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map, peak
             name1, name2 = group_names[i], group_names[j]
             c1, c2 = color_map.get(str(g1), '#9467bd'), color_map.get(str(g2), '#2ca02c')
             
-            rmse, nrmse, cos_sim, n_wf1, n_wf2, z_wf1, z_wf2 = get_metrics(wf1, wf2)
-            time_axis = np.arange(len(wf1)) - len(wf1) // 2
+            # Convert sample axis to ms using spike time resolution
+            dt_ms = float(sp.times[1] - sp.times[0]) * 1000.0 if len(sp.times) > 1 else 1.0
+            time_axis = (np.arange(len(wf1)) - len(wf1) // 2) * dt_ms
+
+            # Compute metrics only from ramp start → exp end (the fitted model region)
+            # Use mean indices across spikes in each group for the trimming window
+            def _group_mean_idx(group_label, col):
+                grp_inds = df.loc[df[cluster_col] == group_label, 'spk_id'].astype(int).tolist()
+                valid = [i for i in grp_inds if i < len(sp.indices) and sp.indices[i][col] >= 0]
+                return int(np.round(np.mean([sp.indices[i][col] for i in valid]))) if valid else None
+
+            pk1 = _group_mean_idx(groups_list[i], 3)   # peak index col=3
+            pk2 = _group_mean_idx(groups_list[j], 3)
+            rs1 = _group_mean_idx(groups_list[i], 0)   # ramp_start col=0
+            rs2 = _group_mean_idx(groups_list[j], 0)
+            ee1 = _group_mean_idx(groups_list[i], 6)   # exp_end col=6
+            ee2 = _group_mean_idx(groups_list[j], 6)
+
+            # Convert to indices in the peak-aligned average waveform
+            half = len(wf1) // 2
+            if pk1 and rs1 and ee1 and pk2 and rs2 and ee2:
+                rel_rs = int(np.round(np.mean([rs1 - pk1, rs2 - pk2])))
+                rel_ee = int(np.round(np.mean([ee1 - pk1, ee2 - pk2])))
+                trim_start = max(0, half + rel_rs)
+                trim_end   = min(len(wf1), half + rel_ee + 1)
+                wf1_m, wf2_m = wf1[trim_start:trim_end], wf2[trim_start:trim_end]
+            else:
+                wf1_m, wf2_m = wf1, wf2
+
+            rmse, nrmse, cos_sim, n_wf1, n_wf2, z_wf1, z_wf2 = get_metrics(wf1_m, wf2_m)
+            # Rebuild time axis for the trimmed region (for panel plots)
+            time_axis_trim = (np.arange(len(wf1_m)) - len(wf1_m) // 2) * dt_ms
+            # Full time axis still used for plotting (xlim handles display)
+            time_axis_full = time_axis.copy()
+            # Recompute normalised/z-scored on full waveform for visual consistency
+            _, _, _, n_wf1_full, n_wf2_full, z_wf1_full, z_wf2_full = get_metrics(wf1, wf2)
+            n_wf1, n_wf2 = n_wf1_full, n_wf2_full
+            z_wf1, z_wf2 = z_wf1_full, z_wf2_full
             
             # --- PANEL 1: Raw Amplitude (RMSE) ---
             ax_raw = axes[pair_idx, 0]
@@ -1049,20 +1088,24 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map, peak
             ax_raw.plot(time_axis, wf2, color=c2, lw=2, label=name2)
             ax_raw.fill_between(time_axis, wf1, wf2, color='gray', alpha=0.2)
             
-            ax_raw.text(0.05, 0.95, f"RMSE: {rmse:.2f}", transform=ax_raw.transAxes, 
+            ax_raw.text(0.05, 0.95, f"RMSE: {rmse:.2f}", transform=ax_raw.transAxes,
                         va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+            ax_raw.set_xlim(-4, 4)
+            ax_raw.axvline(0, color='gray', lw=0.8, ls='--', alpha=0.6)
             ax_raw.set_title(f"1. Absolute Amp (Raw)\n{name1} vs {name2}")
             ax_raw.set_ylabel("Amplitude (uV)")
             ax_raw.grid(True, alpha=0.3)
-            
+
             # --- PANEL 2: Relative Amplitude (NRMSE) ---
             ax_scale = axes[pair_idx, 1]
             ax_scale.plot(time_axis, n_wf1, color=c1, lw=2)
             ax_scale.plot(time_axis, n_wf2, color=c2, lw=2)
             ax_scale.fill_between(time_axis, n_wf1, n_wf2, color='orange', alpha=0.1)
-            
-            ax_scale.text(0.05, 0.95, f"NRMSE: {nrmse:.3f}", transform=ax_scale.transAxes, 
+
+            ax_scale.text(0.05, 0.95, f"NRMSE: {nrmse:.3f}", transform=ax_scale.transAxes,
                          va='top', bbox=dict(boxstyle='round', facecolor='floralwhite', alpha=0.9))
+            ax_scale.set_xlim(-4, 4)
+            ax_scale.axvline(0, color='gray', lw=0.8, ls='--', alpha=0.6)
             ax_scale.set_title(f"2. Relative Amp (Max-Scaled)")
             ax_scale.set_ylabel("Norm. Amp (a.u.)")
             ax_scale.grid(True, alpha=0.3)
@@ -1080,14 +1123,16 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map, peak
                           va='top', fontweight='bold',
                           bbox=dict(boxstyle='round', facecolor='mistyrose', alpha=0.9))
             
+            ax_shape.set_xlim(-4, 4)
+            ax_shape.axvline(0, color='gray', lw=0.8, ls='--', alpha=0.6)
             ax_shape.set_title(f"3. Pure Shape (Z-Scored)")
             ax_shape.set_ylabel("Z-Score (SD)")
             ax_shape.grid(True, alpha=0.3)
             
             # Only label x-axis on the very last row
             if pair_idx == n_pairs - 1:
-                ax_raw.set_xlabel("Samples")
-                ax_scale.set_xlabel("Samples")
+                ax_raw.set_xlabel("Time (ms)")
+                ax_scale.set_xlabel("Time (ms)")
                 ax_shape.set_xlabel("Samples")
             
             rmse_results[f"{name1}_vs_{name2}"] = {

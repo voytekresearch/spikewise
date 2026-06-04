@@ -67,9 +67,10 @@ sys.path.insert(0, str(HELPER_DIR))
 
 from config import CELL_IDS, PRIORITY_CELLS
 
-NB_DIR      = (REPO_ROOT / "AP_empirical_paper1" / "datasets" / "spe-1"
-               / "spe1_patch_LFP_analysis" / "cluster_analyses" / "cell_analyses")
-RIDGE_NB_DIR = NB_DIR / "ridge_regression_analyses"
+NB_DIR           = (REPO_ROOT / "AP_empirical_paper1" / "datasets" / "spe-1"
+                    / "spe1_patch_LFP_analysis" / "cluster_analyses" / "cell_analyses")
+CLUSTER_NB_DIR   = NB_DIR / "cluster_feature_analyses"
+RIDGE_NB_DIR     = NB_DIR / "ridge_regression_analyses"
 PRIORITY_SET = {f"c{n}" for n in PRIORITY_CELLS}
 
 
@@ -81,7 +82,7 @@ def run_cluster_nb(args):
     """Execute one cluster notebook via papermill. Returns (cell_id, 'ok'|traceback)."""
     cell_id, opts = args
     cnum = _cell_num(cell_id)
-    nb   = NB_DIR / f"spe-1_c{cnum}_clusters.ipynb"
+    nb   = CLUSTER_NB_DIR / f"spe-1_c{cnum}_clusters.ipynb"
 
     if not nb.exists():
         return (cell_id, f"notebook not found: {nb.name}")
@@ -139,7 +140,7 @@ def run_lfp_nb(args):
     """Priority LFP notebook (spe-1_c{N}_LFP_analysis.ipynb)."""
     cell_id, opts = args
     cnum = _cell_num(cell_id)
-    nb   = NB_DIR / f"spe-1_c{cnum}_LFP_analysis.ipynb"
+    nb   = CLUSTER_NB_DIR / f"spe-1_c{cnum}_LFP_analysis.ipynb"
     if not nb.exists():
         return (cell_id, f"no priority LFP notebook for c{cnum}")
     result = _run_lfp_notebook(nb, f"LFP c{cnum}", opts)
@@ -150,7 +151,7 @@ def run_lfp_np_nb(args):
     """Non-priority LFP notebook (spe-1_c{N}_np_LFP_analysis.ipynb)."""
     cell_id, opts = args
     cnum = _cell_num(cell_id)
-    nb   = NB_DIR / f"spe-1_c{cnum}_np_LFP_analysis.ipynb"
+    nb   = CLUSTER_NB_DIR / f"spe-1_c{cnum}_np_LFP_analysis.ipynb"
     if not nb.exists():
         return (cell_id, f"no np LFP notebook for c{cnum}")
     result = _run_lfp_notebook(nb, f"LFP-np c{cnum}", opts)
