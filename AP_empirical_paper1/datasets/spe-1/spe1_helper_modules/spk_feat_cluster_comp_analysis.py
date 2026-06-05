@@ -545,9 +545,9 @@ def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
         print(f"  {r['Metadata']:22s} × {r['Feature']:14s} | "
               f"{r['effect_label']} = {r['Effect_Size']:+.3f}  "
               f"95% CI [{r['ci_lo']:+.3f}, {r['ci_hi']:+.3f}]  "
-              f"p_fdr={r['p_fdr']:.3e} {r['Significance']}")
+              f"p_fdr={('< 0.0001' if r['p_fdr'] < 0.0001 else str(round(r['p_fdr'], 4)))} {r['Significance']}")
 
-    sig['p-value'] = sig['p_fdr'].apply(lambda p: f"{p:.2e}")
+    sig['p-value'] = sig['p_fdr'].apply(lambda p: '< 0.0001' if p < 0.0001 else f'{p:.4f}')
     return sig.reset_index(drop=True)
 
 def plot_sig_feat_pairs(df, sig_pairs_df):
@@ -871,7 +871,7 @@ def stat_test_depth_stratification(df):
     print(f"DEPTH STRATIFICATION ANALYSIS")
     print("-" * 40)
     print(f"Kruskal-Wallis H-stat: {stat:.3f}")
-    print(f"p-value: {p:.3e}")
+    print(f"p-value: {'< 0.0001' if p < 0.0001 else f'{p:.4f}'}")
     
     if p < 0.05:
         print("\nSignificant differences found across cortical layers.")
@@ -1184,7 +1184,8 @@ def stat_test_metadata_dependency(df):
         chi2, p, dof, expected = chi2_contingency(contingency)
         
         sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
-        print(f"{col:<20} | p = {p:.3e} ({sig})")
+        p_str = '< 0.0001' if p < 0.0001 else f'{p:.4f}'
+        print(f"{col:<20} | p = {p_str} ({sig})")
         
         results.append({'metadata': col, 'p_value': p, 'sig': sig})
         
@@ -1655,7 +1656,7 @@ def plot_within_vs_between_neuron_distances(df_master, wf_dir, half_win=75,
 
         # Stats
         stat_mw, p_mw = _mwu(within, between, alternative="two-sided")
-        p_str = f"p={p_mw:.3f}" if p_mw >= 0.001 else f"p={p_mw:.2e}"
+        p_str = f"p={'< 0.0001' if p_mw < 0.0001 else f'{p_mw:.4f}'}"
         rb    = _rank_biserial(within, between)
         med_diff, ci = _bootstrap_median_diff(within, between)
         ci_str = f"Δmedian={med_diff:+.3f} [{ci[0]:+.3f}, {ci[1]:+.3f}]"
@@ -1687,4 +1688,254 @@ def plot_within_vs_between_neuron_distances(df_master, wf_dir, half_win=75,
           f"IQR=[{np.percentile(within_cossim,25):.3f}, {np.percentile(within_cossim,75):.3f}]")
     print(f"  Between-cell cos_sim: median={np.median(between_cossim):.3f}  "
           f"IQR=[{np.percentile(between_cossim,25):.3f}, {np.percentile(between_cossim,75):.3f}]")
+    plt.show()
+
+
+# ── Temporal transition detection ─────────────────────────────────────────────
+
+def _changepoint_1d(labels_ord, min_frac=0.1):
+    """
+    Find the single changepoint in an ordinal label sequence that minimises
+    total within-segment variance (O(n) scan after cumulative stats).
+
+    Parameters
+    ----------
+    labels_ord : 1-D array of floats   (ordinal-coded cluster labels)
+    min_frac   : float  minimum fraction of spikes in each segment
+
+    Returns
+    -------
+    best_idx : int  index (in sorted order) after which the change occurs
+    """
+    n   = len(labels_ord)
+    y   = np.asarray(labels_ord, float)
+    lo  = int(np.ceil(n * min_frac))
+    hi  = n - lo
+
+    if lo >= hi:
+        return n // 2
+
+    # cumulative sum and sum-of-squares for left segment
+    cs  = np.cumsum(y)
+    cs2 = np.cumsum(y ** 2)
+
+    best_cost = np.inf
+    best_idx  = lo
+    for k in range(lo, hi):
+        n_l = k;            s_l = cs[k - 1];  ss_l = cs2[k - 1]
+        n_r = n - k;        s_r = cs[-1] - s_l; ss_r = cs2[-1] - ss_l
+        var_l = ss_l / n_l - (s_l / n_l) ** 2
+        var_r = ss_r / n_r - (s_r / n_r) ** 2
+        cost  = n_l * var_l + n_r * var_r
+        if cost < best_cost:
+            best_cost = cost
+            best_idx  = k
+
+    return best_idx
+
+
+def find_temporal_transitions(cluster_pickle_dir, rho_thresh=0.3, p_thresh=0.05,
+                               min_frac=0.1, save_path=None):
+    """
+    For each (cell × spike_feature) pair where |Spearman ρ| > rho_thresh and
+    p < p_thresh, find the recording time at which the cluster label transitions
+    (changepoint in ordinal cluster label sequence).
+
+    Parameters
+    ----------
+    cluster_pickle_dir : str  path to cluster_pickles/
+    rho_thresh         : float  |ρ| threshold (default 0.3)
+    p_thresh           : float  significance threshold (default 0.05)
+    min_frac           : float  min fraction of spikes in each segment (default 0.1)
+    save_path          : str or None  if given, save the result DataFrame as a pickle
+
+    Returns
+    -------
+    df_transitions : pd.DataFrame  one row per detected transition, columns:
+        cell_id, spike_feature, temporal_rho, temporal_p,
+        n_spikes, transition_time_ms, transition_spike_idx,
+        cluster_before, cluster_after,
+        frac_dominant_before, frac_dominant_after,
+        mean_time_before_ms, mean_time_after_ms
+    """
+    import glob
+
+    ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
+               'Low': 0, 'Mid': 1, 'High': 2,
+               'low-mid': 0.5, 'low-high': 1.0, 'mid-high': 1.5}
+
+    def _to_ord(label):
+        if isinstance(label, (int, float)):
+            return float(label)
+        l = str(label).strip().lower()
+        for k, v in ORDINAL.items():
+            if k.lower() == l:
+                return float(v)
+        return float('nan')
+
+    pkl_files = sorted(glob.glob(f'{cluster_pickle_dir}/c*_cluster_df.pkl'))
+    rows = []
+
+    for pkl_path in pkl_files:
+        cid = pkl_path.split('/')[-1].replace('_cluster_df.pkl', '')
+        df  = pd.read_pickle(pkl_path)
+
+        cluster_cols = [c for c in df.columns if c.endswith('_cluster')
+                        and not c.startswith('spk_times')]
+
+        for col in cluster_cols:
+            feat = col.replace('_cluster', '')
+
+            # Compute Spearman ρ between spike time and ordinal cluster label
+            labels     = df[col].dropna()
+            times      = df.loc[labels.index, 'spk_times_ms']
+            labels_ord = labels.map(_to_ord).values
+            valid      = np.isfinite(labels_ord)
+            if valid.sum() < 20:
+                continue
+
+            rho, p = spearmanr(times.values[valid], labels_ord[valid])
+
+            if abs(rho) < rho_thresh or p >= p_thresh:
+                continue
+
+            # Sort by spike time and find changepoint
+            sort_idx    = np.argsort(times.values[valid])
+            times_s     = times.values[valid][sort_idx]
+            labels_s    = labels_ord[valid][sort_idx]
+            raw_labels_s = labels.values[valid][sort_idx]
+
+            cp = _changepoint_1d(labels_s, min_frac=min_frac)
+
+            before = raw_labels_s[:cp]
+            after  = raw_labels_s[cp:]
+
+            # Dominant cluster in each segment
+            def _dominant(arr):
+                vals, cnts = np.unique(arr, return_counts=True)
+                return vals[np.argmax(cnts)], np.max(cnts) / len(arr)
+
+            cl_before, frac_before = _dominant(before)
+            cl_after,  frac_after  = _dominant(after)
+
+            rows.append(dict(
+                cell_id               = cid,
+                spike_feature         = feat,
+                temporal_rho          = float(rho),
+                temporal_p            = float(p),
+                n_spikes              = int(valid.sum()),
+                transition_time_ms    = float(times_s[cp]),
+                transition_spike_idx  = int(cp),
+                cluster_before        = cl_before,
+                cluster_after         = cl_after,
+                frac_dominant_before  = float(frac_before),
+                frac_dominant_after   = float(frac_after),
+                mean_time_before_ms   = float(np.mean(times_s[:cp])),
+                mean_time_after_ms    = float(np.mean(times_s[cp:])),
+            ))
+
+    df_transitions = pd.DataFrame(rows)
+
+    print(f'Found {len(df_transitions)} transitions across '
+          f'{df_transitions["cell_id"].nunique() if len(df_transitions) else 0} cells '
+          f'(|ρ| > {rho_thresh}, p < {p_thresh})')
+
+    if save_path and len(df_transitions):
+        df_transitions.to_pickle(save_path)
+        print(f'Saved: {save_path}')
+
+    return df_transitions
+
+
+def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
+                               n_cols=4, rolling_n=50):
+    """
+    For each detected transition, plot cluster label vs spike time with the
+    changepoint marked. Shows the rolling mean cluster label alongside individual
+    spike labels to make the transition visible.
+
+    Parameters
+    ----------
+    df_transitions   : output of find_temporal_transitions
+    cluster_pickle_dir : str  path to cluster_pickles/
+    n_cols           : int  subplot columns (default 4)
+    rolling_n        : int  window for rolling mean (default 50 spikes)
+    """
+    if len(df_transitions) == 0:
+        print('No transitions to plot.')
+        return
+
+    ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
+               'Low': 0, 'Mid': 1, 'High': 2}
+    CLR = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
+           'Low': '#0072B2', 'Mid': '#009E73', 'High': '#D55E00'}
+
+    def _to_ord(l):
+        return ORDINAL.get(str(l).strip(), 1)
+
+    n_rows = int(np.ceil(len(df_transitions) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(n_cols * 4.5, n_rows * 3.2),
+                             squeeze=False)
+
+    for ax_i, (_, row) in enumerate(df_transitions.iterrows()):
+        ax = axes[ax_i // n_cols][ax_i % n_cols]
+        cid  = row['cell_id']
+        feat = row['spike_feature']
+        t_tr = row['transition_time_ms']
+        rho  = row['temporal_rho']
+        cl_b = row['cluster_before']
+        cl_a = row['cluster_after']
+
+        pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
+        try:
+            df = pd.read_pickle(pkl)
+        except FileNotFoundError:
+            ax.set_visible(False)
+            continue
+
+        col = f'{feat}_cluster'
+        if col not in df.columns:
+            ax.set_visible(False)
+            continue
+
+        sub = df[['spk_times_ms', col]].dropna()
+        sub = sub.sort_values('spk_times_ms').reset_index(drop=True)
+        times  = sub['spk_times_ms'].values / 1000.0   # → seconds
+        labels = sub[col].values
+        ord_l  = np.array([_to_ord(l) for l in labels], dtype=float)
+
+        # Scatter: individual spike cluster labels
+        for lbl in np.unique(labels):
+            mask = labels == lbl
+            ax.scatter(times[mask], ord_l[mask],
+                       color=CLR.get(str(lbl), 'gray'),
+                       s=2, alpha=0.3, linewidths=0)
+
+        # Rolling mean
+        rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
+        ax.plot(times, rm.values, color='k', lw=2, zorder=5)
+
+        # Transition line
+        ax.axvline(t_tr / 1000.0, color='crimson', lw=2, ls='--', zorder=6)
+        ax.text(t_tr / 1000.0, ax.get_ylim()[1] if ax.get_ylim()[1] != ax.get_ylim()[0]
+                else 2.1, f'  {t_tr/1000:.1f}s',
+                color='crimson', fontsize=7, va='top')
+
+        ax.set_yticks([0, 1, 2])
+        ax.set_yticklabels(['low', 'mid', 'high'], fontsize=8)
+        ax.set_xlabel('Time (s)', fontsize=8)
+        ax.set_title(f'{cid}  ·  {feat}\nρ={rho:+.2f}  {cl_b}→{cl_a}',
+                     fontsize=8, fontweight='bold')
+        sns.despine(ax=ax)
+
+    # Hide unused axes
+    for ax_i in range(len(df_transitions), n_rows * n_cols):
+        axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
+
+    fig.suptitle('Temporal transitions in cluster membership\n'
+                 'Black line = rolling mean  |  Red dashed = detected changepoint  |  '
+                 'Colour = cluster label',
+                 fontsize=11, y=1.01)
+    fig.tight_layout()
     plt.show()

@@ -161,25 +161,46 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.plot(y, m * y + b, color='red', linewidth=2)  
     plt.show()
 
-    plt.figure(figsize=(10, 6))
-    sns.barplot(
-        x='Coefficient', y='Feature', data=feature_importance_df, palette=feature_importance_df['Color'].tolist()
-    )
+    # ── Beta weight bar chart with 95% CI error bars ─────────────────────────
+    fig, ax = plt.subplots(figsize=(10, 6))
+    colors = feature_importance_df['Color'].tolist()
+    xerr_low  = feature_importance_df['Coefficient'].values - feature_importance_df['CI Lower'].values
+    xerr_high = feature_importance_df['CI Upper'].values   - feature_importance_df['Coefficient'].values
+    ax.barh(feature_importance_df['Feature'], feature_importance_df['Coefficient'],
+            xerr=[xerr_low, xerr_high], color=colors, alpha=0.8,
+            error_kw=dict(ecolor='#333', lw=1.5, capsize=4))
+    ax.axvline(0, color='gray', lw=1, ls='--', alpha=0.7)
 
-    plt.title('Feature Importance (Ridge Regression)', fontsize=20)
-    plt.xlabel('Coefficient', fontsize=20)
-    plt.ylabel('Feature', fontsize=20)
-    plt.xticks(fontsize=20)
-    plt.yticks(fontsize=20)
+    # Add significance stars
+    for idx, row in feature_importance_df.reset_index(drop=True).iterrows():
+        p = row['p-value']
+        star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+        if star:
+            x_pos = row['CI Upper'] + abs(feature_importance_df['Coefficient'].max()) * 0.03
+            ax.text(x_pos, idx, star, va='center', fontsize=12, color='#D55E00', fontweight='bold')
+
+    ax.set_title('Beta Weights — Ridge Regression (standardised features)', fontsize=14)
+    ax.set_xlabel('Beta weight (standardised)', fontsize=13)
+    ax.set_ylabel('Feature', fontsize=13)
+    plt.tight_layout()
     plt.show()
 
-    significant_features = feature_importance_df[feature_importance_df["p-value"] < 0.05]
-    
-    if not significant_features.empty:
-        print("\nSignificant Features (p < 0.05):")
-        print(significant_features[["Feature", "Coefficient", "CI Lower", "CI Upper", "p-value"]])
-    else:
-        print("\nNo features were statistically significant (p < 0.05).")
+    # ── Beta weight summary table ─────────────────────────────────────────────
+    def _fmt_p(p):
+        if p < 0.0001: return '< 0.0001'
+        return f'{p:.4f}'
+    def _stars(p):
+        if p < 0.001: return '***'
+        if p < 0.01:  return '**'
+        if p < 0.05:  return '*'
+        return 'ns'
+
+    table = feature_importance_df[["Feature", "Coefficient", "CI Lower", "CI Upper", "p-value"]].copy()
+    table['sig'] = table['p-value'].apply(_stars)
+    table['p-value'] = table['p-value'].apply(_fmt_p)
+    table.columns = ['Feature', 'Beta', 'CI 2.5%', 'CI 97.5%', 'p (bootstrap)', 'sig']
+    print('\nBeta weights (standardised, 95% bootstrap CI):')
+    print(table.to_string(index=False))
 
     bootstrapped_coefs = ridge_results["bootstrapped_coefs"]
     
@@ -205,7 +226,7 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     )
     
     plt.xticks(rotation=45)
-    plt.title("Bootstrapped Coefficient Distributions", fontsize=20)
+    plt.title("Bootstrap distributions of beta weights", fontsize=16)
     plt.ylabel("Coefficient Value", fontsize=16)
     plt.xlabel("Feature", fontsize=16)
     plt.show()

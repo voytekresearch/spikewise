@@ -19,12 +19,12 @@ import os
 
 # Cells with strongest spike waveform cluster differences (highest mean nRMSE across features)
 # Updated from pop_spk_waveform_cluster_comparisons.ipynb → Section G
-PRIORITY_CELLS = [3, 4, 21, 24, 26, 27, 42]
+PRIORITY_CELLS = [3, 20, 21, 22, 24, 26, 28]
 
 # Top cells by nRMSE that also have low temporal drift (|mean rho| < 0.2)
 # These provide a contrast group: large waveform differences not confounded by time-in-recording
 # Updated from pop_spk_waveform_cluster_comparisons.ipynb → Section G
-HIGH_DIFF_LOW_DRIFT_CELLS = [8, 14, 26]
+HIGH_DIFF_LOW_DRIFT_CELLS = [15, 26, 46]
 
 # =============================================================================
 # HARDWARE / EXPERIMENT PARAMETERS
