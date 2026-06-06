@@ -1045,7 +1045,8 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map, peak
             
             # Convert sample axis to ms using spike time resolution
             dt_ms = float(sp.times[1] - sp.times[0]) * 1000.0 if len(sp.times) > 1 else 1.0
-            time_axis = (np.arange(len(wf1)) - len(wf1) // 2) * dt_ms
+            peak_idx_for_axis = int(np.nanargmax(np.abs(wf1)))
+            time_axis = (np.arange(len(wf1)) - peak_idx_for_axis) * dt_ms
 
             # Compute metrics only from ramp start → exp end (the fitted model region)
             # Use mean indices across spikes in each group for the trimming window

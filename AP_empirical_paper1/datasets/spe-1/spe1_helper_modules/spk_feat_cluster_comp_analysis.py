@@ -667,6 +667,223 @@ def quantify_spk_feature_prevalence(df):
     
     return feature_counts.merge(metrics, on='spike_feature').sort_values('prevalence_pct', ascending=False)
 
+
+def plot_feature_cluster_grid(df_master):
+    """
+    Cell × feature grid showing number of clusters per (cell, feature).
+    White = no clustering, blue = 2 clusters (bimodal), orange = 3+ clusters.
+    ISI/timing features (log_isi, spk_times_ms, spk_times_idx) are separated
+    by a dashed vertical line and labelled in red-italic to distinguish them
+    from waveform shape features.
+    """
+    import matplotlib.colors as mcolors
+    from matplotlib.patches import Patch
+
+    ISI_FEATS = {'log_isi', 'spk_times_ms', 'spk_times_idx'}
+
+    # Max num_clusters per (cell, feature) — collapse cluster-pair rows
+    pivot = (df_master.groupby(['cell_id', 'spike_feature'])['num_clusters']
+             .max()
+             .unstack(fill_value=0))
+
+    # Cell order by numeric ID
+    cell_order = sorted(pivot.index, key=lambda x: int(x.lstrip('c')))
+    pivot = pivot.loc[cell_order]
+
+    # Feature order: waveform first, ISI/timing last
+    wf_feats  = [f for f in pivot.columns if f not in ISI_FEATS]
+    isi_feats = [f for f in pivot.columns if f in ISI_FEATS]
+    feat_order = wf_feats + isi_feats
+    pivot = pivot.reindex(columns=feat_order, fill_value=0)
+
+    n_cells = len(pivot)
+    n_feats = len(feat_order)
+
+    # Recode: 0 → no clustering, 1 → bimodal (2 clusters), 2 → multimodal (3+)
+    mat = pivot.values.copy().astype(float)
+    coded = np.zeros_like(mat)
+    coded[mat == 2] = 1.0
+    coded[mat >= 3] = 2.0
+
+    cmap  = mcolors.ListedColormap(['#f2f2f2', '#4393C3', '#D6604D'])
+    norm  = mcolors.BoundaryNorm([0, 0.5, 1.5, 3], cmap.N)
+
+    fig_w = max(9, n_feats * 0.75 + 2)
+    fig_h = max(5, n_cells * 0.28 + 2)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    ax.imshow(coded, aspect='auto', cmap=cmap, norm=norm, interpolation='nearest')
+
+    # Axis ticks
+    ax.set_xticks(np.arange(n_feats))
+    ax.set_yticks(np.arange(n_cells))
+    ax.set_yticklabels(cell_order, fontsize=7)
+
+    xlabels = ax.set_xticklabels(feat_order, rotation=40, ha='right', fontsize=8)
+    for lbl, feat in zip(xlabels, feat_order):
+        if feat in ISI_FEATS:
+            lbl.set_color('#B22222')
+            lbl.set_fontstyle('italic')
+
+    # Separator between waveform and ISI groups
+    if isi_feats:
+        ax.axvline(len(wf_feats) - 0.5, color='#444', lw=1.5, ls='--', zorder=5)
+        ax.text(len(wf_feats) + len(isi_feats) / 2 - 0.5, n_cells + 0.8,
+                'ISI / timing', ha='center', va='bottom',
+                fontsize=8, color='#B22222', style='italic',
+                transform=ax.transData, clip_on=False)
+
+    # Minor grid lines as cell borders
+    ax.set_xticks(np.arange(-0.5, n_feats), minor=True)
+    ax.set_yticks(np.arange(-0.5, n_cells), minor=True)
+    ax.grid(which='minor', color='white', linewidth=0.8)
+    ax.tick_params(which='minor', length=0)
+
+    # Legend
+    legend_els = [
+        Patch(facecolor='#f2f2f2', edgecolor='#aaa', label='No clustering'),
+        Patch(facecolor='#4393C3', label='2 clusters (bimodal)'),
+        Patch(facecolor='#D6604D', label='3+ clusters (multimodal)'),
+    ]
+    ax.legend(handles=legend_els, loc='upper left', bbox_to_anchor=(0, 1.08),
+              fontsize=8, frameon=False, ncol=3)
+
+    ax.set_title('Feature cluster presence — all cells', fontsize=11,
+                 fontweight='bold', loc='left', pad=28)
+    ax.set_xlabel('Spike feature', fontsize=9, labelpad=6)
+    ax.set_ylabel('Cell', fontsize=9)
+
+    sns.despine(ax=ax, left=True, bottom=True)
+    plt.tight_layout()
+    return fig, ax
+
+
+def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
+                                   min_cells=2, n_cols_per_row=14):
+    """
+    Small-multiples grid of smooth KDE distributions split by cluster, all cells.
+    Features with more than n_cols_per_row cells wrap onto multiple rows.
+    Waveform features first; log_isi last (red-italic, pink background).
+    spk_times_ms / spk_times_idx excluded.
+    Colors: low=blue, mid=green, high=orange. Solid filled KDE curves.
+    """
+    from scipy.stats import gaussian_kde as _kde
+    from matplotlib.patches import Patch
+
+    ISI_FEATS    = {'log_isi'}
+    SKIP_FEATS   = {'spk_times_ms', 'spk_times_idx'}
+    CLUST_COLORS = {'low': '#0072B2', 'mid': '#E69F00', 'high': '#CC79A7'}
+
+    df_num = df_master.copy()
+    df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+
+    all_pkl = {os.path.basename(p).replace('_cluster_df.pkl', ''): p
+               for p in glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl'))}
+
+    # All cells per feature (from df_master)
+    clustered = {}
+    for feat, grp in df_num[df_num['num_clusters'] >= 2].groupby('spike_feature'):
+        if feat in SKIP_FEATS:
+            continue
+        cells = sorted(grp['cell_id'].unique(), key=lambda c: int(c.lstrip('c')))
+        if len(cells) >= min_cells:
+            clustered[feat] = cells
+
+    wf_feats  = sorted([f for f in clustered if f not in ISI_FEATS],
+                       key=lambda f: -len(clustered[f]))
+    isi_feats = [f for f in clustered if f in ISI_FEATS]
+    feat_order = wf_feats + isi_feats
+
+    # Build row list with wrapping
+    row_groups = []   # (feat, cell_chunk, is_first_chunk, is_isi)
+    n_wf_rows  = 0
+    for feat in feat_order:
+        is_isi = feat in ISI_FEATS
+        cells  = clustered[feat]
+        chunks = [cells[i:i + n_cols_per_row]
+                  for i in range(0, len(cells), n_cols_per_row)]
+        for ci, chunk in enumerate(chunks):
+            row_groups.append((feat, chunk, ci == 0, is_isi))
+            if not is_isi:
+                n_wf_rows += 1
+
+    n_rows  = len(row_groups)
+    label_w = 1.8
+    cell_w  = 1.1
+    cell_h  = 1.1
+    fig_w   = label_w + n_cols_per_row * cell_w + 0.3
+    fig_h   = n_rows * cell_h + 0.7
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs  = fig.add_gridspec(
+        n_rows, n_cols_per_row + 1,
+        left=label_w / fig_w,
+        right=0.99, top=0.94, bottom=0.02,
+        hspace=0.4, wspace=0.08,
+        width_ratios=[0.001] + [1] * n_cols_per_row,
+    )
+
+    for ri, (feat, chunk, is_first, is_isi) in enumerate(row_groups):
+        clust_col  = feat + '_cluster'
+        row_center = 1 - (ri + 0.5) / n_rows
+
+        if is_first:
+            fig.text(
+                (label_w * 0.90) / fig_w, row_center,
+                feat, ha='right', va='center',
+                fontsize=20, fontweight='bold',
+                color='#B22222' if is_isi else 'black',
+                style='italic' if is_isi else 'normal',
+            )
+
+        for ci, cell_id in enumerate(chunk):
+            ax = fig.add_subplot(gs[ri, ci + 1])
+            pkl_path = all_pkl.get(cell_id)
+            if pkl_path is not None:
+                try:
+                    df_cell = pd.read_pickle(pkl_path)
+                    if clust_col in df_cell.columns and feat in df_cell.columns:
+                        all_vals = df_cell[feat].dropna()
+                        pad    = (all_vals.max() - all_vals.min()) * 0.08
+                        x_grid = np.linspace(all_vals.min() - pad,
+                                             all_vals.max() + pad, 300)
+                        for grp in sorted(df_cell[clust_col].dropna().unique()):
+                            vals = df_cell.loc[df_cell[clust_col] == grp, feat].dropna()
+                            if len(vals) < 5:
+                                continue
+                            y   = _kde(vals, bw_method=0.3)(x_grid)
+                            col = CLUST_COLORS.get(grp, '#888')
+                            ax.fill_between(x_grid, y, color=col, alpha=1.0)
+                            ax.plot(x_grid, y, color=col, lw=0.6)
+                except Exception:
+                    pass
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+            ax.set_facecolor('#f5f5f5' if not is_isi else '#fff0f0')
+            ax.set_title(cell_id, fontsize=13, pad=3, color='#444')
+
+        for ci in range(len(chunk), n_cols_per_row):
+            fig.add_subplot(gs[ri, ci + 1]).set_axis_off()
+
+    # Separator between waveform and ISI sections
+    if wf_feats and isi_feats:
+        sep_y = 1 - n_wf_rows / n_rows
+        fig.add_artist(plt.Line2D(
+            [label_w / fig_w, 0.99], [sep_y, sep_y],
+            color='#888', lw=1.0, ls='--', transform=fig.transFigure,
+        ))
+
+    legend_els = [Patch(facecolor='#0072B2', label='low cluster'),
+                  Patch(facecolor='#E69F00', label='mid cluster'),
+                  Patch(facecolor='#CC79A7', label='high cluster')]
+    fig.legend(handles=legend_els, loc='upper right',
+               bbox_to_anchor=(0.99, 1.0), fontsize=16, frameon=False, ncol=3)
+    return fig
+
+
 def plot_aggregated_spike_feat(raw_df):
     # 1. Internal Aggregation: Calculate Means and 95% CI
     stats = raw_df.groupby('spike_feature').agg({
@@ -1379,7 +1596,7 @@ def plot_population_waveform_grid(
     # Force reload from disk every call so changes to config.py are always picked up
     importlib.reload(_cfg)
 
-    CLUSTER_COLORS = {"low": "#1f77b4", "mid": "#2ca02c", "high": "#ff7f0e"}
+    CLUSTER_COLORS = {"low": "#0072B2", "mid": "#E69F00", "high": "#CC79A7"}
     if priority_cells is None:
         priority_cells = set(_cfg.PRIORITY_CELLS)
     else:
@@ -1399,8 +1616,12 @@ def plot_population_waveform_grid(
         cnum = int(pkl.stem.split("_")[0].lstrip("c"))
         if cells_to_plot is not None and cnum not in cells_to_plot:
             continue
+        SKIP_WF_FEATS = {"log_isi", "spk_times_ms", "spk_times_idx"}
         wf_data = pickle.load(open(pkl, "rb"))
         for col, col_data in wf_data.items():
+            feat_name = col.replace("_cluster", "")
+            if feat_name in SKIP_WF_FEATS:
+                continue
             if len([k for k in col_data if k != "t_axis"]) >= 2:
                 panels.append((cnum, col, col_data))
 
@@ -1432,46 +1653,41 @@ def plot_population_waveform_grid(
         valid_peaks = [p for p in peak_amps if np.isfinite(p)]
         amp_lo = np.median(valid_peaks) * 0.1 if len(valid_peaks) > 1 else 0.0
 
+        feat_name  = col.replace("_cluster", "")
+        show_ribbon = feat_name not in {"log_isi", "spk_times_ms", "spk_times_idx"}
+
         for (lab, vals), peak in zip(cluster_items, peak_amps):
             mean = vals["mean"]
-            std  = vals["std"]
-            # Skip if mean is degenerate (all NaN or extreme outlier)
             if not np.isfinite(peak) or peak < amp_lo:
                 continue
             color = CLUSTER_COLORS.get(str(lab), "gray")
             t     = t_axis[:len(mean)]
-            ax.plot(t, mean, color=color, lw=2)
-            # Only show std ribbon if it's not outlier-contaminated
-            # (max std > 2× peak means outlier spikes are blowing up the variance)
-            if np.nanmax(std) <= 2 * peak:
+            ax.plot(t, mean, color=color, lw=2.5)
+            if show_ribbon and "std" in vals:
+                std = vals["std"]
                 ax.fill_between(t, mean - std, mean + std, color=color, alpha=0.15)
 
-        ax.axvline(0, color="gray", lw=0.8, ls="--", alpha=0.4)
         ax.set_xlim(xlim)
-        ax.set_xticks([xlim[0], 0, xlim[1]])
-        ax.tick_params(labelsize=9)
+        ax.set_xticks([])
         ax.set_yticks([])
 
-        # X-axis label only on bottom row
-        if ax_idx >= bottom_row_start:
-            ax.set_xlabel("Samples from peak", fontsize=9)
-        else:
-            ax.set_xlabel("")
-            ax.tick_params(labelbottom=False)
-
         feat = col.replace("_cluster", "")
-        ax.set_title(f"c{cnum} | {feat}", fontsize=9,
-                     fontweight="bold" if is_prio else "normal",
-                     color="#D55E00" if is_prio else ("#009E73" if is_nd else "black"))
+        title_color = "#D55E00" if is_prio else ("#009E73" if is_nd else "#444444")
+        ax.set_title(f"c{cnum} | {feat}", fontsize=13, fontweight="bold",
+                     color=title_color, pad=4)
 
-        border_color = "#D55E00" if is_prio else ("#009E73" if is_nd else "#cccccc")
-        border_lw    = 2.5 if (is_prio or is_nd) else 0.6
+        ax.set_facecolor("#f5f5f5")
         for spine in ax.spines.values():
-            spine.set_linewidth(border_lw)
-            spine.set_edgecolor(border_color)
+            spine.set_visible(False)
 
     for ax in axes[len(panels):]:
         ax.set_visible(False)
+
+    from matplotlib.lines import Line2D
+    legend_els = [Line2D([0], [0], color=c, lw=2.5, label=lab)
+                  for lab, c in CLUSTER_COLORS.items()]
+    fig.legend(handles=legend_els, loc="lower right", fontsize=13,
+               frameon=False, ncol=3)
 
     plt.tight_layout(h_pad=0.4, w_pad=0.3)
 
