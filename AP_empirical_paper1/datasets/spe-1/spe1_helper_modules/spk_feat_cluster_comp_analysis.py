@@ -150,9 +150,9 @@ def compile_experiment_results(folder_path):
     for num_col in ['nRMSE', 'cos_sim', 'temporal_rho', 'temporal_p', 'cortical_depth']:
         final_table[num_col] = pd.to_numeric(final_table[num_col], errors='coerce')
 
-    # Binary flag: 1 if temporal drift is statistically significant (p < 0.05)
+    # Binary flag: 1 if time dependence is moderate-or-stronger (|ρ| ≥ 0.3; Cohen 1988)
     final_table['temporal_component'] = (
-        pd.to_numeric(final_table['temporal_p'], errors='coerce') < 0.05
+        pd.to_numeric(final_table['temporal_rho'], errors='coerce').abs() >= 0.3
     ).astype(float)
 
     return final_table[cols]
@@ -884,6 +884,75 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
     return fig
 
 
+def plot_metadata_effect_heatmap(df_res):
+    """
+    Heatmap of effect sizes (metadata × cluster metric).
+    Cells show effect size; asterisks mark BH-FDR significant pairs.
+    """
+    METRIC_LABELS = {'nRMSE': 'nRMSE', 'cos_sim': 'Cos Sim',
+                     'num_clusters': 'N Clusters', 'temporal_rho': 'Temporal ρ'}
+    META_LABELS = {
+        'patch_type':         'Patch type',
+        'current_type':       'Current type',
+        'cell_type':          'Cell type',
+        'dark_neuron':        'Dark neuron',
+        'clear_EAP_waveform': 'Clear EAP',
+        'cortical_depth':     'Cortical depth',
+    }
+
+    metrics  = [m for m in ['nRMSE', 'cos_sim', 'num_clusters', 'temporal_rho']
+                if m in df_res['Feature'].values]
+    metadata = [m for m in META_LABELS if m in df_res['Metadata'].values]
+
+    effect_mat = pd.DataFrame(index=metadata, columns=metrics, dtype=float)
+    sig_mat    = pd.DataFrame(index=metadata, columns=metrics, data='')
+
+    for _, row in df_res.iterrows():
+        m, f = row['Metadata'], row['Feature']
+        if m in metadata and f in metrics:
+            effect_mat.loc[m, f] = row['Effect_Size']
+            stars = row['Significance'] if row['Significance'] != 'ns' else ''
+            sig_mat.loc[m, f] = stars
+
+    effect_mat = effect_mat.astype(float)
+
+    vmax = np.nanmax(np.abs(effect_mat.values))
+    fig, ax = plt.subplots(figsize=(len(metrics) * 1.6 + 1.5, len(metadata) * 0.9 + 1.2))
+
+    im = ax.imshow(effect_mat.values, cmap='RdBu_r', vmin=-vmax, vmax=vmax, aspect='auto')
+
+    ax.set_xticks(range(len(metrics)))
+    ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in metrics], fontsize=13)
+    ax.set_yticks(range(len(metadata)))
+    ax.set_yticklabels([META_LABELS.get(m, m) for m in metadata], fontsize=13)
+    ax.xaxis.set_ticks_position('top')
+    ax.xaxis.set_label_position('top')
+
+    for i, meta in enumerate(metadata):
+        for j, feat in enumerate(metrics):
+            val  = effect_mat.loc[meta, feat]
+            star = sig_mat.loc[meta, feat]
+            if pd.notna(val):
+                txt = f"{val:+.2f}"
+                if star:
+                    txt += f"\n{star}"
+                text_col = 'white' if abs(val) > vmax * 0.6 else '#222222'
+                ax.text(j, i, txt, ha='center', va='center',
+                        fontsize=10, fontweight='bold', color=text_col)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.04)
+    cbar.set_label('Effect size', fontsize=11)
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.tick_params(length=0)
+
+    ax.set_title('Recording metadata × cluster waveform metrics\n(BH-FDR corrected; *p<.05  **p<.01  ***p<.001)',
+                 fontsize=13, fontweight='bold', pad=40)
+    plt.tight_layout()
+    plt.show()
+
+
 def plot_aggregated_spike_feat(raw_df):
     # 1. Internal Aggregation: Calculate Means and 95% CI
     stats = raw_df.groupby('spike_feature').agg({
@@ -1108,7 +1177,7 @@ def plot_temporal_structure(df, alpha=0.05):
     """
     Visualize temporal_rho across all cell-feature groups.
 
-    Shows whether spike cluster identity drifts over recording time
+    Shows whether spike cluster identity shows time dependence over recording time
     (Spearman rho between spike time and ordinal cluster label).
 
     Panel A: histogram of temporal_rho across all cell-feature groups,
@@ -1138,7 +1207,7 @@ def plot_temporal_structure(df, alpha=0.05):
     ax1.set_ylabel('Count', fontsize=13)
     n_sig = df_plot['significant'].sum()
     n_total = len(df_plot)
-    ax1.set_title(f'Temporal Drift Distribution\n{n_sig}/{n_total} significant (p < {alpha})',
+    ax1.set_title(f'Time Dependence Distribution\n{n_sig}/{n_total} significant (p < {alpha})',
                   fontsize=13, fontweight='bold')
     ax1.legend(fontsize=11, frameon=False)
     ax1.set_xlim(-1.1, 1.1)
@@ -1165,7 +1234,7 @@ def plot_temporal_structure(df, alpha=0.05):
     # Print summary
     n_sig = df_plot['significant'].sum()
     n_total = len(df_plot)
-    print(f"\nTemporal drift summary (p < {alpha}):")
+    print(f"\nTime dependence summary (p < {alpha}):")
     print(f"  Significant: {n_sig} / {n_total} cell-feature groups ({100*n_sig/n_total:.1f}%)")
     print(f"  Mean |rho|: {df_plot['temporal_rho'].abs().mean():.3f}")
     sig_df = df_plot[df_plot['significant']][['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p']].copy()
@@ -1180,7 +1249,7 @@ def plot_temporal_structure(df, alpha=0.05):
 
 def analyze_temporal_metadata_dependency(df, alpha=0.05):
     """
-    Tests whether cell-level metadata predicts temporal_rho (drift of cluster identity
+    Tests whether cell-level metadata predicts temporal_rho (time dependence of cluster identity
     over recording time).
 
     Categorical metadata (cell_type, patch_type, etc.): Kruskal-Wallis + box/strip plot.
@@ -1246,7 +1315,7 @@ def analyze_temporal_metadata_dependency(df, alpha=0.05):
     for j in range(len(meta_cols), len(axes)):
         fig.delaxes(axes[j])
 
-    plt.suptitle('Metadata Predictors of Temporal Drift (temporal_rho)', fontsize=15, fontweight='bold', y=1.01)
+    plt.suptitle('Metadata Predictors of Time Dependence (temporal_rho)', fontsize=15, fontweight='bold', y=1.01)
     plt.tight_layout()
     plt.show()
 
@@ -1258,7 +1327,7 @@ def analyze_temporal_metadata_dependency(df, alpha=0.05):
 
 def analyze_temporal_clustering_relationship(df, alpha=0.05):
     """
-    Tests whether temporal drift (temporal_rho / temporal_component) is related to
+    Tests whether time dependence (temporal_rho / temporal_component) is related to
     clustering quality metrics: nRMSE, cos_sim, num_clusters.
 
     Panel 1: scatter of temporal_rho vs each metric, colored by spike_feature.
@@ -1315,7 +1384,7 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
     axes[-1].legend(handles=handles, title='Spike Feature', bbox_to_anchor=(1.05, 1),
                     loc='upper left', fontsize=11, frameon=True)
 
-    plt.suptitle('Temporal Drift vs Clustering Quality', fontsize=15, fontweight='bold')
+    plt.suptitle('Time Dependence vs Clustering Quality', fontsize=15, fontweight='bold')
     plt.tight_layout()
     plt.show()
 
@@ -1331,7 +1400,7 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
     sns.stripplot(data=df_feat_plot, x='spike_feature', y='temporal_rho', order=feat_order,
                   palette=feat_palette_list, alpha=0.5, size=6, ax=ax_feat)
     ax_feat.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
-    ax_feat.text(len(feat_order) - 0.5, 0.03, 'no temporal drift',
+    ax_feat.text(len(feat_order) - 0.5, 0.03, 'no time dependence',
                  ha='right', va='bottom', fontsize=9, color='#666666', style='italic')
 
     feat_groups = [df_feat_plot.loc[df_feat_plot['spike_feature'] == f, 'temporal_rho'].dropna().values for f in feat_order]
@@ -1358,11 +1427,11 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
     fig2, axes2 = plt.subplots(1, 2, figsize=(10, 5))
     for ax2, metric in zip(axes2, ['nRMSE', 'cos_sim']):
         sub2 = df_plot[['temporal_component', metric]].dropna()
-        sub2['temporal_component'] = sub2['temporal_component'].astype(float).map({0.0: 'No drift', 1.0: 'Sig drift'})
+        sub2['temporal_component'] = sub2['temporal_component'].astype(float).map({0.0: '|ρ| < 0.3', 1.0: '|ρ| ≥ 0.3'})
         sns.boxplot(data=sub2, x='temporal_component', y=metric, showfliers=False,
-                    palette=['#56B4E9', '#D55E00'], order=['No drift', 'Sig drift'], ax=ax2)
+                    palette=['#56B4E9', '#D55E00'], order=['|ρ| < 0.3', '|ρ| ≥ 0.3'], ax=ax2)
         sns.stripplot(data=sub2, x='temporal_component', y=metric, color='.3', alpha=0.4,
-                      order=['No drift', 'Sig drift'], ax=ax2)
+                      order=['|ρ| < 0.3', '|ρ| ≥ 0.3'], ax=ax2)
 
         groups_list = [g[metric].values for _, g in sub2.groupby('temporal_component') if len(g) > 0]
         if len(groups_list) >= 2:
@@ -1375,7 +1444,7 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
         ax2.set_xlabel('Temporal Component')
         sns.despine(ax=ax2)
 
-    plt.suptitle('Does Significant Temporal Drift Affect Cluster Waveform Differences?', fontsize=14, fontweight='bold')
+    plt.suptitle('Does Significant Time Dependence Affect Cluster Waveform Differences?', fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.show()
 
@@ -1429,7 +1498,7 @@ def select_target_cells(
     plot=True,
 ):
     """
-    Derive priority cells and high-difference / low-drift cells from df_master,
+    Derive priority cells and high-difference / time-independent cells from df_master,
     report which have LFP analysis notebooks, and optionally create a summary plot.
 
     Parameters
@@ -1439,9 +1508,9 @@ def select_target_cells(
     n_priority : int
         Number of top-nRMSE cells to designate as priority.
     rho_thresh : float
-        Max |mean temporal rho| for the low-drift group.
+        Max |mean temporal rho| for the time-independent group.
     n_nodrift : int
-        Number of top-nRMSE low-drift cells to select.
+        Number of top-nRMSE time-independent cells to select.
     lfp_nb_dir : str or Path, optional
         Directory containing spe-1_c{N}_LFP_analysis.ipynb notebooks.
         If None, notebook status is not checked.
@@ -1482,7 +1551,7 @@ def select_target_cells(
     print(f"  {priority_cells}")
     print(f"  → config.PRIORITY_CELLS = {priority_nums}")
 
-    print(f"\n=== High-diff / low-drift (|rho| < {rho_thresh}, top {n_nodrift}) ===")
+    print(f"\n=== High-diff / time-independent (|rho| < {rho_thresh}, top {n_nodrift}) ===")
     print(no_drift.head(n_nodrift).to_string(index=False))
     print(f"  → config.HIGH_DIFF_LOW_DRIFT_CELLS = {nodrift_nums}")
 
@@ -1515,13 +1584,13 @@ def select_target_cells(
         ax.set_ylabel('Mean nRMSE across clustering features', fontsize=11)
         ax.set_title(
             'Waveform cluster difference by cell\n'
-            '(orange = priority, green = high-diff/low-drift)',
+            '(orange = priority, green = high-diff/time-independent)',
             fontsize=12, fontweight='bold'
         )
         from matplotlib.patches import Patch
         ax.legend(handles=[
             Patch(color='#D55E00', label=f'Priority cells (top {n_priority})'),
-            Patch(color='#009E73', label=f'High-diff / low-drift (|ρ| < {rho_thresh}, top {n_nodrift})'),
+            Patch(color='#009E73', label=f'High-diff / time-independent (|ρ| < {rho_thresh}, top {n_nodrift})'),
             Patch(color='#BBBBBB', label='Other cells'),
         ], fontsize=9, frameon=False)
         sns.despine(ax=ax)
@@ -1572,7 +1641,7 @@ def plot_population_waveform_grid(
     Grid of peak-aligned average waveforms by cluster group for all (or selected) cells.
 
     - Orange border  = priority cell
-    - Green border   = high-diff / low-drift cell
+    - Green border   = high-diff / time-independent cell
     - Gray border    = other cell
     - X-axis label only on bottom row panels
     - No figure title (avoids overlap with waveforms)
@@ -1702,6 +1771,47 @@ def plot_population_waveform_grid(
 #                          Within-cell vs Between-cell Waveform Distances                     #
 # ------------------------------------------------------------------------------------------- #
 
+_GROUP_CATEGORY = {
+    "Within\n(all)":        ("",             ""),
+    "Between\n(all)":       ("",             ""),
+    "Between\nPC–PC":       ("cell type",    "#6633AA"),
+    "Between\nIN–IN":       ("cell type",    "#6633AA"),
+    "Between\nJuxta–Juxta": ("patch type",   "#1155AA"),
+    "Between\nWC–WC":       ("patch type",   "#1155AA"),
+    "Between\nIC–IC":       ("current type", "#AA3322"),
+    "Between\nVC–VC":       ("current type", "#AA3322"),
+}
+
+def _add_group_category_labels(ax, group_order):
+    """Draw category-row labels and underline brackets below x-tick labels."""
+    trans = ax.get_xaxis_transform()  # x: data, y: axes fraction
+
+    # Collect runs of the same non-empty category
+    runs = []
+    for xi, gname in enumerate(group_order):
+        cat, col = _GROUP_CATEGORY.get(gname, ("", ""))
+        if not cat:
+            continue
+        if runs and runs[-1][0] == cat:
+            runs[-1] = (cat, col, runs[-1][2], xi)
+        else:
+            runs.append((cat, col, xi, xi))
+
+    y_text  = -0.25   # axes-fraction below bottom of plot
+    y_line  = -0.20
+
+    for cat, col, x_lo, x_hi in runs:
+        x_mid = (x_lo + x_hi) / 2
+        # bracket line
+        ax.annotate("", xy=(x_hi + 0.3, y_line), xytext=(x_lo - 0.3, y_line),
+                    xycoords=trans, textcoords=trans,
+                    arrowprops=dict(arrowstyle="-", color=col, lw=1.8))
+        # label
+        ax.text(x_mid, y_text, cat, ha='center', va='top',
+                fontsize=12, color=col, style='italic',
+                transform=trans, clip_on=False)
+
+
 def _peak_align_and_trim(mean_wf, t_axis, half_win=75):
     """
     Find the sample with the largest absolute value (the peak), return the
@@ -1805,22 +1915,14 @@ def compute_between_cell_waveform_distances(wf_dir, half_win=75):
 def plot_within_vs_between_neuron_distances(df_master, wf_dir, half_win=75,
                                             n_bootstrap=2000, alpha=0.05):
     """
-    Compare within-neuron waveform cluster differences (nRMSE, cos_sim from
-    df_master) to between-neuron waveform differences (pairwise cell mean wf
-    distances).
+    Compare within-neuron waveform cluster differences to between-neuron distances.
 
-    Shows:
-      Left  — nRMSE distributions (within vs between)
-      Right — cos_sim distributions (within vs between)
-    Plus a Mann-Whitney U test and bootstrap median difference with 95% CI.
+    Groups:
+      Within-cell (all) | Between-cell (all) | Between PC–PC | Between IN–IN |
+      Between Juxta–Juxta | Between WC–WC (if n >= 3 pairs)
 
-    Parameters
-    ----------
-    df_master : pd.DataFrame  (from compile_experiment_results)
-    wf_dir    : str or Path   (cluster_pickle_dir)
-    half_win  : int           (samples around peak for alignment)
-    n_bootstrap : int
-    alpha     : float
+    Lets you see whether the between-cell distribution is inflated by mixing
+    cell types or recording methods.
     """
     from scipy.stats import mannwhitneyu as _mwu
 
@@ -1829,88 +1931,276 @@ def plot_within_vs_between_neuron_distances(df_master, wf_dir, half_win=75,
         print("No between-cell distances computed — check wf_dir.")
         return
 
-    within_nrmse   = df_master["nRMSE"].dropna().values
-    within_cossim  = df_master["cos_sim"].dropna().values
-    between_nrmse  = df_between["nRMSE"].dropna().values
-    between_cossim = df_between["cos_sim"].dropna().values
+    # Per-cell metadata lookup
+    meta_cols = ["cell_id", "cell_type", "patch_type", "current_type"]
+    cell_meta = (df_master[meta_cols].drop_duplicates("cell_id")
+                 .set_index("cell_id"))
+    ct_map  = cell_meta["cell_type"].to_dict()
+    pt_map  = cell_meta["patch_type"].to_dict()
+    cur_map = cell_meta["current_type"].to_dict()
 
-    rng = np.random.default_rng(42)
+    def _method(pt):
+        return "WC" if isinstance(pt, str) and "WC" in pt else "Juxta"
 
-    def _bootstrap_median_diff(a, b, n=n_bootstrap):
-        diffs = np.array([
-            np.median(rng.choice(a, len(a), replace=True)) -
-            np.median(rng.choice(b, len(b), replace=True))
-            for _ in range(n)
-        ])
-        return np.median(a) - np.median(b), np.percentile(diffs, [2.5, 97.5])
+    # Within-cell (all)
+    within_nrmse = pd.to_numeric(df_master["nRMSE"],   errors="coerce").dropna().values
+    within_cos   = pd.to_numeric(df_master["cos_sim"], errors="coerce").dropna().values
 
-    def _rank_biserial(a, b):
-        stat, _ = _mwu(a, b)
-        return 1 - 2 * stat / (len(a) * len(b))
+    # Between-cell — annotate pairs
+    df_b = df_between.copy()
+    df_b["ct_i"]  = df_b["cell_i"].map(ct_map)
+    df_b["ct_j"]  = df_b["cell_j"].map(ct_map)
+    df_b["pt_i"]  = df_b["cell_i"].map(pt_map).apply(_method)
+    df_b["pt_j"]  = df_b["cell_j"].map(pt_map).apply(_method)
+    df_b["cur_i"] = df_b["cell_i"].map(cur_map)
+    df_b["cur_j"] = df_b["cell_j"].map(cur_map)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    fig.suptitle("Within-cell cluster differences vs Between-cell waveform distances",
-                 fontsize=_FS_TTL, fontweight="bold")
+    def _vals(mask, col):
+        return df_b.loc[mask, col].dropna().values
 
-    for ax, (within, between, metric, better_dir) in zip(
-        axes,
-        [
-            (within_nrmse,  between_nrmse,  "nRMSE (amplitude difference)",   "higher = more different"),
-            (within_cossim, between_cossim, "Cos Sim (shape similarity)",     "lower = more different"),
-        ]
-    ):
-        # Violin + strip
-        plot_data = pd.DataFrame({
-            "value":  np.concatenate([within, between]),
-            "group":  (["Within-cell\n(cluster pairs)"] * len(within) +
-                       ["Between-cell\n(neuron pairs)"] * len(between)),
-        })
-        palette = {"Within-cell\n(cluster pairs)": _CB_PALETTE[0],
-                   "Between-cell\n(neuron pairs)":  _CB_PALETTE[1]}
-        sns.violinplot(data=plot_data, x="group", y="value", palette=palette,
-                       inner=None, cut=0, ax=ax, alpha=0.5)
-        sns.stripplot(data=plot_data, x="group", y="value", palette=palette,
-                      size=3, alpha=0.4, jitter=True, ax=ax)
+    all_mask  = pd.Series([True] * len(df_b), index=df_b.index)
+    pc_mask   = (df_b["ct_i"]  == "PC")    & (df_b["ct_j"]  == "PC")
+    in_mask   = (df_b["ct_i"]  == "IN")    & (df_b["ct_j"]  == "IN")
+    jux_mask  = (df_b["pt_i"]  == "Juxta") & (df_b["pt_j"]  == "Juxta")
+    wc_mask   = (df_b["pt_i"]  == "WC")    & (df_b["pt_j"]  == "WC")
+    ic_mask   = (df_b["cur_i"] == "IC")    & (df_b["cur_j"]  == "IC")
+    vc_mask   = (df_b["cur_i"] == "VC")    & (df_b["cur_j"]  == "VC")
 
-        # Medians
-        for xi, vals in enumerate([within, between]):
-            ax.plot(xi, np.median(vals), "D", color="black", ms=7, zorder=5)
+    wc_nrmse = _vals(wc_mask, "nRMSE")
+    wc_entry = [("Between\nWC–WC", wc_nrmse, _vals(wc_mask, "cos_sim"), "#0072B2")] \
+               if len(wc_nrmse) >= 3 else []
 
-        # Stats
-        stat_mw, p_mw = _mwu(within, between, alternative="two-sided")
-        p_str = f"p={'< 0.0001' if p_mw < 0.0001 else f'{p_mw:.4f}'}"
-        rb    = _rank_biserial(within, between)
-        med_diff, ci = _bootstrap_median_diff(within, between)
-        ci_str = f"Δmedian={med_diff:+.3f} [{ci[0]:+.3f}, {ci[1]:+.3f}]"
+    groups = [
+        ("Within\n(all)",        within_nrmse,             within_cos,                        "#555555"),
+        ("Between\n(all)",       _vals(all_mask, "nRMSE"), _vals(all_mask,  "cos_sim"),        "#AAAAAA"),
+        ("Between\nPC–PC",       _vals(pc_mask,  "nRMSE"), _vals(pc_mask,   "cos_sim"),        "#CC44CC"),
+        ("Between\nIN–IN",       _vals(in_mask,  "nRMSE"), _vals(in_mask,   "cos_sim"),        "#00CCCC"),
+        ("Between\nJuxta–Juxta", _vals(jux_mask, "nRMSE"), _vals(jux_mask,  "cos_sim"),        "#E69F00"),
+        *wc_entry,
+        ("Between\nIC–IC",       _vals(ic_mask,  "nRMSE"), _vals(ic_mask,   "cos_sim"),        "#009E73"),
+        ("Between\nVC–VC",       _vals(vc_mask,  "nRMSE"), _vals(vc_mask,   "cos_sim"),        "#D55E00"),
+    ]
 
-        sig_star = "***" if p_mw < 0.001 else ("**" if p_mw < 0.01 else
-                   ("*" if p_mw < alpha else "ns"))
-        y_top = ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else max(np.max(within), np.max(between))
-        ax.annotate(f"{sig_star}  {p_str}\nr_rb={rb:+.3f}\n{ci_str}",
-                    xy=(0.5, 0.97), xycoords="axes fraction",
-                    ha="center", va="top", fontsize=_FS_SM,
-                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+    GROUP_ORDER = [g[0] for g in groups]
+    PALETTE     = {g[0]: g[3] for g in groups}
 
+    fw = max(10, len(groups) * 1.8)
+
+    for metric_idx, metric_label in [(1, "nRMSE"), (2, "Cos Sim")]:
+        fig, ax = plt.subplots(figsize=(fw, 6))
+        fig.suptitle(f"Within-cell cluster vs Between-cell waveform distances — {metric_label}",
+                     fontsize=22, fontweight="bold")
+
+        rows = []
+        for g in groups:
+            for v in g[metric_idx]:
+                rows.append({"group": g[0], "value": v})
+        plot_df = pd.DataFrame(rows)
+
+        sns.boxplot(data=plot_df, x="group", y="value", order=GROUP_ORDER,
+                    palette=PALETTE, showfliers=False, width=0.55,
+                    linewidth=2.5, ax=ax)
+        sns.stripplot(data=plot_df, x="group", y="value", order=GROUP_ORDER,
+                      palette=PALETTE, size=4, alpha=0.45, jitter=True, ax=ax)
+
+        ax.axvline(1.5, color="#888888", lw=2.0, ls="--", alpha=0.7)
         ax.set_xlabel("")
-        ax.set_ylabel(metric, fontsize=_FS_AX)
-        ax.tick_params(labelsize=_FS_SM)
+        ax.set_ylabel(metric_label, fontsize=18)
+        ax.tick_params(axis="both", labelsize=15, width=2.0, length=6)
+        for spine in ax.spines.values():
+            spine.set_linewidth(2.0)
+        sns.despine(ax=ax)
+        _add_group_category_labels(ax, GROUP_ORDER)
+        plt.tight_layout()
+        fig.subplots_adjust(bottom=0.28)
+        plt.show()
 
-    plt.tight_layout()
-    plt.show()
+        print(f"\n── {metric_label} ──")
+        for g in groups:
+            vals = g[metric_idx]
+            if len(vals):
+                print(f"  {g[0].replace(chr(10),' '):22s}: "
+                      f"median={np.median(vals):.3f}  "
+                      f"IQR=[{np.percentile(vals,25):.3f}, {np.percentile(vals,75):.3f}]  "
+                      f"n={len(vals)}")
 
-    # Print summary
-    print("\n── Within-cell vs Between-cell Distance Summary ────────────────")
-    print(f"  Within-cell  nRMSE  : median={np.median(within_nrmse):.3f}  "
-          f"IQR=[{np.percentile(within_nrmse,25):.3f}, {np.percentile(within_nrmse,75):.3f}]  "
-          f"n={len(within_nrmse)}")
-    print(f"  Between-cell nRMSE  : median={np.median(between_nrmse):.3f}  "
-          f"IQR=[{np.percentile(between_nrmse,25):.3f}, {np.percentile(between_nrmse,75):.3f}]  "
-          f"n={len(between_nrmse)}")
-    print(f"  Within-cell  cos_sim: median={np.median(within_cossim):.3f}  "
-          f"IQR=[{np.percentile(within_cossim,25):.3f}, {np.percentile(within_cossim,75):.3f}]")
-    print(f"  Between-cell cos_sim: median={np.median(between_cossim):.3f}  "
-          f"IQR=[{np.percentile(between_cossim,25):.3f}, {np.percentile(between_cossim,75):.3f}]")
-    plt.show()
+
+def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
+    """
+    Fully spike-level within vs between comparison.
+
+    Within  : each spike vs its own cell's mean waveform.
+    Between : each spike from cell A vs the mean waveform of cell B
+              (both directions per pair), grouped by cell/patch/current type.
+
+    This makes within and between directly comparable — both are
+    spike-to-average distances, not average-to-average.
+    """
+    import pickle
+    from pathlib import Path
+
+    spike_fit_dir = Path(spike_fit_dir)
+    spike_pkls = sorted(spike_fit_dir.glob("c*_spike_fit.pkl"),
+                        key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    # Load all cells: peak-align and trim both mean and spike matrix
+    cell_data = {}
+    for pkl in spike_pkls:
+        cnum    = int(pkl.stem.split("_")[0].lstrip("c"))
+        cell_id = f"c{cnum}"
+        try:
+            sp = pickle.load(open(pkl, "rb"))
+            W  = np.asarray(sp.spikes, float)
+        except Exception:
+            continue
+        avg      = W.mean(axis=0)
+        peak_idx = int(np.argmax(np.abs(avg)))
+        lo, hi   = peak_idx - half_win, peak_idx + half_win
+        if lo < 0 or hi > W.shape[1]:
+            continue
+        cell_data[cell_id] = (avg[lo:hi], W[:, lo:hi])
+
+    n_spikes_total = sum(v[1].shape[0] for v in cell_data.values())
+    print(f"Loaded {len(cell_data)} cells, {n_spikes_total:,} total spikes")
+
+    # ── Within: each spike vs own cell mean (vectorized per cell) ──────────────
+    within_nrmse_l, within_cos_l = [], []
+    for mean_wf, spikes in cell_data.values():
+        denom   = np.max(np.abs(mean_wf)) + 1e-12
+        diff    = spikes - mean_wf
+        nrmse   = np.sqrt(np.mean(diff ** 2, axis=1)) / denom
+        norm_s  = np.linalg.norm(spikes, axis=1)
+        norm_m  = np.linalg.norm(mean_wf) + 1e-12
+        cos     = (spikes @ mean_wf) / (norm_s * norm_m + 1e-12)
+        within_nrmse_l.append(nrmse)
+        within_cos_l.append(cos)
+    within_nrmse = np.concatenate(within_nrmse_l)
+    within_cos   = np.concatenate(within_cos_l)
+
+    # ── Between: spikes of A vs mean of B, and spikes of B vs mean of A ────────
+    cell_ids = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
+    btw_nrmse_l, btw_cos_l = [], []
+    btw_ci_l,    btw_cj_l  = [], []
+
+    for idx_i, ci in enumerate(cell_ids):
+        for idx_j, cj in enumerate(cell_ids):
+            if idx_j <= idx_i:
+                continue
+            mean_i, spikes_i = cell_data[ci]
+            mean_j, spikes_j = cell_data[cj]
+            denom = max(np.max(np.abs(mean_i)), np.max(np.abs(mean_j))) + 1e-12
+
+            # spikes of i vs mean of j
+            diff_ij  = spikes_i - mean_j
+            nrmse_ij = np.sqrt(np.mean(diff_ij ** 2, axis=1)) / denom
+            norm_si  = np.linalg.norm(spikes_i, axis=1)
+            cos_ij   = (spikes_i @ mean_j) / (norm_si * (np.linalg.norm(mean_j) + 1e-12) + 1e-12)
+
+            # spikes of j vs mean of i
+            diff_ji  = spikes_j - mean_i
+            nrmse_ji = np.sqrt(np.mean(diff_ji ** 2, axis=1)) / denom
+            norm_sj  = np.linalg.norm(spikes_j, axis=1)
+            cos_ji   = (spikes_j @ mean_i) / (norm_sj * (np.linalg.norm(mean_i) + 1e-12) + 1e-12)
+
+            n_tot = len(nrmse_ij) + len(nrmse_ji)
+            btw_nrmse_l.append(np.concatenate([nrmse_ij, nrmse_ji]))
+            btw_cos_l.append(np.concatenate([cos_ij, cos_ji]))
+            btw_ci_l.extend([ci] * n_tot)
+            btw_cj_l.extend([cj] * n_tot)
+
+    df_b = pd.DataFrame({
+        "cell_i":  btw_ci_l,
+        "cell_j":  btw_cj_l,
+        "nRMSE":   np.concatenate(btw_nrmse_l),
+        "cos_sim": np.concatenate(btw_cos_l),
+    })
+    print(f"Between: {len(df_b):,} spike-to-avg comparisons across {len(cell_ids)} cells")
+
+    # ── Metadata masks ──────────────────────────────────────────────────────────
+    meta_cols = ["cell_id", "cell_type", "patch_type", "current_type"]
+    cell_meta = df_master[meta_cols].drop_duplicates("cell_id").set_index("cell_id")
+    ct_map  = cell_meta["cell_type"].to_dict()
+    pt_map  = cell_meta["patch_type"].to_dict()
+    cur_map = cell_meta["current_type"].to_dict()
+
+    def _method(pt):
+        return "WC" if isinstance(pt, str) and "WC" in pt else "Juxta"
+
+    df_b["ct_i"]  = df_b["cell_i"].map(ct_map)
+    df_b["ct_j"]  = df_b["cell_j"].map(ct_map)
+    df_b["pt_i"]  = df_b["cell_i"].map(pt_map).apply(_method)
+    df_b["pt_j"]  = df_b["cell_j"].map(pt_map).apply(_method)
+    df_b["cur_i"] = df_b["cell_i"].map(cur_map)
+    df_b["cur_j"] = df_b["cell_j"].map(cur_map)
+
+    def _vals(mask, col):
+        return df_b.loc[mask, col].dropna().values
+
+    all_mask = pd.Series([True] * len(df_b), index=df_b.index)
+    pc_mask  = (df_b["ct_i"] == "PC")    & (df_b["ct_j"] == "PC")
+    in_mask  = (df_b["ct_i"] == "IN")    & (df_b["ct_j"] == "IN")
+    jux_mask = (df_b["pt_i"] == "Juxta") & (df_b["pt_j"] == "Juxta")
+    wc_mask  = (df_b["pt_i"] == "WC")    & (df_b["pt_j"] == "WC")
+    ic_mask  = (df_b["cur_i"] == "IC")   & (df_b["cur_j"] == "IC")
+    vc_mask  = (df_b["cur_i"] == "VC")   & (df_b["cur_j"] == "VC")
+
+    wc_nrmse = _vals(wc_mask, "nRMSE")
+    wc_entry = [("Between\nWC–WC", wc_nrmse, _vals(wc_mask, "cos_sim"), "#0072B2")] \
+               if len(wc_nrmse) >= 3 else []
+
+    groups = [
+        ("Within\n(all)",        within_nrmse,             within_cos,                       "#555555"),
+        ("Between\n(all)",       _vals(all_mask, "nRMSE"), _vals(all_mask,  "cos_sim"),       "#AAAAAA"),
+        ("Between\nPC–PC",       _vals(pc_mask,  "nRMSE"), _vals(pc_mask,   "cos_sim"),       "#CC44CC"),
+        ("Between\nIN–IN",       _vals(in_mask,  "nRMSE"), _vals(in_mask,   "cos_sim"),       "#00CCCC"),
+        ("Between\nJuxta–Juxta", _vals(jux_mask, "nRMSE"), _vals(jux_mask,  "cos_sim"),       "#E69F00"),
+        *wc_entry,
+        ("Between\nIC–IC",       _vals(ic_mask,  "nRMSE"), _vals(ic_mask,   "cos_sim"),       "#009E73"),
+        ("Between\nVC–VC",       _vals(vc_mask,  "nRMSE"), _vals(vc_mask,   "cos_sim"),       "#D55E00"),
+    ]
+
+    GROUP_ORDER = [g[0] for g in groups]
+    PALETTE     = {g[0]: g[3] for g in groups}
+    fw = max(10, len(groups) * 1.8)
+
+    for metric_idx, metric_label in [(1, "nRMSE"), (2, "Cos Sim")]:
+        fig, ax = plt.subplots(figsize=(fw, 6))
+        fig.suptitle(
+            f"Spike-to-average vs Between-cell waveform distances — {metric_label}",
+            fontsize=22, fontweight="bold")
+
+        rows = []
+        for g in groups:
+            for v in g[metric_idx]:
+                rows.append({"group": g[0], "value": v})
+        plot_df = pd.DataFrame(rows)
+
+        sns.boxplot(data=plot_df, x="group", y="value", order=GROUP_ORDER,
+                    palette=PALETTE, showfliers=False, width=0.55,
+                    linewidth=2.5, ax=ax)
+        sns.stripplot(data=plot_df, x="group", y="value", order=GROUP_ORDER,
+                      palette=PALETTE, size=4, alpha=0.45, jitter=True, ax=ax)
+
+        ax.axvline(1.5, color="#888888", lw=2.0, ls="--", alpha=0.7)
+        ax.set_xlabel("")
+        ax.set_ylabel(metric_label, fontsize=18)
+        ax.tick_params(axis="both", labelsize=15, width=2.0, length=6)
+        for spine in ax.spines.values():
+            spine.set_linewidth(2.0)
+        sns.despine(ax=ax)
+        _add_group_category_labels(ax, GROUP_ORDER)
+        plt.tight_layout()
+        fig.subplots_adjust(bottom=0.28)
+        plt.show()
+
+        print(f"\n── {metric_label} (spike-to-avg) ──")
+        for g in groups:
+            vals = g[metric_idx]
+            if len(vals):
+                print(f"  {g[0].replace(chr(10),' '):22s}: "
+                      f"median={np.median(vals):.3f}  "
+                      f"IQR=[{np.percentile(vals,25):.3f}, {np.percentile(vals,75):.3f}]  "
+                      f"n={len(vals)}")
 
 
 # ── Temporal transition detection ─────────────────────────────────────────────
