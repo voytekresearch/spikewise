@@ -1320,17 +1320,21 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
     plt.show()
 
     # --- Panel 2: temporal_rho distribution by spike_feature ---
-    feat_order = df_plot.groupby('spike_feature')['temporal_rho'].median().sort_values().index.tolist()
+    SKIP_FEATS_TEMPORAL = {'spk_times_idx', 'spk_times_ms'}
+    df_feat_plot = df_plot[~df_plot['spike_feature'].isin(SKIP_FEATS_TEMPORAL)]
+    feat_order = df_feat_plot.groupby('spike_feature')['temporal_rho'].median().sort_values().index.tolist()
     feat_palette_list = [palette.get(f, 'gray') for f in feat_order]
 
     fig_feat, ax_feat = plt.subplots(figsize=(10, 5))
-    sns.boxplot(data=df_plot, x='spike_feature', y='temporal_rho', order=feat_order,
+    sns.boxplot(data=df_feat_plot, x='spike_feature', y='temporal_rho', order=feat_order,
                 palette=feat_palette_list, showfliers=False, width=0.5, ax=ax_feat)
-    sns.stripplot(data=df_plot, x='spike_feature', y='temporal_rho', order=feat_order,
+    sns.stripplot(data=df_feat_plot, x='spike_feature', y='temporal_rho', order=feat_order,
                   palette=feat_palette_list, alpha=0.5, size=6, ax=ax_feat)
     ax_feat.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
+    ax_feat.text(len(feat_order) - 0.5, 0.03, 'no temporal drift',
+                 ha='right', va='bottom', fontsize=9, color='#666666', style='italic')
 
-    feat_groups = [df_plot.loc[df_plot['spike_feature'] == f, 'temporal_rho'].dropna().values for f in feat_order]
+    feat_groups = [df_feat_plot.loc[df_feat_plot['spike_feature'] == f, 'temporal_rho'].dropna().values for f in feat_order]
     feat_groups = [g for g in feat_groups if len(g) > 0]
     if len(feat_groups) >= 2:
         kw_stat, kw_p = kruskal(*feat_groups)
@@ -1339,11 +1343,13 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
     kw_sig = '***' if kw_p < 0.001 else '**' if kw_p < 0.01 else '*' if kw_p < 0.05 else 'ns'
     kw_p_str = f"{kw_p:.4f}" if pd.notnull(kw_p) and kw_p >= 0.0001 else ("<0.0001" if pd.notnull(kw_p) else "n/a")
 
-    ax_feat.set_title(f'Temporal Rho by Spike Feature\nKruskal-Wallis {kw_sig} (p={kw_p_str})',
-                      fontsize=13, fontweight='bold')
-    ax_feat.set_xlabel('Spike Feature', fontsize=13)
-    ax_feat.set_ylabel('Temporal Rho', fontsize=13)
-    ax_feat.set_xticklabels(ax_feat.get_xticklabels(), rotation=30, ha='right')
+    ax_feat.set_title('Temporal Rho by Spike Feature', fontsize=16, fontweight='bold', pad=28)
+    ax_feat.text(0.5, 1.01, f'Kruskal-Wallis {kw_sig} (p={kw_p_str})',
+                 transform=ax_feat.transAxes, ha='center', va='bottom', fontsize=10, color='#555555')
+    ax_feat.set_xlabel('Spike Feature', fontsize=15)
+    ax_feat.set_ylabel('Temporal Rho', fontsize=15)
+    ax_feat.tick_params(axis='y', labelsize=13)
+    ax_feat.set_xticklabels(ax_feat.get_xticklabels(), rotation=30, ha='right', fontsize=13)
     sns.despine(ax=ax_feat)
     plt.tight_layout()
     plt.show()
