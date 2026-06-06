@@ -24,12 +24,26 @@ if config_dir not in sys.path:
 import config
 
 # ============================================================
+# Global plot style — cartoony / presentation-ready
+# ============================================================
+sns.set_theme(style='ticks', font_scale=1.4, rc={
+    'axes.linewidth':    2.0,
+    'xtick.major.width': 2.0,
+    'ytick.major.width': 2.0,
+    'xtick.major.size':  6,
+    'ytick.major.size':  6,
+    'patch.linewidth':   2.0,
+    'lines.linewidth':   2.0,
+    'figure.titlesize':  22,
+})
+
+# ============================================================
 # Publication style constants
 # ============================================================
-_FS_SM    = 11   # small annotations, tick labels
-_FS_AX    = 13   # axis labels
-_FS_SUB   = 14   # subplot titles
-_FS_TTL   = 16   # figure suptitles
+_FS_SM    = 14   # small annotations, tick labels
+_FS_AX    = 16   # axis labels
+_FS_SUB   = 18   # subplot titles
+_FS_TTL   = 22   # figure suptitles
 
 # Spike feature palette (consistent across all notebooks/modules)
 _SPIKE_FEAT_COLORS = {
@@ -520,20 +534,20 @@ def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
                    edgecolors='black' if row.significant else color, linewidths=1.5)
         stars = row.Significance if row.Significance != 'ns' else ''
         ax.text(x_max + 0.02, i,
-                f"{row.Effect_Size:+.3f}  {stars}", va='center', fontsize=9)
+                f"{row.Effect_Size:+.3f}  {stars}", va='center')
 
     ax.axvline(0, color='black', lw=1, ls='--', alpha=0.5)
     ax.set_yticks(range(n))
-    ax.set_yticklabels(df_plot['label'].tolist(), fontsize=9)
+    ax.set_yticklabels(df_plot['label'].tolist())
     ax.set_xlim(-x_max * 1.05, x_max * 1.4)
-    ax.set_xlabel('Effect Size  (95% bootstrap CI)', fontsize=11)
+    ax.set_xlabel('Effect Size  (95% bootstrap CI)')
     ax.set_title(
         'Metadata × Cluster Difference\n(BH-FDR corrected; filled marker = significant)',
-        fontsize=12, fontweight='bold'
+        fontweight='bold'
     )
     from matplotlib.lines import Line2D
     legend_els = [Line2D([0], [0], color=c, lw=3, label=t) for t, c in TEST_COLORS.items()]
-    ax.legend(handles=legend_els, fontsize=9, frameon=False, loc='lower right')
+    ax.legend(handles=legend_els, frameon=False, loc='lower right')
     sns.despine(ax=ax)
     plt.tight_layout()
     plt.show()
@@ -557,8 +571,6 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
     if sig_pairs_df is None or len(sig_pairs_df) == 0:
         print("No significant pairs to plot.")
         return
-
-    sns.set_theme(style="ticks")
 
     n_plots = len(sig_pairs_df)
     cols = 3
@@ -631,7 +643,7 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
             ax.set_xlabel(m.replace('_', ' ').title())
             ax.set_ylabel(f.replace('_', ' ').title())
 
-        ax.set_title(f"{stars} (r={r:.2f})", fontweight='bold', fontsize=13)
+        ax.set_title(f"{stars} (r={r:.2f})", fontweight='bold')
         sns.despine(ax=ax)
 
     # Cleanup unused axes
@@ -1032,7 +1044,6 @@ def plot_aggregated_spike_feat(raw_df):
 
 def plot_feature_depth_distribution(df):
     plt.figure(figsize=(12, 8))
-    sns.set_theme(style="ticks")
 
     # 1. Sort features by median depth so the Y-axis follows the anatomy
     sorted_features = df.groupby('spike_feature')['cortical_depth'].median().sort_values().index
@@ -1071,9 +1082,9 @@ def plot_feature_depth_distribution(df):
     )
 
     # 5. Anatomical Formatting
-    plt.title('Cortical Depth Distribution of clustered spike features', fontsize=16, fontweight='bold', pad=25)
-    plt.xlabel('Cortical Depth ($\mu m$)', fontsize=14, fontweight='semibold')
-    plt.ylabel('Clustered Spike Features', fontsize=14, fontweight='semibold')
+    plt.title('Cortical Depth Distribution of clustered spike features', fontweight='bold', pad=25)
+    plt.xlabel('Cortical Depth ($\mu m$)', fontweight='semibold')
+    plt.ylabel('Clustered Spike Features', fontweight='semibold')
     
     # 6. Clean up
     plt.grid(axis='x', linestyle='--', alpha=0.4)
@@ -1203,13 +1214,13 @@ def plot_temporal_structure(df, alpha=0.05):
     sig_vals = df_plot.loc[df_plot['significant'], 'temporal_rho']
     ax1.hist(sig_vals, bins=20, color='#D55E00', alpha=0.8, edgecolor='white', label=f'p < {alpha}')
     ax1.axvline(0, color='black', lw=1.5, linestyle='--', alpha=0.6)
-    ax1.set_xlabel('Temporal Rho (Spearman)', fontsize=13)
-    ax1.set_ylabel('Count', fontsize=13)
+    ax1.set_xlabel('Temporal Rho (Spearman)')
+    ax1.set_ylabel('Count')
     n_sig = df_plot['significant'].sum()
     n_total = len(df_plot)
     ax1.set_title(f'Time Dependence Distribution\n{n_sig}/{n_total} significant (p < {alpha})',
-                  fontsize=13, fontweight='bold')
-    ax1.legend(fontsize=11, frameon=False)
+                  fontweight='bold')
+    ax1.legend(frameon=False)
     ax1.set_xlim(-1.1, 1.1)
     sns.despine(ax=ax1)
 
@@ -1218,13 +1229,13 @@ def plot_temporal_structure(df, alpha=0.05):
     feat_palette = [palette[f] for f in feat_order]
 
     sns.boxplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
-                palette=feat_palette, showfliers=False, width=0.5, ax=ax2)
+                palette=feat_palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax2)
     sns.stripplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
                   palette=feat_palette, alpha=0.5, size=5, ax=ax2)
     ax2.axvline(0, color='black', lw=1, linestyle='--', alpha=0.5)
-    ax2.set_xlabel('Temporal Rho', fontsize=13)
+    ax2.set_xlabel('Temporal Rho')
     ax2.set_ylabel('')
-    ax2.set_title('Distribution by Spike Feature', fontsize=13, fontweight='bold')
+    ax2.set_title('Distribution by Spike Feature', fontweight='bold')
     ax2.set_xlim(-1.1, 1.1)
     sns.despine(ax=ax2)
 
@@ -1287,10 +1298,10 @@ def analyze_temporal_metadata_dependency(df, alpha=0.05):
             x_line = np.linspace(x[valid].min(), x[valid].max(), 100)
             ax.plot(x_line, m_s * x_line + b_s, color='darkblue', lw=2)
             ax.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
-            ax.set_xlabel(col.replace('_', ' ').title(), fontsize=12)
-            ax.set_ylabel('Temporal Rho', fontsize=12)
+            ax.set_xlabel(col.replace('_', ' ').title())
+            ax.set_ylabel('Temporal Rho')
             p_str = f"{p:.4f}" if p >= 0.0001 else "<0.0001"
-            ax.set_title(f'{col}\nSpearman ρ={rho:.2f}, {sig} (p={p_str})', fontsize=12, fontweight='bold')
+            ax.set_title(f'{col}\nSpearman ρ={rho:.2f}, {sig} (p={p_str})', fontweight='bold')
             results.append({'variable': col, 'test': 'Spearman', 'statistic': round(rho, 3), 'p': p, 'sig': sig})
         else:
             groups_list = [g['temporal_rho'].values for _, g in sub.groupby(col)]
@@ -1301,13 +1312,13 @@ def analyze_temporal_metadata_dependency(df, alpha=0.05):
             sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
 
             sns.boxplot(data=sub, x=col, y='temporal_rho', showfliers=False,
-                        palette='Paired', ax=ax)
+                        palette='Paired', linewidth=2.5, ax=ax)
             sns.stripplot(data=sub, x=col, y='temporal_rho', color='.3', alpha=0.4, ax=ax)
             ax.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
-            ax.set_xlabel(col.replace('_', ' ').title(), fontsize=12)
-            ax.set_ylabel('Temporal Rho', fontsize=12)
+            ax.set_xlabel(col.replace('_', ' ').title())
+            ax.set_ylabel('Temporal Rho')
             p_str = f"{p:.4f}" if p >= 0.0001 else "<0.0001"
-            ax.set_title(f'{col}\nKruskal-Wallis {sig} (p={p_str})', fontsize=12, fontweight='bold')
+            ax.set_title(f'{col}\nKruskal-Wallis {sig} (p={p_str})', fontweight='bold')
             results.append({'variable': col, 'test': 'Kruskal-Wallis', 'statistic': round(stat, 3) if pd.notnull(stat) else np.nan, 'p': p, 'sig': sig})
 
         sns.despine(ax=ax)
@@ -1315,7 +1326,7 @@ def analyze_temporal_metadata_dependency(df, alpha=0.05):
     for j in range(len(meta_cols), len(axes)):
         fig.delaxes(axes[j])
 
-    plt.suptitle('Metadata Predictors of Time Dependence (temporal_rho)', fontsize=15, fontweight='bold', y=1.01)
+    plt.suptitle('Metadata Predictors of Time Dependence (temporal_rho)', fontweight='bold', y=1.01)
     plt.tight_layout()
     plt.show()
 
@@ -1373,18 +1384,18 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
         ax.plot(x_line, m_s * x_line + b_s, color='black', lw=2, alpha=0.8)
 
         ax.axvline(0, color='gray', lw=1, linestyle='--', alpha=0.4)
-        ax.set_xlabel('Temporal Rho', fontsize=13)
-        ax.set_ylabel(metric, fontsize=13)
-        ax.set_title(f'temporal_rho vs {metric}\nSpearman ρ={rho:.2f}, {sig}', fontsize=13, fontweight='bold')
+        ax.set_xlabel('Temporal Rho')
+        ax.set_ylabel(metric)
+        ax.set_title(f'temporal_rho vs {metric}\nSpearman ρ={rho:.2f}, {sig}', fontweight='bold')
         sns.despine(ax=ax)
         results.append({'metric': metric, 'spearman_rho': round(rho, 3), 'p': p, 'sig': sig})
 
     handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=palette[f],
                           markersize=8, label=f) for f in features]
     axes[-1].legend(handles=handles, title='Spike Feature', bbox_to_anchor=(1.05, 1),
-                    loc='upper left', fontsize=11, frameon=True)
+                    loc='upper left', frameon=True)
 
-    plt.suptitle('Time Dependence vs Clustering Quality', fontsize=15, fontweight='bold')
+    plt.suptitle('Time Dependence vs Clustering Quality', fontweight='bold')
     plt.tight_layout()
     plt.show()
 
@@ -1396,12 +1407,13 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
 
     fig_feat, ax_feat = plt.subplots(figsize=(10, 5))
     sns.boxplot(data=df_feat_plot, x='spike_feature', y='temporal_rho', order=feat_order,
-                palette=feat_palette_list, showfliers=False, width=0.5, ax=ax_feat)
+                palette=feat_palette_list, showfliers=False, width=0.5, linewidth=2.5, ax=ax_feat)
     sns.stripplot(data=df_feat_plot, x='spike_feature', y='temporal_rho', order=feat_order,
                   palette=feat_palette_list, alpha=0.5, size=6, ax=ax_feat)
     ax_feat.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
-    ax_feat.text(len(feat_order) - 0.5, 0.03, 'no time dependence',
-                 ha='right', va='bottom', fontsize=9, color='#666666', style='italic')
+    ax_feat.text(len(feat_order) - 0.5, 0.03, 'no time\ndependence',
+                 ha='right', va='bottom', fontsize=_FS_SM, color='#666666', style='italic',
+                 linespacing=1.2)
 
     feat_groups = [df_feat_plot.loc[df_feat_plot['spike_feature'] == f, 'temporal_rho'].dropna().values for f in feat_order]
     feat_groups = [g for g in feat_groups if len(g) > 0]
@@ -1412,13 +1424,12 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
     kw_sig = '***' if kw_p < 0.001 else '**' if kw_p < 0.01 else '*' if kw_p < 0.05 else 'ns'
     kw_p_str = f"{kw_p:.4f}" if pd.notnull(kw_p) and kw_p >= 0.0001 else ("<0.0001" if pd.notnull(kw_p) else "n/a")
 
-    ax_feat.set_title('Temporal Rho by Spike Feature', fontsize=16, fontweight='bold', pad=28)
+    ax_feat.set_title('Temporal Rho by Spike Feature', fontweight='bold', pad=28)
     ax_feat.text(0.5, 1.01, f'Kruskal-Wallis {kw_sig} (p={kw_p_str})',
-                 transform=ax_feat.transAxes, ha='center', va='bottom', fontsize=10, color='#555555')
-    ax_feat.set_xlabel('Spike Feature', fontsize=15)
-    ax_feat.set_ylabel('Temporal Rho', fontsize=15)
-    ax_feat.tick_params(axis='y', labelsize=13)
-    ax_feat.set_xticklabels(ax_feat.get_xticklabels(), rotation=30, ha='right', fontsize=13)
+                 transform=ax_feat.transAxes, ha='center', va='bottom', fontsize=_FS_SM, color='#555555')
+    ax_feat.set_xlabel('Spike Feature')
+    ax_feat.set_ylabel('Temporal Rho')
+    ax_feat.set_xticklabels(ax_feat.get_xticklabels(), rotation=30, ha='right')
     sns.despine(ax=ax_feat)
     plt.tight_layout()
     plt.show()
@@ -1429,7 +1440,8 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
         sub2 = df_plot[['temporal_component', metric]].dropna()
         sub2['temporal_component'] = sub2['temporal_component'].astype(float).map({0.0: '|ρ| < 0.3', 1.0: '|ρ| ≥ 0.3'})
         sns.boxplot(data=sub2, x='temporal_component', y=metric, showfliers=False,
-                    palette=['#56B4E9', '#D55E00'], order=['|ρ| < 0.3', '|ρ| ≥ 0.3'], ax=ax2)
+                    palette=['#56B4E9', '#D55E00'], order=['|ρ| < 0.3', '|ρ| ≥ 0.3'],
+                    linewidth=2.5, ax=ax2)
         sns.stripplot(data=sub2, x='temporal_component', y=metric, color='.3', alpha=0.4,
                       order=['|ρ| < 0.3', '|ρ| ≥ 0.3'], ax=ax2)
 
@@ -1440,11 +1452,11 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
             p2 = np.nan
         sig2 = '***' if p2 < 0.001 else '**' if p2 < 0.01 else '*' if p2 < 0.05 else 'ns'
         p2_str = f"{p2:.4f}" if pd.notnull(p2) and p2 >= 0.0001 else ("<0.0001" if pd.notnull(p2) else "n/a")
-        ax2.set_title(f'temporal_component vs {metric}\n{sig2} (p={p2_str})', fontsize=13, fontweight='bold')
+        ax2.set_title(f'temporal_component vs {metric}\n{sig2} (p={p2_str})', fontweight='bold')
         ax2.set_xlabel('Temporal Component')
         sns.despine(ax=ax2)
 
-    plt.suptitle('Does Significant Time Dependence Affect Cluster Waveform Differences?', fontsize=14, fontweight='bold')
+    plt.suptitle('Does Significant Time Dependence Affect Cluster Waveform Differences?', fontweight='bold')
     plt.tight_layout()
     plt.show()
 
