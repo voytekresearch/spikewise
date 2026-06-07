@@ -852,6 +852,240 @@ def plot_beta_distributions(beta_pop, df_tests, target_names, target_labels,
     plt.show()
 
 
+# ── Cartoony beta-weight summary plots (for slides) ──────────────────────────
+
+def plot_beta_significant_summary(df_tests, target_names, target_labels):
+    """
+    Cartoony lollipop/forest plot of population-level *significant* beta
+    weights (one-sample t-test, mean β ≠ 0, p < 0.05), core (non-HPF)
+    targets only.
+
+    One row per significant (target × waveform-feature) pair, sorted by
+    effect size — shows at a glance which spike-waveform features reliably
+    predict which LFP targets, and the *direction* of that relationship
+    (blue stem/dot = β > 0,  orange = β < 0). Stars mark significance level.
+    """
+    import seaborn as sns
+
+    sns.set_theme(style='ticks', font_scale=1.8, rc={
+        'axes.linewidth':    4.0,
+        'xtick.major.width': 4.0,
+        'ytick.major.width': 4.0,
+        'xtick.major.size':  9,
+        'ytick.major.size':  9,
+        'lines.linewidth':   4.0,
+    })
+    _FS_SM, _FS_AX, _FS_SUB = 20, 24, 28
+    pos_color, neg_color = '#0072B2', '#D55E00'  # Okabe-Ito blue / vermillion (colour-blind safe)
+
+    df = df_tests[df_tests['sig_ttest'] &
+                  ~df_tests['target_label'].str.contains(r'\(HPF\)')].copy()
+    if df.empty:
+        print('No population-significant beta weights found (core targets).')
+        return
+    df['abs_beta']  = df['mean_beta'].abs()
+    df['row_label'] = df['target_label'] + '  —  ' + df['feature']
+    df = df.sort_values('abs_beta', ascending=True).reset_index(drop=True)
+
+    n = len(df)
+    fig, ax = plt.subplots(figsize=(13, max(6, n * 0.62)))
+
+    y      = np.arange(n)
+    colors = [pos_color if b >= 0 else neg_color for b in df['mean_beta']]
+    ax.hlines(y, 0, df['mean_beta'], color=colors, linewidth=5.0, alpha=0.85, zorder=2)
+    ax.scatter(df['mean_beta'], y, s=220, color=colors, edgecolor='black',
+               linewidth=2.5, zorder=3)
+
+    x_pad = df['mean_beta'].abs().max() * 0.025
+    for yi, (b, star) in enumerate(zip(df['mean_beta'], df['stars_ttest'])):
+        ax.text(b + (x_pad if b >= 0 else -x_pad), yi, star,
+                ha='left' if b >= 0 else 'right', va='center',
+                fontsize=_FS_AX + 6, fontweight='bold', color='black')
+
+    ax.axvline(0, color='black', lw=3.0, ls='--', alpha=0.6)
+    ax.set_yticks(y)
+    ax.set_yticklabels(df['row_label'], fontsize=_FS_SM, color='black')
+    ax.set_xlabel('Mean β  (standardized units)', fontsize=_FS_AX, color='black')
+    ax.set_title('Population-significant spike-waveform → LFP relationships\n'
+                 '* = one-sample t-test, mean β ≠ 0 (p < 0.05)',
+                 fontsize=_FS_SUB, fontweight='bold', color='black', pad=22)
+    ax.tick_params(axis='both', labelsize=_FS_SM, colors='black')
+
+    handles = [plt.Line2D([0], [0], marker='o', linestyle='', color=pos_color,
+                          markeredgecolor='black', markeredgewidth=2.0, markersize=16,
+                          label='Positive β'),
+               plt.Line2D([0], [0], marker='o', linestyle='', color=neg_color,
+                          markeredgecolor='black', markeredgewidth=2.0, markersize=16,
+                          label='Negative β')]
+    leg = ax.legend(handles=handles, fontsize=_FS_SM, frameon=False, loc='lower right')
+    for text in leg.get_texts():
+        text.set_color('black')
+
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+    return fig, ax
+
+
+def plot_beta_full_summary(df_tests, target_names, target_labels,
+                            targets=('Pre LFP Amp', 'Pre LFP Std',
+                                     'Post LFP Amp', 'Post LFP Std')):
+    """
+    Cartoony lollipop/forest plot of *all* waveform-feature beta weights
+    (not just significant ones) for a chosen set of targets — default is the
+    four core LFP-amplitude/variability targets (Pre/Post × Amp/Std).
+
+    Same layout/encoding as plot_beta_significant_summary (one-sample t-test,
+    mean β; blue = positive, vermillion = negative; * marks p < 0.05) but
+    every (target × feature) row is shown, significant or not — useful for
+    seeing the full beta profile of a target rather than only its hits.
+    """
+    import seaborn as sns
+
+    sns.set_theme(style='ticks', font_scale=1.8, rc={
+        'axes.linewidth':    4.0,
+        'xtick.major.width': 4.0,
+        'ytick.major.width': 4.0,
+        'xtick.major.size':  9,
+        'ytick.major.size':  9,
+        'lines.linewidth':   4.0,
+    })
+    _FS_SM, _FS_AX, _FS_SUB = 20, 24, 28
+    pos_color, neg_color = '#0072B2', '#D55E00'  # Okabe-Ito blue / vermillion (colour-blind safe)
+
+    df = df_tests[df_tests['target_label'].isin(targets)].copy()
+    if df.empty:
+        print('No matching targets found in df_tests.')
+        return
+    df['row_label'] = df['target_label'] + '  —  ' + df['feature']
+
+    # group by target (in the requested order), features sorted by |β| within each
+    tgt_rank = {tl: i for i, tl in enumerate(targets)}
+    df['tgt_rank'] = df['target_label'].map(tgt_rank)
+    df['abs_beta'] = df['mean_beta'].abs()
+    df = df.sort_values(['tgt_rank', 'abs_beta'], ascending=[False, True]).reset_index(drop=True)
+
+    n = len(df)
+    fig, ax = plt.subplots(figsize=(13, max(7, n * 0.5)))
+
+    # 95% CI half-width = t_crit(df) * SEM — this is what the t-test significance
+    # actually reflects (CI excludes 0 <=> p < 0.05), unlike a raw +/-1 SEM bar.
+    ci95 = df['sem_beta'] * stats.t.ppf(0.975, (df['n'] - 1).clip(lower=1))
+
+    y      = np.arange(n)
+    colors = [pos_color if b >= 0 else neg_color for b in df['mean_beta']]
+    ax.hlines(y, 0, df['mean_beta'], color=colors, linewidth=5.0, alpha=0.85, zorder=2)
+    ax.errorbar(df['mean_beta'], y, xerr=ci95, fmt='none',
+                ecolor='black', elinewidth=2.5, capsize=6, capthick=2.5,
+                alpha=0.7, zorder=2.5)
+    ax.scatter(df['mean_beta'], y, s=220, color=colors, edgecolor='black',
+               linewidth=2.5, zorder=3)
+
+    x_pad = (df['mean_beta'].abs() + ci95).max() * 0.04
+    for yi, (b, ci, star, sig) in enumerate(zip(df['mean_beta'], ci95,
+                                                 df['stars_ttest'], df['sig_ttest'])):
+        if sig:
+            edge = b + ci if b >= 0 else b - ci
+            ax.text(edge + (x_pad if b >= 0 else -x_pad), yi, star,
+                    ha='left' if b >= 0 else 'right', va='center',
+                    fontsize=_FS_AX + 6, fontweight='bold', color='black')
+
+    # divider lines between target groups
+    for i in range(1, len(targets)):
+        ax.axhline(i * (n / len(targets)) - 0.5, color='black', lw=2.0, ls=':', alpha=0.4)
+
+    ax.axvline(0, color='black', lw=3.0, ls='--', alpha=0.6)
+    ax.set_yticks(y)
+    ax.set_yticklabels(df['row_label'], fontsize=_FS_SM, color='black')
+    ax.set_xlabel('Mean β  ±  95% CI  (standardized units)', fontsize=_FS_AX, color='black')
+    ax.set_title('Full waveform-feature β profile — Pre/Post LFP Amp & Std\n'
+                 '* = one-sample t-test, mean β ≠ 0 (p < 0.05)  —  bars cross 0 ⟺ ns',
+                 fontsize=_FS_SUB, fontweight='bold', color='black', pad=22)
+    ax.tick_params(axis='both', labelsize=_FS_SM, colors='black')
+
+    handles = [plt.Line2D([0], [0], marker='o', linestyle='', color=pos_color,
+                          markeredgecolor='black', markeredgewidth=2.0, markersize=16,
+                          label='Positive β'),
+               plt.Line2D([0], [0], marker='o', linestyle='', color=neg_color,
+                          markeredgecolor='black', markeredgewidth=2.0, markersize=16,
+                          label='Negative β')]
+    leg = ax.legend(handles=handles, fontsize=_FS_SM, frameon=False, loc='lower right')
+    for text in leg.get_texts():
+        text.set_color('black')
+
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+    return fig, ax
+
+
+def plot_beta_heterogeneity(beta_pop, target_names, target_labels, features=None):
+    """
+    Cartoony violin + strip plot of per-cell beta weights, pooled across all
+    core (non-HPF) Pre/Post targets, one violin per waveform feature.
+
+    Illustrates that some waveform features carry strong effects on LFP
+    prediction overall, but individual cells diverge — the same feature can
+    push the prediction up in one cell and down in another (β straddles zero).
+    Dots are coloured by sign (blue = positive β, orange = negative β).
+    """
+    import seaborn as sns
+
+    sns.set_theme(style='ticks', font_scale=1.8, rc={
+        'axes.linewidth':    4.0,
+        'xtick.major.width': 4.0,
+        'ytick.major.width': 4.0,
+        'xtick.major.size':  9,
+        'ytick.major.size':  9,
+        'lines.linewidth':   4.0,
+    })
+    _FS_SM, _FS_AX, _FS_SUB = 20, 24, 28
+    pos_color, neg_color = '#0072B2', '#D55E00'  # Okabe-Ito blue / vermillion (colour-blind safe)
+
+    if features is None:
+        features = WAVEFORM_LABELS
+
+    core_tn = [tn for tn, tl in zip(target_names, target_labels) if '(HPF)' not in tl]
+
+    rows = []
+    for feat in features:
+        for tn in core_tn:
+            vals  = np.asarray(beta_pop[tn][feat], dtype=float)
+            valid = vals[np.isfinite(vals)]
+            rows.extend(dict(feature=feat, beta=float(v),
+                             sign='Positive β' if v >= 0 else 'Negative β')
+                        for v in valid)
+    df = pd.DataFrame(rows)
+
+    fig, ax = plt.subplots(figsize=(max(14, len(features) * 2.0), 7.5))
+    sns.violinplot(data=df, x='feature', y='beta', order=features, ax=ax,
+                   inner=None, color='#CFD8DC', linewidth=3.0, cut=0, zorder=1)
+    sns.stripplot(data=df, x='feature', y='beta', order=features, ax=ax,
+                  hue='sign', hue_order=['Positive β', 'Negative β'],
+                  palette={'Positive β': pos_color, 'Negative β': neg_color},
+                  alpha=0.35, size=4.0, jitter=0.32, zorder=2, legend=True)
+
+    ax.axhline(0, color='black', lw=3.0, ls='--', alpha=0.6)
+    ax.set_xlabel('')
+    ax.set_ylabel('Per-cell β  (standardized units)', fontsize=_FS_AX, color='black')
+    ax.set_title('Per-cell spike-waveform β weights — pooled across Pre/Post targets\n'
+                 'strong population-level effects can still flip direction across cells',
+                 fontsize=_FS_SUB, fontweight='bold', color='black', pad=22)
+    ax.tick_params(axis='both', labelsize=_FS_SM, colors='black')
+    plt.setp(ax.get_xticklabels(), fontsize=_FS_SM, rotation=25, ha='right', color='black')
+    plt.setp(ax.get_yticklabels(), fontsize=_FS_SM, color='black')
+
+    leg = ax.legend(fontsize=_FS_SM, frameon=False, loc='upper right',
+                    title='', markerscale=2.5)
+    for text in leg.get_texts():
+        text.set_color('black')
+
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+    return fig, ax
+
+
 # ── R² distribution strip plot ───────────────────────────────────────────────
 
 def plot_r2_distributions(r2_pop, sig_pop, target_names, target_labels,
