@@ -2389,6 +2389,17 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
         print('No transitions to plot.')
         return
 
+    sns.set_theme(style='ticks', font_scale=1.3, rc={
+        'axes.linewidth':    2.5,
+        'xtick.major.width': 2.5,
+        'ytick.major.width': 2.5,
+        'xtick.major.size':  6,
+        'ytick.major.size':  6,
+        'lines.linewidth':   2.5,
+    })
+    _FS_TICK, _FS_AX, _FS_SUB = 11, 12, 17
+    trans_color = '#D55E00'  # Okabe-Ito vermillion (colour-blind safe)
+
     ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
                'Low': 0, 'Mid': 1, 'High': 2}
     CLR = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
@@ -2399,7 +2410,7 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
 
     n_rows = int(np.ceil(len(df_transitions) / n_cols))
     fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(n_cols * 4.5, n_rows * 3.2),
+                             figsize=(n_cols * 4.8, n_rows * 3.5),
                              squeeze=False)
 
     for ax_i, (_, row) in enumerate(df_transitions.iterrows()):
@@ -2434,23 +2445,24 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
             mask = labels == lbl
             ax.scatter(times[mask], ord_l[mask],
                        color=CLR.get(str(lbl), 'gray'),
-                       s=2, alpha=0.3, linewidths=0)
+                       s=14, alpha=0.45, linewidths=0, zorder=2)
 
         # Rolling mean
         rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
-        ax.plot(times, rm.values, color='k', lw=2, zorder=5)
+        ax.plot(times, rm.values, color='black', lw=4.0, zorder=5)
 
         # Transition line
-        ax.axvline(t_tr / 1000.0, color='crimson', lw=2, ls='--', zorder=6)
+        ax.axvline(t_tr / 1000.0, color=trans_color, lw=4.0, ls='--', zorder=6)
         ax.text(t_tr / 1000.0, ax.get_ylim()[1] if ax.get_ylim()[1] != ax.get_ylim()[0]
                 else 2.1, f'  {t_tr/1000:.1f}s',
-                color='crimson', fontsize=7, va='top')
+                color=trans_color, fontsize=_FS_TICK, fontweight='bold', va='top')
 
         ax.set_yticks([0, 1, 2])
-        ax.set_yticklabels(['low', 'mid', 'high'], fontsize=8)
-        ax.set_xlabel('Time (s)', fontsize=8)
+        ax.set_yticklabels(['low', 'mid', 'high'], fontsize=_FS_TICK, color='black')
+        ax.set_xlabel('Time (s)', fontsize=_FS_AX, color='black')
         ax.set_title(f'{cid}  ·  {feat}\nρ={rho:+.2f}  {cl_b}→{cl_a}',
-                     fontsize=8, fontweight='bold')
+                     fontsize=_FS_AX, fontweight='bold', color='black')
+        ax.tick_params(axis='both', labelsize=_FS_TICK, colors='black')
         sns.despine(ax=ax)
 
     # Hide unused axes
@@ -2458,8 +2470,8 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
         axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
 
     fig.suptitle('Temporal transitions in cluster membership\n'
-                 'Black line = rolling mean  |  Red dashed = detected changepoint  |  '
+                 'Black line = rolling mean   |   Vermillion dashed = detected changepoint   |   '
                  'Colour = cluster label',
-                 fontsize=11, y=1.01)
+                 fontsize=_FS_SUB, fontweight='bold', color='black', y=1.01)
     fig.tight_layout()
     plt.show()
