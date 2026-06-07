@@ -545,16 +545,46 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
 def build_population_scatter(all_results, cell_ids, target_names, target_labels,
                               pre_win=None, post_win=None, baseline_win=None):
     """
-    Pool scatter data (actual vs predicted, z-scored) across cells.
+    Pool scatter data (actual vs predicted, z-scored) across cells — cartoony
+    style, core (non-HPF) targets only.
+
+    Organised exactly like plot_r2_summary_boxplot: one row per LFP feature
+    (LFP Amp, LFP Std, Gamma AUC, Exponent, Theta AUC), Pre-spike scatters on
+    the left of a thick dashed divider and Post-spike scatters on the right.
+
     Reads y_actual/y_pred saved in each cell's pickle — no cell data reloading needed.
     Only includes cells where the Waveform-only model was significant.
     """
     import seaborn as sns
-    pooled = {tn: {'y': [], 'yp': [], 'colors': []} for tn in target_names}
-    cmap   = plt.cm.get_cmap('tab20', len(cell_ids))
+    sns.set_theme(style='ticks', font_scale=1.8, rc={
+        'axes.linewidth':    4.0,
+        'xtick.major.width': 4.0,
+        'ytick.major.width': 4.0,
+        'xtick.major.size':  9,
+        'ytick.major.size':  9,
+        'lines.linewidth':   4.0,
+        'figure.titlesize':  28,
+    })
+    _FS_SM, _FS_AX, _FS_SUB = 22, 26, 30
 
-    for c_idx, cid in enumerate(cell_ids):
-        for tn in target_names:
+    feat_order = ['LFP Amp', 'LFP Std', 'Gamma AUC', 'Exponent', 'Theta AUC']
+    win_order  = ['Pre', 'Post']
+
+    # core (non-HPF) target name <-> label lookup
+    tl_idx = {tl: i for i, tl in enumerate(target_labels) if '(HPF)' not in tl}
+    win_feat_tn = {win: {} for win in win_order}
+    for win in win_order:
+        for feat in feat_order:
+            tl = f'{win} {feat}'
+            if tl in tl_idx:
+                win_feat_tn[win][feat] = target_names[tl_idx[tl]]
+    feats = [f for f in feat_order if any(f in win_feat_tn[w] for w in win_order)]
+
+    cmap = plt.cm.get_cmap('tab20', len(cell_ids))
+
+    def _pool(tn):
+        y, yp, colors = [], [], []
+        for c_idx, cid in enumerate(cell_ids):
             cell_res = all_results.get(cid, {}).get(tn, {}).get('Waveform only', {})
             # Use raw p < 0.05 — consistent with sig_pop (pickles store sig_fdr, not used here)
             p_raw = cell_res.get('p_val', 1.0)
@@ -564,42 +594,80 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
             y_pred   = cell_res.get('y_pred')
             if y_actual is None or y_pred is None:
                 continue
-            pooled[tn]['y'].extend(y_actual.tolist())
-            pooled[tn]['yp'].extend(y_pred.tolist())
-            pooled[tn]['colors'].extend([cmap(c_idx)] * len(y_actual))
+            y.extend(y_actual.tolist())
+            yp.extend(y_pred.tolist())
+            colors.extend([cmap(c_idx)] * len(y_actual))
+        return np.array(y), np.array(yp), colors
 
-    sig_targets = [(tn, tl) for tn, tl in zip(target_names, target_labels)
-                   if len(pooled[tn]['y']) > 0]
-    if not sig_targets:
-        print('No significant targets found.')
-        return
+    # each side gets its own little grid (e.g. 5 feats -> 2 rows x 3 cols)
+    ncols_blk = min(len(feats), 3)
+    nrows_blk = math.ceil(len(feats) / ncols_blk)
+    ncols_tot = 2 * ncols_blk
 
-    ncols = min(len(sig_targets), 4)
-    nrows = math.ceil(len(sig_targets) / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.2, nrows * 4.2))
-    axes = np.array(axes).flatten() if len(sig_targets) > 1 else [axes]
-    fig.suptitle('Population – Actual vs Predicted (Waveform only)\n'
-                 'Each colour = one cell  |  z-scored within cell  |  p<0.05 cells only',
-                 fontsize=12, y=1.01)
+    # insert a narrow spacer column between the two blocks so the divider has
+    # room to sit in open space rather than overlapping axis labels/ticks
+    spacer_idx = ncols_blk
+    width_ratios = [1.0] * ncols_blk + [0.18] + [1.0] * ncols_blk
+    fig = plt.figure(figsize=(ncols_tot * 5.0 + 1.0, nrows_blk * 4.8))
+    gs = fig.add_gridspec(nrows_blk, ncols_tot + 1, width_ratios=width_ratios,
+                          wspace=0.45, hspace=0.55)
+    axes = np.empty((nrows_blk, ncols_tot), dtype=object)
+    for r in range(nrows_blk):
+        for c in range(ncols_tot):
+            gs_col = c if c < ncols_blk else c + 1
+            axes[r, c] = fig.add_subplot(gs[r, gs_col])
 
-    for ax, (tn, tl) in zip(axes, sig_targets):
-        y   = np.array(pooled[tn]['y'])
-        yp  = np.array(pooled[tn]['yp'])
-        r2  = float(np.corrcoef(y, yp)[0, 1] ** 2)
-        ax.scatter(y, yp, c=pooled[tn]['colors'], alpha=0.07, s=2, rasterized=True)
-        lo, hi = min(y.min(), yp.min()), max(y.max(), yp.max())
-        ax.plot([lo, hi], [lo, hi], 'k--', lw=1.2, alpha=0.8)
-        ax.set_xlabel('Actual (z-score)', fontsize=10)
-        ax.set_ylabel('Predicted (z-score)', fontsize=10)
-        ax.set_title(tl, fontsize=11, fontweight='bold')
-        ax.text(0.05, 0.93, f'Pooled r² = {r2:.3f}', transform=ax.transAxes,
-                fontsize=9, va='top')
-        ax.text(0.05, 0.85, f'{len(y):,} spikes', transform=ax.transAxes,
-                fontsize=8, va='top', color='#555')
-        sns.despine(ax=ax)
+    fig.text(0.5, 1.0,
+             'Each colour = one cell   |   z-scored within cell   |   p < 0.05 cells only',
+             ha='center', va='top', fontsize=_FS_SM, style='italic', color='black')
 
-    for i in range(len(sig_targets), len(axes)): axes[i].set_visible(False)
-    fig.tight_layout(); plt.show()
+    for wi, win in enumerate(win_order):
+        col_off = wi * ncols_blk
+        for fi, feat in enumerate(feats):
+            r, c = divmod(fi, ncols_blk)
+            ax = axes[r, col_off + c]
+            tn = win_feat_tn[win].get(feat)
+            if tn is None:
+                ax.set_visible(False)
+                continue
+            y, yp, colors = _pool(tn)
+            if len(y) == 0:
+                ax.set_visible(False)
+                continue
+            r2 = float(np.corrcoef(y, yp)[0, 1] ** 2)
+            ax.scatter(y, yp, c=colors, alpha=0.07, s=3, rasterized=True)
+            lo, hi = min(y.min(), yp.min()), max(y.max(), yp.max())
+            ax.plot([lo, hi], [lo, hi], 'k--', lw=4.5, alpha=0.8)
+            ax.set_title(f'{win} — {feat}', fontsize=_FS_SUB, fontweight='bold',
+                         color='black', pad=16)
+            box = dict(facecolor='white', edgecolor='none', alpha=0.75, pad=2.0)
+            ax.text(0.05, 0.88, f'r² = {r2:.3f}', transform=ax.transAxes,
+                    fontsize=_FS_AX, fontweight='bold', va='top', color='black', bbox=box)
+            ax.text(0.05, 0.74, f'{len(y):,} spikes', transform=ax.transAxes,
+                    fontsize=_FS_SM - 6, va='top', color='black', bbox=box)
+            ax.set_xlabel('Actual (z-score)', fontsize=_FS_AX, color='black')
+            ax.set_ylabel('Predicted (z-score)', fontsize=_FS_AX, color='black')
+            ax.tick_params(axis='both', labelsize=_FS_SM, colors='black')
+            sns.despine(ax=ax)
+
+        # hide unused slots in this block (e.g. 5 feats in a 2x3 grid -> 1 empty)
+        for fi in range(len(feats), nrows_blk * ncols_blk):
+            r, c = divmod(fi, ncols_blk)
+            axes[r, col_off + c].set_visible(False)
+
+    fig.subplots_adjust(top=0.88)
+
+    # ── thick dashed divider, centred in the spacer column between blocks ──
+    fig.canvas.draw()
+    pos_l = next(ax for ax in axes[:, ncols_blk - 1] if ax.get_visible()).get_position()
+    pos_r = next(ax for ax in axes[:, ncols_blk] if ax.get_visible()).get_position()
+    x_div = (pos_l.x1 + pos_r.x0) / 2
+    all_pos = [ax.get_position() for ax in axes.flatten() if ax.get_visible()]
+    y0, y1 = min(p.y0 for p in all_pos), max(p.y1 for p in all_pos)
+    fig.add_artist(plt.Line2D([x_div, x_div], [y0, y1], transform=fig.transFigure,
+                              color='black', linestyle='--', linewidth=5.0, alpha=0.7))
+
+    plt.show()
 
 
 # ── Population tests: R² > 0 ────────────────────────────────────────────────
@@ -1029,6 +1097,157 @@ def plot_r2_summary(r2_pop, df_r2, target_names, target_labels,
     sns.despine(ax=ax)
     fig.tight_layout()
     plt.show()
+
+
+def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
+                             predictor_set='Waveform only',
+                             control_predictor_set='Log ISI only'):
+    """
+    Cartoony boxplot of per-cell CV R² for the core LFP-feature targets only
+    (Pre/Post × LFP Amp, LFP Std, Gamma AUC, Exponent, Theta AUC — no HPF,
+    no baseline-corrected, no Δ variants).
+
+    Single plot, split by a vertical dashed divider: Pre-spike targets on the
+    left, Post-spike targets on the right. Within each side, boxes are grouped
+    by LFP feature and coloured by model — Waveform model vs. a Log-ISI-only
+    control (showing whether waveform shape carries information beyond simple
+    spike timing).
+
+    Diamonds mark the population mean CV R² (the boxplot line itself is the
+    median — they differ because the per-cell R² distribution is right-skewed).
+    Each pair of boxes is annotated above with the fraction of cells
+    individually significant and a star marking population-level significance
+    (Wilcoxon median R² > 0, from df_r2).
+
+    Parameters
+    ----------
+    r2_pop, sig_pop        : output of aggregate_population
+    df_r2                  : output of run_r2_tests
+    target_names, target_labels : list[str]
+    predictor_set          : str  the main model
+    control_predictor_set  : str  the control comparison
+    """
+    import seaborn as sns
+
+    sns.set_theme(style='ticks', font_scale=1.8, rc={
+        'axes.linewidth':    3.0,
+        'xtick.major.width': 3.0,
+        'ytick.major.width': 3.0,
+        'xtick.major.size':  8,
+        'ytick.major.size':  8,
+        'patch.linewidth':   3.0,
+        'lines.linewidth':   3.0,
+        'figure.titlesize':  24,
+    })
+    _FS_SM, _FS_AX, _FS_SUB = 18, 22, 26
+
+    feat_order   = ['LFP Amp', 'LFP Std', 'Gamma AUC', 'Exponent', 'Theta AUC']
+    win_order    = ['Pre', 'Post']
+    model_order  = [predictor_set, control_predictor_set]
+    model_colors = {predictor_set: '#1976D2', control_predictor_set: '#9E9E9E'}
+    model_labels = {predictor_set: 'Waveform model', control_predictor_set: 'Log-ISI control'}
+
+    tl_idx = {tl: i for i, tl in enumerate(target_labels)}
+
+    # feature -> target name, per window (only keep features present in both windows)
+    win_feat_tn = {win: {} for win in win_order}
+    for win in win_order:
+        for feat in feat_order:
+            tl = f'{win} {feat}'
+            if tl in tl_idx:
+                win_feat_tn[win][feat] = target_names[tl_idx[tl]]
+    feats = [f for f in feat_order if all(f in win_feat_tn[w] for w in win_order)]
+
+    # ── build one long-form df per side, and a shared whisker-based y-range ──
+    side_dfs = []
+    whisk_hi, whisk_lo = [], []
+    for win in win_order:
+        rows = []
+        for feat in feats:
+            tn = win_feat_tn[win][feat]
+            for pn in model_order:
+                vals  = np.asarray(r2_pop[tn][pn], dtype=float)
+                valid = vals[np.isfinite(vals)]
+                rows.extend(dict(feat=feat, model=pn, r2=v) for v in valid)
+                if len(valid):
+                    q1, q3 = np.percentile(valid, [25, 75])
+                    iqr = q3 - q1
+                    whisk_hi.append(valid[valid <= q3 + 1.5 * iqr].max())
+                    whisk_lo.append(valid[valid >= q1 - 1.5 * iqr].min())
+        side_dfs.append(pd.DataFrame(rows))
+
+    y_top = max(whisk_hi)
+    y_bot = min(0.0, min(whisk_lo))
+    pad   = (y_top - y_bot) * 0.08
+    ylim  = (y_bot - pad, y_top + pad)
+
+    box_w  = 0.65
+    offset = box_w / 4   # seaborn's dodge offset for 2 hue levels at this width
+
+    fig, axes = plt.subplots(1, 2, figsize=(max(15, len(feats) * 4.4), 7.5),
+                             sharey=True, gridspec_kw={'wspace': 0.05})
+
+    for ax, win, df_plot in zip(axes, win_order, side_dfs):
+        sns.boxplot(data=df_plot, x='feat', y='r2', hue='model', order=feats,
+                    hue_order=model_order,
+                    palette=[model_colors[m] for m in model_order],
+                    width=box_w, dodge=True, fliersize=0, ax=ax,
+                    showmeans=True,
+                    meanprops=dict(marker='D', markerfacecolor='white',
+                                   markeredgecolor='black', markeredgewidth=2.0,
+                                   markersize=9, zorder=5),
+                    boxprops=dict(linewidth=3.0, alpha=0.85),
+                    medianprops=dict(linewidth=3.0, color='black'),
+                    whiskerprops=dict(linewidth=3.0),
+                    capprops=dict(linewidth=3.0))
+        ax.get_legend().remove()
+        ax.axhline(0, color='gray', linestyle='--', linewidth=2.5, alpha=0.6)
+        ax.set_ylim(*ylim)
+
+        # annotations at a fixed height *relative to the axes* — never overlap boxes
+        trans = ax.get_xaxis_transform()
+        for fi, feat in enumerate(feats):
+            tn = win_feat_tn[win][feat]
+            for hi, pn in enumerate(model_order):
+                sig_arr  = np.asarray(sig_pop[tn][pn], dtype=bool)
+                frac_sig = float(sig_arr.mean()) if len(sig_arr) else np.nan
+                row = df_r2[(df_r2['target'] == tn) & (df_r2['predictor_set'] == pn)]
+                star = row.iloc[0]['stars'] if len(row) and row.iloc[0]['sig_r2'] else ''
+                x = fi + (-offset if hi == 0 else offset)
+                ax.text(x, 1.02, f'{frac_sig:.0%}{star}',
+                        ha='center', va='bottom', fontsize=_FS_SM - 4, fontweight='bold',
+                        color='black', transform=trans, clip_on=False)
+
+        ax.set_xlabel('')
+        ax.set_ylabel('CV R²' if ax is axes[0] else '', fontsize=_FS_AX, color='black')
+        ax.tick_params(axis='x', labelsize=_FS_SM, colors='black')
+        ax.tick_params(axis='y', labelsize=_FS_SM, colors='black', left=(ax is axes[0]))
+        sns.despine(ax=ax, left=(ax is axes[1]), right=(ax is axes[0]))
+
+    fig.text(0.5, 1.04,
+             '% = fraction of cells individually significant   |   '
+             '* = population-level significant (median R² > 0)   |   '
+             '◇ mean,  — median',
+             ha='center', fontsize=_FS_SM, style='italic', color='black')
+
+    handles = [plt.Rectangle((0, 0), 1, 1, color=model_colors[m], alpha=0.85,
+                             label=model_labels[m]) for m in model_order]
+    fig.legend(handles=handles, fontsize=_FS_SM, frameon=False, labelcolor='black',
+               loc='upper right', bbox_to_anchor=(0.99, 1.10))
+
+    fig.tight_layout(rect=[0, 0, 0.88, 0.92])
+
+    # ── dashed divider between the two panels, placed using final (post-layout)
+    # axes positions ──
+    fig.canvas.draw()
+    pos_l, pos_r = axes[0].get_position(), axes[1].get_position()
+    x_div = (pos_l.x1 + pos_r.x0) / 2
+    y0, y1 = min(pos_l.y0, pos_r.y0), max(pos_l.y1, pos_r.y1)
+    fig.add_artist(plt.Line2D([x_div, x_div], [y0, y1], transform=fig.transFigure,
+                              color='black', linestyle='--', linewidth=4.0, alpha=0.6))
+
+    plt.show()
+    return fig, axes
 
 
 # ── Target correlation check ─────────────────────────────────────────────────
