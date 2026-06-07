@@ -2398,7 +2398,7 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
         'lines.linewidth':   2.5,
     })
     _FS_TICK, _FS_AX, _FS_SUB = 11, 12, 17
-    trans_color = '#D55E00'  # Okabe-Ito vermillion (colour-blind safe)
+    trans_color = '#CC79A7'  # Okabe-Ito reddish purple (colour-blind safe, distinct from cluster colours)
 
     ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
                'Low': 0, 'Mid': 1, 'High': 2}
@@ -2470,8 +2470,142 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
         axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
 
     fig.suptitle('Temporal transitions in cluster membership\n'
-                 'Black line = rolling mean   |   Vermillion dashed = detected changepoint   |   '
+                 'Black line = rolling mean of cluster label (low=0, mid=1, high=2)   |   Purple dashed = detected changepoint   |   '
                  'Colour = cluster label',
                  fontsize=_FS_SUB, fontweight='bold', color='black', y=1.01)
     fig.tight_layout()
+    plt.show()
+
+
+def plot_temporal_transitions_highlights(df_transitions, cluster_pickle_dir,
+                                           selections, n_cols=3, rolling_n=50):
+    """
+    Cartoony highlight-reel version of plot_temporal_transitions: shows only a
+    hand-picked subset of (cell_id, spike_feature) transitions, laid out in a
+    small grid with much bigger fonts, dots, and lines — for slides.
+
+    Parameters
+    ----------
+    df_transitions : output of find_temporal_transitions
+    cluster_pickle_dir : str  path to cluster_pickles/
+    selections     : list[tuple[str, str]]
+        (cell_id, spike_feature) pairs to plot, e.g.
+        [('c42', 'peak_width'), ('c20', 'peak_amp'), ...]
+    n_cols         : int  subplot columns (default 3)
+    rolling_n      : int  window for rolling mean (default 50 spikes)
+    """
+    sns.set_theme(style='ticks', font_scale=2.2, rc={
+        'axes.linewidth':    4.5,
+        'xtick.major.width': 4.5,
+        'ytick.major.width': 4.5,
+        'xtick.major.size':  10,
+        'ytick.major.size':  10,
+        'lines.linewidth':   4.5,
+    })
+    _FS_TICK, _FS_AX, _FS_SUB = 22, 24, 30
+    trans_color = '#CC79A7'  # Okabe-Ito reddish purple (colour-blind safe, distinct from cluster colours)
+
+    ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
+               'Low': 0, 'Mid': 1, 'High': 2}
+    CLR = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
+           'Low': '#0072B2', 'Mid': '#009E73', 'High': '#D55E00'}
+
+    def _to_ord(l):
+        return ORDINAL.get(str(l).strip(), 1)
+
+    rows = []
+    for cid, feat in selections:
+        match = df_transitions[(df_transitions['cell_id'] == cid) &
+                               (df_transitions['spike_feature'] == feat)]
+        if match.empty:
+            print(f'No transition found for ({cid}, {feat}) — skipping.')
+            continue
+        rows.append(match.iloc[0])
+
+    if not rows:
+        print('No matching transitions found.')
+        return
+
+    n_rows = int(np.ceil(len(rows) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(n_cols * 7.5, n_rows * 5.5),
+                             squeeze=False)
+
+    for ax_i, row in enumerate(rows):
+        ax = axes[ax_i // n_cols][ax_i % n_cols]
+        cid  = row['cell_id']
+        feat = row['spike_feature']
+        t_tr = row['transition_time_ms']
+        rho  = row['temporal_rho']
+        cl_b = row['cluster_before']
+        cl_a = row['cluster_after']
+
+        pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
+        try:
+            df = pd.read_pickle(pkl)
+        except FileNotFoundError:
+            ax.set_visible(False)
+            continue
+
+        col = f'{feat}_cluster'
+        if col not in df.columns:
+            ax.set_visible(False)
+            continue
+
+        sub = df[['spk_times_ms', col]].dropna()
+        sub = sub.sort_values('spk_times_ms').reset_index(drop=True)
+        times  = sub['spk_times_ms'].values / 1000.0   # → seconds
+        labels = sub[col].values
+        ord_l  = np.array([_to_ord(l) for l in labels], dtype=float)
+
+        # Scatter: individual spike cluster labels — big, bold dots
+        for lbl in np.unique(labels):
+            mask = labels == lbl
+            ax.scatter(times[mask], ord_l[mask],
+                       color=CLR.get(str(lbl), 'gray'),
+                       s=60, alpha=0.55, linewidths=0, zorder=2)
+
+        # Rolling mean
+        rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
+        ax.plot(times, rm.values, color='black', lw=6.5, zorder=5)
+
+        # Transition line
+        t_tr_s = t_tr / 1000.0
+        ax.axvline(t_tr_s, color=trans_color, lw=6.0, ls='--', zorder=6)
+
+        ax.set_yticks([0, 1, 2])
+        ax.set_yticklabels(['low', 'mid', 'high'], fontsize=_FS_TICK, color='black')
+        ax.set_xlabel('Time (s)', fontsize=_FS_AX, color='black')
+        ax.set_title(f'{cid}  ·  {feat}\nρ={rho:+.2f}  {cl_b}→{cl_a}',
+                     fontsize=_FS_AX, fontweight='bold', color='black', pad=14)
+        ax.tick_params(axis='both', labelsize=_FS_TICK, colors='black')
+        sns.despine(ax=ax)
+
+    # Hide unused axes
+    for ax_i in range(len(rows), n_rows * n_cols):
+        axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
+
+    fig.suptitle('Temporal transitions in cluster membership',
+                 fontsize=_FS_SUB, fontweight='bold', color='black', y=1.06)
+
+    handles = [
+        plt.Line2D([0], [0], color='black', lw=6.5,
+                   label='Rolling mean of cluster label'),
+        plt.Line2D([0], [0], marker='s', linestyle='', color=trans_color,
+                   markeredgecolor='black', markeredgewidth=2.0, markersize=18,
+                   label='Detected changepoint'),
+        plt.Line2D([0], [0], marker='o', linestyle='', color=CLR['low'],
+                   markersize=18, label='Low'),
+        plt.Line2D([0], [0], marker='o', linestyle='', color=CLR['mid'],
+                   markersize=18, label='Mid'),
+        plt.Line2D([0], [0], marker='o', linestyle='', color=CLR['high'],
+                   markersize=18, label='High'),
+    ]
+    leg = fig.legend(handles=handles, fontsize=_FS_TICK, frameon=False,
+                     loc='upper center', bbox_to_anchor=(0.5, 1.0),
+                     ncol=5, columnspacing=2.0, handlelength=2.5)
+    for text in leg.get_texts():
+        text.set_color('black')
+
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
     plt.show()
