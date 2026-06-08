@@ -261,6 +261,213 @@ def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
     return X_waveform, X_log_isi, X_both, WAVEFORM_LABELS, Y, target_names, target_labels
 
 
+# ── Single-PSD alternative (fit Specparam once per pre/post window) ──────────
+#
+# build_ridge_matrices derives gamma_auc / exponent / theta_auc by averaging an
+# already time-resolved sliding-window Specparam fit (win_avg(specparam_by_spike[i],
+# ...)) within each pre/post/baseline window. The functions below offer an
+# alternative: compute ONE PSD over the raw LFP segment inside each window and
+# fit ONE static SpectralModel to it directly — this avoids blending together
+# sliding-window epochs that straddle a window boundary, at the cost of a lower-
+# resolution (single-spectrum) estimate per window.
+
+def compute_pre_post_psd_features(hpf_lfp_by_spike, fs, pre_win, post_win, baseline_win,
+                                   psd_seg_len_s=0.25,
+                                   freq_range=(1, 90), n_freqs=256, time_bandwidth=2.0,
+                                   band_dict=None, aperiodic_mode="fixed",
+                                   peak_width_limits=(4.0, 8.0),
+                                   max_n_peaks=4, min_peak_height=0.0, peak_threshold=2.0,
+                                   verbose=False):
+    """
+    For each spike, compute ONE multitaper PSD per pre/baseline/post window and
+    fit ONE static SpectralModel to it — returning single-value exponent/
+    gamma_auc/theta_auc/r_squared per window (rather than averaging an already
+    time-resolved fit within the window).
+
+    The pre/post/baseline analysis windows used in this pipeline (e.g. 50-100 ms)
+    are far too short to estimate a usable multitaper PSD across 1-90 Hz: the
+    minimum viable spectral bandwidth is ~1/window_length, so a 50 ms window only
+    supports ~20 Hz resolution — too coarse to separate theta from gamma or fit a
+    credible aperiodic. To keep "one PSD per window" while still getting a usable
+    spectral estimate, the PSD is computed over a `psd_seg_len_s`-long segment
+    *centered on the analysis window's midpoint* (clipped to the available trace),
+    rather than over the literal (typically much shorter) window bounds.
+
+    Parameters
+    ----------
+    hpf_lfp_by_spike : list of dict, from load_hpf_lfp_windows
+        {'t_bins_s': ndarray, 'lfp_hpf': ndarray} — full-resolution per-spike trace.
+    fs : float
+        Sampling rate of the LFP traces (Hz), e.g. config.LFP_FS.
+    pre_win, post_win, baseline_win : (start_s, end_s)
+        Analysis windows. Only their midpoints are used to center the PSD segment.
+    psd_seg_len_s : float
+        Length (s) of the segment the PSD/Specparam fit is computed over, centered
+        on each analysis window's midpoint. Default 0.25 s (625 samples @ 2500 Hz)
+        gives ~4 Hz spectral resolution with time_bandwidth=2.0 — enough to
+        separate theta (4-8 Hz) from gamma (30-55 Hz).
+    freq_range, n_freqs, time_bandwidth, band_dict, aperiodic_mode,
+    peak_width_limits, max_n_peaks, min_peak_height, peak_threshold, verbose :
+        Passed through to mne.time_frequency.psd_array_multitaper / SpectralModel,
+        matching the conventions used in compute_lfp_windows / band_aucs (gamma=
+        30-55 Hz, theta = 4-8 Hz, log10-power AUC between full and aperiodic fit).
+
+    Returns
+    -------
+    list of dict, one per spike:
+        {'pre': {...}, 'baseline': {...}, 'post': {...}}
+    each sub-dict: {'exponent', 'gamma_auc', 'theta_auc', 'r_squared'} (NaN on failure).
+    """
+    import mne
+    from specparam import SpectralModel
+
+    if band_dict is None:
+        band_dict = {"theta": (4, 8), "gamma": (30, 55)}
+
+    half_len = psd_seg_len_s / 2.0
+    min_samples = int(round(fs * psd_seg_len_s * 0.9))   # allow slight edge clipping
+
+    # Multitaper requires normalized half-bandwidth (bandwidth/2)*T >= 0.5,
+    # i.e. bandwidth >= 1/T — bump up time_bandwidth if the segment is too
+    # short for the requested value (e.g. the 2.0 Hz default needs T >= 0.5 s).
+    bandwidth = max(float(time_bandwidth), 1.0 / psd_seg_len_s)
+
+    def _fit_window(t_bins, trace, window):
+        empty = {'exponent': np.nan, 'gamma_auc': np.nan, 'theta_auc': np.nan, 'r_squared': np.nan}
+        center = (window[0] + window[1]) / 2.0
+        mask = (t_bins >= center - half_len) & (t_bins <= center + half_len)
+        seg = trace[mask]
+        if seg.size < min_samples:
+            return empty
+
+        psd, freqs = mne.time_frequency.psd_array_multitaper(
+            seg[np.newaxis, :], sfreq=fs, fmin=freq_range[0], fmax=freq_range[1],
+            bandwidth=bandwidth, adaptive=False, normalization='full', verbose=False,
+        )
+        psd = np.squeeze(psd, axis=0)
+        freqs = np.asarray(freqs, float)
+
+        sm = SpectralModel(
+            aperiodic_mode=aperiodic_mode,
+            peak_width_limits=peak_width_limits, max_n_peaks=max_n_peaks,
+            min_peak_height=min_peak_height, peak_threshold=peak_threshold, verbose=verbose,
+        )
+        try:
+            sm.fit(freqs, psd, freq_range=freq_range)
+            full_log = np.asarray(sm.get_model(component="full",      space="log"))
+            ape_log  = np.asarray(sm.get_model(component="aperiodic", space="log"))
+            out = {
+                'exponent':  float(sm.get_params("aperiodic_params", "exponent")),
+                'r_squared': float(sm.r_squared_),
+            }
+        except Exception:
+            return empty
+
+        for bname, (f_lo, f_hi) in band_dict.items():
+            if bname not in ('theta', 'gamma'):
+                continue
+            bmask = (freqs >= f_lo) & (freqs <= f_hi)
+            if np.any(bmask):
+                out[f'{bname}_auc'] = float(np.trapz(full_log[bmask] - ape_log[bmask], freqs[bmask]))
+            else:
+                out[f'{bname}_auc'] = np.nan
+        out.setdefault('theta_auc', np.nan)
+        out.setdefault('gamma_auc', np.nan)
+        return out
+
+    results = []
+    for hw in hpf_lfp_by_spike:
+        t_bins = np.asarray(hw['t_bins_s'], float)
+        trace  = np.asarray(hw['lfp_hpf'], float)
+        results.append({
+            'pre':      _fit_window(t_bins, trace, pre_win),
+            'baseline': _fit_window(t_bins, trace, baseline_win),
+            'post':     _fit_window(t_bins, trace, post_win),
+        })
+    return results
+
+
+def build_ridge_matrices_single_psd(df_reg, lfp_windows_by_spike, hpf_lfp_by_spike, fs,
+                                     pre_win, post_win, baseline_win,
+                                     psd_seg_len_s=0.25,
+                                     freq_range=(1, 90), n_freqs=256, time_bandwidth=2.0,
+                                     band_dict=None, **specparam_kwargs):
+    """
+    Alternative to build_ridge_matrices: gamma_auc / exponent / theta_auc come
+    from compute_pre_post_psd_features (one PSD + one static SpectralModel fit
+    per pre/baseline/post window per spike) rather than from averaging an
+    already time-resolved sliding-window fit within each window. lfp_amp /
+    lfp_std targets are computed identically to build_ridge_matrices, from the
+    HPF-detrended trace via win_avg/win_std.
+
+    Returns the same (X_waveform, X_log_isi, X_both, waveform_labels, Y,
+    target_names, target_labels) tuple as build_ridge_matrices, so it can be fed
+    into run_ridge_regression / plot_ridge_results unchanged — letting the two
+    spectral-feature methods be compared side by side.
+    """
+    n = len(df_reg)
+    psd_feats = compute_pre_post_psd_features(
+        hpf_lfp_by_spike, fs, pre_win, post_win, baseline_win,
+        psd_seg_len_s=psd_seg_len_s,
+        freq_range=freq_range, n_freqs=n_freqs, time_bandwidth=time_bandwidth,
+        band_dict=band_dict, **specparam_kwargs,
+    )
+
+    X_waveform = df_reg[WAVEFORM_COLS].values.astype(float)
+    X_log_isi  = df_reg[['log_isi']].values.astype(float)
+    X_both     = np.hstack([X_waveform, X_log_isi])
+
+    target_names = (
+        [f'pre_{k}'    for k in FEAT_KEYS] +
+        [f'prebc_{k}'  for k in FEAT_KEYS] +
+        [f'post_{k}'   for k in FEAT_KEYS] +
+        [f'postbc_{k}' for k in FEAT_KEYS] +
+        [f'delta_{k}'  for k in FEAT_KEYS]
+    )
+    target_labels = (
+        [f'Pre {l}'      for l in FEAT_LABELS] +
+        [f'Pre−BL {l}'   for l in FEAT_LABELS] +
+        [f'Post {l}'     for l in FEAT_LABELS] +
+        [f'Post−BL {l}'  for l in FEAT_LABELS] +
+        [f'Δ {l}'        for l in FEAT_LABELS]
+    )
+
+    Y = np.full((n, 25), np.nan)
+
+    for i in range(n):
+        sw    = lfp_windows_by_spike[i]
+        t_sw  = sw['t_bins_s'] if sw is not None else None
+        pf    = psd_feats[i]
+        hw    = hpf_lfp_by_spike[i]
+        t_hpf = hw['t_bins_s']
+        hpf   = hw['lfp_hpf']
+        _amp  = lambda win: win_avg(t_hpf, hpf, win)
+        _std  = lambda win: win_std(t_hpf, hpf, win)
+
+        pre_vals = [_amp(pre_win), _std(pre_win),
+                    pf['pre']['gamma_auc'], pf['pre']['exponent'], pf['pre']['theta_auc']]
+        bl_vals = [_amp(baseline_win), _std(baseline_win),
+                   pf['baseline']['gamma_auc'], pf['baseline']['exponent'], pf['baseline']['theta_auc']]
+        post_vals = [_amp(post_win), _std(post_win),
+                     pf['post']['gamma_auc'], pf['post']['exponent'], pf['post']['theta_auc']]
+
+        Y[i,  0: 5] = pre_vals
+        Y[i,  5:10] = [p - b if np.isfinite(p) and np.isfinite(b) else np.nan
+                       for p, b in zip(pre_vals, bl_vals)]
+        Y[i, 10:15] = post_vals
+        Y[i, 15:20] = [po - b if np.isfinite(po) and np.isfinite(b) else np.nan
+                       for po, b in zip(post_vals, bl_vals)]
+        Y[i, 20:25] = [po - pr if np.isfinite(po) and np.isfinite(pr) else np.nan
+                       for po, pr in zip(post_vals, pre_vals)]
+
+    nan_pct = np.isnan(Y).mean(axis=0) * 100
+    print('Target NaN % (single-PSD method):')
+    for tl, pct in zip(target_labels, nan_pct):
+        print(f'  {tl:22s}  {pct:.1f}%')
+
+    return X_waveform, X_log_isi, X_both, WAVEFORM_LABELS, Y, target_names, target_labels
+
+
 # ── Regression ────────────────────────────────────────────────────────────────
 
 def run_ridge_regression(Y, predictor_sets, target_names, n_perm, rng_seed, alphas,
