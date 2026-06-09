@@ -2217,53 +2217,72 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
 
 # ── Temporal transition detection ─────────────────────────────────────────────
 
-def _changepoint_1d(labels_ord, min_frac=0.1):
+def _sigmoid_transition_1d(times_sec, labels_ord, rolling_n=50, min_frac=0.1):
     """
-    Find the single changepoint in an ordinal label sequence that minimises
-    total within-segment variance (O(n) scan after cumulative stats).
+    Fit a 4-parameter logistic sigmoid to the rolling mean of ordinal cluster
+    labels and return the inflection point (half-transition time) and sharpness.
+
+    Model: y = b + L / (1 + exp(-k * (t - t0)))
+      t0 = transition time (inflection point, seconds)
+      k  = sharpness (1/s); positive = low→high, negative = high→low
+
+    Falls back to the time-series midpoint if curve_fit fails.
 
     Parameters
     ----------
-    labels_ord : 1-D array of floats   (ordinal-coded cluster labels)
-    min_frac   : float  minimum fraction of spikes in each segment
+    times_sec  : 1-D array of recording times (seconds, sorted ascending)
+    labels_ord : 1-D array of ordinal-coded cluster labels (same order)
+    rolling_n  : int   rolling-mean window size in spikes (default 50)
+    min_frac   : float minimum segment fraction for fallback clipping
 
     Returns
     -------
-    best_idx : int  index (in sorted order) after which the change occurs
+    t0_sec : float  transition time in seconds
+    k      : float  sharpness (NaN if fit failed)
     """
-    n   = len(labels_ord)
-    y   = np.asarray(labels_ord, float)
-    lo  = int(np.ceil(n * min_frac))
-    hi  = n - lo
+    from scipy.optimize import curve_fit
 
-    if lo >= hi:
-        return n // 2
+    t  = np.asarray(times_sec, float)
+    y  = np.asarray(labels_ord, float)
+    n  = len(t)
 
-    # cumulative sum and sum-of-squares for left segment
-    cs  = np.cumsum(y)
-    cs2 = np.cumsum(y ** 2)
+    rm = pd.Series(y).rolling(rolling_n, center=True, min_periods=1).mean().values
 
-    best_cost = np.inf
-    best_idx  = lo
-    for k in range(lo, hi):
-        n_l = k;            s_l = cs[k - 1];  ss_l = cs2[k - 1]
-        n_r = n - k;        s_r = cs[-1] - s_l; ss_r = cs2[-1] - ss_l
-        var_l = ss_l / n_l - (s_l / n_l) ** 2
-        var_r = ss_r / n_r - (s_r / n_r) ** 2
-        cost  = n_l * var_l + n_r * var_r
-        if cost < best_cost:
-            best_cost = cost
-            best_idx  = k
+    def _logistic(t_, L, k, t0, b):
+        return b + L / (1.0 + np.exp(np.clip(-k * (t_ - t0), -500, 500)))
 
-    return best_idx
+    L0  = max(rm.max() - rm.min(), 1e-3)
+    b0  = rm.min()
+    t00 = float(t[n // 2])
+    k0  = np.sign(float(y[-1]) - float(y[0])) * 2.0 / max(t[-1] - t[0], 1e-9)
+
+    try:
+        popt, _ = curve_fit(
+            _logistic, t, rm,
+            p0=[L0, k0, t00, b0],
+            bounds=([0.0,    -np.inf, float(t[0]),   -np.inf],
+                    [np.inf,  np.inf, float(t[-1]),   np.inf]),
+            maxfev=10000,
+        )
+        _, k_fit, t0_fit, _ = popt
+        # Clip t0 to the valid time range (min_frac guard)
+        lo_t = t[int(np.ceil(n * min_frac))]
+        hi_t = t[max(int(n * (1.0 - min_frac)) - 1, int(np.ceil(n * min_frac)))]
+        t0_fit = float(np.clip(t0_fit, lo_t, hi_t))
+        return t0_fit, float(k_fit)
+    except Exception:
+        lo = int(np.ceil(n * min_frac))
+        hi = max(n - lo - 1, lo)
+        return float(t[max(lo, min(hi, n // 2))]), float('nan')
 
 
 def find_temporal_transitions(cluster_pickle_dir, rho_thresh=0.3, p_thresh=0.05,
-                               min_frac=0.1, save_path=None):
+                               min_frac=0.1, rolling_n=50, save_path=None):
     """
     For each (cell × spike_feature) pair where |Spearman ρ| > rho_thresh and
     p < p_thresh, find the recording time at which the cluster label transitions
-    (changepoint in ordinal cluster label sequence).
+    using sigmoid fit to the rolling mean of ordinal labels.  The transition
+    time is the inflection point t0 of the best-fit logistic curve.
 
     Parameters
     ----------
@@ -2271,6 +2290,7 @@ def find_temporal_transitions(cluster_pickle_dir, rho_thresh=0.3, p_thresh=0.05,
     rho_thresh         : float  |ρ| threshold (default 0.3)
     p_thresh           : float  significance threshold (default 0.05)
     min_frac           : float  min fraction of spikes in each segment (default 0.1)
+    rolling_n          : int    rolling-mean window for sigmoid fit (default 50 spikes)
     save_path          : str or None  if given, save the result DataFrame as a pickle
 
     Returns
@@ -2278,6 +2298,7 @@ def find_temporal_transitions(cluster_pickle_dir, rho_thresh=0.3, p_thresh=0.05,
     df_transitions : pd.DataFrame  one row per detected transition, columns:
         cell_id, spike_feature, temporal_rho, temporal_p,
         n_spikes, transition_time_ms, transition_spike_idx,
+        transition_sharpness_k,
         cluster_before, cluster_after,
         frac_dominant_before, frac_dominant_after,
         mean_time_before_ms, mean_time_after_ms
@@ -2323,13 +2344,22 @@ def find_temporal_transitions(cluster_pickle_dir, rho_thresh=0.3, p_thresh=0.05,
             if abs(rho) < rho_thresh or p >= p_thresh:
                 continue
 
-            # Sort by spike time and find changepoint
-            sort_idx    = np.argsort(times.values[valid])
-            times_s     = times.values[valid][sort_idx]
-            labels_s    = labels_ord[valid][sort_idx]
+            # Sort by spike time and find sigmoid transition
+            sort_idx     = np.argsort(times.values[valid])
+            times_ms_s   = times.values[valid][sort_idx]       # ms, sorted
+            labels_s     = labels_ord[valid][sort_idx]
             raw_labels_s = labels.values[valid][sort_idx]
 
-            cp = _changepoint_1d(labels_s, min_frac=min_frac)
+            t0_sec, k_sharpness = _sigmoid_transition_1d(
+                times_ms_s / 1000.0, labels_s,
+                rolling_n=rolling_n, min_frac=min_frac,
+            )
+            t0_ms = t0_sec * 1000.0
+            # Find spike index closest to t0 (clamped to min_frac bounds)
+            n_v  = len(times_ms_s)
+            lo   = int(np.ceil(n_v * min_frac))
+            hi   = n_v - lo
+            cp   = int(np.clip(np.argmin(np.abs(times_ms_s - t0_ms)), lo, hi))
 
             before = raw_labels_s[:cp]
             after  = raw_labels_s[cp:]
@@ -2348,14 +2378,15 @@ def find_temporal_transitions(cluster_pickle_dir, rho_thresh=0.3, p_thresh=0.05,
                 temporal_rho          = float(rho),
                 temporal_p            = float(p),
                 n_spikes              = int(valid.sum()),
-                transition_time_ms    = float(times_s[cp]),
+                transition_time_ms    = float(t0_ms),
                 transition_spike_idx  = int(cp),
+                transition_sharpness_k= float(k_sharpness),
                 cluster_before        = cl_before,
                 cluster_after         = cl_after,
                 frac_dominant_before  = float(frac_before),
                 frac_dominant_after   = float(frac_after),
-                mean_time_before_ms   = float(np.mean(times_s[:cp])),
-                mean_time_after_ms    = float(np.mean(times_s[cp:])),
+                mean_time_before_ms   = float(np.mean(times_ms_s[:cp])),
+                mean_time_after_ms    = float(np.mean(times_ms_s[cp:])),
             ))
 
     df_transitions = pd.DataFrame(rows)
@@ -2449,10 +2480,39 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
 
         # Rolling mean
         rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
-        ax.plot(times, rm.values, color='black', lw=4.0, zorder=5)
+        ax.plot(times, rm.values, color='black', lw=3.5, zorder=5, alpha=0.6,
+                label='Rolling mean')
 
-        # Transition line
-        ax.axvline(t_tr / 1000.0, color=trans_color, lw=4.0, ls='--', zorder=6)
+        # Sigmoid fit overlay
+        k_val = row.get('transition_sharpness_k', float('nan'))
+        if np.isfinite(k_val):
+            from scipy.optimize import curve_fit
+
+            def _logistic(t_, L, k, t0, b):
+                return b + L / (1.0 + np.exp(np.clip(-k * (t_ - t0), -500, 500)))
+
+            rm_arr = rm.values
+            L0  = max(rm_arr.max() - rm_arr.min(), 1e-3)
+            b0  = rm_arr.min()
+            k0  = k_val
+            t00 = t_tr / 1000.0
+            try:
+                popt, _ = curve_fit(
+                    _logistic, times, rm_arr,
+                    p0=[L0, k0, t00, b0],
+                    bounds=([0, -np.inf, times[0], -np.inf],
+                            [np.inf, np.inf, times[-1], np.inf]),
+                    maxfev=5000,
+                )
+                t_fit = np.linspace(times[0], times[-1], 300)
+                ax.plot(t_fit, _logistic(t_fit, *popt),
+                        color=trans_color, lw=3.5, zorder=6, label='Sigmoid fit')
+            except Exception:
+                pass
+
+        # Transition line at sigmoid inflection point
+        ax.axvline(t_tr / 1000.0, color=trans_color, lw=2.5, ls='--', zorder=7,
+                   alpha=0.85)
         ax.text(t_tr / 1000.0, ax.get_ylim()[1] if ax.get_ylim()[1] != ax.get_ylim()[0]
                 else 2.1, f'  {t_tr/1000:.1f}s',
                 color=trans_color, fontsize=_FS_TICK, fontweight='bold', va='top')
@@ -2460,7 +2520,8 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
         ax.set_yticks([0, 1, 2])
         ax.set_yticklabels(['low', 'mid', 'high'], fontsize=_FS_TICK, color='black')
         ax.set_xlabel('Time (s)', fontsize=_FS_AX, color='black')
-        ax.set_title(f'{cid}  ·  {feat}\nρ={rho:+.2f}  {cl_b}→{cl_a}',
+        k_str = f'k={k_val:.2f}/s' if np.isfinite(k_val) else 'k=fit fail'
+        ax.set_title(f'{cid}  ·  {feat}\nρ={rho:+.2f}  {cl_b}→{cl_a}  {k_str}',
                      fontsize=_FS_AX, fontweight='bold', color='black')
         ax.tick_params(axis='both', labelsize=_FS_TICK, colors='black')
         sns.despine(ax=ax)
@@ -2470,8 +2531,8 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
         axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
 
     fig.suptitle('Temporal transitions in cluster membership\n'
-                 'Black line = rolling mean of cluster label (low=0, mid=1, high=2)   |   Purple dashed = detected changepoint   |   '
-                 'Colour = cluster label',
+                 'Black = rolling mean   |   Purple curve = sigmoid fit   |   '
+                 'Purple dashed = sigmoid inflection (t₀)   |   Colour = cluster label',
                  fontsize=_FS_SUB, fontweight='bold', color='black', y=1.01)
     fig.tight_layout()
     plt.show()
