@@ -305,12 +305,12 @@ def compute_pre_post_psd_features(hpf_lfp_by_spike, fs, pre_win, post_win, basel
         Length (s) of the segment the PSD/Specparam fit is computed over, centered
         on each analysis window's midpoint. Default 0.25 s (625 samples @ 2500 Hz)
         gives ~4 Hz spectral resolution with time_bandwidth=2.0 — enough to
-        separate theta (4-8 Hz) from gamma (30-55 Hz).
+        separate theta (4-10 Hz) from gamma (30-55 Hz).
     freq_range, n_freqs, time_bandwidth, band_dict, aperiodic_mode,
     peak_width_limits, max_n_peaks, min_peak_height, peak_threshold, verbose :
         Passed through to mne.time_frequency.psd_array_multitaper / SpectralModel,
         matching the conventions used in compute_lfp_windows / band_aucs (gamma=
-        30-55 Hz, theta = 4-8 Hz, log10-power AUC between full and aperiodic fit).
+        30-55 Hz, theta = 4-10 Hz, log10-power AUC between full and aperiodic fit).
 
     Returns
     -------
@@ -322,7 +322,7 @@ def compute_pre_post_psd_features(hpf_lfp_by_spike, fs, pre_win, post_win, basel
     from specparam import SpectralModel
 
     if band_dict is None:
-        band_dict = {"theta": (4, 8), "gamma": (30, 55)}
+        band_dict = {"theta": (4, 10), "gamma": (30, 55)}
 
     half_len = psd_seg_len_s / 2.0
     min_samples = int(round(fs * psd_seg_len_s * 0.9))   # allow slight edge clipping

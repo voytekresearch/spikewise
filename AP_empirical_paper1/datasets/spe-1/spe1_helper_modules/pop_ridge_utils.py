@@ -23,6 +23,7 @@ Typical notebook usage
 """
 
 import os
+import glob
 import math
 import pickle
 import numpy as np
@@ -187,6 +188,41 @@ def merge_hpf_targets(pickle_dir, feat_labels):
 
     print(f'Merged: {len(all_results)} cells  |  {len(target_names)} targets '
           f'(Pre+Post abs + HPF amp/std, no BL-corrected or Δ)')
+    return all_results, cell_ids, target_names, target_labels, predictor_sets
+
+
+def load_psd_results(pickle_dir, feat_labels):
+    """
+    Load single-PSD-method ridge results (c*_ridge_results_psd.pkl).
+
+    Returns the same (all_results, cell_ids, target_names, target_labels,
+    predictor_sets) tuple used by aggregate_population, restricted to the
+    10 Pre+Post absolute-window targets (no BL-corrected or Δ).
+    """
+    pkls = sorted(glob.glob(os.path.join(pickle_dir, 'c*_ridge_results_psd.pkl')))
+    pkls = [p for p in pkls if 'population' not in os.path.basename(p)]
+
+    all_results = {}
+    for p in pkls:
+        cid = os.path.basename(p).replace('_ridge_results_psd.pkl', '')
+        with open(p, 'rb') as f:
+            all_results[cid] = pickle.load(f)
+
+    cell_ids = sorted(all_results.keys())
+
+    feat_keys = ['lfp_amp', 'lfp_std', 'gamma_auc', 'exponent', 'theta_auc']
+    target_names  = []
+    target_labels = []
+    for window, win_label in [('pre', 'Pre'), ('post', 'Post')]:
+        for fk, fl in zip(feat_keys, feat_labels):
+            target_names.append(f'{window}_{fk}')
+            target_labels.append(f'{win_label} {fl}')
+
+    first          = next(iter(all_results.values()))
+    predictor_sets = list(first[list(first.keys())[0]].keys())
+
+    print(f'PSD: {len(all_results)} cells  |  {len(target_names)} targets '
+          f'(Pre+Post abs, single-PSD method, theta=4–10 Hz, gamma=30–55 Hz)')
     return all_results, cell_ids, target_names, target_labels, predictor_sets
 
 

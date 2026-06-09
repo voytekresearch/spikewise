@@ -37,6 +37,15 @@ Usage examples
 # Specific cells (np), 2 workers:
     python scripts/run_spe1_batch.py --lfp-np-only --cells 1 2 6 7 --workers 2
 
+# Single-PSD ridge only (skips cells that already have a _psd.pkl):
+    python scripts/run_spe1_batch.py --ridge-psd-only
+
+# Single-PSD ridge, force rerun even if pickle exists:
+    python scripts/run_spe1_batch.py --ridge-psd-only --force-psd
+
+# Single-PSD ridge for specific cells:
+    python scripts/run_spe1_batch.py --ridge-psd-only --cells 1 2 3
+
 Notes
 -----
 - Each cluster notebook runs spike fitting with n_jobs=-1 (all cores).
@@ -45,6 +54,8 @@ Notes
 - Plots are saved inline into the notebook by papermill automatically.
 - Manual thresholds and all per-cell config live in the notebooks — they are
   always respected because papermill runs the actual notebook, not a copy.
+- --ridge-psd-only runs run_ridge_psd_cell.py directly (not via nbconvert) so
+  existing sliding-window pickle results are never re-triggered.
 """
 
 import argparse
@@ -169,6 +180,41 @@ def run_ridge_nb(args):
     return (cell_id, result)
 
 
+def run_ridge_psd_nb(args):
+    """
+    Single-PSD ridge for one cell, run directly via run_ridge_psd_cell.py.
+    Skips cells whose _psd.pkl already exists unless force_psd is set.
+    Never touches the old sliding-window pickle results.
+    """
+    import subprocess
+    cell_id, opts = args
+    cnum = _cell_num(cell_id)
+    t0   = datetime.now()
+    print(f"  [psd-ridge c{cnum}] started {t0:%H:%M:%S}")
+
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve().parent / "run_ridge_psd_cell.py"),
+        "--cell", str(cnum),
+    ]
+    if opts.get("force_psd"):
+        cmd.append("--force")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=None if opts["workers"] == 1 else subprocess.DEVNULL,
+            stderr=None if opts["workers"] == 1 else subprocess.DEVNULL,
+        )
+        elapsed = (datetime.now() - t0).seconds // 60
+        if result.returncode != 0:
+            return (cell_id, f"run_ridge_psd_cell.py exited {result.returncode}")
+        print(f"  [psd-ridge c{cnum}] done ({elapsed} min)")
+        return (cell_id, "ok")
+    except Exception:
+        return (cell_id, traceback.format_exc())
+
+
 def _run_phase(fn, job_args, workers, label):
     print(f"\n{'='*60}")
     print(f"{label} ({len(job_args)} cells, {workers} worker(s))")
@@ -210,8 +256,14 @@ def main():
                         help="Run ridge regression notebooks (spe-1_c{N}_spk_to_lfp_ridge.ipynb)")
     parser.add_argument("--ridge-only", dest="ridge_only",  action="store_true",
                         help="Skip clustering/LFP; run ridge notebooks only")
+    parser.add_argument("--ridge-psd",      dest="run_ridge_psd",  action="store_true",
+                        help="Run single-PSD ridge (run_ridge_psd_cell.py); skips cells with existing pickle")
+    parser.add_argument("--ridge-psd-only", dest="ridge_psd_only", action="store_true",
+                        help="Skip clustering/LFP/sliding-window ridge; run single-PSD ridge only")
     parser.add_argument("--force-cluster", dest="force_cluster", action="store_true",
                         help="Inject FORCE_CLUSTER=True into cluster notebooks")
+    parser.add_argument("--force-psd",  dest="force_psd",  action="store_true",
+                        help="Force rerun single-PSD ridge even if _psd.pkl already exists")
     parser.add_argument("--force-all",     dest="force_all",     action="store_true",
                         help="Equivalent to --force-cluster")
     args = parser.parse_args()
@@ -220,11 +272,12 @@ def main():
         args.force_cluster = True
 
     # --*-only flags imply their respective run flags and skip clustering
-    if args.lfp_only:    args.run_lfp    = True
-    if args.lfp_np_only: args.run_lfp_np = True
-    if args.ridge_only:  args.run_ridge  = True
+    if args.lfp_only:       args.run_lfp       = True
+    if args.lfp_np_only:    args.run_lfp_np    = True
+    if args.ridge_only:     args.run_ridge     = True
+    if args.ridge_psd_only: args.run_ridge_psd = True
 
-    skip_clustering = args.lfp_only or args.lfp_np_only or args.ridge_only
+    skip_clustering = args.lfp_only or args.lfp_np_only or args.ridge_only or args.ridge_psd_only
 
     # Resolve cell lists
     if args.cells:
@@ -234,20 +287,26 @@ def main():
     else:
         cell_ids = list(CELL_IDS)
 
-    lfp_ids    = [cid for cid in cell_ids if cid in PRIORITY_SET]     if args.run_lfp    else []
-    lfp_np_ids = [cid for cid in cell_ids if cid not in PRIORITY_SET] if args.run_lfp_np else []
-    ridge_ids  = list(cell_ids)                                        if args.run_ridge  else []
+    lfp_ids       = [cid for cid in cell_ids if cid in PRIORITY_SET]     if args.run_lfp       else []
+    lfp_np_ids    = [cid for cid in cell_ids if cid not in PRIORITY_SET] if args.run_lfp_np    else []
+    ridge_ids     = list(cell_ids)                                        if args.run_ridge     else []
+    ridge_psd_ids = list(cell_ids)                                        if args.run_ridge_psd else []
 
-    opts = {"force_cluster": args.force_cluster, "workers": args.workers}
-    # Note: force flags are set inside each notebook's parameters cell
+    opts = {
+        "force_cluster": args.force_cluster,
+        "force_psd":     args.force_psd,
+        "workers":       args.workers,
+    }
+    # Note: FORCE flags for sliding-window ridge are set inside each notebook's parameters cell
 
     if not skip_clustering:
         print(f"Clustering:      {len(cell_ids)} cells")
     print(f"LFP (priority):  {len(lfp_ids)} cells  {sorted(lfp_ids)}")
     print(f"LFP (np):        {len(lfp_np_ids)} cells")
     print(f"Ridge:           {len(ridge_ids)} cells")
-    print(f"force_cluster={args.force_cluster}  workers={args.workers}")
-    print("Note: FORCE flags are set inside each notebook's parameters cell.")
+    print(f"Ridge PSD:       {len(ridge_psd_ids)} cells  (skip-if-exists unless --force-psd)")
+    print(f"force_cluster={args.force_cluster}  force_psd={args.force_psd}  workers={args.workers}")
+    print("Note: FORCE flags for sliding-window ridge are set inside each notebook's parameters cell.")
 
     # Phase 1: cluster notebooks
     if not skip_clustering:
@@ -280,13 +339,22 @@ def main():
             "Phase 3: LFP analysis notebooks (non-priority)",
         )
 
-    # Phase 4: ridge regression notebooks
+    # Phase 4: ridge regression notebooks (full, via nbconvert)
     if ridge_ids:
         _run_phase(
             run_ridge_nb,
             [(cid, opts) for cid in ridge_ids],
             args.workers,
             "Phase 4: Ridge regression notebooks",
+        )
+
+    # Phase 5: single-PSD ridge (direct Python, skip-if-exists)
+    if ridge_psd_ids:
+        _run_phase(
+            run_ridge_psd_nb,
+            [(cid, opts) for cid in ridge_psd_ids],
+            args.workers,
+            "Phase 5: Single-PSD ridge regression",
         )
 
     print("\nDone.")
