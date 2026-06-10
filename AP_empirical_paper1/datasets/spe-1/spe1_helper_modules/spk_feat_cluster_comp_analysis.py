@@ -2800,3 +2800,409 @@ def plot_temporal_transitions_highlights(df_transitions, cluster_pickle_dir,
 
     fig.tight_layout(rect=[0, 0, 1, 0.94])
     plt.show()
+
+
+# ── LFP block analysis at transition times ───────────────────────────────────
+
+def analyze_lfp_at_transitions(
+    df_transitions,
+    lfp_npy_dir,
+    fs=2500,
+    freq_range=(1, 90),
+    save_path=None,
+    force=False,
+):
+    """
+    For each (cell, feature) in df_transitions, cut the continuous LFP recording
+    at the transition time(s) to create temporal blocks.  For each block compute:
+
+        mean_amp  : mean LFP amplitude (µV, raw)
+        std_amp   : std  LFP amplitude (µV, raw)
+        freqs     : frequency axis (Hz)
+        psd       : Welch PSD of the block (µV²/Hz)
+        exponent  : specparam aperiodic exponent
+        offset    : specparam aperiodic offset
+        theta_auc : specparam theta peak AUC (4–10 Hz)
+        gamma_auc : specparam gamma peak AUC (30–55 Hz)
+
+    Parameters
+    ----------
+    lfp_npy_dir : str  path to filt_lfp_recordings/ containing c{N}_lfp.npy
+    """
+    import os
+    import pickle
+    from scipy.signal import welch
+    from specparam import SpectralModel
+
+    if save_path and not force and os.path.exists(save_path):
+        with open(save_path, 'rb') as _f:
+            cached = pickle.load(_f)
+        print(f'Loaded cached LFP block results from {save_path}  '
+              f'(pass force=True to recompute)')
+        return cached
+
+    BLOCK_COLORS = ['#2980b9', '#e74c3c', '#27ae60', '#8e44ad']
+    results = {}
+
+    for cid, cell_grp in df_transitions.groupby('cell_id'):
+        npy_path = os.path.join(lfp_npy_dir, f'{cid}_lfp.npy')
+        if not os.path.exists(npy_path):
+            print(f'  skip {cid}: no LFP file at {npy_path}')
+            continue
+
+        lfp_raw = np.load(npy_path).astype(float)
+        n_samps = len(lfp_raw)
+
+        for feat, feat_grp in cell_grp.groupby('spike_feature'):
+            t0s_ms   = sorted(feat_grp['transition_time_ms'].dropna().values)
+            t0_samps = [int(round(t * fs / 1000.0)) for t in t0s_ms]
+            boundaries = [0] + t0_samps + [n_samps]
+
+            block_results = []
+            for b_idx in range(len(boundaries) - 1):
+                i0, i1 = boundaries[b_idx], boundaries[b_idx + 1]
+                if i1 - i0 < int(fs * 2.0):
+                    continue
+
+                block = lfp_raw[i0:i1]
+                mean_amp = float(np.mean(block))
+                std_amp  = float(np.std(block))
+
+                nperseg = min(len(block), int(fs * 4.0))
+                freqs_w, psd_w = welch(block, fs=fs, nperseg=nperseg,
+                                       noverlap=nperseg // 2, scaling='density')
+                fmask     = (freqs_w >= freq_range[0]) & (freqs_w <= freq_range[1])
+                freqs_out = freqs_w[fmask]
+                psd_out   = psd_w[fmask]
+
+                sm = SpectralModel(
+                    aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+                    max_n_peaks=4, min_peak_height=0.0,
+                    peak_threshold=2.0, verbose=False,
+                )
+                try:
+                    sm.fit(freqs_out, psd_out, freq_range=freq_range)
+                    exponent  = float(sm.get_params('aperiodic_params', 'exponent'))
+                    offset    = float(sm.get_params('aperiodic_params', 'offset'))
+                    full_log  = np.asarray(sm.get_model(component='full',      space='log'))
+                    ape_log   = np.asarray(sm.get_model(component='aperiodic', space='log'))
+                    freqs_fit = np.asarray(sm.freqs)
+                    theta_m   = (freqs_fit >= 4)  & (freqs_fit <= 10)
+                    gamma_m   = (freqs_fit >= 30) & (freqs_fit <= 55)
+                    theta_auc = float(np.trapz(np.clip(full_log[theta_m] - ape_log[theta_m], 0, None), freqs_fit[theta_m]))
+                    gamma_auc = float(np.trapz(np.clip(full_log[gamma_m] - ape_log[gamma_m], 0, None), freqs_fit[gamma_m]))
+                except Exception as _e:
+                    print(f"  specparam warn [{cid}|{feat}|blk{b_idx}]: {_e}", flush=True)
+                    exponent = offset = theta_auc = gamma_auc = float('nan')
+                    freqs_fit = full_log = ape_log = None
+
+                block_results.append({
+                    'block':      b_idx,
+                    'color':      BLOCK_COLORS[b_idx % len(BLOCK_COLORS)],
+                    'label':      f'Block {b_idx + 1}',
+                    't_start_ms': i0 / fs * 1000.0,
+                    't_end_ms':   i1 / fs * 1000.0,
+                    'n_samples':  i1 - i0,
+                    'mean_amp':   mean_amp,
+                    'std_amp':    std_amp,
+                    'freqs':      freqs_out,
+                    'psd':        psd_out,
+                    'freqs_fit':  freqs_fit,
+                    'full_log':   full_log,
+                    'ape_log':    ape_log,
+                    'exponent':   exponent,
+                    'offset':     offset,
+                    'theta_auc':  theta_auc,
+                    'gamma_auc':  gamma_auc,
+                })
+
+            if block_results:
+                results[(cid, feat)] = block_results
+                dur = [f"{b['n_samples']/fs:.0f}s" for b in block_results]
+                print(f'  {cid:6s}  {feat:25s}  blocks: {dur}')
+
+    if save_path:
+        with open(save_path, 'wb') as _f:
+            pickle.dump(results, _f)
+        print(f'Saved: {save_path}')
+
+    return results
+
+
+def plot_lfp_transition_validation(
+    df_transitions,
+    lfp_npy_dir,
+    cluster_pickle_dir,
+    fs=2500,
+    rolling_n=50,
+    n_cols=4,
+):
+    """
+    Grid validation plot: all (cell, feature) pairs in one figure.
+    Each column = one (cell, feature); 2 rows per column:
+      Row 0: full spike cluster rolling mean with transition line(s)
+      Row 1: full raw LFP recording with transition line(s) and block shading
+
+    Confirms that spike-derived transition times map to the correct LFP samples.
+    """
+    import matplotlib.gridspec as gridspec
+    import seaborn as sns
+
+    ORDINAL   = {'low': 0, 'mid': 1, 'high': 2, 'Low': 0, 'Mid': 1, 'High': 2}
+    CLR       = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
+                 'Low': '#0072B2', 'Mid': '#009E73', 'High': '#D55E00'}
+    BLK_CLRS  = ['#2980b9', '#e74c3c', '#27ae60', '#8e44ad']
+    TRANS_CLR = 'crimson'
+    _DS       = 10  # downsample factor for LFP trace
+
+    pairs = list(df_transitions.groupby(['cell_id', 'spike_feature']))
+    n_pairs = len(pairs)
+    n_cols  = min(n_cols, n_pairs)
+    n_rows  = int(np.ceil(n_pairs / n_cols))
+
+    # Cache loaded LFP per cell to avoid re-loading
+    _lfp_cache = {}
+
+    fig = plt.figure(figsize=(n_cols * 5.5, n_rows * 4.5),
+                     constrained_layout=False)
+    outer_gs = gridspec.GridSpec(n_rows, n_cols, figure=fig,
+                                 hspace=0.15, wspace=0.35)
+
+    for p_idx, ((cid, feat), grp) in enumerate(pairs):
+        row, col = divmod(p_idx, n_cols)
+        inner_gs = gridspec.GridSpecFromSubplotSpec(
+            2, 1, subplot_spec=outer_gs[row, col],
+            height_ratios=[1, 1.5], hspace=0.25,
+        )
+        ax_spk = fig.add_subplot(inner_gs[0])
+        ax_lfp = fig.add_subplot(inner_gs[1])
+
+        t0s_ms = sorted(grp['transition_time_ms'].dropna().values)
+
+        # ── spike rolling mean ──────────────────────────────────────────
+        pkl = os.path.join(cluster_pickle_dir, f'{cid}_cluster_df.pkl')
+        try:
+            df_cl = pd.read_pickle(pkl)
+        except FileNotFoundError:
+            ax_spk.set_visible(False); ax_lfp.set_visible(False); continue
+        cl_col = f'{feat}_cluster'
+        if cl_col not in df_cl.columns:
+            ax_spk.set_visible(False); ax_lfp.set_visible(False); continue
+        sub   = df_cl[['spk_times_ms', cl_col]].dropna().sort_values('spk_times_ms')
+        spk_t = sub['spk_times_ms'].values / 1000.0
+        lbls  = sub[cl_col].values
+        ord_l = np.array([ORDINAL.get(str(l).strip(), 1) for l in lbls], dtype=float)
+        rm    = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean().values
+
+        for lbl in np.unique(lbls):
+            m = lbls == lbl
+            ax_spk.scatter(spk_t[m], ord_l[m], color=CLR.get(str(lbl), 'gray'),
+                           s=5, alpha=0.2, linewidths=0)
+        ax_spk.plot(spk_t, rm, color='black', lw=1.8)
+        for t0_ms in t0s_ms:
+            ax_spk.axvline(t0_ms / 1000.0, color=TRANS_CLR, lw=1.5, ls='--')
+        ax_spk.set_yticks([0, 1, 2])
+        ax_spk.set_yticklabels(['low', 'mid', 'high'], fontsize=7)
+        ax_spk.set_title(f'{cid}  ·  {feat}', fontsize=9, fontweight='bold')
+        ax_spk.tick_params(labelbottom=False)
+        sns.despine(ax=ax_spk)
+
+        # ── full LFP recording ──────────────────────────────────────────
+        if cid not in _lfp_cache:
+            npy_path = os.path.join(lfp_npy_dir, f'{cid}_lfp.npy')
+            if not os.path.exists(npy_path):
+                ax_spk.set_visible(False); ax_lfp.set_visible(False); continue
+            _lfp_cache[cid] = np.load(npy_path).astype(float)
+        lfp_raw = _lfp_cache[cid]
+        n_samps = len(lfp_raw)
+        lfp_t_s = np.arange(n_samps) / fs
+        lfp_dur_s = n_samps / fs
+
+        # Add recording length to spike panel title
+        ax_spk.set_title(f'{cid}  ·  {feat}\nrec: {lfp_dur_s:.0f} s', fontsize=9, fontweight='bold')
+
+        boundaries_s = [0.0] + [t / 1000.0 for t in t0s_ms] + [lfp_t_s[-1]]
+        for b_i in range(len(boundaries_s) - 1):
+            ax_lfp.axvspan(boundaries_s[b_i], boundaries_s[b_i + 1],
+                           alpha=0.08, color=BLK_CLRS[b_i % len(BLK_CLRS)])
+        ax_lfp.plot(lfp_t_s[::_DS], lfp_raw[::_DS], color='black', lw=0.35, alpha=0.8)
+        for t0_ms in t0s_ms:
+            ax_lfp.axvline(t0_ms / 1000.0, color=TRANS_CLR, lw=1.5, ls='--',
+                           label=f't₀={t0_ms/1000:.1f}s')
+        # Annotate recording duration on the LFP panel
+        ax_lfp.text(0.98, 0.97, f'{lfp_dur_s:.0f} s', transform=ax_lfp.transAxes,
+                    fontsize=8, ha='right', va='top', color='dimgray')
+        ax_lfp.legend(fontsize=7, frameon=False, loc='upper left')
+        ax_lfp.set_xlabel('Time (s)', fontsize=8)
+        ax_lfp.set_ylabel('LFP (µV)', fontsize=8)
+        sns.despine(ax=ax_lfp)
+
+    fig.suptitle('LFP transition validation — spike t₀ mapped to continuous LFP',
+                 fontsize=12, fontweight='bold')
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_lfp_block_comparison(
+    lfp_block_results,
+    df_transitions,
+    cluster_pickle_dir,
+    rolling_n=50,
+):
+    """
+    For each (cell, feature) in lfp_block_results, plot a 3-panel figure:
+      Left  : rolling mean of cluster labels with transition time(s) marked
+      Middle: overlaid PSDs (raw + specparam fit) per block
+      Right : grouped bar chart of exponent, theta AUC, gamma AUC, std per block
+    """
+    import matplotlib.gridspec as gridspec
+    import seaborn as sns
+    from specparam import SpectralModel
+
+    ORDINAL = {'low': 0, 'mid': 1, 'high': 2, 'Low': 0, 'Mid': 1, 'High': 2}
+    CLR_CLUSTER = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
+                   'Low': '#0072B2', 'Mid': '#009E73', 'High': '#D55E00'}
+    FEAT_LABELS = ['Exponent', 'Theta AUC', 'Gamma AUC', 'Std (raw)']
+
+    _sm_kwargs = dict(aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+                      max_n_peaks=4, min_peak_height=0.0, peak_threshold=2.0, verbose=False)
+
+    for (cid, feat), blocks in lfp_block_results.items():
+        if not blocks:
+            continue
+
+        # Re-run specparam for any block where the cached fit failed
+        for blk in blocks:
+            if blk.get('freqs_fit') is not None:
+                continue
+            psd_b = blk.get('psd', blk.get('mean_psd'))
+            if psd_b is None or blk.get('freqs') is None:
+                continue
+            try:
+                _sm = SpectralModel(**_sm_kwargs)
+                _sm.fit(blk['freqs'], psd_b, freq_range=(1, 90))
+                ff = np.asarray(_sm.freqs)
+                fl = np.asarray(_sm.get_model(component='full',      space='log'))
+                al = np.asarray(_sm.get_model(component='aperiodic', space='log'))
+                tm = (ff >= 4)  & (ff <= 10)
+                gm = (ff >= 30) & (ff <= 55)
+                blk['freqs_fit'] = ff
+                blk['full_log']  = fl
+                blk['ape_log']   = al
+                blk['exponent']  = float(_sm.get_params('aperiodic_params', 'exponent'))
+                blk['offset']    = float(_sm.get_params('aperiodic_params', 'offset'))
+                blk['theta_auc'] = float(np.trapz(np.clip(fl[tm] - al[tm], 0, None), ff[tm]))
+                blk['gamma_auc'] = float(np.trapz(np.clip(fl[gm] - al[gm], 0, None), ff[gm]))
+            except Exception as _e:
+                print(f"  specparam refit failed [{cid}|{feat}]: {_e}")
+
+        # Load cluster data for spike rolling mean
+        pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
+        try:
+            df_cl = pd.read_pickle(pkl)
+        except FileNotFoundError:
+            continue
+        col = f'{feat}_cluster'
+        if col not in df_cl.columns:
+            continue
+        sub = df_cl[['spk_times_ms', col]].dropna().sort_values('spk_times_ms')
+        times_s = sub['spk_times_ms'].values / 1000.0
+        labels  = sub[col].values
+        ord_l   = np.array([ORDINAL.get(str(l).strip(), 1) for l in labels], dtype=float)
+        rm      = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean().values
+
+        # Transition times
+        grp = df_transitions[(df_transitions['cell_id'] == cid) &
+                             (df_transitions['spike_feature'] == feat)]
+        t0s_s = sorted(grp['transition_time_ms'].dropna().values / 1000.0)
+
+        fig = plt.figure(figsize=(18, 5))
+        gs  = gridspec.GridSpec(1, 3, figure=fig, wspace=0.38)
+        ax_spike = fig.add_subplot(gs[0])
+        ax_psd   = fig.add_subplot(gs[1])
+        ax_bar   = fig.add_subplot(gs[2])
+
+        # ── Left: spike rolling mean ──────────────────────────────────────
+        for lbl in np.unique(labels):
+            m = labels == lbl
+            ax_spike.scatter(times_s[m], ord_l[m],
+                             color=CLR_CLUSTER.get(str(lbl), 'gray'),
+                             s=8, alpha=0.3, linewidths=0, zorder=2)
+        ax_spike.plot(times_s, rm, color='black', lw=2.5, zorder=4)
+        for t0 in t0s_s:
+            ax_spike.axvline(t0, color='crimson', lw=2, ls='--', zorder=5)
+        # shade each block
+        boundaries_s = [-np.inf] + t0s_s + [np.inf]
+        x_lo = float(times_s[0]); x_hi = float(times_s[-1])
+        for b_i, blk in enumerate(blocks):
+            lo = max(boundaries_s[b_i],  x_lo)
+            hi = min(boundaries_s[b_i+1], x_hi)
+            ax_spike.axvspan(lo, hi, alpha=0.08, color=blk['color'], zorder=1)
+        ax_spike.set_yticks([0, 1, 2])
+        ax_spike.set_yticklabels(['low', 'mid', 'high'], fontsize=9)
+        ax_spike.set_xlabel('Time (s)', fontsize=10)
+        ax_spike.set_title(f'{cid}  ·  {feat}', fontsize=11, fontweight='bold')
+        sns.despine(ax=ax_spike)
+
+        # ── Middle: PSDs + specparam ──────────────────────────────────────
+        _added_band_labels = {'theta': False, 'gamma': False}
+        for blk in blocks:
+            freqs, psd = blk['freqs'], blk.get('psd', blk.get('mean_psd'))
+            dur_s = blk.get('n_samples', blk.get('n_spikes', 0))
+            dur_label = f"{dur_s/2500:.0f}s" if 'n_samples' in blk else f"n={dur_s}"
+            ax_psd.semilogy(freqs, psd, color=blk['color'], lw=1.5, alpha=0.5,
+                            label=f"{blk['label']} ({dur_label})")
+            if blk.get('freqs_fit') is not None:
+                ff = blk['freqs_fit']
+                fl = blk['full_log']
+                al = blk['ape_log']
+                # full specparam fit
+                ax_psd.semilogy(ff, 10**fl, color=blk['color'], lw=2.5, zorder=5)
+                # aperiodic component
+                ax_psd.semilogy(ff, 10**al, color=blk['color'], lw=1.5, ls='--', alpha=0.8)
+                # theta AUC shading (4–10 Hz)
+                tm = (ff >= 4) & (ff <= 10)
+                if tm.any():
+                    fl_clipped = np.clip(fl[tm], al[tm], None)
+                    _lbl = 'θ (4–10 Hz)' if not _added_band_labels['theta'] else None
+                    ax_psd.fill_between(ff[tm], 10**al[tm], 10**fl_clipped,
+                                        alpha=0.30, color='mediumpurple',
+                                        zorder=4, label=_lbl)
+                    _added_band_labels['theta'] = True
+                # gamma AUC shading (30–55 Hz)
+                gm = (ff >= 30) & (ff <= 55)
+                if gm.any():
+                    fl_clipped = np.clip(fl[gm], al[gm], None)
+                    _lbl = 'γ (30–55 Hz)' if not _added_band_labels['gamma'] else None
+                    ax_psd.fill_between(ff[gm], 10**al[gm], 10**fl_clipped,
+                                        alpha=0.30, color='goldenrod',
+                                        zorder=4, label=_lbl)
+                    _added_band_labels['gamma'] = True
+        ax_psd.set_xlabel('Frequency (Hz)', fontsize=10)
+        ax_psd.set_ylabel('PSD (µV²/Hz)', fontsize=10)
+        ax_psd.legend(fontsize=8, frameon=False)
+        ax_psd.set_title('PSD + specparam per block', fontsize=11)
+        sns.despine(ax=ax_psd)
+
+        # ── Right: grouped bar chart ──────────────────────────────────────
+        feat_keys = ['exponent', 'theta_auc', 'gamma_auc', 'std_amp']
+        n_feats  = len(feat_keys)
+        n_blocks = len(blocks)
+        x = np.arange(n_feats)
+        width = 0.8 / n_blocks
+        for b_i, blk in enumerate(blocks):
+            vals = [blk.get(k, float('nan')) for k in feat_keys]
+            offset_x = (b_i - (n_blocks - 1) / 2.0) * width
+            bars = ax_bar.bar(x + offset_x, vals, width * 0.9,
+                              color=blk['color'], label=blk['label'], zorder=3)
+        ax_bar.set_xticks(x)
+        ax_bar.set_xticklabels(FEAT_LABELS, fontsize=8, rotation=20, ha='right')
+        ax_bar.set_ylabel('Value', fontsize=10)
+        ax_bar.set_title('Block comparison', fontsize=11)
+        ax_bar.legend(fontsize=8, frameon=False)
+        ax_bar.axhline(0, color='gray', lw=0.8, ls='--')
+        sns.despine(ax=ax_bar)
+
+        fig.suptitle(f'{cid}  {feat}  —  LFP blocks at transition',
+                     fontsize=12, fontweight='bold')
+        plt.show()
