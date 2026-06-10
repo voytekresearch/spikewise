@@ -3262,17 +3262,14 @@ def plot_lfp_block_comparison(
             'lines.linewidth':     3.5,
         }
         with plt.rc_context(_rc):
-            # ── Layout: spike (top-left) / PSD (bottom-left) / bars (right half) ──
-            fig = plt.figure(figsize=(28, 15))
-            gs  = gridspec.GridSpec(2, 2, figure=fig,
-                                    width_ratios=[1.0, 1.0],
-                                    height_ratios=[1.0, 1.0],
-                                    wspace=0.25, hspace=0.55)
-            ax_spike = fig.add_subplot(gs[0, 0])
-            ax_psd   = fig.add_subplot(gs[1, 0])
-            # 3-row × 6-col grid: every panel spans 2 cols; rows 0-1 use left 4 cols only
-            gs_bar = gridspec.GridSpecFromSubplotSpec(4, 6, subplot_spec=gs[:, 1],
-                                                      hspace=0.9, wspace=0.5)
+            # ── Flat 4-row × 3-col layout (tight_layout works correctly with flat GridSpec) ──
+            # Col 0: spike (rows 0-1) + PSD (rows 2-3); Cols 1-2: bar panels
+            fig = plt.figure(figsize=(26, 15))
+            gs  = gridspec.GridSpec(4, 3, figure=fig,
+                                    width_ratios=[1.3, 1.0, 1.0],
+                                    wspace=0.5, hspace=0.7)
+            ax_spike = fig.add_subplot(gs[0:2, 0])
+            ax_psd   = fig.add_subplot(gs[2:4, 0])
 
             # ── Top-left: spike rolling mean ──────────────────────────────
             for lbl in np.unique(labels):
@@ -3342,20 +3339,20 @@ def plot_lfp_block_comparison(
             ax_psd.yaxis.set_minor_locator(plt.NullLocator())
             sns.despine(ax=ax_psd)
 
-            # ── Right half: rows 0-1 = 2 wide panels, row 2 = total γ full-width, row 3 = slow/high γ ──
+            # ── Bar panels directly in the flat GridSpec ──────────────────
             _bar_axes = [
-                fig.add_subplot(gs_bar[0, 0:3]),  # mean_amp
-                fig.add_subplot(gs_bar[0, 3:6]),  # std_amp
-                fig.add_subplot(gs_bar[1, 0:3]),  # exponent
-                fig.add_subplot(gs_bar[1, 3:6]),  # theta_auc
-                fig.add_subplot(gs_bar[2, 0:6]),  # total_gamma (full width)
-                fig.add_subplot(gs_bar[3, 0:3]),  # slow_gamma
-                fig.add_subplot(gs_bar[3, 3:6]),  # high_gamma
+                fig.add_subplot(gs[0, 1]),  # mean_amp
+                fig.add_subplot(gs[0, 2]),  # std_amp
+                fig.add_subplot(gs[1, 1]),  # exponent
+                fig.add_subplot(gs[1, 2]),  # theta_auc
+                fig.add_subplot(gs[2, 1]),  # total_gamma
+                fig.add_subplot(gs[3, 1]),  # slow_gamma
+                fig.add_subplot(gs[3, 2]),  # high_gamma
             ]
             for p_i, (ax_b, (key, ylabel)) in enumerate(zip(_bar_axes, bar_specs)):
                 vals_all = [blk.get(key, float('nan')) for blk in blocks]
                 for b_i, (blk, val) in enumerate(zip(blocks, vals_all)):
-                    ax_b.bar(b_i, val, color=blk['color'], zorder=3,
+                    ax_b.bar(b_i, val, color=blk['color'], zorder=3, width=0.4,
                              label=blk['label'] if p_i == 0 else None)
                     if np.isfinite(val):
                         _txt_y  = val if val >= 0 else val * 0.97
@@ -3398,5 +3395,5 @@ def plot_lfp_block_comparison(
 
             fig.suptitle(f'{cid}  ·  {feat}  —  LFP blocks at transition',
                          fontsize=26, fontweight='bold', y=1.01)
-            plt.tight_layout()
+            plt.tight_layout(pad=2.5, w_pad=2.0, h_pad=2.0)
             plt.show()
