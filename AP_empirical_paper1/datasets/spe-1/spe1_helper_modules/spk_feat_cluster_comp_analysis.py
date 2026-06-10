@@ -2217,93 +2217,202 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
 
 # ── Temporal transition detection ─────────────────────────────────────────────
 
-def _sigmoid_transition_1d(times_sec, labels_ord, rolling_n=50, min_frac=0.1):
+def _fit_multi_sigmoid(times_sec, labels_ord, rolling_n=50, min_frac=0.1,
+                       max_sigs=3, r2_early_stop=0.95):
     """
-    Fit a 4-parameter logistic sigmoid to the rolling mean of ordinal cluster
-    labels and return the inflection point (half-transition time) and sharpness.
+    Fit 1–max_sigs logistic sigmoids to the rolling mean of ordinal cluster
+    labels.  Model selection by AIC.
 
-    Model: y = b + L / (1 + exp(-k * (t - t0)))
-      t0 = transition time (inflection point, seconds)
-      k  = sharpness (1/s); positive = low→high, negative = high→low
+    Model: y = b + Σ_i  L_i / (1 + exp(-k_i·(t − t0_i)))
 
-    Falls back to the time-series midpoint if curve_fit fails.
+    Tries alternating-sign k initializations to catch on-off-on patterns.
 
     Parameters
     ----------
     times_sec  : 1-D array of recording times (seconds, sorted ascending)
     labels_ord : 1-D array of ordinal-coded cluster labels (same order)
     rolling_n  : int   rolling-mean window size in spikes (default 50)
-    min_frac   : float minimum segment fraction for fallback clipping
+    min_frac   : float minimum segment fraction used for t0 bounding
+    max_sigs   : int   maximum sigmoids to try (default 3)
 
     Returns
     -------
-    t0_sec : float  transition time in seconds
-    k      : float  sharpness (NaN if fit failed)
+    transitions : list of (t0_sec, k) tuples, sorted by time
+    r2          : float  R² of winning model  (NaN on total failure)
+    popt        : list   [b, L1, k1, t01, ...]  for winning model
+    n_sigs      : int    number of sigmoids selected
     """
     from scipy.optimize import curve_fit
 
     t  = np.asarray(times_sec, float)
     y  = np.asarray(labels_ord, float)
     n  = len(t)
-
     rm = pd.Series(y).rolling(rolling_n, center=True, min_periods=1).mean().values
 
-    def _logistic(t_, L, k, t0, b):
-        return b + L / (1.0 + np.exp(np.clip(-k * (t_ - t0), -500, 500)))
-
-    L0  = max(rm.max() - rm.min(), 1e-3)
-    b0  = rm.min()
-    t00 = float(t[n // 2])
-    k0  = np.sign(float(y[-1]) - float(y[0])) * 2.0 / max(t[-1] - t[0], 1e-9)
-
-    try:
-        popt, _ = curve_fit(
-            _logistic, t, rm,
-            p0=[L0, k0, t00, b0],
-            bounds=([0.0,    -np.inf, float(t[0]),   -np.inf],
-                    [np.inf,  np.inf, float(t[-1]),   np.inf]),
-            maxfev=10000,
-        )
-        _, k_fit, t0_fit, _ = popt
-        # Clip t0 to the valid time range (min_frac guard)
-        lo_t = t[int(np.ceil(n * min_frac))]
-        hi_t = t[max(int(n * (1.0 - min_frac)) - 1, int(np.ceil(n * min_frac)))]
-        t0_fit = float(np.clip(t0_fit, lo_t, hi_t))
-        return t0_fit, float(k_fit)
-    except Exception:
+    # Early exit: if rolling mean has almost no variance, nothing to fit
+    rm_range = float(rm.max() - rm.min())
+    if rm_range < 0.15:
         lo = int(np.ceil(n * min_frac))
-        hi = max(n - lo - 1, lo)
-        return float(t[max(lo, min(hi, n // 2))]), float('nan')
+        fb = float(t[max(lo, n // 2)])
+        return [(fb, float('nan'))], float('nan'), [float(rm.min()), rm_range, float('nan'), fb], 1
+
+    # Downsample to at most 300 points so curve_fit stays fast on long recordings
+    _MAX_PTS = 300
+    if n > _MAX_PTS:
+        idx = np.round(np.linspace(0, n - 1, _MAX_PTS)).astype(int)
+        t_fit_arr = t[idx]
+        rm_fit    = rm[idx]
+    else:
+        t_fit_arr = t
+        rm_fit    = rm
+
+    ss_tot = float(np.sum((rm_fit - rm_fit.mean()) ** 2))
+
+    # Allow multi-sigma only when the rolling mean has a genuine interior
+    # peak or dip — i.e. the extremum is in the middle of the recording,
+    # not just at an endpoint (which would be a plain monotone transition).
+    # Threshold: interior must exceed endpoints by ≥15% of total range.
+    if max_sigs > 1:
+        q   = max(1, len(rm_fit) // 5)          # outer-20% endpoint bands
+        end_hi = max(float(rm_fit[:q].mean()), float(rm_fit[-q:].mean()))
+        end_lo = min(float(rm_fit[:q].mean()), float(rm_fit[-q:].mean()))
+        mid    = rm_fit[q:-q] if len(rm_fit) > 2 * q else rm_fit
+        has_bump = float(mid.max()) > end_hi + 0.15 * rm_range
+        has_dip  = float(mid.min()) < end_lo - 0.15 * rm_range
+        if not (has_bump or has_dip):
+            max_sigs = 1
+
+    lo_t = float(t[int(np.ceil(n * min_frac))])
+    hi_t = float(t[max(int(n * (1.0 - min_frac)) - 1, int(np.ceil(n * min_frac)))])
+
+    def _make_model(ns_):
+        def _m(t_, b, *lkt):
+            val = np.full_like(t_, float(b))
+            for i in range(ns_):
+                L_, k_, t0_ = lkt[3 * i], lkt[3 * i + 1], lkt[3 * i + 2]
+                val = val + L_ / (1.0 + np.exp(np.clip(-k_ * (t_ - t0_), -500, 500)))
+            return val
+        return _m
+
+    best_aic         = np.inf
+    best_transitions = None
+    best_r2          = float('nan')
+    best_popt        = None
+    best_n           = 1
+
+    k_scale = 2.0 / max(hi_t - lo_t, 1e-9)
+    L_range = max(rm.max() - rm.min(), 1e-3)
+    b0      = float(rm.min())
+
+    # Only two sign patterns per ns — enough to catch monotone and alternating cases
+    _SIGN_PATS = {
+        1: [(1,), (-1,)],
+        2: [(1, -1), (-1, 1)],
+        3: [(1, -1, 1), (-1, 1, -1)],
+    }
+    AIC_MIN_IMPROVEMENT = 30.0  # extra sigmoid needs substantial improvement to justify complexity
+
+    for ns in range(1, max_sigs + 1):
+        n_params  = 1 + 3 * ns
+        model     = _make_model(ns)
+        t_cands   = np.linspace(lo_t, hi_t, ns + 2)[1:-1]
+        sign_pats = _SIGN_PATS.get(ns, [(1,) * ns])
+
+        lower = [-np.inf] + [0.0,    -np.inf, float(t[0])   ] * ns
+        upper = [ np.inf] + [np.inf,  np.inf, float(t[-1])  ] * ns
+
+        ns_best_aic = np.inf
+        for signs in sign_pats:
+            p0 = [b0]
+            for i in range(ns):
+                p0.extend([L_range / ns, signs[i] * k_scale, float(t_cands[i])])
+            try:
+                popt, _ = curve_fit(model, t_fit_arr, rm_fit, p0=p0,
+                                    bounds=(lower, upper), maxfev=5000)
+                resid = rm_fit - model(t_fit_arr, *popt)
+                rss   = float(np.sum(resid ** 2))
+                nf    = len(rm_fit)
+                aic   = nf * np.log(max(rss / nf, 1e-300)) + 2 * n_params
+                r2    = 1.0 - rss / ss_tot if ss_tot > 0 else 0.0
+
+                if aic < ns_best_aic:
+                    ns_best_aic = aic
+
+                if aic < best_aic:
+                    best_aic  = aic
+                    best_r2   = float(r2)
+                    best_popt = list(popt)
+                    best_n    = ns
+                    transitions = []
+                    for i in range(ns):
+                        k_i  = float(popt[2 + 3 * i])
+                        t0_i = float(np.clip(popt[3 + 3 * i], lo_t, hi_t))
+                        transitions.append((t0_i, k_i))
+                    transitions.sort(key=lambda x: x[0])
+                    best_transitions = transitions
+            except Exception:
+                continue
+
+        # If single sigmoid already good enough, don't try more (avoids overfitting noise)
+        if ns == 1 and best_r2 >= r2_early_stop:
+            break
+        # Stop early if going from ns-1 → ns didn't help enough
+        if ns > 1 and (np.isinf(ns_best_aic) or best_n < ns or
+                       ns_best_aic > best_aic + AIC_MIN_IMPROVEMENT):
+            break
+
+    if best_transitions is None:
+        lo = int(np.ceil(n * min_frac))
+        fb = float(t[max(lo, n // 2)])
+        return [(fb, float('nan'))], float('nan'), [b0, L_range, float('nan'), fb], 1
+
+    return best_transitions, best_r2, best_popt, best_n
 
 
-def find_temporal_transitions(cluster_pickle_dir, rho_thresh=0.3, p_thresh=0.05,
-                               min_frac=0.1, rolling_n=50, save_path=None):
+def find_temporal_transitions(cluster_pickle_dir, r2_thresh=0.80, min_k=0.02,
+                               min_spikes=20, min_frac=0.1, rolling_n=50,
+                               max_sigs=3, save_path=None, force=False):
     """
-    For each (cell × spike_feature) pair where |Spearman ρ| > rho_thresh and
-    p < p_thresh, find the recording time at which the cluster label transitions
-    using sigmoid fit to the rolling mean of ordinal labels.  The transition
-    time is the inflection point t0 of the best-fit logistic curve.
+    For each (cell × spike_feature) pair with enough spikes, fit 1–max_sigs
+    logistic sigmoids (AIC selection) to the rolling mean of ordinal cluster
+    labels.  Keep the result only if the overall R² ≥ r2_thresh and the
+    sharpest sigmoid has |k| ≥ min_k.  Returns one row per inflection point,
+    so a 2-sigmoid fit produces 2 rows for the same (cell, feature).
+
+    If save_path already exists and force=False, the cached DataFrame is loaded
+    and returned immediately without recomputing.
 
     Parameters
     ----------
-    cluster_pickle_dir : str  path to cluster_pickles/
-    rho_thresh         : float  |ρ| threshold (default 0.3)
-    p_thresh           : float  significance threshold (default 0.05)
-    min_frac           : float  min fraction of spikes in each segment (default 0.1)
-    rolling_n          : int    rolling-mean window for sigmoid fit (default 50 spikes)
-    save_path          : str or None  if given, save the result DataFrame as a pickle
+    cluster_pickle_dir : str    path to cluster_pickles/
+    r2_thresh          : float  minimum overall R² to keep (default 0.80)
+    min_k              : float  minimum |k| (1/s) of the sharpest sigmoid (default 0.02)
+    min_spikes         : int    minimum valid spikes required (default 20)
+    min_frac           : float  segment fraction for t0 bounding (default 0.1)
+    rolling_n          : int    rolling-mean window in spikes (default 50)
+    max_sigs           : int    maximum sigmoids per cell/feature (default 3)
+    save_path          : str or None  if given, pickle the result DataFrame
+    force              : bool   if True, recompute even when save_path exists (default False)
 
     Returns
     -------
-    df_transitions : pd.DataFrame  one row per detected transition, columns:
-        cell_id, spike_feature, temporal_rho, temporal_p,
-        n_spikes, transition_time_ms, transition_spike_idx,
-        transition_sharpness_k,
+    df_transitions : pd.DataFrame  one row per inflection point, columns:
+        cell_id, spike_feature,
+        n_spikes, n_transitions, transition_index,
+        transition_time_ms, transition_sharpness_k,
+        sigmoid_r2, sigmoid_popt,
         cluster_before, cluster_after,
         frac_dominant_before, frac_dominant_after,
         mean_time_before_ms, mean_time_after_ms
     """
     import glob
+    import os
+
+    if save_path and not force and os.path.exists(save_path):
+        df_cached = pd.read_pickle(save_path)
+        print(f'Loaded cached transitions from {save_path}  '
+              f'({len(df_cached)} rows — pass force=True to recompute)')
+        return df_cached
 
     ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
                'Low': 0, 'Mid': 1, 'High': 2,
@@ -2318,6 +2427,10 @@ def find_temporal_transitions(cluster_pickle_dir, rho_thresh=0.3, p_thresh=0.05,
                 return float(v)
         return float('nan')
 
+    def _dominant(arr):
+        vals, cnts = np.unique(arr, return_counts=True)
+        return vals[np.argmax(cnts)], float(np.max(cnts) / len(arr))
+
     pkl_files = sorted(glob.glob(f'{cluster_pickle_dir}/c*_cluster_df.pkl'))
     rows = []
 
@@ -2331,69 +2444,81 @@ def find_temporal_transitions(cluster_pickle_dir, rho_thresh=0.3, p_thresh=0.05,
         for col in cluster_cols:
             feat = col.replace('_cluster', '')
 
-            # Compute Spearman ρ between spike time and ordinal cluster label
             labels     = df[col].dropna()
             times      = df.loc[labels.index, 'spk_times_ms']
             labels_ord = labels.map(_to_ord).values
             valid      = np.isfinite(labels_ord)
-            if valid.sum() < 20:
+            if valid.sum() < min_spikes:
                 continue
 
-            rho, p = spearmanr(times.values[valid], labels_ord[valid])
-
-            if abs(rho) < rho_thresh or p >= p_thresh:
-                continue
-
-            # Sort by spike time and find sigmoid transition
             sort_idx     = np.argsort(times.values[valid])
-            times_ms_s   = times.values[valid][sort_idx]       # ms, sorted
+            times_ms_s   = times.values[valid][sort_idx]
             labels_s     = labels_ord[valid][sort_idx]
             raw_labels_s = labels.values[valid][sort_idx]
 
-            t0_sec, k_sharpness = _sigmoid_transition_1d(
+            transitions, r2, popt, n_sigs = _fit_multi_sigmoid(
                 times_ms_s / 1000.0, labels_s,
-                rolling_n=rolling_n, min_frac=min_frac,
+                rolling_n=rolling_n, min_frac=min_frac, max_sigs=max_sigs,
+                r2_early_stop=0.95,
             )
-            t0_ms = t0_sec * 1000.0
-            # Find spike index closest to t0 (clamped to min_frac bounds)
-            n_v  = len(times_ms_s)
-            lo   = int(np.ceil(n_v * min_frac))
-            hi   = n_v - lo
-            cp   = int(np.clip(np.argmin(np.abs(times_ms_s - t0_ms)), lo, hi))
 
-            before = raw_labels_s[:cp]
-            after  = raw_labels_s[cp:]
+            # Filter: good overall fit AND at least one sigmoid must be sharp enough
+            if not np.isfinite(r2) or r2 < r2_thresh:
+                continue
+            finite_ks = [abs(k) for _, k in transitions if np.isfinite(k)]
+            if not finite_ks or max(finite_ks) < min_k:
+                continue
 
-            # Dominant cluster in each segment
-            def _dominant(arr):
-                vals, cnts = np.unique(arr, return_counts=True)
-                return vals[np.argmax(cnts)], np.max(cnts) / len(arr)
+            n_v = len(times_ms_s)
+            lo  = int(np.ceil(n_v * min_frac))
+            hi  = n_v - lo
 
-            cl_before, frac_before = _dominant(before)
-            cl_after,  frac_after  = _dominant(after)
+            # Segment boundaries for before/after per transition
+            t0_ms_list = [t0 * 1000.0 for t0, _ in transitions]
+            boundaries_ms = [times_ms_s[0]] + t0_ms_list + [times_ms_s[-1]]
 
-            rows.append(dict(
-                cell_id               = cid,
-                spike_feature         = feat,
-                temporal_rho          = float(rho),
-                temporal_p            = float(p),
-                n_spikes              = int(valid.sum()),
-                transition_time_ms    = float(t0_ms),
-                transition_spike_idx  = int(cp),
-                transition_sharpness_k= float(k_sharpness),
-                cluster_before        = cl_before,
-                cluster_after         = cl_after,
-                frac_dominant_before  = float(frac_before),
-                frac_dominant_after   = float(frac_after),
-                mean_time_before_ms   = float(np.mean(times_ms_s[:cp])),
-                mean_time_after_ms    = float(np.mean(times_ms_s[cp:])),
-            ))
+            for ti, (t0_sec, k_val) in enumerate(transitions):
+                t0_ms_i  = t0_sec * 1000.0
+                cp       = int(np.clip(np.argmin(np.abs(times_ms_s - t0_ms_i)), lo, hi))
+                prev_ms  = boundaries_ms[ti]
+                next_ms  = boundaries_ms[ti + 2]
+
+                mask_b = (times_ms_s >= prev_ms) & (times_ms_s <  t0_ms_i)
+                mask_a = (times_ms_s >= t0_ms_i) & (times_ms_s <= next_ms)
+
+                if mask_b.sum() == 0 or mask_a.sum() == 0:
+                    continue
+
+                cl_before, frac_before = _dominant(raw_labels_s[mask_b])
+                cl_after,  frac_after  = _dominant(raw_labels_s[mask_a])
+
+                if cl_before == cl_after:
+                    continue
+
+                rows.append(dict(
+                    cell_id               = cid,
+                    spike_feature         = feat,
+                    n_spikes              = int(valid.sum()),
+                    n_transitions         = n_sigs,
+                    transition_index      = ti,
+                    transition_time_ms    = float(t0_ms_i),
+                    transition_sharpness_k= float(k_val),
+                    sigmoid_r2            = float(r2),
+                    sigmoid_popt          = popt,
+                    cluster_before        = cl_before,
+                    cluster_after         = cl_after,
+                    frac_dominant_before  = float(frac_before),
+                    frac_dominant_after   = float(frac_after),
+                    mean_time_before_ms   = float(np.mean(times_ms_s[mask_b])),
+                    mean_time_after_ms    = float(np.mean(times_ms_s[mask_a])),
+                ))
 
     df_transitions = pd.DataFrame(rows)
+    n_pairs = df_transitions[['cell_id','spike_feature']].drop_duplicates().shape[0] if len(df_transitions) else 0
 
-    print(f'Found {len(df_transitions)} transitions across '
-          f'{df_transitions["cell_id"].nunique() if len(df_transitions) else 0} cells '
-          f'(|ρ| > {rho_thresh}, p < {p_thresh})')
+    print(f'Found {len(df_transitions)} transition events across '
+          f'{n_pairs} (cell, feature) pairs '
+          f'(R² ≥ {r2_thresh}, |k| ≥ {min_k} /s, max {max_sigs} sigmoids)')
 
     if save_path and len(df_transitions):
         df_transitions.to_pickle(save_path)
@@ -2439,19 +2564,30 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
     def _to_ord(l):
         return ORDINAL.get(str(l).strip(), 1)
 
-    n_rows = int(np.ceil(len(df_transitions) / n_cols))
+    # One panel per (cell_id, spike_feature) group — supports multi-sigmoid
+    groups   = list(df_transitions.groupby(['cell_id', 'spike_feature'], sort=False))
+    n_panels = len(groups)
+
+    n_rows = int(np.ceil(n_panels / n_cols))
     fig, axes = plt.subplots(n_rows, n_cols,
                              figsize=(n_cols * 4.8, n_rows * 3.5),
                              squeeze=False)
 
-    for ax_i, (_, row) in enumerate(df_transitions.iterrows()):
-        ax = axes[ax_i // n_cols][ax_i % n_cols]
-        cid  = row['cell_id']
-        feat = row['spike_feature']
-        t_tr = row['transition_time_ms']
-        rho  = row['temporal_rho']
-        cl_b = row['cluster_before']
-        cl_a = row['cluster_after']
+    def _multi_sigmoid(t_, popt_):
+        b   = popt_[0]
+        val = np.full_like(t_, float(b))
+        ns  = (len(popt_) - 1) // 3
+        for i in range(ns):
+            L_, k_, t0_ = popt_[1+3*i], popt_[2+3*i], popt_[3+3*i]
+            val = val + L_ / (1.0 + np.exp(np.clip(-k_*(t_-t0_), -500, 500)))
+        return val
+
+    for ax_i, ((cid, feat), group) in enumerate(groups):
+        ax    = axes[ax_i // n_cols][ax_i % n_cols]
+        first = group.iloc[0]
+        r2_val = float(first.get('sigmoid_r2', float('nan')))
+        popt   = first.get('sigmoid_popt')
+        n_sigs = int(first.get('n_transitions', 1))
 
         pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
         try:
@@ -2465,13 +2601,13 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
             ax.set_visible(False)
             continue
 
-        sub = df[['spk_times_ms', col]].dropna()
-        sub = sub.sort_values('spk_times_ms').reset_index(drop=True)
-        times  = sub['spk_times_ms'].values / 1000.0   # → seconds
+        sub    = df[['spk_times_ms', col]].dropna()
+        sub    = sub.sort_values('spk_times_ms').reset_index(drop=True)
+        times  = sub['spk_times_ms'].values / 1000.0
         labels = sub[col].values
         ord_l  = np.array([_to_ord(l) for l in labels], dtype=float)
 
-        # Scatter: individual spike cluster labels
+        # Scatter
         for lbl in np.unique(labels):
             mask = labels == lbl
             ax.scatter(times[mask], ord_l[mask],
@@ -2480,54 +2616,45 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
 
         # Rolling mean
         rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
-        ax.plot(times, rm.values, color='black', lw=3.5, zorder=5, alpha=0.6,
-                label='Rolling mean')
+        ax.plot(times, rm.values, color='black', lw=3.5, zorder=5, alpha=0.6)
 
-        # Sigmoid fit overlay
-        k_val = row.get('transition_sharpness_k', float('nan'))
-        if np.isfinite(k_val):
-            from scipy.optimize import curve_fit
-
-            def _logistic(t_, L, k, t0, b):
-                return b + L / (1.0 + np.exp(np.clip(-k * (t_ - t0), -500, 500)))
-
-            rm_arr = rm.values
-            L0  = max(rm_arr.max() - rm_arr.min(), 1e-3)
-            b0  = rm_arr.min()
-            k0  = k_val
-            t00 = t_tr / 1000.0
+        # Multi-sigmoid curve from stored popt
+        if popt is not None:
             try:
-                popt, _ = curve_fit(
-                    _logistic, times, rm_arr,
-                    p0=[L0, k0, t00, b0],
-                    bounds=([0, -np.inf, times[0], -np.inf],
-                            [np.inf, np.inf, times[-1], np.inf]),
-                    maxfev=5000,
-                )
-                t_fit = np.linspace(times[0], times[-1], 300)
-                ax.plot(t_fit, _logistic(t_fit, *popt),
-                        color=trans_color, lw=3.5, zorder=6, label='Sigmoid fit')
+                t_fit = np.linspace(times[0], times[-1], 400)
+                ax.plot(t_fit, _multi_sigmoid(t_fit, popt),
+                        color=trans_color, lw=3.5, zorder=6)
             except Exception:
                 pass
 
-        # Transition line at sigmoid inflection point
-        ax.axvline(t_tr / 1000.0, color=trans_color, lw=2.5, ls='--', zorder=7,
-                   alpha=0.85)
-        ax.text(t_tr / 1000.0, ax.get_ylim()[1] if ax.get_ylim()[1] != ax.get_ylim()[0]
-                else 2.1, f'  {t_tr/1000:.1f}s',
-                color=trans_color, fontsize=_FS_TICK, fontweight='bold', va='top')
+        # One dashed line + label per transition in the group
+        title_parts = []
+        for _, tr_row in group.sort_values('transition_index').iterrows():
+            t_tr  = float(tr_row['transition_time_ms'])
+            k_val = float(tr_row['transition_sharpness_k'])
+            cl_b  = tr_row['cluster_before']
+            cl_a  = tr_row['cluster_after']
+            ax.axvline(t_tr / 1000.0, color=trans_color, lw=2.5, ls='--',
+                       zorder=7, alpha=0.85)
+            ax.text(t_tr / 1000.0, 2.15, f'  {t_tr/1000:.1f}s',
+                    color=trans_color, fontsize=_FS_TICK - 1,
+                    fontweight='bold', va='top', clip_on=True)
+            k_str = f'k={k_val:.3f}/s' if np.isfinite(k_val) else 'k=?'
+            title_parts.append(f'{cl_b}→{cl_a} {k_str}')
+
+        r2_str  = f'R²={r2_val:.2f}' if np.isfinite(r2_val) else 'R²=?'
+        sig_tag = f'({n_sigs}σ)' if n_sigs > 1 else ''
+        ax.set_title(f'{cid}  ·  {feat}  {sig_tag}\n{r2_str}  ' + '   '.join(title_parts),
+                     fontsize=_FS_AX, fontweight='bold', color='black')
 
         ax.set_yticks([0, 1, 2])
         ax.set_yticklabels(['low', 'mid', 'high'], fontsize=_FS_TICK, color='black')
         ax.set_xlabel('Time (s)', fontsize=_FS_AX, color='black')
-        k_str = f'k={k_val:.2f}/s' if np.isfinite(k_val) else 'k=fit fail'
-        ax.set_title(f'{cid}  ·  {feat}\nρ={rho:+.2f}  {cl_b}→{cl_a}  {k_str}',
-                     fontsize=_FS_AX, fontweight='bold', color='black')
         ax.tick_params(axis='both', labelsize=_FS_TICK, colors='black')
         sns.despine(ax=ax)
 
     # Hide unused axes
-    for ax_i in range(len(df_transitions), n_rows * n_cols):
+    for ax_i in range(n_panels, n_rows * n_cols):
         axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
 
     fig.suptitle('Temporal transitions in cluster membership\n'
@@ -2594,12 +2721,13 @@ def plot_temporal_transitions_highlights(df_transitions, cluster_pickle_dir,
 
     for ax_i, row in enumerate(rows):
         ax = axes[ax_i // n_cols][ax_i % n_cols]
-        cid  = row['cell_id']
-        feat = row['spike_feature']
-        t_tr = row['transition_time_ms']
-        rho  = row['temporal_rho']
-        cl_b = row['cluster_before']
-        cl_a = row['cluster_after']
+        cid   = row['cell_id']
+        feat  = row['spike_feature']
+        t_tr  = row['transition_time_ms']
+        cl_b  = row['cluster_before']
+        cl_a  = row['cluster_after']
+        k_val = row.get('transition_sharpness_k', float('nan'))
+        r2_val= row.get('sigmoid_r2', float('nan'))
 
         pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
         try:
@@ -2637,7 +2765,9 @@ def plot_temporal_transitions_highlights(df_transitions, cluster_pickle_dir,
         ax.set_yticks([0, 1, 2])
         ax.set_yticklabels(['low', 'mid', 'high'], fontsize=_FS_TICK, color='black')
         ax.set_xlabel('Time (s)', fontsize=_FS_AX, color='black')
-        ax.set_title(f'{cid}  ·  {feat}\nρ={rho:+.2f}  {cl_b}→{cl_a}',
+        k_str  = f'k={k_val:.3f}/s' if np.isfinite(k_val) else 'k=?'
+        r2_str = f'R²={r2_val:.2f}' if np.isfinite(r2_val) else ''
+        ax.set_title(f'{cid}  ·  {feat}\n{r2_str}  {k_str}  {cl_b}→{cl_a}',
                      fontsize=_FS_AX, fontweight='bold', color='black', pad=14)
         ax.tick_params(axis='both', labelsize=_FS_TICK, colors='black')
         sns.despine(ax=ax)
