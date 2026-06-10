@@ -2823,7 +2823,7 @@ def analyze_lfp_at_transitions(
         exponent  : specparam aperiodic exponent
         offset    : specparam aperiodic offset
         theta_auc : specparam theta peak AUC (4–10 Hz)
-        gamma_auc : specparam gamma peak AUC (30–55 Hz)
+        slow_gamma_auc / high_gamma_auc / total_gamma_auc : specparam gamma AUC (30–60 / 60–80 / 30–80 Hz)
 
     Parameters
     ----------
@@ -2833,6 +2833,10 @@ def analyze_lfp_at_transitions(
     import pickle
     from scipy.signal import welch
     from specparam import SpectralModel
+    try:
+        from specparam.utils import interpolate_spectrum
+    except ImportError:
+        from fooof.utils import interpolate_spectrum
 
     if save_path and not force and os.path.exists(save_path):
         with open(save_path, 'rb') as _f:
@@ -2841,7 +2845,7 @@ def analyze_lfp_at_transitions(
               f'(pass force=True to recompute)')
         return cached
 
-    BLOCK_COLORS = ['#2980b9', '#e74c3c', '#27ae60', '#8e44ad']
+    BLOCK_COLORS = ['#0072B2', '#D55E00', '#009E73', '#CC79A7']  # Okabe-Ito
     results = {}
 
     for cid, cell_grp in df_transitions.groupby('cell_id'):
@@ -2878,22 +2882,35 @@ def analyze_lfp_at_transitions(
                 sm = SpectralModel(
                     aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
                     max_n_peaks=4, min_peak_height=0.0,
-                    peak_threshold=2.0, verbose=False,
+                    peak_threshold=1.5, verbose=False,
                 )
                 try:
-                    sm.fit(freqs_out, psd_out, freq_range=freq_range)
+                    freqs_sm, psd_sm = interpolate_spectrum(freqs_out, psd_out, [58, 62])
+                    sm.fit(freqs_sm, psd_sm, freq_range=freq_range)
                     exponent  = float(sm.get_params('aperiodic_params', 'exponent'))
                     offset    = float(sm.get_params('aperiodic_params', 'offset'))
                     full_log  = np.asarray(sm.get_model(component='full',      space='log'))
                     ape_log   = np.asarray(sm.get_model(component='aperiodic', space='log'))
                     freqs_fit = np.asarray(sm.freqs)
-                    theta_m   = (freqs_fit >= 4)  & (freqs_fit <= 10)
-                    gamma_m   = (freqs_fit >= 30) & (freqs_fit <= 55)
-                    theta_auc = float(np.trapz(np.clip(full_log[theta_m] - ape_log[theta_m], 0, None), freqs_fit[theta_m]))
-                    gamma_auc = float(np.trapz(np.clip(full_log[gamma_m] - ape_log[gamma_m], 0, None), freqs_fit[gamma_m]))
+                    # AUC = specparam peak model above aperiodic (NaN-safe: missing → 0 contribution)
+                    def _band_auc(fl, al, ff, flo, fhi):
+                        m = (ff >= flo) & (ff <= fhi)
+                        d = np.where(np.isfinite(fl[m] - al[m]), fl[m] - al[m], 0.0)
+                        return float(np.trapezoid(np.clip(d, 0, None), ff[m]))
+                    theta_auc      = _band_auc(full_log, ape_log, freqs_fit,  4,  15)
+                    slow_gamma_auc = _band_auc(full_log, ape_log, freqs_fit, 30,  60)
+                    high_gamma_auc = _band_auc(full_log, ape_log, freqs_fit, 60,  80)
+                    total_gamma_auc= _band_auc(full_log, ape_log, freqs_fit, 30,  80)
+                    _peaks = np.atleast_2d(sm.peak_params_) if sm.n_peaks_ > 0 else np.empty((0, 3))
+                    _pk_str = ', '.join(f'CF={p[0]:.1f}Hz PW={p[1]:.3f} BW={p[2]:.1f}' for p in _peaks) or 'none'
+                    print(f'  [{cid}|{feat}|blk{b_idx}] exp={exponent:.2f}  '
+                          f'θ={theta_auc:.4f}  sγ={slow_gamma_auc:.4f}  '
+                          f'hγ={high_gamma_auc:.4f}  totγ={total_gamma_auc:.4f}  '
+                          f'n_peaks={sm.n_peaks_}  peaks=[{_pk_str}]', flush=True)
                 except Exception as _e:
                     print(f"  specparam warn [{cid}|{feat}|blk{b_idx}]: {_e}", flush=True)
-                    exponent = offset = theta_auc = gamma_auc = float('nan')
+                    exponent = offset = float('nan')
+                    theta_auc = slow_gamma_auc = high_gamma_auc = total_gamma_auc = float('nan')
                     freqs_fit = full_log = ape_log = None
 
                 block_results.append({
@@ -2912,8 +2929,10 @@ def analyze_lfp_at_transitions(
                     'ape_log':    ape_log,
                     'exponent':   exponent,
                     'offset':     offset,
-                    'theta_auc':  theta_auc,
-                    'gamma_auc':  gamma_auc,
+                    'theta_auc':       theta_auc,
+                    'slow_gamma_auc':  slow_gamma_auc,
+                    'high_gamma_auc':  high_gamma_auc,
+                    'total_gamma_auc': total_gamma_auc,
                 })
 
             if block_results:
@@ -3058,29 +3077,73 @@ def plot_lfp_block_comparison(
     import matplotlib.gridspec as gridspec
     import seaborn as sns
     from specparam import SpectralModel
+    try:
+        from specparam.utils import interpolate_spectrum
+    except ImportError:
+        from fooof.utils import interpolate_spectrum
 
     ORDINAL = {'low': 0, 'mid': 1, 'high': 2, 'Low': 0, 'Mid': 1, 'High': 2}
     CLR_CLUSTER = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
                    'Low': '#0072B2', 'Mid': '#009E73', 'High': '#D55E00'}
-    FEAT_LABELS = ['Exponent', 'Theta AUC', 'Gamma AUC', 'Std (raw)']
 
     _sm_kwargs = dict(aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
-                      max_n_peaks=4, min_peak_height=0.0, peak_threshold=2.0, verbose=False)
+                      max_n_peaks=4, min_peak_height=0.0, peak_threshold=1.5, verbose=False)
+
+    bar_specs = [
+        ('mean_amp',        'Mean amp\n(µV)'),
+        ('std_amp',         'Std amp\n(µV)'),
+        ('exponent',        'Exponent'),
+        ('theta_auc',       'θ AUC\n4–15 Hz'),
+        ('total_gamma_auc', 'Total γ\n30–80 Hz'),
+        ('slow_gamma_auc',  'Slow γ\n30–60 Hz'),
+        ('high_gamma_auc',  'High γ\n60–80 Hz'),
+    ]
+    _auc_keys = {'theta_auc', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc'}
+
+    # Pre-scan all blocks for global y-limits (bar features + PSD)
+    _gvals = {key: [] for key, _ in bar_specs}
+    _psd_mins, _psd_maxs = [], []
+    for _blks in lfp_block_results.values():
+        for _blk in _blks:
+            for key, _ in bar_specs:
+                v = _blk.get(key, float('nan'))
+                if np.isfinite(v):
+                    _gvals[key].append(v)
+            _p = _blk.get('psd', _blk.get('mean_psd'))
+            if _p is not None:
+                _p = np.asarray(_p)
+                _p = _p[_p > 0]
+                if len(_p):
+                    _psd_mins.append(float(np.min(_p)))
+                    _psd_maxs.append(float(np.max(_p)))
+    _global_ylims = {}
+    for key, vals in _gvals.items():
+        if not vals:
+            _global_ylims[key] = None
+            continue
+        lo, hi = min(vals), max(vals)
+        span = max(hi - lo, abs(hi) * 0.05, 1e-6)
+        top  = max(hi, 0) + span * 0.45  # headroom above 0 for bracket even when all vals negative
+        bot  = 0.0 if key in _auc_keys else min(lo, 0) - span * 0.1
+        _global_ylims[key] = (bot, top)
+    _psd_ylim = (min(_psd_mins) * 0.5, max(_psd_maxs) * 2.0) if _psd_mins else None
 
     for (cid, feat), blocks in lfp_block_results.items():
         if not blocks:
             continue
 
-        # Re-run specparam for any block where the cached fit failed
+        # Ensure every block has valid specparam fit + AUC
         for blk in blocks:
             if blk.get('freqs_fit') is not None:
-                continue
+                continue  # cached fit present — trust stored AUC values
+            # No fit — run specparam now
             psd_b = blk.get('psd', blk.get('mean_psd'))
             if psd_b is None or blk.get('freqs') is None:
                 continue
             try:
                 _sm = SpectralModel(**_sm_kwargs)
-                _sm.fit(blk['freqs'], psd_b, freq_range=(1, 90))
+                _freqs_sm, _psd_sm = interpolate_spectrum(blk['freqs'], psd_b, [58, 62])
+                _sm.fit(_freqs_sm, _psd_sm, freq_range=(1, 90))
                 ff = np.asarray(_sm.freqs)
                 fl = np.asarray(_sm.get_model(component='full',      space='log'))
                 al = np.asarray(_sm.get_model(component='aperiodic', space='log'))
@@ -3091,10 +3154,80 @@ def plot_lfp_block_comparison(
                 blk['ape_log']   = al
                 blk['exponent']  = float(_sm.get_params('aperiodic_params', 'exponent'))
                 blk['offset']    = float(_sm.get_params('aperiodic_params', 'offset'))
-                blk['theta_auc'] = float(np.trapz(np.clip(fl[tm] - al[tm], 0, None), ff[tm]))
-                blk['gamma_auc'] = float(np.trapz(np.clip(fl[gm] - al[gm], 0, None), ff[gm]))
+                def _bauc(fl, al, ff, flo, fhi):
+                    m = (ff >= flo) & (ff <= fhi)
+                    d = np.where(np.isfinite(fl[m] - al[m]), fl[m] - al[m], 0.0)
+                    return float(np.trapezoid(np.clip(d, 0, None), ff[m]))
+                blk['theta_auc']       = _bauc(fl, al, ff,  4,  15)
+                blk['slow_gamma_auc']  = _bauc(fl, al, ff, 30,  60)
+                blk['high_gamma_auc']  = _bauc(fl, al, ff, 60,  80)
+                blk['total_gamma_auc'] = _bauc(fl, al, ff, 30,  80)
+                _pks_r = np.atleast_2d(_sm.peak_params_) if _sm.n_peaks_ > 0 else np.empty((0, 3))
+                _pk_str_r = ', '.join(f'CF={p[0]:.1f}Hz PW={p[1]:.3f} BW={p[2]:.1f}' for p in _pks_r) or 'none'
+                print(f'  [refit {cid}|{feat}|blk{blk["block"]}] exp={blk["exponent"]:.2f}  '
+                      f'θ={blk["theta_auc"]:.4f}  sγ={blk["slow_gamma_auc"]:.4f}  '
+                      f'hγ={blk["high_gamma_auc"]:.4f}  totγ={blk["total_gamma_auc"]:.4f}  '
+                      f'n_peaks={_sm.n_peaks_}  peaks=[{_pk_str_r}]', flush=True)
             except Exception as _e:
                 print(f"  specparam refit failed [{cid}|{feat}]: {_e}")
+
+        # Repair / backfill all AUC keys using specparam peak model (NaN → 0 contribution)
+        _AUC_BANDS = [
+            ('theta_auc',       4,  15),
+            ('slow_gamma_auc',  30, 60),
+            ('high_gamma_auc',  60, 80),
+            ('total_gamma_auc', 30, 80),
+        ]
+        for blk in blocks:
+            _ff2 = blk.get('freqs_fit')
+            _fl2 = blk.get('full_log')
+            _al2 = blk.get('ape_log')
+            if _ff2 is None or _fl2 is None or _al2 is None:
+                continue
+            _ff2 = np.asarray(_ff2); _fl2 = np.asarray(_fl2); _al2 = np.asarray(_al2)
+            for _key, _flo, _fhi in _AUC_BANDS:
+                if not np.isfinite(blk.get(_key, float('nan'))):
+                    _m2 = (_ff2 >= _flo) & (_ff2 <= _fhi)
+                    _d2 = np.where(np.isfinite(_fl2[_m2] - _al2[_m2]), _fl2[_m2] - _al2[_m2], 0.0)
+                    blk[_key] = float(np.trapezoid(np.clip(_d2, 0, None), _ff2[_m2]))
+
+        # Print specparam summary for every block (from cache or refit)
+        print(f'\n=== {cid} | {feat} ===', flush=True)
+        for blk in blocks:
+            ff_p = blk.get('freqs_fit')
+            fl_p = blk.get('full_log')
+            al_p = blk.get('ape_log')
+            exp_p  = blk.get('exponent', float('nan'))
+            th_p   = blk.get('theta_auc', float('nan'))
+            sg_p   = blk.get('slow_gamma_auc', float('nan'))
+            hg_p   = blk.get('high_gamma_auc', float('nan'))
+            tg_p   = blk.get('total_gamma_auc', float('nan'))
+            if ff_p is not None and fl_p is not None and al_p is not None:
+                ff_p = np.asarray(ff_p); fl_p = np.asarray(fl_p); al_p = np.asarray(al_p)
+                # Reconstruct peaks: contiguous regions where full_log > ape_log
+                _diff_p = fl_p - al_p
+                _diff_p = np.where(np.isfinite(_diff_p), _diff_p, 0.0)
+                _above  = _diff_p > 0.01
+                _pk_info = []
+                in_peak = False
+                for i_p, val in enumerate(_above):
+                    if val and not in_peak:
+                        pk_start = i_p; in_peak = True
+                    elif not val and in_peak:
+                        seg = _diff_p[pk_start:i_p]
+                        cf_idx = pk_start + int(np.argmax(seg))
+                        _pk_info.append(f'CF={ff_p[cf_idx]:.1f}Hz PW={_diff_p[cf_idx]:.3f}')
+                        in_peak = False
+                if in_peak:
+                    seg = _diff_p[pk_start:]
+                    cf_idx = pk_start + int(np.argmax(seg))
+                    _pk_info.append(f'CF={ff_p[cf_idx]:.1f}Hz PW={_diff_p[cf_idx]:.3f}')
+                pk_str = ', '.join(_pk_info) or 'none'
+            else:
+                pk_str = 'no fit'
+            print(f'  {blk["label"]:10s}  exp={exp_p:.3f}  '
+                  f'θ={th_p:.4f}  sγ={sg_p:.4f}  hγ={hg_p:.4f}  totγ={tg_p:.4f}  '
+                  f'peaks=[{pk_str}]', flush=True)
 
         # Load cluster data for spike rolling mean
         pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
@@ -3116,93 +3249,154 @@ def plot_lfp_block_comparison(
                              (df_transitions['spike_feature'] == feat)]
         t0s_s = sorted(grp['transition_time_ms'].dropna().values / 1000.0)
 
-        fig = plt.figure(figsize=(18, 5))
-        gs  = gridspec.GridSpec(1, 3, figure=fig, wspace=0.38)
-        ax_spike = fig.add_subplot(gs[0])
-        ax_psd   = fig.add_subplot(gs[1])
-        ax_bar   = fig.add_subplot(gs[2])
+        _rc = {
+            'axes.linewidth':      3.5,
+            'xtick.major.width':   3.0,  'ytick.major.width':   3.0,
+            'xtick.major.size':    9,    'ytick.major.size':    9,
+            'xtick.minor.visible': False, 'ytick.minor.visible': False,
+            'font.size':           22,   'font.family': 'sans-serif',
+            'font.weight':         'bold',
+            'axes.titlesize':      26,   'axes.labelsize':      24,
+            'xtick.labelsize':     20,   'ytick.labelsize':     20,
+            'legend.fontsize':     18,
+            'lines.linewidth':     3.5,
+        }
+        with plt.rc_context(_rc):
+            # ── Layout: spike (top-left) / PSD (bottom-left) / bars (right half) ──
+            fig = plt.figure(figsize=(28, 15))
+            gs  = gridspec.GridSpec(2, 2, figure=fig,
+                                    width_ratios=[1.0, 1.0],
+                                    height_ratios=[1.0, 1.0],
+                                    wspace=0.25, hspace=0.55)
+            ax_spike = fig.add_subplot(gs[0, 0])
+            ax_psd   = fig.add_subplot(gs[1, 0])
+            # 3-row × 6-col grid: every panel spans 2 cols; rows 0-1 use left 4 cols only
+            gs_bar = gridspec.GridSpecFromSubplotSpec(4, 6, subplot_spec=gs[:, 1],
+                                                      hspace=0.9, wspace=0.5)
 
-        # ── Left: spike rolling mean ──────────────────────────────────────
-        for lbl in np.unique(labels):
-            m = labels == lbl
-            ax_spike.scatter(times_s[m], ord_l[m],
-                             color=CLR_CLUSTER.get(str(lbl), 'gray'),
-                             s=8, alpha=0.3, linewidths=0, zorder=2)
-        ax_spike.plot(times_s, rm, color='black', lw=2.5, zorder=4)
-        for t0 in t0s_s:
-            ax_spike.axvline(t0, color='crimson', lw=2, ls='--', zorder=5)
-        # shade each block
-        boundaries_s = [-np.inf] + t0s_s + [np.inf]
-        x_lo = float(times_s[0]); x_hi = float(times_s[-1])
-        for b_i, blk in enumerate(blocks):
-            lo = max(boundaries_s[b_i],  x_lo)
-            hi = min(boundaries_s[b_i+1], x_hi)
-            ax_spike.axvspan(lo, hi, alpha=0.08, color=blk['color'], zorder=1)
-        ax_spike.set_yticks([0, 1, 2])
-        ax_spike.set_yticklabels(['low', 'mid', 'high'], fontsize=9)
-        ax_spike.set_xlabel('Time (s)', fontsize=10)
-        ax_spike.set_title(f'{cid}  ·  {feat}', fontsize=11, fontweight='bold')
-        sns.despine(ax=ax_spike)
+            # ── Top-left: spike rolling mean ──────────────────────────────
+            for lbl in np.unique(labels):
+                m = labels == lbl
+                ax_spike.scatter(times_s[m], ord_l[m],
+                                 color=CLR_CLUSTER.get(str(lbl), 'gray'),
+                                 s=12, alpha=0.3, linewidths=0, zorder=2)
+            ax_spike.plot(times_s, rm, color='black', lw=5.0, zorder=4)
+            for t0 in t0s_s:
+                ax_spike.axvline(t0, color='crimson', lw=4.0, ls='--', zorder=5)
+            boundaries_s = [-np.inf] + t0s_s + [np.inf]
+            x_lo = float(times_s[0]); x_hi = float(times_s[-1])
+            for b_i, blk in enumerate(blocks):
+                lo = max(boundaries_s[b_i],  x_lo)
+                hi = min(boundaries_s[b_i+1], x_hi)
+                ax_spike.axvspan(lo, hi, alpha=0.12, color=blk['color'], zorder=1)
+            ax_spike.set_yticks([0, 1, 2])
+            ax_spike.set_yticklabels(['low', 'mid', 'high'], fontsize=22)
+            ax_spike.set_xlabel('Time (s)', fontsize=24)
+            ax_spike.set_ylabel('Cluster', fontsize=24)
+            ax_spike.set_title(f'{cid}  ·  {feat}', fontsize=26, fontweight='bold')
+            sns.despine(ax=ax_spike, offset=10)
 
-        # ── Middle: PSDs + specparam ──────────────────────────────────────
-        _added_band_labels = {'theta': False, 'gamma': False}
-        for blk in blocks:
-            freqs, psd = blk['freqs'], blk.get('psd', blk.get('mean_psd'))
-            dur_s = blk.get('n_samples', blk.get('n_spikes', 0))
-            dur_label = f"{dur_s/2500:.0f}s" if 'n_samples' in blk else f"n={dur_s}"
-            ax_psd.semilogy(freqs, psd, color=blk['color'], lw=1.5, alpha=0.5,
-                            label=f"{blk['label']} ({dur_label})")
-            if blk.get('freqs_fit') is not None:
-                ff = blk['freqs_fit']
-                fl = blk['full_log']
-                al = blk['ape_log']
-                # full specparam fit
-                ax_psd.semilogy(ff, 10**fl, color=blk['color'], lw=2.5, zorder=5)
-                # aperiodic component
-                ax_psd.semilogy(ff, 10**al, color=blk['color'], lw=1.5, ls='--', alpha=0.8)
-                # theta AUC shading (4–10 Hz)
-                tm = (ff >= 4) & (ff <= 10)
-                if tm.any():
-                    fl_clipped = np.clip(fl[tm], al[tm], None)
-                    _lbl = 'θ (4–10 Hz)' if not _added_band_labels['theta'] else None
-                    ax_psd.fill_between(ff[tm], 10**al[tm], 10**fl_clipped,
-                                        alpha=0.30, color='mediumpurple',
-                                        zorder=4, label=_lbl)
-                    _added_band_labels['theta'] = True
-                # gamma AUC shading (30–55 Hz)
-                gm = (ff >= 30) & (ff <= 55)
-                if gm.any():
-                    fl_clipped = np.clip(fl[gm], al[gm], None)
-                    _lbl = 'γ (30–55 Hz)' if not _added_band_labels['gamma'] else None
-                    ax_psd.fill_between(ff[gm], 10**al[gm], 10**fl_clipped,
-                                        alpha=0.30, color='goldenrod',
-                                        zorder=4, label=_lbl)
-                    _added_band_labels['gamma'] = True
-        ax_psd.set_xlabel('Frequency (Hz)', fontsize=10)
-        ax_psd.set_ylabel('PSD (µV²/Hz)', fontsize=10)
-        ax_psd.legend(fontsize=8, frameon=False)
-        ax_psd.set_title('PSD + specparam per block', fontsize=11)
-        sns.despine(ax=ax_psd)
+            # ── Bottom-left: PSDs + specparam ────────────────────────────
+            _added_band_labels = {'theta': False, 'slow_gamma': False, 'high_gamma': False}
+            for blk in blocks:
+                freqs, psd = blk['freqs'], blk.get('psd', blk.get('mean_psd'))
+                dur_s = blk.get('n_samples', blk.get('n_spikes', 0))
+                dur_label = f"{dur_s/2500:.0f}s" if 'n_samples' in blk else f"n={dur_s}"
+                ax_psd.semilogy(freqs, psd, color=blk['color'], lw=3.0, alpha=0.45,
+                                label=f"{blk['label']} ({dur_label})")
+                if blk.get('freqs_fit') is not None:
+                    ff = np.asarray(blk['freqs_fit'])
+                    fl = np.asarray(blk['full_log']) if blk.get('full_log') is not None else None
+                    al = np.asarray(blk['ape_log'])
+                    if fl is not None:
+                        _v = np.isfinite(fl)
+                        if _v.any():
+                            ax_psd.semilogy(ff[_v], 10**fl[_v], color=blk['color'],
+                                            lw=5.5, zorder=5)
+                    ax_psd.semilogy(ff, 10**al, color=blk['color'],
+                                    lw=3.0, ls='--', alpha=0.85)
+                    if fl is not None:
+                        _shade_bands = [
+                            ('theta',      4,  15, 'mediumpurple', 'θ (4–15 Hz)'),
+                            ('slow_gamma', 30, 60, 'goldenrod',    'slow γ (30–60 Hz)'),
+                            ('high_gamma', 60, 80, 'tomato',       'high γ (60–80 Hz)'),
+                        ]
+                        for _bkey, _blo, _bhi, _bcol, _blbl_str in _shade_bands:
+                            _bm = (ff >= _blo) & (ff <= _bhi)
+                            if _bm.any():
+                                _fl_s = np.where(np.isfinite(fl[_bm]), fl[_bm], al[_bm])
+                                _fl_c = np.clip(_fl_s, al[_bm], None)
+                                _lbl  = _blbl_str if not _added_band_labels.get(_bkey) else None
+                                ax_psd.fill_between(ff[_bm], 10**al[_bm], 10**_fl_c,
+                                                    alpha=0.40, color=_bcol, zorder=4, label=_lbl)
+                                _added_band_labels[_bkey] = True
+            ax_psd.set_xlabel('Frequency (Hz)', fontsize=24)
+            ax_psd.set_ylabel('PSD (µV²/Hz)',   fontsize=24)
+            ax_psd.legend(fontsize=18, frameon=False)
+            ax_psd.set_title('PSD + specparam', fontsize=26)
+            if _psd_ylim is not None:
+                ax_psd.set_ylim(_psd_ylim)
+            ax_psd.set_xlim(0, 90)
+            ax_psd.set_xticks([0, 20, 40, 60, 80])
+            ax_psd.yaxis.set_major_locator(plt.LogLocator(numticks=3))
+            ax_psd.yaxis.set_minor_locator(plt.NullLocator())
+            sns.despine(ax=ax_psd)
 
-        # ── Right: grouped bar chart ──────────────────────────────────────
-        feat_keys = ['exponent', 'theta_auc', 'gamma_auc', 'std_amp']
-        n_feats  = len(feat_keys)
-        n_blocks = len(blocks)
-        x = np.arange(n_feats)
-        width = 0.8 / n_blocks
-        for b_i, blk in enumerate(blocks):
-            vals = [blk.get(k, float('nan')) for k in feat_keys]
-            offset_x = (b_i - (n_blocks - 1) / 2.0) * width
-            bars = ax_bar.bar(x + offset_x, vals, width * 0.9,
-                              color=blk['color'], label=blk['label'], zorder=3)
-        ax_bar.set_xticks(x)
-        ax_bar.set_xticklabels(FEAT_LABELS, fontsize=8, rotation=20, ha='right')
-        ax_bar.set_ylabel('Value', fontsize=10)
-        ax_bar.set_title('Block comparison', fontsize=11)
-        ax_bar.legend(fontsize=8, frameon=False)
-        ax_bar.axhline(0, color='gray', lw=0.8, ls='--')
-        sns.despine(ax=ax_bar)
+            # ── Right half: rows 0-1 = 2 wide panels, row 2 = total γ full-width, row 3 = slow/high γ ──
+            _bar_axes = [
+                fig.add_subplot(gs_bar[0, 0:3]),  # mean_amp
+                fig.add_subplot(gs_bar[0, 3:6]),  # std_amp
+                fig.add_subplot(gs_bar[1, 0:3]),  # exponent
+                fig.add_subplot(gs_bar[1, 3:6]),  # theta_auc
+                fig.add_subplot(gs_bar[2, 0:6]),  # total_gamma (full width)
+                fig.add_subplot(gs_bar[3, 0:3]),  # slow_gamma
+                fig.add_subplot(gs_bar[3, 3:6]),  # high_gamma
+            ]
+            for p_i, (ax_b, (key, ylabel)) in enumerate(zip(_bar_axes, bar_specs)):
+                vals_all = [blk.get(key, float('nan')) for blk in blocks]
+                for b_i, (blk, val) in enumerate(zip(blocks, vals_all)):
+                    ax_b.bar(b_i, val, color=blk['color'], zorder=3,
+                             label=blk['label'] if p_i == 0 else None)
+                    if np.isfinite(val):
+                        _txt_y  = val if val >= 0 else val * 0.97
+                        _txt_va = 'bottom' if val >= 0 else 'top'
+                        ax_b.text(b_i, _txt_y, f'{val:.3g}', ha='center',
+                                  va=_txt_va, fontsize=16, color='black', fontweight='bold')
 
-        fig.suptitle(f'{cid}  {feat}  —  LFP blocks at transition',
-                     fontsize=12, fontweight='bold')
-        plt.show()
+                ylim = _global_ylims.get(key)
+                if ylim is not None:
+                    ax_b.set_ylim(ylim)
+                elif key in _auc_keys:
+                    ax_b.set_ylim(bottom=0)
+
+                y0, y1 = ax_b.get_ylim()
+                yspan   = y1 - y0
+                tick    = yspan * 0.025
+                for pair_i in range(len(blocks) - 1):
+                    v1, v2 = vals_all[pair_i], vals_all[pair_i + 1]
+                    if not (np.isfinite(v1) and np.isfinite(v2) and v1 != 0):
+                        continue
+                    pct = (v2 - v1) / abs(v1) * 100
+                    lbl = f'{"↑" if pct >= 0 else "↓"}{abs(pct):.0f}%'
+                    bh  = y1 - yspan * (0.08 + pair_i * 0.14)
+                    ax_b.plot([pair_i, pair_i, pair_i + 1, pair_i + 1],
+                              [bh - tick, bh, bh, bh - tick], lw=5.0, color='#222222')
+                    ax_b.text((pair_i + pair_i + 1) / 2, bh + tick * 0.3,
+                              lbl, ha='center', va='bottom', fontsize=20,
+                              color='#111111', fontweight='bold')
+
+                ax_b.set_ylabel(ylabel, fontsize=16, fontweight='bold')
+                ax_b.axhline(0, color='gray', lw=1.5, ls='--')
+                ax_b.set_xticks(range(len(blocks)))
+                if p_i >= 4:  # total γ row and slow/high γ row show x-tick labels
+                    ax_b.set_xticklabels([blk['label'] for blk in blocks],
+                                         fontsize=13, rotation=20, ha='right')
+                else:
+                    ax_b.set_xticklabels([])
+                sns.despine(ax=ax_b, offset=5)
+            _bar_axes[1].legend(fontsize=13, frameon=False, loc='upper right')
+
+            fig.suptitle(f'{cid}  ·  {feat}  —  LFP blocks at transition',
+                         fontsize=26, fontweight='bold', y=1.01)
+            plt.tight_layout()
+            plt.show()

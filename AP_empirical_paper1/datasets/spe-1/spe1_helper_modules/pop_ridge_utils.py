@@ -162,7 +162,7 @@ def merge_hpf_targets(pickle_dir, feat_labels):
     target_labels = []
     for window, win_label in [('pre', 'Pre'), ('post', 'Post')]:
         for feat_key, feat_lbl in zip(
-            ['lfp_amp', 'lfp_std', 'gamma_auc', 'exponent', 'theta_auc'],
+            ['lfp_amp', 'lfp_std', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc', 'exponent', 'theta_auc'],
             feat_labels,
         ):
             tn = f'{window}_{feat_key}'
@@ -210,7 +210,7 @@ def load_psd_results(pickle_dir, feat_labels):
 
     cell_ids = sorted(all_results.keys())
 
-    feat_keys = ['lfp_amp', 'lfp_std', 'gamma_auc', 'exponent', 'theta_auc']
+    feat_keys = ['lfp_amp', 'lfp_std', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc', 'exponent', 'theta_auc']
     target_names  = []
     target_labels = []
     for window, win_label in [('pre', 'Pre'), ('post', 'Post')]:
@@ -222,7 +222,7 @@ def load_psd_results(pickle_dir, feat_labels):
     predictor_sets = list(first[list(first.keys())[0]].keys())
 
     print(f'PSD: {len(all_results)} cells  |  {len(target_names)} targets '
-          f'(Pre+Post abs, single-PSD method, theta=4–10 Hz, gamma=30–55 Hz)')
+          f'(Pre+Post abs, single-PSD method, theta=4–15 Hz, slow_gamma=30–60 Hz, high_gamma=60–80 Hz)')
     return all_results, cell_ids, target_names, target_labels, predictor_sets
 
 
@@ -1318,11 +1318,13 @@ def plot_r2_summary(r2_pop, df_r2, target_names, target_labels,
     x     = np.arange(len(target_names))
 
     feat_cols = {
-        'lfp_amp':   '#0072B2',
-        'lfp_std':   '#56B4E9',
-        'gamma_auc': '#009E73',
-        'exponent':  '#E69F00',
-        'theta_auc': '#CC79A7',
+        'lfp_amp':        '#0072B2',
+        'lfp_std':        '#56B4E9',
+        'slow_gamma_auc': '#009E73',
+        'high_gamma_auc': '#D55E00',
+        'total_gamma_auc':'#F0E442',
+        'exponent':       '#E69F00',
+        'theta_auc':      '#CC79A7',
     }
     bar_cols = []
     for tn in target_names:

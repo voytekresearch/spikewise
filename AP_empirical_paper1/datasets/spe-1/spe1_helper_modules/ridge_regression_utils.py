@@ -49,8 +49,8 @@ WAVEFORM_LABELS = [
     'Ramp Amp', 'Infl. Time', 'Infl. Amp', 'Peak Amp',
     'Peak Width', 'Sharpness', 'Decay λ', 'Decay Const',
 ]
-FEAT_KEYS   = ['lfp_amp', 'lfp_std', 'gamma_auc', 'exponent', 'theta_auc']
-FEAT_LABELS = ['LFP Amp', 'LFP Std', 'Gamma AUC', 'Exponent', 'Theta AUC']
+FEAT_KEYS   = ['lfp_amp', 'lfp_std', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc', 'exponent', 'theta_auc']
+FEAT_LABELS = ['LFP Amp', 'LFP Std', 'Slow γ AUC\n30–60 Hz', 'High γ AUC\n60–80 Hz', 'Total γ AUC\n30–80 Hz', 'Exponent', 'θ AUC\n4–15 Hz']
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -198,7 +198,7 @@ def build_ridge_matrices(df_reg, specparam_by_spike, lfp_windows_by_spike,
         [f'Δ {l}'        for l in FEAT_LABELS]
     )
 
-    Y = np.full((n, 25), np.nan)
+    Y = np.full((n, 5 * len(FEAT_KEYS)), np.nan)
 
     for i in range(n):
         sp        = specparam_by_spike[i]
@@ -322,7 +322,7 @@ def compute_pre_post_psd_features(hpf_lfp_by_spike, fs, pre_win, post_win, basel
     from specparam import SpectralModel
 
     if band_dict is None:
-        band_dict = {"theta": (4, 10), "gamma": (30, 55)}
+        band_dict = {"theta": (4, 15), "slow_gamma": (30, 60), "high_gamma": (60, 80), "total_gamma": (30, 80)}
 
     half_len = psd_seg_len_s / 2.0
     min_samples = int(round(fs * psd_seg_len_s * 0.9))   # allow slight edge clipping
@@ -332,20 +332,29 @@ def compute_pre_post_psd_features(hpf_lfp_by_spike, fs, pre_win, post_win, basel
     # short for the requested value (e.g. the 2.0 Hz default needs T >= 0.5 s).
     bandwidth = max(float(time_bandwidth), 1.0 / psd_seg_len_s)
 
+    try:
+        from specparam.utils import interpolate_spectrum as _interp_spec
+    except ImportError:
+        from fooof.utils import interpolate_spectrum as _interp_spec
+
+    _empty = {'exponent': np.nan, 'r_squared': np.nan}
+    for _bname in band_dict:
+        _empty[f'{_bname}_auc'] = np.nan
+
     def _fit_window(t_bins, trace, window):
-        empty = {'exponent': np.nan, 'gamma_auc': np.nan, 'theta_auc': np.nan, 'r_squared': np.nan}
         center = (window[0] + window[1]) / 2.0
         mask = (t_bins >= center - half_len) & (t_bins <= center + half_len)
         seg = trace[mask]
         if seg.size < min_samples:
-            return empty
+            return dict(_empty)
 
         psd, freqs = mne.time_frequency.psd_array_multitaper(
             seg[np.newaxis, :], sfreq=fs, fmin=freq_range[0], fmax=freq_range[1],
             bandwidth=bandwidth, adaptive=False, normalization='full', verbose=False,
         )
-        psd = np.squeeze(psd, axis=0)
-        freqs = np.asarray(freqs, float)
+        psd    = np.squeeze(psd, axis=0)
+        freqs  = np.asarray(freqs, float)
+        freqs_sm, psd_sm = _interp_spec(freqs, psd, [58, 62])
 
         sm = SpectralModel(
             aperiodic_mode=aperiodic_mode,
@@ -353,26 +362,27 @@ def compute_pre_post_psd_features(hpf_lfp_by_spike, fs, pre_win, post_win, basel
             min_peak_height=min_peak_height, peak_threshold=peak_threshold, verbose=verbose,
         )
         try:
-            sm.fit(freqs, psd, freq_range=freq_range)
+            sm.fit(freqs_sm, psd_sm, freq_range=freq_range)
             full_log = np.asarray(sm.get_model(component="full",      space="log"))
             ape_log  = np.asarray(sm.get_model(component="aperiodic", space="log"))
+            ff       = np.asarray(sm.freqs)
             out = {
                 'exponent':  float(sm.get_params("aperiodic_params", "exponent")),
                 'r_squared': float(sm.r_squared_),
             }
         except Exception:
-            return empty
+            return dict(_empty)
 
         for bname, (f_lo, f_hi) in band_dict.items():
-            if bname not in ('theta', 'gamma'):
-                continue
-            bmask = (freqs >= f_lo) & (freqs <= f_hi)
+            bmask = (ff >= f_lo) & (ff <= f_hi)
             if np.any(bmask):
-                out[f'{bname}_auc'] = float(np.trapz(full_log[bmask] - ape_log[bmask], freqs[bmask]))
+                diff = np.where(np.isfinite(full_log[bmask] - ape_log[bmask]),
+                                full_log[bmask] - ape_log[bmask], 0.0)
+                out[f'{bname}_auc'] = float(np.trapezoid(np.clip(diff, 0, None), ff[bmask]))
             else:
                 out[f'{bname}_auc'] = np.nan
-        out.setdefault('theta_auc', np.nan)
-        out.setdefault('gamma_auc', np.nan)
+        for bname in band_dict:
+            out.setdefault(f'{bname}_auc', np.nan)
         return out
 
     results = []
@@ -432,7 +442,7 @@ def build_ridge_matrices_single_psd(df_reg, lfp_windows_by_spike, hpf_lfp_by_spi
         [f'Δ {l}'        for l in FEAT_LABELS]
     )
 
-    Y = np.full((n, 25), np.nan)
+    Y = np.full((n, 5 * len(FEAT_KEYS)), np.nan)
 
     for i in range(n):
         sw    = lfp_windows_by_spike[i]
@@ -444,21 +454,31 @@ def build_ridge_matrices_single_psd(df_reg, lfp_windows_by_spike, hpf_lfp_by_spi
         _amp  = lambda win: win_avg(t_hpf, hpf, win)
         _std  = lambda win: win_std(t_hpf, hpf, win)
 
-        pre_vals = [_amp(pre_win), _std(pre_win),
-                    pf['pre']['gamma_auc'], pf['pre']['exponent'], pf['pre']['theta_auc']]
-        bl_vals = [_amp(baseline_win), _std(baseline_win),
-                   pf['baseline']['gamma_auc'], pf['baseline']['exponent'], pf['baseline']['theta_auc']]
-        post_vals = [_amp(post_win), _std(post_win),
-                     pf['post']['gamma_auc'], pf['post']['exponent'], pf['post']['theta_auc']]
+        _nf = len(FEAT_KEYS)
+        def _pf_vals(win_key):
+            pfw = pf[win_key]
+            return [_amp(locals()[f'{win_key}_win']), _std(locals()[f'{win_key}_win']),
+                    pfw.get('slow_gamma_auc', np.nan), pfw.get('high_gamma_auc', np.nan),
+                    pfw.get('total_gamma_auc', np.nan), pfw.get('exponent', np.nan),
+                    pfw.get('theta_auc', np.nan)]
+        pre_vals  = [_amp(pre_win),      _std(pre_win),
+                     pf['pre']['slow_gamma_auc'],      pf['pre']['high_gamma_auc'],
+                     pf['pre']['total_gamma_auc'],     pf['pre']['exponent'],      pf['pre']['theta_auc']]
+        bl_vals   = [_amp(baseline_win), _std(baseline_win),
+                     pf['baseline']['slow_gamma_auc'], pf['baseline']['high_gamma_auc'],
+                     pf['baseline']['total_gamma_auc'],pf['baseline']['exponent'], pf['baseline']['theta_auc']]
+        post_vals = [_amp(post_win),     _std(post_win),
+                     pf['post']['slow_gamma_auc'],     pf['post']['high_gamma_auc'],
+                     pf['post']['total_gamma_auc'],    pf['post']['exponent'],     pf['post']['theta_auc']]
 
-        Y[i,  0: 5] = pre_vals
-        Y[i,  5:10] = [p - b if np.isfinite(p) and np.isfinite(b) else np.nan
-                       for p, b in zip(pre_vals, bl_vals)]
-        Y[i, 10:15] = post_vals
-        Y[i, 15:20] = [po - b if np.isfinite(po) and np.isfinite(b) else np.nan
-                       for po, b in zip(post_vals, bl_vals)]
-        Y[i, 20:25] = [po - pr if np.isfinite(po) and np.isfinite(pr) else np.nan
-                       for po, pr in zip(post_vals, pre_vals)]
+        Y[i,       0:  _nf] = pre_vals
+        Y[i,   _nf: 2*_nf] = [p - b if np.isfinite(p) and np.isfinite(b) else np.nan
+                                for p, b in zip(pre_vals, bl_vals)]
+        Y[i, 2*_nf: 3*_nf] = post_vals
+        Y[i, 3*_nf: 4*_nf] = [po - b if np.isfinite(po) and np.isfinite(b) else np.nan
+                                for po, b in zip(post_vals, bl_vals)]
+        Y[i, 4*_nf: 5*_nf] = [po - pr if np.isfinite(po) and np.isfinite(pr) else np.nan
+                                for po, pr in zip(post_vals, pre_vals)]
 
     nan_pct = np.isnan(Y).mean(axis=0) * 100
     print('Target NaN % (single-PSD method):')
