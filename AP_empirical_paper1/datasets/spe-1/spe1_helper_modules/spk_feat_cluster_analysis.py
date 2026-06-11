@@ -591,7 +591,16 @@ def get_cluster_colors_and_labels(cluster_col, unique_clusters, df=None, cluster
                 'high': "#ff7f0e",  # Orange for High
                 "default": "#9467bd"
             }
-        
+        else:
+            _order = {'low': 0, 'mid': 1, 'high': 2}
+            _name  = {'low': 'Low', 'mid': 'Mid', 'high': 'High'}
+            groups = tuple(sorted(unique_clusters, key=lambda x: _order.get(x, 9)))
+            group_names = tuple(_name.get(c, c.capitalize()) for c in groups)
+            color_map = {
+                'low': "#1f77b4", 'mid': "#2ca02c", 'high': "#ff7f0e",
+                "default": "#9467bd"
+            }
+
         return groups, group_names, color_map
         
     else:
@@ -1287,7 +1296,10 @@ def visualize_feature_groups_hist(
     """
    
     n_groups = len(groups)
-    if n_groups < 2 or n_groups > 3:
+    if n_groups < 2:
+        print(f"  [skip] visualize_feature_groups_hist: only {n_groups} group(s), need ≥2")
+        return
+    if n_groups > 3:
         raise ValueError(f"Function supports 2 or 3 groups, got {n_groups}")
     
     if group_names is None:
