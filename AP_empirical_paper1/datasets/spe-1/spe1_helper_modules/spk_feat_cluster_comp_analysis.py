@@ -3397,3 +3397,179 @@ def plot_lfp_block_comparison(
                          fontsize=26, fontweight='bold', y=1.01)
             plt.tight_layout(pad=2.5, w_pad=2.0, h_pad=2.0)
             plt.show()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Population transition delta plot
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DELTA_LFP_KEYS = ['theta_auc', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc',
+                   'exponent', 'mean_amp', 'std_amp']
+_DELTA_LFP_LABELS = {
+    'theta_auc':       'θ AUC',
+    'slow_gamma_auc':  'Slow γ\n(30–60)',
+    'high_gamma_auc':  'High γ\n(60–80)',
+    'total_gamma_auc': 'Total γ\n(30–80)',
+    'exponent':        'Exponent',
+    'mean_amp':        'Amplitude',
+    'std_amp':         'Std',
+}
+_DELTA_WF_LABELS = {
+    'exp_lambda':      'Exp λ',
+    'log_isi':         'Log ISI',
+    'peak_amp':        'Peak Amp',
+    'peak_sharpness':  'Sharpness',
+    'peak_width':      'Peak Width',
+    'inflection_time': 'Infl. Time',
+}
+# direction colours: blue = LFP increases, red = LFP decreases
+_DIR_COL_POS = '#2166AC'   # blue  – LFP goes UP   when waveform low→high
+_DIR_COL_NEG = '#D6604D'   # red   – LFP goes DOWN when waveform low→high
+
+
+def plot_transition_deltas(lfp_block_results, df_transitions, lfp_keys=None):
+    """
+    For each (cell, waveform feature) pair compute Δ = post-transition minus
+    pre-transition for each LFP feature, sign-corrected so that positive Δ
+    always means the LFP feature increased when the waveform cluster went from
+    a lower to a higher ordinal group (low→mid, low→high, mid→high).
+    Cells where the waveform went high→low have their Δ flipped.
+
+    Layout: one panel per waveform feature, x = LFP feature, y = Δ.
+    Each dot is one cell.  Horizontal line at zero marks no change.
+
+    Parameters
+    ----------
+    lfp_block_results : dict keyed by (cell_id, wf_feat), values = [block0, block1]
+    df_transitions    : DataFrame from find_temporal_transitions (needs
+                        cell_id, spike_feature, cluster_before, cluster_after)
+    lfp_keys          : list[str] LFP feature keys to include (default: 5 core)
+    """
+    lfp_keys = lfp_keys or _DELTA_LFP_KEYS
+
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+
+    # build a direction lookup: (cell_id, wf_feat) -> +1 or -1
+    # use the primary transition (first row per cell/feature pair)
+    direction_map = {}
+    primary = (df_transitions
+               .sort_values('transition_index')
+               .drop_duplicates(subset=['cell_id', 'spike_feature'], keep='first'))
+    for _, row in primary.iterrows():
+        before = _ORD.get(str(row['cluster_before']).lower(), 1)
+        after  = _ORD.get(str(row['cluster_after']).lower(),  1)
+        sign   = 1 if after >= before else -1
+        direction_map[(row['cell_id'], row['spike_feature'])] = sign
+
+    # collect per-waveform-feature rows
+    from collections import defaultdict
+    rows_by_wf = defaultdict(list)
+
+    # pass 1: collect raw deltas, sign-corrected for waveform direction
+    for (cid, wf_feat), blocks in lfp_block_results.items():
+        if len(blocks) < 2:
+            continue
+        b0, b1 = blocks[0], blocks[1]
+        sign = direction_map.get((cid, wf_feat), 1)
+        row = {'cell': cid, '_sign': sign}
+        for lk in lfp_keys:
+            if lk in b0 and lk in b1:
+                row[lk] = sign * (float(b1[lk]) - float(b0[lk]))
+        rows_by_wf[wf_feat].append(row)
+
+    # pass 2: compute cross-cell std per LFP feature (pooled across all wf groups)
+    all_rows = [r for rows in rows_by_wf.values() for r in rows]
+    norm_sd = {}
+    for lk in lfp_keys:
+        vals = [r[lk] for r in all_rows if lk in r]
+        norm_sd[lk] = float(np.std(vals)) if len(vals) > 1 else 1.0
+
+    # pass 3: normalise in place
+    for rows in rows_by_wf.values():
+        for row in rows:
+            for lk in lfp_keys:
+                if lk in row:
+                    row[lk] = row[lk] / (norm_sd[lk] + 1e-12)
+
+    wf_feats = sorted(rows_by_wf.keys(),
+                      key=lambda w: -len(rows_by_wf[w]))  # most cells first
+
+    # global y range across all panels
+    all_vals = [r[lk] for rows in rows_by_wf.values()
+                for r in rows for lk in lfp_keys if lk in r]
+    global_ymax = max(abs(v) for v in all_vals) * 1.15 if all_vals else 1.0
+    global_ylim = (-global_ymax, global_ymax)
+
+    n_wf  = len(wf_feats)
+    ncols = min(3, n_wf)
+    nrows = int(np.ceil(n_wf / ncols))
+    n_lk  = len(lfp_keys)
+
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=((0.8 + 0.9 * n_lk) * ncols, 4.0 * nrows),
+                             squeeze=False)
+
+    from matplotlib.lines import Line2D
+
+    for idx, wf in enumerate(wf_feats):
+        ax      = axes[idx // ncols][idx % ncols]
+        rows    = rows_by_wf[wf]
+        n_cells = len(rows)
+
+        ax.set_ylim(*global_ylim)
+        ax.axhline(0, color='#888', lw=1.0, ls='--', zorder=1)
+
+        x_ticks, x_labels = [], []
+        for xi, lk in enumerate(lfp_keys):
+            deltas = [r[lk] for r in rows if lk in r]
+            if not deltas:
+                continue
+
+            jitter = (np.random.default_rng(xi).random(len(deltas)) - 0.5) * 0.3
+
+            for j, d in zip(jitter, deltas):
+                col = _DIR_COL_POS if d >= 0 else _DIR_COL_NEG
+                ax.scatter(xi + j, d, color=col, edgecolors='white',
+                           linewidths=0.6, s=50, alpha=0.8, zorder=3)
+
+            mu  = float(np.mean(deltas))
+            sem = float(np.std(deltas) / np.sqrt(len(deltas)))
+            muc = _DIR_COL_POS if mu >= 0 else _DIR_COL_NEG
+            ax.plot([xi - 0.3, xi + 0.3], [mu, mu],
+                    color='k', lw=2.5, solid_capstyle='round', zorder=4)
+            ax.plot([xi, xi], [mu - sem, mu + sem],
+                    color='k', lw=1.5, zorder=4)
+
+            x_ticks.append(xi)
+            x_labels.append(_DELTA_LFP_LABELS.get(lk, lk))
+
+        ax.set_xlim(-0.6, n_lk - 0.4)
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, fontsize=9)
+        ax.set_title(f'{_DELTA_WF_LABELS.get(wf, wf)}  (n={n_cells})',
+                     fontsize=11, fontweight='bold')
+        if idx % ncols == 0:
+            ax.set_ylabel('Normalised Δ  (post − pre)', fontsize=9)
+        ax.tick_params(labelsize=8)
+        sns.despine(ax=ax)
+
+    for idx in range(n_wf, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    legend_handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_POS,
+               markersize=9, label='LFP ↑  when spike-feature cluster: low → high'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_NEG,
+               markersize=9, label='LFP ↓  when spike-feature cluster: low → high'),
+        Line2D([0], [0], color='k', lw=2.5, label='mean ± SEM'),
+    ]
+    fig.legend(handles=legend_handles, fontsize=9, frameon=False,
+               loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.02))
+
+    fig.suptitle(
+        'LFP change at spike-feature cluster transition  (post − pre, normalised)\n'
+        'Each dot = one cell  ·  all panels share the same y-axis',
+        fontsize=11, y=1.01)
+    plt.tight_layout()
+    plt.show()
+    return fig, axes
