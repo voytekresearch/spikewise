@@ -12,6 +12,7 @@ import matplotlib.patches as patches
 from matplotlib.patches import Circle
 from scipy.stats import pearsonr, spearmanr, chi2_contingency, kruskal, mannwhitneyu
 from statsmodels.stats.multitest import multipletests
+from pop_ridge_utils import _stars
 
 # ------------------------------------------------------------------------------------------- #
 #                                     Environment Setup                                       #
@@ -3427,6 +3428,67 @@ _DIR_COL_POS = '#2166AC'   # blue  – LFP goes UP   when waveform low→high
 _DIR_COL_NEG = '#D6604D'   # red   – LFP goes DOWN when waveform low→high
 
 
+def compute_transition_deltas(lfp_block_results, df_transitions, lfp_keys=None):
+    """
+    Extract sign-corrected, normalised LFP Δ values for every
+    (cell, waveform feature, LFP feature) combination and return a tidy DataFrame.
+
+    Each row is one (cell_id × wf_feat × lfp_feat) observation.
+    delta_norm is normalised by the cross-cell SD of raw Δ for that LFP feature,
+    so values are in comparable units across features.
+
+    Columns
+    -------
+    cell_id, wf_feat, lfp_feat, delta_raw, delta_norm, direction_sign
+    """
+    from collections import defaultdict
+
+    lfp_keys = lfp_keys or _DELTA_LFP_KEYS
+    _ORD     = {'low': 0, 'mid': 1, 'high': 2}
+
+    primary = (df_transitions
+               .sort_values('transition_index')
+               .drop_duplicates(subset=['cell_id', 'spike_feature'], keep='first'))
+    direction_map = {}
+    for _, row in primary.iterrows():
+        before = _ORD.get(str(row['cluster_before']).lower(), 1)
+        after  = _ORD.get(str(row['cluster_after']).lower(),  1)
+        direction_map[(row['cell_id'], row['spike_feature'])] = 1 if after >= before else -1
+
+    raw_by_key = defaultdict(list)   # (cell_id, wf_feat) -> [{lfp_key: raw_delta, ...}]
+    for (cid, wf_feat), blocks in lfp_block_results.items():
+        if len(blocks) < 2:
+            continue
+        b0, b1   = blocks[0], blocks[1]
+        sign     = direction_map.get((cid, wf_feat), 1)
+        row_data = {'cell_id': cid, 'wf_feat': wf_feat, 'direction_sign': sign}
+        for lk in lfp_keys:
+            if lk in b0 and lk in b1:
+                row_data[lk] = sign * (float(b1[lk]) - float(b0[lk]))
+        raw_by_key[(cid, wf_feat)].append(row_data)
+
+    all_rows = [r for rows in raw_by_key.values() for r in rows]
+    norm_sd  = {}
+    for lk in lfp_keys:
+        vals = [r[lk] for r in all_rows if lk in r]
+        norm_sd[lk] = float(np.std(vals)) if len(vals) > 1 else 1.0
+
+    records = []
+    for row_data in all_rows:
+        for lk in lfp_keys:
+            if lk in row_data:
+                records.append(dict(
+                    cell_id        = row_data['cell_id'],
+                    wf_feat        = row_data['wf_feat'],
+                    lfp_feat       = lk,
+                    delta_raw      = row_data[lk],
+                    delta_norm     = row_data[lk] / (norm_sd[lk] + 1e-12),
+                    direction_sign = row_data['direction_sign'],
+                ))
+
+    return pd.DataFrame(records)
+
+
 def plot_transition_deltas(lfp_block_results, df_transitions, lfp_keys=None):
     """
     For each (cell, waveform feature) pair compute Δ = post-transition minus
@@ -3573,3 +3635,212 @@ def plot_transition_deltas(lfp_block_results, df_transitions, lfp_keys=None):
     plt.tight_layout()
     plt.show()
     return fig, axes
+
+
+# ── EAP waveform extraction ───────────────────────────────────────────────────
+
+def extract_eap_waveforms(npx_signal, spike_times_ms, npx_fs, pre_samp, post_samp):
+    """Extract EAP windows around each spike time.
+
+    Parameters
+    ----------
+    npx_signal : 1-D array
+        Filtered Neuropixels recording (samples).
+    spike_times_ms : array-like
+        Spike times in milliseconds.
+    npx_fs : float
+        Neuropixels sampling rate (Hz).
+    pre_samp, post_samp : int
+        Samples to include before and after each spike peak.
+
+    Returns
+    -------
+    np.ndarray, shape (n_spikes, pre_samp + post_samp)
+        One row per extracted waveform; spikes too close to the recording
+        boundary are silently dropped.
+    """
+    n = len(npx_signal)
+    waveforms = []
+    spike_samps = np.round(np.asarray(spike_times_ms) * npx_fs / 1000).astype(int)
+    for s in spike_samps:
+        lo, hi = s - pre_samp, s + post_samp
+        if lo >= 0 and hi <= n:
+            waveforms.append(npx_signal[lo:hi])
+    return np.array(waveforms) if waveforms else np.empty((0, pre_samp + post_samp))
+
+
+# ── Transition–metadata correlation plots ────────────────────────────────────
+
+_TRANS_CONT_VARS = {
+    'cort_depth':           'Cortical depth (µm)',
+    'firing_rate_hz':       'Firing rate (Hz)',
+    'rec_duration_min':     'Recording duration (min)',
+    'trans_abruptness':     'Transition speed |k|',
+    'trans_time_frac':      'Transition time (frac. of rec.)',
+    'sigmoid_r2':           'Transition sigmoid R²',
+    'frac_dominant_before': 'Dominant cluster fraction (pre)',
+    'frac_dominant_after':  'Dominant cluster fraction (post)',
+}
+
+_TRANS_CAT_VARS = {
+    'cell_type':         'Cell type',
+    'patch_type_simple': 'Patch type',
+    'dark_neuron':       'Dark neuron',
+    'clear_eap':         'Clear EAP',
+}
+
+_TYPE_COLORS = {'PC': '#2166AC', 'IN': '#D6604D'}
+
+
+def plot_lfp_delta_heatmap(df_wide, lfp_cols, cont_vars=None, lfp_labels=None):
+    """Spearman ρ heatmap between LFP Δ values and continuous metadata variables."""
+    if cont_vars is None:   cont_vars  = _TRANS_CONT_VARS
+    if lfp_labels is None:  lfp_labels = _DELTA_LFP_LABELS
+
+    cont_cols = [k for k in cont_vars if k in df_wide.columns]
+    rho_mat = np.full((len(lfp_cols), len(cont_cols)), np.nan)
+    p_mat   = np.full((len(lfp_cols), len(cont_cols)), np.nan)
+    for i, lk in enumerate(lfp_cols):
+        for j, mk in enumerate(cont_cols):
+            sub = df_wide[[lk, mk]].dropna()
+            if len(sub) >= 5:
+                r, p = spearmanr(sub[lk], sub[mk])
+                rho_mat[i, j] = r
+                p_mat[i, j]   = p
+
+    row_labels = [lfp_labels.get(lk, lk) for lk in lfp_cols]
+    col_labels = [cont_vars[mk] for mk in cont_cols]
+
+    fig, ax = plt.subplots(figsize=(max(8, len(cont_cols) * 1.1), max(4, len(lfp_cols) * 0.9)))
+    im = ax.imshow(rho_mat, vmin=-1, vmax=1, cmap='RdBu_r', aspect='auto')
+    for i in range(len(lfp_cols)):
+        for j in range(len(cont_cols)):
+            if not np.isfinite(rho_mat[i, j]): continue
+            tc = 'white' if abs(rho_mat[i, j]) > 0.4 else '#222'
+            ax.text(j, i, f'{rho_mat[i, j]:+.2f}\n{_stars(p_mat[i, j])}',
+                    ha='center', va='center', fontsize=7.5, color=tc)
+    ax.set_xticks(range(len(cont_cols)))
+    ax.set_xticklabels(col_labels, rotation=35, ha='right', fontsize=9)
+    ax.set_yticks(range(len(lfp_cols)))
+    ax.set_yticklabels(row_labels, fontsize=9)
+    ax.set_title('Spearman ρ: LFP Δ  ×  continuous metadata\n'
+                 '* p<0.05  ** p<0.01  *** p<0.001', fontsize=10)
+    plt.colorbar(im, ax=ax, shrink=0.6).set_label('Spearman ρ', fontsize=9)
+    fig.tight_layout()
+    plt.show()
+    return fig, ax
+
+
+def plot_lfp_delta_by_category(df_wide, lfp_cols, cat_vars=None, lfp_labels=None):
+    """Strip plots of LFP Δ grouped by each categorical metadata variable.
+
+    One figure per variable. All panels share the same y-axis. Mean ± SEM
+    shown as a black crosshair. Boolean columns (dark_neuron, clear_eap) are
+    cast to strings automatically so seaborn palette lookup works correctly.
+    """
+    if cat_vars is None:   cat_vars   = _TRANS_CAT_VARS
+    if lfp_labels is None: lfp_labels = _DELTA_LFP_LABELS
+
+    all_vals = [v for lk in lfp_cols for v in df_wide[lk].dropna()]
+    ymax = max(abs(v) for v in all_vals) * 1.15
+
+    for cat_col, cat_label in cat_vars.items():
+        if cat_col not in df_wide.columns:
+            continue
+        categories = [str(c) for c in sorted(df_wide[cat_col].dropna().unique(), key=str)]
+        n_lk  = len(lfp_cols)
+        ncols = min(4, n_lk)
+        nrows = int(np.ceil(n_lk / ncols))
+        fig, axes = plt.subplots(nrows, ncols,
+                                  figsize=(3.5 * ncols, 3.2 * nrows), squeeze=False)
+        palette = sns.color_palette('Set2', len(categories))
+        col_map = dict(zip(categories, palette))
+
+        for idx, lk in enumerate(lfp_cols):
+            ax  = axes[idx // ncols][idx % ncols]
+            sub = df_wide[[cat_col, lk]].dropna().copy()
+            sub[cat_col] = sub[cat_col].astype(str)
+
+            sns.stripplot(data=sub, x=cat_col, y=lk, order=categories,
+                          palette=col_map, size=6, alpha=0.75, jitter=True,
+                          edgecolor='white', linewidth=0.4, ax=ax)
+
+            for xi, cat in enumerate(categories):
+                vals = sub.loc[sub[cat_col] == cat, lk].dropna().values
+                if len(vals) == 0: continue
+                mu  = np.mean(vals)
+                sem = np.std(vals) / np.sqrt(len(vals))
+                ax.plot([xi - 0.25, xi + 0.25], [mu, mu],
+                        color='k', lw=2.5, solid_capstyle='round', zorder=5)
+                ax.plot([xi, xi], [mu - sem, mu + sem],
+                        color='k', lw=1.5, zorder=5)
+
+            ax.axhline(0, color='#888', lw=0.8, ls='--')
+            ax.set_ylim(-ymax, ymax)
+            ax.set_xlabel('')
+            ax.set_xticklabels(categories, fontsize=9)
+            ax.set_ylabel(lfp_labels.get(lk, lk) + ' Δ' if idx % ncols == 0 else '', fontsize=9)
+            ax.set_title(lfp_labels.get(lk, lk), fontsize=9, fontweight='bold')
+            ax.tick_params(labelsize=8)
+            sns.despine(ax=ax)
+
+        for idx in range(n_lk, nrows * ncols):
+            axes[idx // ncols][idx % ncols].set_visible(False)
+
+        fig.suptitle(f'LFP Δ by  {cat_label}  (mean ± SEM, all panels same y-axis)',
+                     fontsize=11, y=1.01)
+        plt.tight_layout()
+        plt.show()
+
+
+def plot_lfp_delta_by_continuous(df_wide, lfp_cols, cont_vars=None, lfp_labels=None,
+                                  type_colors=None):
+    """Scatter plots of LFP Δ vs each continuous metadata variable, coloured by cell type."""
+    if cont_vars is None:   cont_vars   = _TRANS_CONT_VARS
+    if lfp_labels is None:  lfp_labels  = _DELTA_LFP_LABELS
+    if type_colors is None: type_colors = _TYPE_COLORS
+
+    for mk, mlabel in cont_vars.items():
+        if mk not in df_wide.columns:
+            continue
+        n_lk  = len(lfp_cols)
+        ncols = min(4, n_lk)
+        nrows = int(np.ceil(n_lk / ncols))
+        fig, axes = plt.subplots(nrows, ncols,
+                                  figsize=(3.8 * ncols, 3.2 * nrows), squeeze=False)
+
+        for idx, lk in enumerate(lfp_cols):
+            ax  = axes[idx // ncols][idx % ncols]
+            sub = df_wide[[mk, lk, 'cell_type']].dropna()
+
+            for ct, grp in sub.groupby('cell_type'):
+                ax.scatter(grp[mk], grp[lk],
+                           color=type_colors.get(ct, 'gray'),
+                           edgecolors='white', linewidths=0.4,
+                           s=50, alpha=0.8, label=ct, zorder=3)
+
+            xy = sub[[mk, lk]].dropna()
+            if len(xy) >= 5:
+                rho, p = spearmanr(xy[mk], xy[lk])
+                m, b   = np.polyfit(xy[mk], xy[lk], 1)
+                xs     = np.linspace(xy[mk].min(), xy[mk].max(), 100)
+                ax.plot(xs, m * xs + b, color='#444', lw=1.4, ls='--', zorder=2)
+                ax.text(0.97, 0.97, f'ρ={rho:+.2f}{_stars(p)}',
+                        transform=ax.transAxes, ha='right', va='top', fontsize=8)
+
+            ax.axhline(0, color='#aaa', lw=0.8, ls=':')
+            ax.set_xlabel(mlabel, fontsize=8)
+            ax.set_ylabel(lfp_labels.get(lk, lk) + ' Δ' if idx % ncols == 0 else '', fontsize=8)
+            ax.set_title(lfp_labels.get(lk, lk), fontsize=9, fontweight='bold')
+            ax.tick_params(labelsize=7)
+            sns.despine(ax=ax)
+
+        for idx in range(n_lk, nrows * ncols):
+            axes[idx // ncols][idx % ncols].set_visible(False)
+
+        handles = [plt.scatter([], [], color=c, label=ct, s=40) for ct, c in type_colors.items()]
+        fig.legend(handles=handles, fontsize=9, frameon=False,
+                   loc='lower center', ncol=2, bbox_to_anchor=(0.5, -0.04))
+        fig.suptitle(f'LFP Δ  vs  {mlabel}  (coloured by cell type)', fontsize=10, y=1.01)
+        plt.tight_layout()
+        plt.show()
