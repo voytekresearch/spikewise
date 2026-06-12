@@ -1761,3 +1761,100 @@ def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
         df_tests_hpf=df_tests_hpf, sig_r2_targets_hpf=sig_hpf_targets,
         res_hpf=res_hpf,
     )
+
+
+# ── Pre/post mean PSD panel ───────────────────────────────────────────────────
+
+_PSD_PRE  = (-0.055, -0.005)
+_PSD_POST = ( 0.005,  0.055)
+_PSD_SEG  = 0.25
+_PSD_BW   = max(2.0, 1.0 / _PSD_SEG)   # 4 Hz
+_PSD_FR   = (1, 90)
+
+
+def _mean_psd(hpf_list, win, lfp_fs):
+    import mne
+    half  = _PSD_SEG / 2
+    min_s = int(round(lfp_fs * _PSD_SEG * 0.9))
+    psds  = []
+    for hw in hpf_list:
+        t   = np.asarray(hw['t_bins_s'], float)
+        x   = np.asarray(hw['lfp_hpf'],  float)
+        ctr = (win[0] + win[1]) / 2
+        seg = x[(t >= ctr - half) & (t <= ctr + half)]
+        if seg.size < min_s:
+            continue
+        p, f = mne.time_frequency.psd_array_multitaper(
+            seg[np.newaxis, :], sfreq=lfp_fs,
+            fmin=_PSD_FR[0], fmax=_PSD_FR[1],
+            bandwidth=_PSD_BW, adaptive=False, normalization='full', verbose=False,
+        )
+        psds.append(np.squeeze(p, 0))
+    return np.asarray(f, float), np.mean(psds, axis=0)
+
+
+def _psd_fit_plot(ax, freqs, psd, label, color):
+    from specparam import SpectralModel
+    sm = SpectralModel(aperiodic_mode='fixed', peak_width_limits=(4., 8.),
+                       max_n_peaks=4, peak_threshold=2., verbose=False)
+    sm.fit(freqs, psd, freq_range=_PSD_FR)
+    fl  = np.asarray(sm.get_model(component='full',      space='log'))
+    al  = np.asarray(sm.get_model(component='aperiodic', space='log'))
+    exp = float(sm.get_params('aperiodic_params', 'exponent'))
+    tm  = (freqs >= 4)  & (freqs <= 10)
+    gm  = (freqs >= 30) & (freqs <= 80)
+    tauc = float(np.trapz(fl[tm] - al[tm], freqs[tm]))
+    gauc = float(np.trapz(fl[gm] - al[gm], freqs[gm]))
+    ax.plot(freqs, np.log10(psd), lw=1., alpha=0.3, color=color)
+    ax.plot(freqs, fl, lw=2., color=color, label='Specparam')
+    ax.plot(freqs, al, lw=1.6, ls='--', color='gray')
+    ax.fill_between(freqs[tm], fl[tm], al[tm], alpha=0.4, color='mediumpurple', label=f'θ={tauc:.2f}')
+    ax.fill_between(freqs[gm], fl[gm], al[gm], alpha=0.4, color='goldenrod',    label=f'γ={gauc:.2f}')
+    ax.set_title(f'{label}  exp={exp:.2f}', fontsize=7.5)
+    ax.legend(fontsize=5.5, frameon=True, loc='upper right')
+    ax.set_xlabel('Freq (Hz)', fontsize=7)
+    ax.tick_params(labelsize=6)
+
+
+def plot_prepost_psd_panel(cell_ids, lfp_fs, ncols=6,
+                           pre_win=None, post_win=None):
+    """
+    For each cell in cell_ids compute mean pre- and post-spike PSDs (HPF LFP),
+    fit specparam, and show a panel of paired PRE/POST subplots.
+
+    Parameters
+    ----------
+    cell_ids : list[str]  e.g. ['c1', 'c2', ...]
+    lfp_fs   : float  LFP sampling rate (Hz)
+    ncols    : int  subplot columns (default 6)
+    pre_win  : tuple (lo, hi) seconds relative to spike (default _PSD_PRE)
+    post_win : tuple (lo, hi) seconds relative to spike (default _PSD_POST)
+    """
+    from ridge_regression_utils import load_hpf_lfp_windows, load_cell_data
+
+    pre_win  = pre_win  or _PSD_PRE
+    post_win = post_win or _PSD_POST
+
+    all_cnums = sorted([int(c.lstrip('c')) for c in cell_ids])
+    nrows = (len(all_cnums) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows * 2, ncols,
+                             figsize=(4 * ncols, 4 * nrows * 2))
+    axes = axes.reshape(nrows * 2, ncols)
+
+    for idx, cnum in enumerate(all_cnums):
+        ro, co = (idx // ncols) * 2, idx % ncols
+        df_reg, _, _ = load_cell_data(cnum)
+        hpf = load_hpf_lfp_windows(cnum, hpf_cutoff=0.1)[:len(df_reg)]
+        fp, pp = _mean_psd(hpf, pre_win,  lfp_fs)
+        fq, pq = _mean_psd(hpf, post_win, lfp_fs)
+        _psd_fit_plot(axes[ro,     co], fp, pp, f'c{cnum} PRE',  '#2980b9')
+        _psd_fit_plot(axes[ro + 1, co], fq, pq, f'c{cnum} POST', '#e74c3c')
+
+    for idx in range(len(all_cnums), nrows * ncols):
+        ro, co = (idx // ncols) * 2, idx % ncols
+        axes[ro,     co].set_visible(False)
+        axes[ro + 1, co].set_visible(False)
+
+    plt.tight_layout()
+    plt.show()
+    return fig, axes
