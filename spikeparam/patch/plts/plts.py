@@ -212,15 +212,19 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
 
     else:
 
-        # Pre-compute peak-aligned waveforms and a shared time axis
+        # Pre-compute peak-aligned waveforms and a shared time axis.
+        # Use model.indices[:, 3] (Spike-class-identified peak within window)
+        # rather than argmax — argmax can pick a neighboring spike that has
+        # entered the window in fast-firing cells, which shifts the entire
+        # alignment and places control points at the wrong time.
         valid_inds = [i for i in inds if i not in model.inds_error and i < len(model.spikes)]
         if peak_align and valid_inds:
-            raw_wfs    = [model.spikes[i] for i in valid_inds]
-            peak_idxs  = [int(np.argmax(w)) for w in raw_wfs]
-            pre        = max(peak_idxs)  # samples before peak in the shared grid
-            aligned_arr, t_aligned = _peak_align(raw_wfs, model.times, wght)
+            raw_wfs   = [model.spikes[i] for i in valid_inds]
+            peak_idxs = [int(model.indices[i][3]) for i in valid_inds]
+            pre       = max(peak_idxs)
+            aligned_arr, t_aligned = _peak_align(raw_wfs, model.times, wght,
+                                                  peak_idxs=peak_idxs)
             aligned_map = {i: aligned_arr[k] for k, i in enumerate(valid_inds)}
-            # per-spike: original peak index (used to place fits on the shared axis)
             pk_map = {i: pk for i, pk in zip(valid_inds, peak_idxs)}
         else:
             aligned_map = {}
@@ -241,7 +245,17 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                 lab_true = ''
 
                 if show_points:
-                    _plot_control_points(t_wf, wf, model.indices[i], ax)
+                    if peak_align:
+                        # Shift indices to account for the alignment offset.
+                        # model.indices[i] are positions in the ORIGINAL window;
+                        # after alignment each waveform is shifted by (pre - pk_i)
+                        # so we must offset indices accordingly.
+                        pk_i   = pk_map.get(i, int(model.indices[i][3]))
+                        shift  = pre - pk_i
+                        adj    = model.indices[i] + shift
+                    else:
+                        adj = model.indices[i]
+                    _plot_control_points(t_wf, wf, adj, ax)
 
             for i in inds:
 
@@ -317,6 +331,11 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
 
         ax.set_ylabel('Voltage')
         ax.set_xlabel('Time (ms)')
+
+        # Clip to the nominal window so the axis always shows ±window_length ms,
+        # regardless of NaN-padded tails or edge spikes.
+        if in_ms and hasattr(model, 'window_length'):
+            ax.set_xlim(-model.window_length[0], model.window_length[1])
 
         # Create custom legend handles and labels
         custom_legend_handles = []
