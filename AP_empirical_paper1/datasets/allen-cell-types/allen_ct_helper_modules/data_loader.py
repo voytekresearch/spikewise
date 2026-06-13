@@ -138,6 +138,26 @@ def get_ramp_sweeps(specimen_id: int) -> list:
     return get_sweeps(specimen_id, RAMP_STIM_NAMES)
 
 
+def get_all_spiking_sweeps(specimen_id: int) -> list:
+    """
+    Return all sweeps (any stimulus type) where num_spikes > 0.
+
+    Includes Long Square, Short Square, Ramp, Noise 1, Noise 2, etc.
+    Excludes subthreshold and hyperpolarizing sweeps (num_spikes NaN or 0).
+
+    Each returned dict has: sweep_number, stimulus_name,
+    stimulus_absolute_amplitude, num_spikes, and QC fields.
+    """
+    ctc = _get_cache()
+    all_sweeps = ctc.get_ephys_sweeps(specimen_id)
+    spiking = []
+    for s in all_sweeps:
+        n = s.get("num_spikes")
+        if n is not None and not (isinstance(n, float) and np.isnan(n)) and n > 0:
+            spiking.append(s)
+    return sorted(spiking, key=lambda s: s["sweep_number"])
+
+
 # =============================================================================
 # RAW TRACE EXTRACTION
 # =============================================================================
@@ -325,3 +345,85 @@ def load_from_pickle(filename: str, subdir: str = ""):
     path = os.path.join(load_dir, f"{filename}.pkl")
     with open(path, "rb") as f:
         return pickle.load(f)
+
+
+# =============================================================================
+# PRECOMPUTED EPHYS FEATURES
+# =============================================================================
+
+def load_precomputed_features() -> pd.DataFrame:
+    """
+    Download Allen Cell Types precomputed electrophysiology features.
+
+    Allen computes these from all sweeps and provides them via the API.
+    They are directly analogous to spikeparam features extracted in spe-1/pvc-6:
+      upstroke_downstroke_ratio_long_square  ~  peak_sharpness
+      threshold_v_long_square                ~  inflection_mv
+      peak_v_long_square                     ~  peak_amplitude
+      fast_trough_v_long_square              ~  trough voltage
+      avg_isi                                ~  log_isi
+      adaptation                             ~  ISI adaptation
+
+    Returns
+    -------
+    pd.DataFrame, one row per cell, indexed by specimen_id.
+    """
+    ctc = _get_cache()
+    features = ctc.get_ephys_features()
+    df = pd.DataFrame(features).set_index("specimen_id")
+    print(f"Loaded precomputed ephys features for {len(df)} cells ({len(df.columns)} features)")
+    return df
+
+
+def load_morphology_features() -> pd.DataFrame:
+    """
+    Download Allen Cell Types morphology features for cells with reconstructions.
+
+    Only a subset of cells have morphological reconstructions (~701 total, ~537
+    mouse). Key features: total_length, total_volume, soma_surface,
+    number_bifurcations, number_stems, average_diameter,
+    max_euclidean_distance, hausdorff_dimension.
+
+    Returns
+    -------
+    pd.DataFrame, one row per cell, indexed by specimen_id.
+    """
+    ctc = _get_cache()
+    morph = ctc.get_morphology_features()
+    df = pd.DataFrame(morph)
+    if "specimen_id" in df.columns:
+        df = df.set_index("specimen_id")
+    print(f"Loaded morphology features for {len(df)} cells ({len(df.columns)} features)")
+    return df
+
+
+def load_merged_dataset(
+    species: str = "Mus musculus",
+    include_morphology: bool = True,
+) -> pd.DataFrame:
+    """
+    Load cell metadata + precomputed ephys features (+ optionally morphology) merged.
+
+    Returns one row per cell. Shape ~(1920, 72) without morphology,
+    ~(1920, 102) with morphology (NaN for cells lacking reconstructions).
+
+    Parameters
+    ----------
+    include_morphology : bool
+        If True, left-join morphology features (NaN for cells without reconstruction).
+    """
+    cells_df = load_cell_metadata(species=species)
+    feat_df = load_precomputed_features()
+    merged = cells_df.merge(feat_df, left_on="id", right_index=True, how="left")
+    n_feat = feat_df.shape[1]
+    n_matched = merged[feat_df.columns[0]].notna().sum()
+    print(f"Merged metadata+ephys: {len(merged)} cells, {n_feat} ephys features, "
+          f"{n_matched}/{len(merged)} cells have feature data")
+    if include_morphology:
+        morph_df = load_morphology_features()
+        merged = merged.merge(morph_df, left_on="id", right_index=True, how="left")
+        n_morph = morph_df.shape[1]
+        n_morph_matched = merged[morph_df.columns[0]].notna().sum()
+        print(f"Added morphology: {n_morph} features, "
+              f"{n_morph_matched}/{len(merged)} cells have reconstruction data")
+    return merged

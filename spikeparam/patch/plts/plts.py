@@ -34,9 +34,9 @@ def _filter_outlier_spikes(indices, spikes, iqr_thresh=1.5):
             if p_lo <= p <= p_hi and w_lo <= wd <= w_hi]
 
 
-def _peak_align(waveforms, times, wght=1):
+def _peak_align(waveforms, times, wght=1, peak_idxs=None):
     """
-    Align each waveform so its own peak (max |amplitude|) falls at t=0.
+    Align each waveform so its peak falls at t=0.
 
     Creates a common grid spanning the widest pre-peak and post-peak window
     across all waveforms. Shorter waveforms are NaN-padded.
@@ -48,6 +48,10 @@ def _peak_align(waveforms, times, wght=1):
         Original time array (same length as each waveform).
     wght : float
         Multiplier applied to times (1000 for ms).
+    peak_idxs : list of int, optional
+        Pre-computed peak indices (one per waveform). When provided, these are
+        used instead of argmax. Pass model.indices[:, 3] to avoid argmax
+        picking a neighboring spike that entered the window.
 
     Returns
     -------
@@ -59,8 +63,11 @@ def _peak_align(waveforms, times, wght=1):
     if not waveforms:
         return np.empty((0, 0)), np.array([0.0])
 
-    wfs       = [np.asarray(w, float) for w in waveforms]
-    peak_idxs = [int(np.argmax(w)) for w in wfs]
+    wfs = [np.asarray(w, float) for w in waveforms]
+    if peak_idxs is None:
+        peak_idxs = [int(np.argmax(w)) for w in wfs]
+    else:
+        peak_idxs = [int(p) for p in peak_idxs]
 
     pre   = max(peak_idxs)                                          # samples before peak
     post  = max(len(w) - pk - 1 for w, pk in zip(wfs, peak_idxs)) # samples after peak

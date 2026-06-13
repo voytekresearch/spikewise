@@ -64,45 +64,43 @@ DEFAULT_STRUCTURES = None  # include all
 
 SPIKE_WAVEFORM_FEATURES = [
     # --- Threshold / initiation ---
-    "threshold_v_long_square",        # spike threshold voltage (mV)  ~ inflection_mv in spe-1
-    "threshold_i_long_square",        # threshold current (pA)
+    "threshold_v_long_square",               # spike threshold voltage (mV)  ~ inflection_mv in spe-1
+    "threshold_i_long_square",               # threshold current (pA)
 
     # --- Peak ---
-    "peak_v_long_square",             # peak voltage (mV)             ~ peak_amplitude in spe-1
-    "peak_t_long_square",             # time to peak (ms)
+    "peak_v_long_square",                    # peak voltage (mV)             ~ peak_amplitude in spe-1
+    "peak_t_long_square",                    # time to peak (ms)
 
     # --- Trough / repolarization ---
-    "trough_v_long_square",           # fast trough voltage (mV)
-    "trough_t_long_square",           # time to trough (ms)
+    "fast_trough_v_long_square",             # fast trough voltage (mV)
+    "fast_trough_t_long_square",             # time to fast trough (ms)
+    "slow_trough_v_long_square",             # slow trough voltage (mV)
 
     # --- Waveform shape ---
-    "upstroke_downstroke_ratio_long_square",  # upstroke/downstroke ratio  ~ peak_sharpness proxy
-    "upstroke_v_long_square",         # upstroke voltage
-    "downstroke_v_long_square",       # downstroke voltage
-
-    # --- Width ---
-    "width_long_square",              # spike half-width (ms)         ~ width in spe-1
+    "upstroke_downstroke_ratio_long_square", # upstroke/downstroke ratio  ~ peak_sharpness proxy
 
     # --- Adaptation / firing ---
-    "adaptation_long_square",         # inter-spike interval adaptation
-    "avg_isi",                        # average inter-spike interval (ms)
-    "f_i_curve_slope",                # slope of f-I curve (Hz/pA)
+    "adaptation",                            # inter-spike interval adaptation
+    "avg_isi",                               # average inter-spike interval (ms)
+    "f_i_curve_slope",                       # slope of f-I curve (Hz/pA)
+    "latency",                               # latency to first spike (ms)
 
     # --- Input resistance / membrane ---
-    "ri",                             # input resistance (MΩ)
-    "tau",                            # membrane time constant (ms)
-    "vrest",                          # resting membrane potential (mV)
+    "input_resistance_mohm",                 # input resistance (MΩ)
+    "tau",                                   # membrane time constant (ms)
+    "vrest",                                 # resting membrane potential (mV)
+    "sag",                                   # sag ratio (Ih current proxy)
 ]
 
 # Subset most analogous to spe-1 spike features for primary analysis
 PRIMARY_SPIKE_FEATURES = [
     "threshold_v_long_square",
     "peak_v_long_square",
-    "trough_v_long_square",
+    "fast_trough_v_long_square",
     "upstroke_downstroke_ratio_long_square",
-    "width_long_square",
-    "adaptation_long_square",
+    "adaptation",
     "avg_isi",
+    "f_i_curve_slope",
 ]
 
 # =============================================================================
