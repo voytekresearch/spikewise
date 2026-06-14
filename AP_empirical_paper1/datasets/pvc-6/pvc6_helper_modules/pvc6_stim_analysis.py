@@ -296,15 +296,15 @@ def compute_stim_lag_correlations(f, fs, df_pink_raw, one_ms,
     return lag_centers, r_vals, p_vals, features
 
 
-def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50):
+def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50, offset_ms=0):
     """
     Re-extract pre-inflection stimulus statistics for each pink-noise spike
-    using a configurable window width.  Use this after the main processing
-    pipeline to test whether a wider window improves stim → waveform prediction.
+    using a configurable window width and optional offset.
 
-    The original processing uses window_ms=5 (5 samples before the inflection
-    point).  The lag analysis shows that stim_mean correlations with waveform
-    features grow up to ~50 ms before the spike, motivating this expansion.
+    The window covers [infl_idx - (offset_ms + window_ms) : infl_idx - offset_ms].
+    offset_ms=0 (default) gives the standard window ending at the inflection.
+    Set offset_ms=500, window_ms=100 for a pre-stimulus control window (500–600ms
+    before the spike, outside the 500ms stimulus epoch).
 
     Parameters
     ----------
@@ -313,12 +313,13 @@ def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50):
     df_pink_raw  : pink-noise rows from df — must retain 'sweep', 'spike_num',
                    'inflection_time', and all waveform feature columns
     one_ms       : samples per millisecond (= fs // 1000)
-    window_ms    : window width in ms, ending at the spike inflection point
+    window_ms    : window width in ms
+    offset_ms    : shift the window this many ms further back from the inflection
 
     Returns
     -------
     pd.DataFrame indexed identically to df_pink_raw with columns:
-        stim_mean_<W>ms, stim_std_<W>ms, stim_exp_<W>ms
+        stim_mean_<suffix>, stim_std_<suffix>, stim_exp_<suffix>
     """
     import pandas as _pd
     from scipy.signal import find_peaks as _find_peaks
@@ -350,7 +351,7 @@ def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50):
             infl_idx = peak_idx - int(row['inflection_time'] * one_ms)
             pos      = idx_to_pos[orig_idx]
 
-            end   = infl_idx
+            end   = infl_idx - int(offset_ms * one_ms)
             start = end - int(window_ms * one_ms)
             if start < 0 or end > len(stim):
                 continue
@@ -371,7 +372,7 @@ def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50):
             except Exception:
                 pass
 
-    suffix = f'{window_ms}ms'
+    suffix = f'{window_ms}ms' if offset_ms == 0 else f'ctrl_{offset_ms}to{offset_ms + window_ms}ms'
     return _pd.DataFrame(
         {f'stim_mean_{suffix}': mean_vals,
          f'stim_std_{suffix}':  std_vals,

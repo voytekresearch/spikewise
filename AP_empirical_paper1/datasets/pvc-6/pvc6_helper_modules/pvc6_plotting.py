@@ -49,7 +49,12 @@ def plot_pink_spikes(sp, indices_to_plot):
 
     legend = ax.get_legend()
     if legend:
-        legend.set_frame_on(False)
+        _handles = legend.legend_handles
+        _labels  = [t.get_text() for t in legend.get_texts()]
+        legend.remove()
+        legend = ax.legend(_handles, _labels,
+                           loc='center left', bbox_to_anchor=(1.01, 0.5),
+                           frameon=False)
         plt.setp(legend.get_texts(), fontsize=18, fontweight='bold')
         for handle in legend.legend_handles:
             handle.set_markersize(14)
@@ -498,7 +503,9 @@ def plot_stim_lag_correlations(lag_centers, r_vals, p_vals, features,
 def plot_window_expansion(results_by_window, windows_ms,
                           targets=('stim_mean', 'stim_std', 'stim_exp'),
                           target_labels=('stim mean', 'stim std', 'stim exp'),
-                          title=''):
+                          title='',
+                          control_results=None,
+                          control_label='ctrl 500–600ms'):
     """
     Compare ridge regression R² (bootstrap mean + 95 % CI) across pre-inflection
     window sizes for one or more stimulus targets.
@@ -508,10 +515,14 @@ def plot_window_expansion(results_by_window, windows_ms,
     results_by_window : dict
         Keyed as '{W}ms_{target}', e.g. '5ms_stim_mean'.
         Values are dicts returned by run_ridge_regression_kfold.
-    windows_ms  : list of int   – window sizes tested (x-axis)
-    targets     : tuple of str  – target names (separate subplots)
-    target_labels : tuple of str – display labels for targets
-    title       : str           – figure suptitle suffix
+    windows_ms      : list of int   – window sizes tested (x-axis)
+    targets         : tuple of str  – target names (separate subplots)
+    target_labels   : tuple of str  – display labels for targets
+    title           : str           – figure suptitle suffix
+    control_results : dict, optional
+        Keyed as 'ctrl_{target}', e.g. 'ctrl_stim_mean'. When provided, adds a
+        visually separated bar at the right of each subplot for the control window.
+    control_label   : str – x-tick label for the control bar
     """
     n_targets = len(targets)
     fig, axes = plt.subplots(1, n_targets, figsize=(4 * n_targets, 4), sharey=False)
@@ -548,15 +559,41 @@ def plot_window_expansion(results_by_window, windows_ms,
                     fmt='none', color='k', capsize=4, lw=1.5)
         ax.axhline(0, color='k', lw=0.8, ls='--', alpha=0.5)
 
-        ax.set_xticks(xs)
-        ax.set_xticklabels([f'{w} ms' for w in windows_ms], fontsize=9)
-        ax.set_xlabel('Window width', fontsize=10)
+        x_labels = [f'{w} ms' for w in windows_ms]
+        x_ticks  = list(xs)
+
+        if control_results is not None:
+            ctrl_key = tgt
+            ctrl_x   = len(windows_ms) + 1.0  # gap of 1 unit
+            if ctrl_key in control_results:
+                cr = control_results[ctrl_key]
+                cr2  = cr['r2_mean']
+                clo  = cr['r2_ci'][0]
+                chi  = cr['r2_ci'][1]
+                csig = cr.get('sig_fdr', False)
+                ctrl_color = '#0072B2' if csig else '#56B4E9'
+                ax.bar(ctrl_x, cr2, color=ctrl_color, alpha=0.8, width=0.6,
+                       hatch='//', edgecolor='white', linewidth=0.5)
+                ax.errorbar(ctrl_x, cr2,
+                            yerr=[[cr2 - clo], [chi - cr2]],
+                            fmt='none', color='k', capsize=4, lw=1.5)
+                if csig:
+                    ax.text(ctrl_x, cr2 + (chi - cr2) + 0.002, '*',
+                            ha='center', va='bottom', fontsize=12, color='#0072B2')
+                ax.axvline(len(windows_ms) + 0.4, color='k', lw=0.8,
+                           ls=':', alpha=0.4)
+            x_ticks.append(ctrl_x)
+            x_labels.append(control_label)
+
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, fontsize=9, rotation=20, ha='right')
+        ax.set_xlabel('Window', fontsize=10)
         ax.set_ylabel('Bootstrap R² (mean ± 95 % CI)', fontsize=9)
         ax.set_title(tgt_lbl, fontsize=10, fontweight='bold')
         ax.spines[['top', 'right']].set_visible(False)
         ax.tick_params(labelsize=8)
 
-        # annotate significance
+        # annotate significance for regular bars
         for xi, (r2, sig) in enumerate(zip(r2s, sigs)):
             if sig:
                 ax.text(xi, r2 + (hi[xi] - r2) + 0.002, '*',
@@ -566,6 +603,11 @@ def plot_window_expansion(results_by_window, windows_ms,
     from matplotlib.patches import Patch
     legend_elements = [Patch(facecolor='#D55E00', alpha=0.8, label='FDR sig.'),
                        Patch(facecolor='#888888', alpha=0.8, label='not sig.')]
+    if control_results is not None:
+        legend_elements += [
+            Patch(facecolor='#0072B2', alpha=0.8, hatch='//', label='ctrl (sig.)'),
+            Patch(facecolor='#56B4E9', alpha=0.8, hatch='//', label='ctrl (n.s.)'),
+        ]
     axes[-1].legend(handles=legend_elements, fontsize=8, frameon=False,
                     loc='upper left')
 
