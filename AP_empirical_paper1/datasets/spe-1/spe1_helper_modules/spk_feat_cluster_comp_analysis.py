@@ -3637,6 +3637,248 @@ def plot_transition_deltas(lfp_block_results, df_transitions, lfp_keys=None):
     return fig, axes
 
 
+def _collect_delta_rows(lfp_block_results, df_transitions, lfp_keys):
+    """Shared data-prep for the transition-delta family of plots.
+
+    Returns (rows_by_wf, norm_sd, wf_feats, global_ylim).
+    Each row dict has keys: 'cell', '_sign', and one float per lk (normalised).
+    """
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+
+    direction_map = {}
+    primary = (df_transitions
+               .sort_values('transition_index')
+               .drop_duplicates(subset=['cell_id', 'spike_feature'], keep='first'))
+    for _, row in primary.iterrows():
+        before = _ORD.get(str(row['cluster_before']).lower(), 1)
+        after  = _ORD.get(str(row['cluster_after']).lower(),  1)
+        sign   = 1 if after >= before else -1
+        direction_map[(row['cell_id'], row['spike_feature'])] = sign
+
+    from collections import defaultdict
+    rows_by_wf = defaultdict(list)
+    for (cid, wf_feat), blocks in lfp_block_results.items():
+        if len(blocks) < 2:
+            continue
+        b0, b1 = blocks[0], blocks[1]
+        sign = direction_map.get((cid, wf_feat), 1)
+        row = {'cell': cid, '_sign': sign}
+        for lk in lfp_keys:
+            if lk in b0 and lk in b1:
+                row[lk] = sign * (float(b1[lk]) - float(b0[lk]))
+        rows_by_wf[wf_feat].append(row)
+
+    all_rows = [r for rows in rows_by_wf.values() for r in rows]
+    norm_sd = {}
+    for lk in lfp_keys:
+        vals = [r[lk] for r in all_rows if lk in r]
+        norm_sd[lk] = float(np.std(vals)) if len(vals) > 1 else 1.0
+
+    for rows in rows_by_wf.values():
+        for row in rows:
+            for lk in lfp_keys:
+                if lk in row:
+                    row[lk] = row[lk] / (norm_sd[lk] + 1e-12)
+
+    wf_feats = sorted(rows_by_wf.keys(), key=lambda w: -len(rows_by_wf[w]))
+
+    all_vals = [r[lk] for rows in rows_by_wf.values()
+                for r in rows for lk in lfp_keys if lk in r]
+    global_ymax = max(abs(v) for v in all_vals) * 1.15 if all_vals else 1.0
+
+    return rows_by_wf, norm_sd, wf_feats, (-global_ymax, global_ymax)
+
+
+def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_keys=None):
+    """Same as plot_transition_deltas but the mean ± SEM crosshair is coloured
+    by the sign of the population mean: blue if mean > 0, red if mean < 0.
+
+    Direction-coloured dots (blue/red) are kept.
+    """
+    lfp_keys = lfp_keys or _DELTA_LFP_KEYS
+    rows_by_wf, _, wf_feats, global_ylim = _collect_delta_rows(
+        lfp_block_results, df_transitions, lfp_keys)
+
+    n_wf  = len(wf_feats)
+    ncols = min(3, n_wf)
+    nrows = int(np.ceil(n_wf / ncols))
+    n_lk  = len(lfp_keys)
+
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=((0.8 + 0.9 * n_lk) * ncols, 4.0 * nrows),
+                             squeeze=False)
+    from matplotlib.lines import Line2D
+
+    for idx, wf in enumerate(wf_feats):
+        ax      = axes[idx // ncols][idx % ncols]
+        rows    = rows_by_wf[wf]
+        n_cells = len(rows)
+
+        ax.set_ylim(*global_ylim)
+        ax.axhline(0, color='#888', lw=1.0, ls='--', zorder=1)
+
+        x_ticks, x_labels = [], []
+        for xi, lk in enumerate(lfp_keys):
+            deltas = [r[lk] for r in rows if lk in r]
+            if not deltas:
+                continue
+
+            jitter = (np.random.default_rng(xi).random(len(deltas)) - 0.5) * 0.3
+            for j, d in zip(jitter, deltas):
+                col = _DIR_COL_POS if d >= 0 else _DIR_COL_NEG
+                ax.scatter(xi + j, d, color=col, edgecolors='white',
+                           linewidths=0.6, s=50, alpha=0.8, zorder=3)
+
+            mu  = float(np.mean(deltas))
+            sem = float(np.std(deltas) / np.sqrt(len(deltas)))
+            muc = _DIR_COL_POS if mu >= 0 else _DIR_COL_NEG
+            ax.plot([xi - 0.3, xi + 0.3], [mu, mu],
+                    color=muc, lw=2.5, solid_capstyle='round', zorder=4)
+            ax.plot([xi, xi], [mu - sem, mu + sem],
+                    color=muc, lw=1.5, zorder=4)
+
+            x_ticks.append(xi)
+            x_labels.append(_DELTA_LFP_LABELS.get(lk, lk))
+
+        ax.set_xlim(-0.6, n_lk - 0.4)
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, fontsize=9)
+        ax.set_title(f'{_DELTA_WF_LABELS.get(wf, wf)}  (n={n_cells})',
+                     fontsize=11, fontweight='bold')
+        if idx % ncols == 0:
+            ax.set_ylabel('Normalised Δ  (post − pre)', fontsize=9)
+        ax.tick_params(labelsize=8)
+        sns.despine(ax=ax)
+
+    for idx in range(n_wf, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    legend_handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_POS,
+               markersize=9, label='LFP ↑  when spike-feature cluster: low → high'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_NEG,
+               markersize=9, label='LFP ↓  when spike-feature cluster: low → high'),
+        Line2D([0], [0], color=_DIR_COL_POS, lw=2.5, label='mean ± SEM  (positive)'),
+        Line2D([0], [0], color=_DIR_COL_NEG, lw=2.5, label='mean ± SEM  (negative)'),
+    ]
+    fig.legend(handles=legend_handles, fontsize=9, frameon=False,
+               loc='lower center', ncol=2, bbox_to_anchor=(0.5, -0.04))
+
+    fig.suptitle(
+        'LFP change at spike-feature cluster transition  (post − pre, normalised)\n'
+        'Mean bar colour = sign of population mean  ·  all panels share the same y-axis',
+        fontsize=11, y=1.01)
+    plt.tight_layout()
+    plt.show()
+    return fig, axes
+
+
+def plot_transition_deltas_by_celltype(lfp_block_results, df_transitions,
+                                        cell_type_dict, lfp_keys=None):
+    """Same panel layout as plot_transition_deltas but dots coloured by putative
+    cell type (PC vs IN) rather than by LFP direction.
+
+    Parameters
+    ----------
+    cell_type_dict : dict
+        Maps cell number (int) → cell type string, e.g. {1: 'PC', 2: 'IN'}.
+        Sourced from config.DICT_CELL_TYPE.
+    """
+    lfp_keys = lfp_keys or _DELTA_LFP_KEYS
+    rows_by_wf, _, wf_feats, global_ylim = _collect_delta_rows(
+        lfp_block_results, df_transitions, lfp_keys)
+
+    _CT_COL = {'PC': _DIR_COL_POS, 'IN': _DIR_COL_NEG}
+
+    def _cell_type(cid):
+        try:
+            return cell_type_dict.get(int(cid.lstrip('c')), 'unknown')
+        except (ValueError, AttributeError):
+            return 'unknown'
+
+    n_wf  = len(wf_feats)
+    ncols = min(3, n_wf)
+    nrows = int(np.ceil(n_wf / ncols))
+    n_lk  = len(lfp_keys)
+
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=((0.8 + 0.9 * n_lk) * ncols, 4.0 * nrows),
+                             squeeze=False)
+    from matplotlib.lines import Line2D
+
+    for idx, wf in enumerate(wf_feats):
+        ax      = axes[idx // ncols][idx % ncols]
+        rows    = rows_by_wf[wf]
+        n_cells = len(rows)
+
+        ax.set_ylim(*global_ylim)
+        ax.axhline(0, color='#888', lw=1.0, ls='--', zorder=1)
+
+        x_ticks, x_labels = [], []
+        for xi, lk in enumerate(lfp_keys):
+            deltas_by_ct = {'PC': [], 'IN': [], 'unknown': []}
+            for r in rows:
+                if lk not in r:
+                    continue
+                ct = _cell_type(r['cell'])
+                deltas_by_ct.get(ct, deltas_by_ct['unknown']).append(r[lk])
+
+            all_deltas = [d for vals in deltas_by_ct.values() for d in vals]
+            if not all_deltas:
+                continue
+
+            rng = np.random.default_rng(xi)
+            for ct, deltas in deltas_by_ct.items():
+                if not deltas:
+                    continue
+                col    = _CT_COL.get(ct, 'gray')
+                jitter = (rng.random(len(deltas)) - 0.5) * 0.3
+                for j, d in zip(jitter, deltas):
+                    ax.scatter(xi + j, d, color=col, edgecolors='white',
+                               linewidths=0.6, s=50, alpha=0.8, zorder=3)
+
+            mu  = float(np.mean(all_deltas))
+            sem = float(np.std(all_deltas) / np.sqrt(len(all_deltas)))
+            ax.plot([xi - 0.3, xi + 0.3], [mu, mu],
+                    color='k', lw=2.5, solid_capstyle='round', zorder=4)
+            ax.plot([xi, xi], [mu - sem, mu + sem],
+                    color='k', lw=1.5, zorder=4)
+
+            x_ticks.append(xi)
+            x_labels.append(_DELTA_LFP_LABELS.get(lk, lk))
+
+        ax.set_xlim(-0.6, n_lk - 0.4)
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, fontsize=9)
+        ax.set_title(f'{_DELTA_WF_LABELS.get(wf, wf)}  (n={n_cells})',
+                     fontsize=11, fontweight='bold')
+        if idx % ncols == 0:
+            ax.set_ylabel('Normalised Δ  (post − pre)', fontsize=9)
+        ax.tick_params(labelsize=8)
+        sns.despine(ax=ax)
+
+    for idx in range(n_wf, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    legend_handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_CT_COL['PC'],
+               markersize=9, label='PC (putative pyramidal)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_CT_COL['IN'],
+               markersize=9, label='IN (putative interneuron)'),
+        Line2D([0], [0], color='k', lw=2.5, label='mean ± SEM  (all cells)'),
+    ]
+    fig.legend(handles=legend_handles, fontsize=9, frameon=False,
+               loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.02))
+
+    fig.suptitle(
+        'LFP change at spike-feature cluster transition  (post − pre, normalised)\n'
+        'Dot colour = putative cell type  ·  all panels share the same y-axis',
+        fontsize=11, y=1.01)
+    plt.tight_layout()
+    plt.show()
+    return fig, axes
+
+
 # ── EAP waveform extraction ───────────────────────────────────────────────────
 
 def extract_eap_waveforms(npx_signal, spike_times_ms, npx_fs, pre_samp, post_samp):
