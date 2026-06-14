@@ -27,19 +27,34 @@ def plot_pink_spikes(sp, indices_to_plot):
     sp.plot(indices_to_plot, color='hotpink', mode='full', show_points=True)
     fig = plt.gcf()
     ax = plt.gca()
-    
-    ax.set_xlabel('Time (ms)', fontsize=18)
-    ax.set_ylabel('Voltage', fontsize=18)
-    
-    legend = ax.get_legend()
-    if legend:
-        plt.setp(legend.get_texts(), fontsize=18)
-    
-    ax.tick_params(axis='both', which='major', labelsize=16)
-    
+
+    fig.set_size_inches(8, 4)
+
     for line in ax.get_lines():
         line.set_linewidth(3)
-    
+
+    ax.set_xlabel('Time (ms)', fontsize=26, fontweight='bold')
+    ax.set_ylabel('Voltage (mV)', fontsize=26, fontweight='bold')
+    ax.set_xticks([-4, 0, 4])
+    ax.set_yticks([-60, 20])
+    ax.tick_params(axis='both', which='major', labelsize=22, width=2.5, color='black')
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontweight('bold')
+
+    for spine in ['top', 'right']:
+        ax.spines[spine].set_visible(False)
+    for spine in ['left', 'bottom']:
+        ax.spines[spine].set_linewidth(2.5)
+        ax.spines[spine].set_color('black')
+
+    legend = ax.get_legend()
+    if legend:
+        legend.set_frame_on(False)
+        plt.setp(legend.get_texts(), fontsize=18, fontweight='bold')
+        for handle in legend.legend_handles:
+            handle.set_markersize(14)
+
+    plt.tight_layout()
     plt.show()
 
 def plot_correlation_scatter(df_pink_filtered):
