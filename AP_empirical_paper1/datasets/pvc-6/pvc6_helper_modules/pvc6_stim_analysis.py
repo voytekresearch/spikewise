@@ -47,8 +47,8 @@ def svm_stim(X, y, X_train, X_test, y_train, y_test):
     return best_model, accs
 
 
-def random_forest_stim(X, y, X_train, X_test, y_train, y_test):
-    """Random forest with grid search + bootstrapped accuracy."""
+def random_forest_stim(X, y, X_train, X_test, y_train, y_test, n_bootstraps=1000):
+    """Random forest with grid search + bootstrapped accuracy and feature importances."""
     param_grid = {
         'n_estimators': [50, 100, 200],
         'max_depth': [None, 10, 20],
@@ -59,8 +59,17 @@ def random_forest_stim(X, y, X_train, X_test, y_train, y_test):
     grid_search = GridSearchCV(RandomForestClassifier(random_state=42), param_grid, cv=5, scoring='accuracy')
     grid_search.fit(X_train, y_train)
     best_model = grid_search.best_estimator_
-    accs = bootstrap_model(best_model, X_train, y_train, X_test, y_test)
-    return best_model, accs
+
+    bootstrapped_accuracies = []
+    bootstrapped_importances = []
+    for _ in range(n_bootstraps):
+        X_resampled, y_resampled = resample(X_train, y_train, random_state=None)
+        best_model.fit(X_resampled, y_resampled)
+        y_pred = best_model.predict(X_test)
+        bootstrapped_accuracies.append(accuracy_score(y_test, y_pred))
+        bootstrapped_importances.append(best_model.feature_importances_)
+
+    return best_model, np.array(bootstrapped_accuracies), np.array(bootstrapped_importances)
 
 
 # ── Continuous stimulus regression ───────────────────────────────────────────

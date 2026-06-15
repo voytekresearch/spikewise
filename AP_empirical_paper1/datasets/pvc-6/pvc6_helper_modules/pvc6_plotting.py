@@ -594,27 +594,43 @@ def plot_combined_feature_importance(all_features_feature_importance_df, all_fea
 
 
 # Function to plot feature importance
-def plot_feature_importance_categorical(best_model, X):
-    if hasattr(best_model, 'feature_importances_'):
-        importances = best_model.feature_importances_
-    else:
-        raise AttributeError("The model does not have feature_importances_ attribute.")
-    
+def plot_feature_importance_categorical(best_model, X, bootstrap_importances):
+    """Plot RF feature importances as mean ± 95% CI across bootstrap runs."""
     feature_names = X.columns
-    df_importance = pd.DataFrame({"Feature": feature_names, "Importance": importances})
-    df_importance = df_importance.sort_values(by="Importance", ascending=False)
-    
-    df_importance['Color'] = df_importance['Feature'].map(_FEATURE_COLOR_MAP).fillna('#8c8c8c')
+    imp_mean  = np.mean(bootstrap_importances, axis=0)
+    imp_lower = np.percentile(bootstrap_importances, 2.5,  axis=0)
+    imp_upper = np.percentile(bootstrap_importances, 97.5, axis=0)
 
-    
-    plt.figure(figsize=(10, 6))
-    sns.barplot(x="Importance", y="Feature", data=df_importance, palette=df_importance['Color'].tolist())
-    plt.xlabel("Importance", fontsize=16)
-    plt.ylabel("Feature", fontsize=16)
-    plt.xticks(fontsize=14)
-    plt.yticks(fontsize=14)
-    plt.gca().spines['top'].set_visible(False)
-    plt.gca().spines['right'].set_visible(False)
+    df_importance = pd.DataFrame({
+        'Feature':  feature_names,
+        'Importance': imp_mean,
+        'CI Lower': imp_lower,
+        'CI Upper': imp_upper,
+    })
+    df_importance = df_importance.sort_values(by='Importance', ascending=True)  # ascending=True puts largest at top for barh
+    df_importance['Color'] = df_importance['Feature'].map(_FEATURE_COLOR_MAP).fillna('#8c8c8c')
+    df_importance['Label'] = df_importance['Feature'].str.replace('_', ' ')
+
+    xerr_low  = df_importance['Importance'].values - df_importance['CI Lower'].values
+    xerr_high = df_importance['CI Upper'].values   - df_importance['Importance'].values
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+    bars = ax.barh(df_importance['Label'], df_importance['Importance'],
+                   xerr=[xerr_low, xerr_high],
+                   color=df_importance['Color'].tolist(),
+                   edgecolor='#1a1a1a', linewidth=2.5,
+                   error_kw={'elinewidth': 4, 'capsize': 8, 'capthick': 4, 'ecolor': '#1a1a1a'})
+    ax.set_xlabel('Importance', fontsize=36, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=32, width=2.5)
+    ax.tick_params(axis='y', labelsize=38, width=2.5)
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_linewidth(2.5)
+    ax.spines['bottom'].set_linewidth(2.5)
+    plt.tight_layout()
     plt.show()
 
 # Function to plot bootstrapped accuracies as histograms
