@@ -28,8 +28,8 @@ def plot_corr_heatmap_only_spk(
         'peak_sharpness': 'peak sharp',
         'exp_lambda':     'exp lambda',
         'exp_const':      'exp const',
-        'log_isi':        'log isis',
-        'isi':            'log isis',
+        'log_isi':        'log ISI',
+        'isi':            'log ISI',
     }
     def _short(f):
         return _LABEL.get(f, f.replace('_', ' '))
@@ -62,7 +62,7 @@ def plot_corr_heatmap_only_spk(
     ylabels = [''] + [_y_label(f) for f in spike_features[1:]]
 
     fig, ax = plt.subplots(figsize=figsize)
-    sns.heatmap(rho, mask=mask, annot=False, cmap='coolwarm', center=0,
+    sns.heatmap(rho, mask=mask, annot=False, cmap='RdBu_r', center=0,
                 vmin=-1, vmax=1, square=True, linewidths=0, ax=ax,
                 xticklabels=xlabels, yticklabels=ylabels)
 
@@ -83,7 +83,7 @@ def plot_corr_heatmap_only_spk(
         ax.spines[spine].set_linewidth(2.5)
         ax.spines[spine].set_color('#1a1a1a')
 
-    _cmap_obj = plt.cm.coolwarm
+    _cmap_obj = plt.cm.RdBu_r
     _norm_obj = mcolors.Normalize(vmin=-1, vmax=1)
     cell_h_in = figsize[1] / n
     star_fs = max(14, int(cell_h_in * 72 * 0.45))
