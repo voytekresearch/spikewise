@@ -18,6 +18,30 @@ def plot_corr_heatmap_only_spk(
     figsize=(14, 11),
 ):
     """Lower-triangle correlation heatmap with cartoony styling: big stars, white text on dark cells."""
+    # ── Built-in label abbreviations (no underscores) ─────────────────────────
+    _LABEL = {
+        'ramp_amp':       'ramp amp',
+        'inflection_time':'inflec time',
+        'inflection_amp': 'inflec amp',
+        'peak_amp':       'peak amp',
+        'peak_width':     'peak width',
+        'peak_sharpness': 'peak sharp',
+        'exp_lambda':     'exp lambda',
+        'exp_const':      'exp const',
+        'log_isi':        'log isis',
+        'isi':            'log isis',
+    }
+    def _short(f):
+        return _LABEL.get(f, f.replace('_', ' '))
+
+    def _y_label(f):
+        s = _short(f)
+        parts = s.split(' ')
+        # split two-word labels longer than 8 chars onto two lines
+        if len(parts) == 2:
+            return parts[0] + '\n' + parts[1]
+        return s
+
     df_selected = df_features[spike_features]
     df_cleaned = df_selected.replace([np.inf, -np.inf], np.nan).dropna()
     if df_cleaned.empty:
@@ -33,8 +57,9 @@ def plot_corr_heatmap_only_spk(
 
     n = len(spike_features)
     mask    = np.triu(np.ones_like(rho, dtype=bool))
-    xlabels = list(spike_features[:-1]) + ['']
-    ylabels = [''] + list(spike_features[1:])
+    # x: one line, angled  |  y: two lines where label is long
+    xlabels = [_short(f) for f in spike_features[:-1]] + ['']
+    ylabels = [''] + [_y_label(f) for f in spike_features[1:]]
 
     fig, ax = plt.subplots(figsize=figsize)
     sns.heatmap(rho, mask=mask, annot=False, cmap='coolwarm', center=0,
@@ -60,11 +85,9 @@ def plot_corr_heatmap_only_spk(
 
     _cmap_obj = plt.cm.coolwarm
     _norm_obj = mcolors.Normalize(vmin=-1, vmax=1)
-    # scale so star fits within ~40% of cell height; number gets remaining ~25%
     cell_h_in = figsize[1] / n
-    star_fs = max(14, int(cell_h_in * 72 * 0.40))
-    r_fs    = max(10, int(cell_h_in * 72 * 0.22))
-    # positions: star in upper-center of cell, number just below
+    star_fs = max(14, int(cell_h_in * 72 * 0.45))
+    r_fs    = max(10, int(cell_h_in * 72 * 0.26))
     star_y = 0.32
     num_y  = 0.68
 
@@ -89,10 +112,15 @@ def plot_corr_heatmap_only_spk(
                             fontweight='bold', color=txt_color,
                             fontfamily='Helvetica Neue')
 
-    ax.tick_params(axis='both', which='major', labelsize=22, width=2.5)
+    # x: angled labels, larger font  |  y: two-line labels, slightly smaller to fit in cell
+    ax.tick_params(axis='x', which='major', labelsize=32, width=2.5)
+    ax.tick_params(axis='y', which='major', labelsize=28, width=2.5)
     fig.canvas.draw()
-    for label in ax.get_xticklabels() + ax.get_yticklabels():
+    for label in ax.get_xticklabels():
         label.set_fontweight('bold'); label.set_fontfamily('Helvetica Neue')
+    for label in ax.get_yticklabels():
+        label.set_fontweight('bold'); label.set_fontfamily('Helvetica Neue')
+        label.set_multialignment('center')
     if title:
         ax.set_title(title, fontsize=22, fontweight='bold', fontfamily='Helvetica Neue')
     plt.xticks(rotation=45, ha='right')
