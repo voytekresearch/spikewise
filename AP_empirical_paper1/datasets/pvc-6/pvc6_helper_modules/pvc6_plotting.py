@@ -132,28 +132,36 @@ def plot_top_correlations_by_window(df_w, window_ms, n_top=6):
     ncols = 3
     nrows = int(np.ceil(n_top / ncols))
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(7 * ncols, 6 * nrows),
+                             figsize=(11 * ncols, 9 * nrows),
                              constrained_layout=True)
     axes = np.array(axes).flatten()
 
     for ax, (abs_r, r, p, sf, stf, valid) in zip(axes, top):
-        color = _SCATTER_COLORS.get(stf, '#888')
+        color = _FEATURE_COLOR_MAP.get(sf, '#888')
         ax.scatter(valid[sf], valid[stf],
-                   s=70, alpha=0.65, color=color, linewidths=0)
+                   s=100, alpha=0.65, color=color, linewidths=0)
 
         # regression line
         m, b = np.polyfit(valid[sf], valid[stf], 1)
         xs = np.linspace(valid[sf].min(), valid[sf].max(), 200)
-        ax.plot(xs, m * xs + b, color='#1a1a1a', lw=3.5, zorder=3)
+        ax.plot(xs, m * xs + b, color='#1a1a1a', lw=4, zorder=3)
 
         # r / p annotation — bottom-right, no title needed
         p_str = 'p<0.001' if p < 0.001 else f'p={p:.3f}'
         ax.text(0.96, 0.05, f'r = {r:.2f}\n{p_str}',
                 transform=ax.transAxes, ha='right', va='bottom',
-                fontweight='bold', color='#1a1a1a')
+                fontsize=28, fontweight='bold', color='#1a1a1a')
 
-        ax.set_xlabel(sf.replace('_', ' '))
-        ax.set_ylabel(stf.replace('_', ' '))
+        ax.set_xlabel(sf.replace('_', ' '), fontsize=34, fontweight='bold')
+        ax.set_ylabel(f'{window_ms} ms {stf.replace("_", " ")}', fontsize=34, fontweight='bold')
+
+        ax.tick_params(axis='both', labelsize=28, width=2.5)
+        for label in ax.get_xticklabels() + ax.get_yticklabels():
+            label.set_fontweight('bold')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(2.5)
+        ax.spines['bottom'].set_linewidth(2.5)
 
         # 3 ticks per axis — no clutter
         ax.locator_params(nbins=3)
@@ -395,10 +403,18 @@ def plot_ridge_results_grid(results_dict, keys, labels=None, ys=None):
             ax.scatter(y, yhat, s=35, alpha=0.55)
             m, b = np.polyfit(y, yhat, 1)
             ax.plot(y, m * y + b, color='red', lw=2.5)
-            ax.set_xlabel(f'Actual  ({label})')
-            ax.set_ylabel('Predicted')
+            ax.set_xlabel(f'Actual  ({label})', fontsize=22, fontweight='bold')
+            ax.set_ylabel('Predicted', fontsize=22, fontweight='bold')
             ax.text(0.05, 0.95, f'R²={r2:.3f}\n[{ci[0]:.3f},{ci[1]:.3f}]',
-                    transform=ax.transAxes, ha='left', va='top', fontweight='bold')
+                    transform=ax.transAxes, ha='left', va='top',
+                    fontsize=18, fontweight='bold')
+            ax.tick_params(axis='both', labelsize=18, width=2)
+            for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+                lbl.set_fontweight('bold')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_linewidth(2)
+            ax.spines['bottom'].set_linewidth(2)
             ax.locator_params(nbins=3)
         plt.show()
 
@@ -434,7 +450,8 @@ def plot_ridge_results_grid(results_dict, keys, labels=None, ys=None):
         ax.barh(feat_df.index, feat_df['Coefficient'],
                 xerr=[xerr_low.values, xerr_high.values],
                 color=colors, alpha=0.82,
-                error_kw=dict(ecolor='#333', lw=1.2, capsize=3))
+                edgecolor='#1a1a1a', linewidth=1.8,
+                error_kw=dict(ecolor='#333', lw=2, capsize=5))
         ax.axvline(0, color='gray', lw=1, ls='--', alpha=0.7)
 
         x_max = float(feat_df['CI Upper'].max())
@@ -443,11 +460,19 @@ def plot_ridge_results_grid(results_dict, keys, labels=None, ys=None):
             star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
             if star:
                 ax.text(x_max + abs(x_max) * 0.06, i, star,
-                        va='center', color='#D55E00', fontweight='bold')
+                        va='center', fontsize=20, color='#D55E00', fontweight='bold')
 
-        ax.set_xlabel(f'Beta weight (std.)  —  {label}')
-        if col == 0:
-            ax.set_ylabel('Feature')
+        ax.set_xlabel(f'Beta weight (std.)  —  {label}', fontsize=22, fontweight='bold')
+        ax.set_ylabel('')
+        ax.tick_params(axis='x', labelsize=18, width=2)
+        ax.tick_params(axis='y', labelsize=18, width=2)
+        ax.locator_params(axis='x', nbins=3)
+        for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+            lbl.set_fontweight('bold')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(2)
+        ax.spines['bottom'].set_linewidth(2)
     plt.show()
 
     # ── Bootstrapped R² distributions ────────────────────────────────────────
@@ -469,10 +494,19 @@ def plot_ridge_results_grid(results_dict, keys, labels=None, ys=None):
         if p_perm is not None:
             sig   = ' *' if p_perm < 0.05 else ''
             title += f'\np={p_perm:.3f}{sig}'
-        ax.set_xlabel('R²')
-        ax.set_ylabel('Count' if col == 0 else '')
+        ax.set_xlabel('R²', fontsize=22, fontweight='bold')
+        ax.set_ylabel('Count' if col == 0 else '', fontsize=22, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=18, width=2)
+        for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+            lbl.set_fontweight('bold')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(2)
+        ax.spines['bottom'].set_linewidth(2)
         ax.locator_params(nbins=3)
-        ax.legend(frameon=False, loc='upper left')
+        leg = ax.legend(frameon=False, loc='upper left', fontsize=16)
+        for t in leg.get_texts():
+            t.set_fontweight('bold')
     plt.show()
 
 
@@ -756,7 +790,8 @@ def plot_window_expansion(results_by_window, windows_ms,
             Patch(facecolor='#56B4E9', alpha=0.6, hatch='//', label='shuffle ctrl')
         )
     fig.legend(handles=legend_elements, frameon=False,
-               loc='upper right', bbox_to_anchor=(1.0, 0.95))
+               loc='lower center', bbox_to_anchor=(0.5, 1.01),
+               ncol=len(legend_elements))
 
     plt.show()
 

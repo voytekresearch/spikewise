@@ -2897,7 +2897,7 @@ def analyze_lfp_at_transitions(
                     def _band_auc(fl, al, ff, flo, fhi):
                         m = (ff >= flo) & (ff <= fhi)
                         d = np.where(np.isfinite(fl[m] - al[m]), fl[m] - al[m], 0.0)
-                        return float(np.trapezoid(np.clip(d, 0, None), ff[m]))
+                        return float(np.trapz(np.clip(d, 0, None), ff[m]))
                     theta_auc      = _band_auc(full_log, ape_log, freqs_fit,  4,  15)
                     slow_gamma_auc = _band_auc(full_log, ape_log, freqs_fit, 30,  60)
                     high_gamma_auc = _band_auc(full_log, ape_log, freqs_fit, 60,  80)
@@ -3158,7 +3158,7 @@ def plot_lfp_block_comparison(
                 def _bauc(fl, al, ff, flo, fhi):
                     m = (ff >= flo) & (ff <= fhi)
                     d = np.where(np.isfinite(fl[m] - al[m]), fl[m] - al[m], 0.0)
-                    return float(np.trapezoid(np.clip(d, 0, None), ff[m]))
+                    return float(np.trapz(np.clip(d, 0, None), ff[m]))
                 blk['theta_auc']       = _bauc(fl, al, ff,  4,  15)
                 blk['slow_gamma_auc']  = _bauc(fl, al, ff, 30,  60)
                 blk['high_gamma_auc']  = _bauc(fl, al, ff, 60,  80)
@@ -3190,7 +3190,7 @@ def plot_lfp_block_comparison(
                 if not np.isfinite(blk.get(_key, float('nan'))):
                     _m2 = (_ff2 >= _flo) & (_ff2 <= _fhi)
                     _d2 = np.where(np.isfinite(_fl2[_m2] - _al2[_m2]), _fl2[_m2] - _al2[_m2], 0.0)
-                    blk[_key] = float(np.trapezoid(np.clip(_d2, 0, None), _ff2[_m2]))
+                    blk[_key] = float(np.trapz(np.clip(_d2, 0, None), _ff2[_m2]))
 
         # Print specparam summary for every block (from cache or refit)
         print(f'\n=== {cid} | {feat} ===', flush=True)
@@ -3376,10 +3376,10 @@ def plot_lfp_block_comparison(
                         continue
                     pct = (v2 - v1) / abs(v1) * 100
                     lbl = f'{"↑" if pct >= 0 else "↓"}{abs(pct):.0f}%'
-                    bh  = y1 - yspan * (0.08 + pair_i * 0.14)
+                    bh  = y1 - yspan * (0.04 + pair_i * 0.14)
                     ax_b.plot([pair_i, pair_i, pair_i + 1, pair_i + 1],
                               [bh - tick, bh, bh, bh - tick], lw=5.0, color='#222222')
-                    ax_b.text((pair_i + pair_i + 1) / 2, bh + tick * 0.3,
+                    ax_b.text((pair_i + pair_i + 1) / 2, bh + tick * 1.5,
                               lbl, ha='center', va='bottom', fontsize=20,
                               color='#111111', fontweight='bold')
 

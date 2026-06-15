@@ -15,9 +15,9 @@ Main pipeline:
 import sys
 import numpy as np
 
-# numpy 2.0 removed trapz → trapezoid; patch for older specparam versions
-if not hasattr(np, 'trapz'):
-    np.trapz = np.trapezoid
+# numpy <2.0 uses trapz; numpy 2.0+ renamed it to trapezoid — patch both directions
+if not hasattr(np, 'trapezoid'):
+    np.trapezoid = np.trapz
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -1171,9 +1171,9 @@ def compute_cluster_statistics(group_data, alpha=0.05):
 
     
     n_groups = len(group_data)
-    
+
     # Quick sanity check
-    if any(len(g) < 3 for g in group_data):
+    if n_groups < 2 or any(len(g) < 3 for g in group_data):
         return {
             'p_value': None,
             'significance': None,

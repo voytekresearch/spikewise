@@ -378,7 +378,7 @@ def compute_pre_post_psd_features(hpf_lfp_by_spike, fs, pre_win, post_win, basel
             if np.any(bmask):
                 diff = np.where(np.isfinite(full_log[bmask] - ape_log[bmask]),
                                 full_log[bmask] - ape_log[bmask], 0.0)
-                out[f'{bname}_auc'] = float(np.trapezoid(np.clip(diff, 0, None), ff[bmask]))
+                out[f'{bname}_auc'] = float(np.trapz(np.clip(diff, 0, None), ff[bmask]))
             else:
                 out[f'{bname}_auc'] = np.nan
         for bname in band_dict:
