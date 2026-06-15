@@ -101,6 +101,156 @@ def plot_corr_heatmap_only_spk(
     plt.show()
 
 
+def display_feature_table(df_features, nrows=2, save_path=None, blend=0.20):
+    """Display a styled spike feature DataFrame and optionally save as PNG.
+
+    Args:
+        df_features: DataFrame from sp.df_features (before QC filtering so r2 cols are present).
+        nrows: Number of spike rows to show.
+        save_path: If given, saves a PNG to this path (uses matplotlib, no extra deps).
+        blend: Color saturation for column header tints (0=white, 1=full color). Default 0.20.
+    """
+    from IPython.display import display, HTML
+
+    _feat_colors = {
+        'ramp_amp':        'C4',
+        'inflection_time': 'C3',
+        'inflection_amp':  'C3',
+        'peak_amp':        'C5',
+        'peak_width':      'C5',
+        'peak_sharpness':  'C5',
+        'exp_lambda':      'C6',
+        'exp_const':       'C6',
+        'isi':             'C7',
+        'r_squared_ramp':  'C4',
+        'r_squared_exp':   'C6',
+    }
+    _col_order = ['ramp_amp', 'inflection_time', 'inflection_amp',
+                  'peak_amp', 'peak_width', 'peak_sharpness',
+                  'exp_lambda', 'exp_const', 'isi',
+                  'r_squared_ramp', 'r_squared_exp']
+    _col_labels_html = {
+        'ramp_amp':        'ramp<br>amp',
+        'inflection_time': 'inflection<br>time',
+        'inflection_amp':  'inflection<br>amp',
+        'peak_amp':        'peak<br>amp',
+        'peak_width':      'peak<br>width',
+        'peak_sharpness':  'peak<br>sharpness',
+        'exp_lambda':      'exp<br>lambda',
+        'exp_const':       'exp<br>const',
+        'isi':             'log<br>isi',
+        'r_squared_ramp':  'r2 ramp<br>fit',
+        'r_squared_exp':   'r2 decay<br>fit',
+    }
+
+    def _faint(c):
+        rgb = np.array(mcolors.to_rgb(c))
+        blended = rgb * blend + np.ones(3) * (1 - blend)
+        r, g, b = [int(x * 255) for x in blended]
+        return f'rgb({r},{g},{b})'
+
+    def _faint_rgb(c):
+        rgb = np.array(mcolors.to_rgb(c))
+        return rgb * blend + np.ones(3) * (1 - blend)
+
+    _avail = [c for c in _col_order if c in df_features.columns]
+    _df = df_features[_avail].head(nrows).copy()
+    if 'isi' in _df.columns:
+        _df['isi'] = np.log10(_df['isi'])
+    _df = _df.round(2).rename(columns=_col_labels_html)
+    _df.index.name = 'spike id'
+    _df = _df.reset_index()
+
+    # ── HTML display ──────────────────────────────────────────────────────────
+    import re as _re
+    _html = _df.to_html(escape=False, index=False)
+    # Strip pandas' default class/border attrs so Jupyter's .dataframe CSS doesn't fight ours
+    _html = _re.sub(r'<table[^>]*>', '<table class="spk-df">', _html)
+
+    _col_css = '\n'.join(
+        f'table.spk-df thead th:nth-child({i+2}) {{ background-color: {_faint(_feat_colors[c])} !important; }}'
+        for i, c in enumerate(_avail)
+    )
+    display(HTML(f"""<style>
+table.spk-df {{
+    border-collapse: collapse !important;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif !important;
+}}
+table.spk-df th {{
+    font-size: 18px !important;
+    font-weight: bold !important;
+    border: 2.5px solid #1a1a1a !important;
+    padding: 10px 16px !important;
+    text-align: center !important;
+    background-color: #ffffff !important;
+    color: #1a1a1a !important;
+    line-height: 1.3 !important;
+    vertical-align: middle !important;
+}}
+table.spk-df td {{
+    font-size: 16px !important;
+    font-weight: normal !important;
+    border: 1.5px solid #1a1a1a !important;
+    padding: 9px 14px !important;
+    text-align: center !important;
+    background-color: #ffffff !important;
+    color: #1a1a1a !important;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif !important;
+    vertical-align: middle !important;
+}}
+{_col_css}
+</style>{_html}"""))
+
+    # ── PNG save ──────────────────────────────────────────────────────────────
+    # Use Figure + FigureCanvasAgg directly (never touches plt) so %matplotlib
+    # inline does not capture or display this figure in the notebook output.
+    if save_path is not None:
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        _plain_labels = {c: _col_labels_html.get(c, c).replace('<br>', '\n') for c in _avail}
+        _df_png = df_features[_avail].head(nrows).copy()
+        if 'isi' in _df_png.columns:
+            _df_png['isi'] = np.log10(_df_png['isi'])
+        _df_png = _df_png.round(2).rename(columns=_plain_labels)
+        _df_png.index.name = 'spike id'
+        _df_png = _df_png.reset_index()
+
+        n_cols = len(_df_png.columns)
+        col_w, row_h = 1.55, 0.70
+        fig = Figure(figsize=(n_cols * col_w, (nrows + 1) * row_h + 0.3),
+                     facecolor='white')
+        FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
+        ax.axis('off')
+
+        tbl = ax.table(
+            cellText=_df_png.values.tolist(),
+            colLabels=list(_df_png.columns),
+            cellLoc='center',
+            loc='center',
+            bbox=[0, 0, 1, 1],
+        )
+        tbl.auto_set_font_size(False)
+
+        for (row, col), cell in tbl.get_celld().items():
+            cell.set_edgecolor('#1a1a1a')
+            if row == 0:
+                cell.set_linewidth(2.5)
+                cell.set_text_props(fontweight='bold', fontsize=13,
+                                    fontfamily='Helvetica Neue')
+                feat = _avail[col - 1] if (col > 0 and col - 1 < len(_avail)) else None
+                cell.set_facecolor(_faint_rgb(_feat_colors[feat]) if feat and feat in _feat_colors else np.ones(3))
+            else:
+                cell.set_linewidth(1.5)
+                cell.set_facecolor(np.ones(3))
+                cell.set_text_props(fontsize=12, fontfamily='Helvetica Neue')
+
+        fig.savefig(save_path, dpi=180, bbox_inches='tight',
+                    facecolor='white', edgecolor='none')
+        print(f'Saved to {save_path}')
+
+
 def plot_corr_heatmap(
     df_features,
     spike_features,
