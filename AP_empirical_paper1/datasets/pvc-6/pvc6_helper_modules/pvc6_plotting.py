@@ -199,14 +199,19 @@ def plot_confusion_matrix(best_model, X_test, y_test):
     cm      = confusion_matrix(y_test, best_model.predict(X_test))
     display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=best_model.classes_)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    display.plot(cmap='Blues', ax=ax, xticks_rotation=45, values_format='d')
+    fig, ax = plt.subplots(figsize=(11, 5))
+    display.plot(cmap='Blues', ax=ax, xticks_rotation=0, values_format='d')
+    ax.set_aspect('equal')
 
     for text in ax.texts:
-        text.set_fontsize(14)
+        text.set_fontsize(28)
+        text.set_fontweight('bold')
 
-    ax.set_xlabel('Predicted Label')
-    ax.set_ylabel('True Label')
+    ax.set_xlabel('Predicted Label', fontsize=24, fontweight='bold')
+    ax.set_ylabel('True Label', fontsize=24, fontweight='bold')
+    ax.tick_params(axis='both', which='major', labelsize=22, width=2.5)
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontweight('bold')
     # confusion matrix needs all four spines
     for spine in ax.spines.values():
         spine.set_visible(True)
