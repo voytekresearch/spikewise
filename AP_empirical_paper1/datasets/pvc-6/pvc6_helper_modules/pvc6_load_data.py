@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import statsmodels.api as sm
 from scipy.stats import pearsonr
@@ -327,4 +328,43 @@ def plot_spike_and_derivative(i_sweeps, f, fs, one_ms):
     plt.show()
 
 
+def load_or_compute_cell_data(pickle_paths, force_rerun,
+                              n_sweeps, f, one_ms, fs, pink_types):
+    """Load df_stim_features and all_data_flat from cache, or compute from scratch.
 
+    pickle_paths must have keys 'stim' and 'data'. all_data_flat is always computed
+    on the fly from all_data (not pickled — it is too large to save efficiently).
+    Returns (df_stim_features, all_data_flat).
+    """
+    import pickle, pandas as pd
+
+    all_data = None
+    if not force_rerun and os.path.exists(pickle_paths['stim']) and os.path.exists(pickle_paths['data']):
+        try:
+            with open(pickle_paths['stim'], 'rb') as fh:
+                df_stim_features = pickle.load(fh)
+            with open(pickle_paths['data'], 'rb') as fh:
+                all_data = pickle.load(fh)
+            print('Loaded df_stim_features and all_data from pickle.')
+        except Exception as e:
+            print(f'Pickle load failed ({e}); recomputing.')
+
+    if all_data is None:
+        (df_sweep, df_stim_type, df_spike_number, df_voltage_ramp, df_inflection_time, df_inflection_mv,
+         df_peak_amplitude, df_peak_sharpness, df_decay_lambda, df_decay_const, df_stim_exp, df_stim_mean,
+         df_stim_std, df_pinktype, all_data, all_times, *_
+        ) = process_sweeps(n_sweeps, f, one_ms, fs, pink_types,
+                           load_sweep, find_spike_times, fit_exp_nonlinear)
+        df_stim_features = pd.DataFrame({
+            'sweep': df_sweep, 'stim_type': df_stim_type, 'spike_num': df_spike_number,
+            'stim_exp': df_stim_exp, 'stim_mean': df_stim_mean,
+            'stim_std': df_stim_std, 'pink_type': df_pinktype,
+        }, columns=['sweep', 'stim_type', 'spike_num', 'stim_exp', 'stim_mean', 'stim_std', 'pink_type'])
+        with open(pickle_paths['stim'], 'wb') as fh:
+            pickle.dump(df_stim_features, fh)
+        with open(pickle_paths['data'], 'wb') as fh:
+            pickle.dump(all_data, fh)
+        print('Computed and saved df_stim_features and all_data to pickle.')
+
+    all_data_flat = [spike for sweep in all_data for spike in sweep]
+    return df_stim_features, all_data_flat

@@ -7,6 +7,8 @@ from spikeparam_plotting import *
 from specparam import SpectralTimeModel
 import matplotlib.patches as mpatches
 
+plt.rcParams['font.family'] = 'Helvetica Neue'
+
 
 def plot_spike_time_histogram_with_windows(
     spk_times_ms: np.ndarray,

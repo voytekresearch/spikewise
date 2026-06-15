@@ -2,7 +2,7 @@ from sklearn.model_selection import GridSearchCV, KFold, cross_val_score, cross_
 from sklearn.linear_model import LogisticRegression, Ridge, RidgeCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, r2_score
 from sklearn.utils import resample
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
@@ -118,38 +118,48 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
     coefficients  = model.coef_
     feature_names = X.columns
 
-    # ── Bootstrap for coefficient CIs ────────────────────────────────────────
+    # ── Bootstrap coefficient CIs (training bootstrap — standard for coef SE) ──
+    rng = np.random.default_rng(random_state)
     bootstrapped_coefs       = []
-    bootstrapped_r2          = []
-    bootstrapped_adjusted_r2 = []
+    all_indices = np.arange(n_samples)
 
     for _ in range(bootstraps):
-        X_res, y_res = resample(X, y, random_state=None)
-        X_res_z = StandardScaler().fit_transform(X_res)
-        model.fit(X_res_z, y_res)
+        boot_idx = rng.choice(all_indices, size=n_samples, replace=True)
+        X_boot   = X.iloc[boot_idx]; y_boot = y.iloc[boot_idx]
+        scaler_b = StandardScaler()
+        model.fit(scaler_b.fit_transform(X_boot), y_boot)
         bootstrapped_coefs.append(model.coef_)
-        r2         = model.score(X_res_z, y_res)
-        adj_r2     = 1 - ((1 - r2) * (n_samples - 1) / (n_samples - n_features - 1))
-        bootstrapped_r2.append(r2)
-        bootstrapped_adjusted_r2.append(adj_r2)
 
-    bootstrapped_coefs       = np.array(bootstrapped_coefs)
-    bootstrapped_r2          = np.array(bootstrapped_r2)
-    bootstrapped_adjusted_r2 = np.array(bootstrapped_adjusted_r2)
-
+    bootstrapped_coefs = np.array(bootstrapped_coefs)
     lower_bound     = np.percentile(bootstrapped_coefs, 2.5,  axis=0)
     upper_bound     = np.percentile(bootstrapped_coefs, 97.5, axis=0)
     standard_errors = np.std(bootstrapped_coefs, axis=0)
     p_values        = np.array([ttest_1samp(bootstrapped_coefs[:, i], 0)[1]
                                 for i in range(bootstrapped_coefs.shape[1])])
 
-    r2_mean          = np.mean(bootstrapped_r2)
+    # ── Bootstrap R² from CV predictions (unbiased, stable CIs) ─────────────
+    # Resample (y, y_pred_cv) pairs — no re-fitting, CIs on held-out R².
+    y_arr      = np.asarray(y)
+    yhat_arr   = np.asarray(y_pred_cv)
+    boot_r2    = []
+    boot_adjr2 = []
+    for _ in range(bootstraps):
+        idx   = rng.choice(n_samples, size=n_samples, replace=True)
+        r2    = r2_score(y_arr[idx], yhat_arr[idx])
+        adj   = 1 - ((1 - r2) * (n_samples - 1) / (n_samples - n_features - 1))
+        boot_r2.append(r2)
+        boot_adjr2.append(adj)
+
+    bootstrapped_r2          = np.array(boot_r2)
+    bootstrapped_adjusted_r2 = np.array(boot_adjr2)
+    r2_mean          = float(np.mean(bootstrapped_r2))
     r2_ci            = np.percentile(bootstrapped_r2, [2.5, 97.5])
-    adjusted_r2_mean = np.mean(bootstrapped_adjusted_r2)
+    adjusted_r2_mean = float(np.mean(bootstrapped_adjusted_r2))
     adjusted_r2_ci   = np.percentile(bootstrapped_adjusted_r2, [2.5, 97.5])
 
     return {
         # ── original keys (unchanged for backward compat) ──
+        "y_true":                     np.asarray(y),
         "y_pred_cv":                  y_pred_cv,
         "coefficients":               coefficients,
         "feature_names":              feature_names,
@@ -211,89 +221,6 @@ def apply_fdr_pvc6(results_dict, q=0.05):
         print(f"  {k:<15}  R²={r2:.3f}  p_perm={p:.3f}  p_fdr={pfdr:.3f} {sig}")
 
     return results_dict
-
-
-# ── Stimulus onset analysis ───────────────────────────────────────────────────
-
-def compute_stim_lag_correlations(f, fs, df_pink_raw, one_ms,
-                                   window_ms=5, max_lag_ms=100,
-                                   features=None):
-    """
-    Slide a pre-spike stimulus window from 0 to max_lag_ms before the spike
-    inflection point and correlate mean stimulus amplitude with each waveform
-    feature. Reveals the temporal window within which input drive shapes the AP.
-
-    Parameters
-    ----------
-    f           : open h5py.File handle for the recording
-    fs          : sampling rate (Hz)
-    df_pink_raw : pink-noise rows from df — must retain 'sweep', 'spike_num',
-                  'inflection_time', and all waveform feature columns
-    one_ms      : samples per millisecond (= fs // 1000)
-    window_ms   : width of each sliding window (ms)
-    max_lag_ms  : how far back before inflection to search (ms)
-    features    : waveform features to correlate against (default: 6 standard)
-
-    Returns
-    -------
-    lag_centers : (n_lags,)            ms before inflection point (window centers)
-    r_vals      : (n_lags, n_features) Pearson r
-    p_vals      : (n_lags, n_features) p-values
-    features    : list of feature names (same order as r_vals columns)
-    """
-    if features is None:
-        features = ['ramp_amp', 'inflection_time', 'peak_amp',
-                    'peak_sharpness', 'exp_lambda', 'exp_const']
-
-    thresh_mv = -10
-    thresh_ms = one_ms * 1
-
-    lag_starts  = np.arange(0, max_lag_ms, window_ms)
-    lag_centers = lag_starts + window_ms / 2.0
-    n_lags      = len(lag_centers)
-    n_spikes    = len(df_pink_raw)
-
-    stim_at_lag  = np.full((n_spikes, n_lags), np.nan)
-    idx_to_pos   = {idx: pos for pos, idx in enumerate(df_pink_raw.index)}
-
-    for sweep_id, sweep_group in df_pink_raw.groupby('sweep'):
-        dset = f['Sweep_' + str(int(sweep_id))]
-        stim = np.array(dset[:, 0])
-        data = np.array(dset[:, 1])
-
-        idx_peaks, _ = find_peaks(data, height=thresh_mv, distance=thresh_ms)
-
-        for orig_idx, row in sweep_group.iterrows():
-            spike_num = int(row['spike_num'])
-            if spike_num >= len(idx_peaks):
-                continue
-
-            peak_idx = idx_peaks[spike_num]
-            # inflection_time is stored as ms from inflection to peak
-            infl_idx = peak_idx - int(row['inflection_time'] * one_ms)
-            pos      = idx_to_pos[orig_idx]
-
-            for li, lag_start_ms in enumerate(lag_starts):
-                end   = infl_idx - int(lag_start_ms * one_ms)
-                start = end - int(window_ms * one_ms)
-                if start < 0 or end > len(stim):
-                    continue
-                stim_at_lag[pos, li] = np.mean(stim[start:end])
-
-    r_vals = np.full((n_lags, len(features)), np.nan)
-    p_vals = np.full((n_lags, len(features)), np.nan)
-
-    for li in range(n_lags):
-        for fi, feat in enumerate(features):
-            stim_lag  = stim_at_lag[:, li]
-            feat_vals = df_pink_raw[feat].values.astype(float)
-            valid     = np.isfinite(stim_lag) & np.isfinite(feat_vals)
-            if valid.sum() > 10:
-                r, p = pearsonr(stim_lag[valid], feat_vals[valid])
-                r_vals[li, fi] = r
-                p_vals[li, fi] = p
-
-    return lag_centers, r_vals, p_vals, features
 
 
 def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50, offset_ms=0):
@@ -389,3 +316,69 @@ def f_test_r2(r2_small, r2_big, p_small, p_big, n):
     F     = num / denom
     p     = 1 - stats.f.cdf(F, p_big - p_small, n - p_big - 1)
     return F, p
+
+
+_DROP_COLS = ['stim_exp', 'stim_mean', 'stim_std', 'log_isi']
+
+
+def prepare_window_df(df_pink_filtered, df_pink_raw_filtered, f, fs, one_ms, window_ms):
+    """Return a copy of df_pink_filtered with stim features recomputed for window_ms.
+
+    For the 5 ms default window, returns df_pink_filtered unchanged.
+    Rows with NaN stim_mean are dropped before returning.
+    """
+    if window_ms == 5:
+        return df_pink_filtered.copy()
+    stim_extra = recompute_stim_features(f, fs, df_pink_raw_filtered, one_ms, window_ms=window_ms)
+    df_w = df_pink_filtered.copy()
+    df_w['stim_mean'] = stim_extra[f'stim_mean_{window_ms}ms']
+    df_w['stim_std']  = stim_extra[f'stim_std_{window_ms}ms']
+    df_w['stim_exp']  = stim_extra[f'stim_exp_{window_ms}ms']
+    return df_w.dropna(subset=['stim_mean'])
+
+
+def run_window_expansion(windows_ms, df_pink_filtered, df_pink_raw_filtered,
+                         f, fs, one_ms, existing=None, rng=None):
+    """Compute ridge regression (real + shuffle) for each window in windows_ms.
+
+    Only missing keys are computed; already-present entries in *existing* are kept.
+    Returns the updated results dict.
+    """
+    results = dict(existing or {})
+    if rng is None:
+        rng = np.random.default_rng(42)
+    targets = ['stim_mean', 'stim_std', 'stim_exp']
+
+    missing_windows = [w for w in windows_ms
+                       if any(f'{w}ms_{t}' not in results for t in targets)]
+    missing_shuffle = [w for w in windows_ms
+                       if any(f'shuf_{w}ms_{t}' not in results for t in targets)]
+
+    if missing_windows:
+        print(f'Computing missing windows: {missing_windows}')
+        for wms in missing_windows:
+            df_w = prepare_window_df(df_pink_filtered, df_pink_raw_filtered, f, fs, one_ms, wms)
+            for target in targets:
+                data_t = df_w.dropna(subset=[target])
+                drop   = [c for c in _DROP_COLS if c in data_t.columns]
+                X_t    = data_t.drop(columns=drop)
+                y_t    = data_t[target]
+                print(f'\n--- {wms} ms | {target} ---')
+                results[f'{wms}ms_{target}'] = run_ridge_regression_kfold(X_t, y_t)
+
+    if missing_shuffle:
+        print(f'\nComputing shuffle controls for windows: {missing_shuffle}')
+        for wms in missing_shuffle:
+            df_w = prepare_window_df(df_pink_filtered, df_pink_raw_filtered, f, fs, one_ms, wms)
+            for target in targets:
+                data_t = df_w.dropna(subset=[target])
+                drop   = [c for c in _DROP_COLS if c in data_t.columns]
+                X_t    = data_t.drop(columns=drop)
+                y_shuf = pd.Series(rng.permutation(data_t[target].values), index=data_t.index)
+                print(f'\n--- shuf {wms} ms | {target} ---')
+                results[f'shuf_{wms}ms_{target}'] = run_ridge_regression_kfold(X_t, y_shuf)
+
+    if not missing_windows and not missing_shuffle:
+        print('All windows (including shuffle controls) already computed.')
+
+    return results

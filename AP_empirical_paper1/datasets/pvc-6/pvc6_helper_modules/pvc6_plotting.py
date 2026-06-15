@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.metrics import ConfusionMatrixDisplay
+from scipy.stats import pearsonr
 import warnings
 
 # Suppress seaborn palette deprecation noise only
@@ -62,32 +63,105 @@ def plot_pink_spikes(sp, indices_to_plot):
     plt.tight_layout()
     plt.show()
 
-def plot_correlation_scatter(df_pink_filtered):
-    """Scatter plots: exp_const vs stim_mean, peak_sharpness vs stim_mean, stim_mean vs log ISI."""
-    fig, axs = plt.subplots(1, 3, figsize=(19, 6))
-    
-    axs[0].plot(df_pink_filtered['exp_const'], df_pink_filtered['stim_mean'], '.C6', markersize=20)
-    axs[0].set_xlabel('Decay exp constant', fontsize=30)
-    axs[0].set_ylabel('Stim mean', fontsize=30)
-    axs[0].spines['top'].set_visible(False)
-    axs[0].spines['right'].set_visible(False)
-    axs[0].tick_params(axis='both', labelsize=20)
-    
-    axs[1].plot(df_pink_filtered['peak_sharpness'], df_pink_filtered['stim_mean'], '.C5', markersize=20)
-    axs[1].set_xlabel('Peak sharpness', fontsize=30)
-    axs[1].set_ylabel('Stim mean', fontsize=30)
-    axs[1].spines['top'].set_visible(False)
-    axs[1].spines['right'].set_visible(False)
-    axs[1].tick_params(axis='both', labelsize=20)
-    
-    axs[2].plot(df_pink_filtered['stim_mean'], df_pink_filtered['log_isi'], '.C7', markersize=20)
-    axs[2].set_xlabel('Stim mean', fontsize=30)
-    axs[2].set_ylabel('Log ISI', fontsize=30)
-    axs[2].spines['top'].set_visible(False)
-    axs[2].spines['right'].set_visible(False)
-    axs[2].tick_params(axis='both', labelsize=20)
-    
-    plt.tight_layout()
+def set_plot_style():
+    """Global bold/cartoony style: big fonts, only left+bottom spines, minimal ticks."""
+    plt.rcParams.update({
+        'font.family':            'Helvetica Neue',
+        'font.size':              18,
+        'font.weight':            'bold',
+        'axes.labelsize':         20,
+        'axes.labelweight':       'bold',
+        'axes.titlesize':         20,
+        'axes.titleweight':       'bold',
+        'xtick.labelsize':        16,
+        'ytick.labelsize':        16,
+        'legend.fontsize':        16,
+        'legend.title_fontsize':  16,
+        'figure.titlesize':       22,
+        'figure.titleweight':     'bold',
+        # clean white background (overrides seaborn whitegrid)
+        'axes.facecolor':         'white',
+        'figure.facecolor':       'white',
+        'axes.edgecolor':         '#1a1a1a',
+        # only left + bottom spines
+        'axes.spines.top':        False,
+        'axes.spines.right':      False,
+        'axes.linewidth':         2.5,
+        # ticks — thick, minimal
+        'xtick.major.width':      2.0,
+        'ytick.major.width':      2.0,
+        'xtick.major.size':       6,
+        'ytick.major.size':       6,
+        'xtick.minor.visible':    False,
+        'ytick.minor.visible':    False,
+        # no grid
+        'axes.grid':              False,
+    })
+
+
+_SPIKE_FEATURES = [
+    'ramp_amp', 'inflection_time', 'inflection_amp',
+    'peak_amp', 'peak_width', 'peak_sharpness',
+    'exp_lambda', 'exp_const', 'log_isi',
+]
+_STIM_FEATURES = ['stim_mean', 'stim_std', 'stim_exp']
+
+# Bold palette — one colour per stim feature, reused across subplots
+_SCATTER_COLORS = {'stim_mean': '#E07B54', 'stim_std': '#5B8DB8', 'stim_exp': '#72B26C'}
+
+
+def plot_top_correlations_by_window(df_w, window_ms, n_top=6):
+    """2×3 grid of the top-N spike-feature × stim-feature correlations for a given window.
+
+    Pairs are ranked by |Pearson r|. Style is bold/cartoony with minimal tick clutter.
+    """
+    pairs = []
+    for sf in _SPIKE_FEATURES:
+        for stf in _STIM_FEATURES:
+            if sf not in df_w.columns or stf not in df_w.columns:
+                continue
+            valid = df_w[[sf, stf]].dropna()
+            if len(valid) < 10:
+                continue
+            r, p = pearsonr(valid[sf], valid[stf])
+            pairs.append((abs(r), r, p, sf, stf, valid))
+
+    pairs.sort(key=lambda x: x[0], reverse=True)
+    top = pairs[:n_top]
+
+    ncols = 3
+    nrows = int(np.ceil(n_top / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(7 * ncols, 6 * nrows),
+                             constrained_layout=True)
+    axes = np.array(axes).flatten()
+
+    for ax, (abs_r, r, p, sf, stf, valid) in zip(axes, top):
+        color = _SCATTER_COLORS.get(stf, '#888')
+        ax.scatter(valid[sf], valid[stf],
+                   s=70, alpha=0.65, color=color, linewidths=0)
+
+        # regression line
+        m, b = np.polyfit(valid[sf], valid[stf], 1)
+        xs = np.linspace(valid[sf].min(), valid[sf].max(), 200)
+        ax.plot(xs, m * xs + b, color='#1a1a1a', lw=3.5, zorder=3)
+
+        # r / p annotation — bottom-right, no title needed
+        p_str = 'p<0.001' if p < 0.001 else f'p={p:.3f}'
+        ax.text(0.96, 0.05, f'r = {r:.2f}\n{p_str}',
+                transform=ax.transAxes, ha='right', va='bottom',
+                fontweight='bold', color='#1a1a1a')
+
+        ax.set_xlabel(sf.replace('_', ' '))
+        ax.set_ylabel(stf.replace('_', ' '))
+
+        # 3 ticks per axis — no clutter
+        ax.locator_params(nbins=3)
+
+    # hide unused axes
+    for ax in axes[len(top):]:
+        ax.set_visible(False)
+
     plt.show()
 
 def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_spks):
@@ -114,7 +188,6 @@ def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_sp
     
     plt.xlabel('Time (ms)')
     plt.ylabel('Voltage')
-    plt.title('Mean and Standard Deviation of Spikes')
     plt.xlim(1600, 2400)
     plt.show()
 
@@ -122,20 +195,24 @@ def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_sp
 
 def plot_confusion_matrix(best_model, X_test, y_test):
     """Confusion matrix for a trained classifier on test data."""
-    conf_matrix = ConfusionMatrixDisplay.from_estimator(best_model, X_test, y_test)
-    
-    plt.figure(figsize=(8, 6))
-    ax = plt.gca()
-    conf_matrix.plot(cmap='Blues', ax=ax, xticks_rotation=45, values_format='d')
-    
+    from sklearn.metrics import confusion_matrix
+    cm      = confusion_matrix(y_test, best_model.predict(X_test))
+    display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=best_model.classes_)
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    display.plot(cmap='Blues', ax=ax, xticks_rotation=45, values_format='d')
+
     for text in ax.texts:
         text.set_fontsize(14)
-    
-    plt.title('Confusion Matrix', fontsize=16)
-    plt.xlabel('Predicted Label', fontsize=17)
-    plt.ylabel('True Label', fontsize=17)
-    plt.xticks(fontsize=16)
-    plt.yticks(fontsize=16)
+
+    ax.set_xlabel('Predicted Label')
+    ax.set_ylabel('True Label')
+    # confusion matrix needs all four spines
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(2.5)
+        spine.set_color('#1a1a1a')
+    plt.tight_layout()
     plt.show()
 
 def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
@@ -173,7 +250,6 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     sns.scatterplot(x=y, y=y_pred_cv, s=55)
     plt.xlabel("Actual Values", fontsize=20)
     plt.ylabel("Predicted Values", fontsize=20)
-    plt.title(title, fontsize=20)
     plt.xticks(fontsize=16)
     plt.yticks(fontsize=16)
 
@@ -199,7 +275,6 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
             x_pos = row['CI Upper'] + abs(feature_importance_df['Coefficient'].max()) * 0.03
             ax.text(x_pos, idx, star, va='center', fontsize=12, color='#D55E00', fontweight='bold')
 
-    ax.set_title('Beta Weights — Ridge Regression (standardised features)', fontsize=14)
     ax.set_xlabel('Beta weight (standardised)', fontsize=13)
     ax.set_ylabel('Feature', fontsize=13)
     plt.tight_layout()
@@ -246,7 +321,6 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     )
     
     plt.xticks(rotation=45)
-    plt.title("Bootstrap distributions of beta weights", fontsize=16)
     plt.ylabel("Coefficient Value", fontsize=16)
     plt.xlabel("Feature", fontsize=16)
     plt.show()
@@ -255,7 +329,6 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
 
     plt.subplot(1, 3, 1)
     sns.boxplot(x=r2_scores)
-    plt.title("K-Fold R² Scores", fontsize=16)
     plt.xlabel("R²", fontsize=14)
 
     plt.subplot(1, 3, 2)
@@ -263,7 +336,6 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.axvline(r2_mean, color='red', linestyle='--', label=f"Mean R²: {r2_mean:.3f}")
     plt.axvline(r2_ci[0], color='gray', linestyle=':', label=f"95% CI: [{r2_ci[0]:.3f}, {r2_ci[1]:.3f}]")
     plt.axvline(r2_ci[1], color='gray', linestyle=':')
-    plt.title("Bootstrapped R² Distribution", fontsize=16)
     plt.xlabel("R²", fontsize=14)
     plt.legend()
 
@@ -272,7 +344,6 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     plt.axvline(adjusted_r2_mean, color='red', linestyle='--', label=f"Mean Adjusted R²: {adjusted_r2_mean:.3f}")
     plt.axvline(adjusted_r2_ci[0], color='gray', linestyle=':', label=f"95% CI: [{adjusted_r2_ci[0]:.3f}, {adjusted_r2_ci[1]:.3f}]")
     plt.axvline(adjusted_r2_ci[1], color='gray', linestyle=':')
-    plt.title("Bootstrapped Adjusted R² Distribution", fontsize=16)
     plt.xlabel("Adjusted R²", fontsize=14)
     plt.legend()
 
@@ -282,6 +353,122 @@ def plot_ridge_results(y, ridge_results, title="Ridge Regression Results"):
     print(f"\nMean Adjusted R-squared (Bootstrapped): {adjusted_r2_mean:.3f}")
     print(f"95% CI for Adjusted R-squared: {adjusted_r2_ci}")
 
+
+def plot_ridge_results_grid(results_dict, keys, labels=None, ys=None):
+    """Show scatter, beta-weight, and R² panels for multiple ridge fits side-by-side.
+
+    results_dict : {key: ridge_results}
+    keys         : ordered list of keys to plot (columns)
+    labels       : display title per column (defaults to keys)
+    ys           : {key: y_series} – required for the scatter row
+    """
+    n = len(keys)
+    if labels is None:
+        labels = list(keys)
+
+    # ── Scatter: actual vs predicted ─────────────────────────────────────────
+    if ys is not None or any('y_true' in results_dict[k] for k in keys):
+        fig, axes = plt.subplots(1, n, figsize=(7 * n, 5), constrained_layout=True)
+        if n == 1:
+            axes = [axes]
+        for ax, key, label in zip(axes, keys, labels):
+            res  = results_dict[key]
+            yhat = np.asarray(res['y_pred_cv'])
+            if 'y_true' in res:
+                y = res['y_true']
+            elif ys is not None:
+                y = np.asarray(ys[key])
+                if len(y) != len(yhat):
+                    raise ValueError(
+                        f"y size {len(y)} != y_pred_cv size {len(yhat)} for key '{key}'. "
+                        "Set FORCE_RERUN=True to regenerate pickles."
+                    )
+            else:
+                continue
+            r2   = res['r2_mean']
+            ci   = res['r2_ci']
+            ax.scatter(y, yhat, s=35, alpha=0.55)
+            m, b = np.polyfit(y, yhat, 1)
+            ax.plot(y, m * y + b, color='red', lw=2.5)
+            ax.set_xlabel(f'Actual  ({label})')
+            ax.set_ylabel('Predicted')
+            ax.text(0.05, 0.95, f'R²={r2:.3f}\n[{ci[0]:.3f},{ci[1]:.3f}]',
+                    transform=ax.transAxes, ha='left', va='top', fontweight='bold')
+            ax.locator_params(nbins=3)
+        plt.show()
+
+    # ── Beta weights: shared feature order, only left col gets y-labels ──────
+    # Build a stable feature order (sorted by mean |coef| across all keys)
+    feat_importance = {}
+    for key in keys:
+        res = results_dict[key]
+        for feat, coef in zip(res['feature_names'], res['coefficients']):
+            feat_importance[feat] = feat_importance.get(feat, 0) + abs(coef)
+    ordered_feats = sorted(feat_importance, key=lambda x: feat_importance[x])
+    n_feats = len(ordered_feats)
+
+    fig, axes = plt.subplots(1, n, figsize=(7 * n, max(5, n_feats * 0.38 + 1)),
+                             sharey=True, constrained_layout=True)
+    if n == 1:
+        axes = [axes]
+    for col, (ax, key, label) in enumerate(zip(axes, keys, labels)):
+        res = results_dict[key]
+        feat_df = pd.DataFrame({
+            'Feature':     res['feature_names'],
+            'Coefficient': res['coefficients'],
+            'CI Lower':    res['ci_lower'],
+            'CI Upper':    res['ci_upper'],
+            'p-value':     res['p_values'],
+        }).set_index('Feature').reindex(ordered_feats).dropna()
+
+        colors    = ['hotpink' if f.startswith('stim_') else _FEATURE_COLOR_MAP.get(f, 'gray')
+                     for f in feat_df.index]
+        xerr_low  = feat_df['Coefficient'] - feat_df['CI Lower']
+        xerr_high = feat_df['CI Upper']    - feat_df['Coefficient']
+
+        ax.barh(feat_df.index, feat_df['Coefficient'],
+                xerr=[xerr_low.values, xerr_high.values],
+                color=colors, alpha=0.82,
+                error_kw=dict(ecolor='#333', lw=1.2, capsize=3))
+        ax.axvline(0, color='gray', lw=1, ls='--', alpha=0.7)
+
+        x_max = float(feat_df['CI Upper'].max())
+        for i, (feat, row) in enumerate(feat_df.iterrows()):
+            p    = row['p-value']
+            star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+            if star:
+                ax.text(x_max + abs(x_max) * 0.06, i, star,
+                        va='center', color='#D55E00', fontweight='bold')
+
+        ax.set_xlabel(f'Beta weight (std.)  —  {label}')
+        if col == 0:
+            ax.set_ylabel('Feature')
+    plt.show()
+
+    # ── Bootstrapped R² distributions ────────────────────────────────────────
+    fig, axes = plt.subplots(1, n, figsize=(6 * n, 4), constrained_layout=True)
+    if n == 1:
+        axes = [axes]
+    for col, (ax, key, label) in enumerate(zip(axes, keys, labels)):
+        res    = results_dict[key]
+        boot   = res['bootstrapped_r2']
+        r2m    = res['r2_mean']
+        ci     = res['r2_ci']
+        p_perm = res.get('p_val_perm', None)
+        ax.hist(boot, bins=30, alpha=0.7, color='steelblue', edgecolor='none')
+        ax.axvline(r2m,   color='red',  ls='--', lw=2,   label=f'Mean={r2m:.3f}')
+        ax.axvline(ci[0], color='gray', ls=':',  lw=1.5)
+        ax.axvline(ci[1], color='gray', ls=':',  lw=1.5,
+                   label=f'95% CI [{ci[0]:.3f},{ci[1]:.3f}]')
+        title = label
+        if p_perm is not None:
+            sig   = ' *' if p_perm < 0.05 else ''
+            title += f'\np={p_perm:.3f}{sig}'
+        ax.set_xlabel('R²')
+        ax.set_ylabel('Count' if col == 0 else '')
+        ax.locator_params(nbins=3)
+        ax.legend(frameon=False, loc='upper left')
+    plt.show()
 
 
 # --- Define the function to plot R-squared comparison ---
@@ -364,7 +551,6 @@ def plot_combined_actual_vs_predicted(y_actual, all_features_y_pred, all_feature
     # Add labels and title
     plt.xlabel('Actual log_isi', fontsize=20)
     plt.ylabel('Predicted log_isi', fontsize=20)
-    plt.title('Combined Scatter Plot of Actual vs. Predicted Values for All Models', fontsize=20)
     plt.xticks(fontsize=16)               
     plt.yticks(fontsize=16)
     
@@ -390,7 +576,6 @@ def plot_combined_feature_importance(all_features_feature_importance_df, all_fea
                 palette=['#5b83bc', '#974a75', '#df8ac1'], linewidth=0.5)  # Increased bar thickness
     
     # Add labels and title
-    plt.title('Combined Feature Importance for All Models', fontsize=20)
     plt.xlabel('Coefficient (Importance)', fontsize=20)
     
     plt.xticks(fontsize=16)
@@ -419,7 +604,6 @@ def plot_feature_importance_categorical(best_model, X):
     
     plt.figure(figsize=(10, 6))
     sns.barplot(x="Importance", y="Feature", data=df_importance, palette=df_importance['Color'].tolist())
-    plt.title("Feature Importance (Random Forest)", fontsize=20)
     plt.xlabel("Importance", fontsize=16)
     plt.ylabel("Feature", fontsize=16)
     plt.xticks(fontsize=14)
@@ -430,73 +614,21 @@ def plot_feature_importance_categorical(best_model, X):
 
 # Function to plot bootstrapped accuracies as histograms
 def plot_bootstrap_histograms(bootstrapped_results, model_names):
-    plt.figure(figsize=(18, 6))
-    for i, (accs, model_name) in enumerate(zip(bootstrapped_results, model_names)):
-
-        # Compute statistics for R² and Adjusted R²
+    n = len(bootstrapped_results)
+    fig, axes = plt.subplots(1, n, figsize=(6 * n, 5), constrained_layout=True)
+    if n == 1:
+        axes = [axes]
+    for ax, accs, model_name in zip(axes, bootstrapped_results, model_names):
         accs_mean = np.mean(accs)
-        accs_ci = np.percentile(accs, [2.5, 97.5])
-        
-        plt.subplot(1, 3, i+1)
-        sns.histplot(accs, kde=True, bins=30)
-        plt.axvline(accs_mean , color='red', linestyle='--', label=f"Mean R²: {accs_mean:.3f}")
-        plt.axvline(accs_ci[0], color='gray', linestyle=':', label=f"95% CI: [{accs_ci[0]:.3f}, {accs_ci[1]:.3f}]")
-        plt.axvline(accs_ci[1], color='gray', linestyle=':')
-        plt.title(f"{model_name} Bootrstrapped Accuracy Distribution", fontsize=16)
-        plt.xlabel("Accuracy", fontsize=14)
-        plt.ylabel("Frequency", fontsize=16)
-        plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_stim_lag_correlations(lag_centers, r_vals, p_vals, features,
-                                alpha=0.05, title=''):
-    """
-    Line plot of Pearson r vs pre-inflection lag for each waveform feature.
-    Shaded region = p < alpha. Vertical dotted line marks the fixed 5ms window
-    used in the main analysis.
-    """
-    n_feats = len(features)
-    ncols   = 3
-    nrows   = int(np.ceil(n_feats / ncols))
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(ncols * 3.2, nrows * 3.0),
-                             sharey=False)
-    axes = np.array(axes).flatten()
-
-    sup = 'Stimulus onset: Pearson r vs pre-spike lag'
-    if title:
-        sup += f'  |  {title}'
-    fig.suptitle(sup, fontsize=11, y=1.02)
-
-    for fi, (feat, ax) in enumerate(zip(features, axes)):
-        col = _FEATURE_COLOR_MAP.get(feat, 'gray')
-        r   = r_vals[:, fi]
-        p   = p_vals[:, fi]
-
-        ax.plot(lag_centers, r, color=col, lw=2)
-        ax.axhline(0, color='k', lw=0.8, ls='--', alpha=0.5)
-        # dotted line = current fixed window centre (0–5ms → 2.5ms)
-        ax.axvline(2.5, color='#999', lw=1, ls=':', alpha=0.8,
-                   label='current window')
-
-        sig = p < alpha
-        ax.fill_between(lag_centers, r, 0, where=sig,
-                        color=col, alpha=0.3, label=f'p<{alpha}')
-
-        ax.set_xlabel('ms before inflection', fontsize=9)
-        ax.set_title(feat, fontsize=9, fontweight='bold')
-        ax.spines[['top', 'right']].set_visible(False)
-        ax.tick_params(labelsize=8)
-        if fi == 0:
-            ax.set_ylabel('Pearson r', fontsize=9)
-            ax.legend(fontsize=7, frameon=False)
-
-    for ax in axes[n_feats:]:
-        ax.set_visible(False)
-
-    fig.tight_layout()
+        accs_ci   = np.percentile(accs, [2.5, 97.5])
+        sns.histplot(accs, kde=True, bins=30, ax=ax)
+        ax.axvline(accs_mean,   color='red',  ls='--', lw=2, label=f'Mean: {accs_mean:.3f}')
+        ax.axvline(accs_ci[0],  color='gray', ls=':',  lw=1.5,
+                   label=f'95% CI [{accs_ci[0]:.3f},{accs_ci[1]:.3f}]')
+        ax.axvline(accs_ci[1],  color='gray', ls=':',  lw=1.5)
+        ax.set_xlabel(f'Accuracy  ({model_name})')
+        ax.set_ylabel('Frequency')
+        ax.legend(frameon=False)
     plt.show()
 
 
@@ -504,8 +636,7 @@ def plot_window_expansion(results_by_window, windows_ms,
                           targets=('stim_mean', 'stim_std', 'stim_exp'),
                           target_labels=('stim mean', 'stim std', 'stim exp'),
                           title='',
-                          control_results=None,
-                          control_label='ctrl 500–600ms'):
+                          shuffle_results=None):
     """
     Compare ridge regression R² (bootstrap mean + 95 % CI) across pre-inflection
     window sizes for one or more stimulus targets.
@@ -514,27 +645,24 @@ def plot_window_expansion(results_by_window, windows_ms,
     ----------
     results_by_window : dict
         Keyed as '{W}ms_{target}', e.g. '5ms_stim_mean'.
-        Values are dicts returned by run_ridge_regression_kfold.
     windows_ms      : list of int   – window sizes tested (x-axis)
     targets         : tuple of str  – target names (separate subplots)
     target_labels   : tuple of str  – display labels for targets
     title           : str           – figure suptitle suffix
-    control_results : dict, optional
-        Keyed as 'ctrl_{target}', e.g. 'ctrl_stim_mean'. When provided, adds a
-        visually separated bar at the right of each subplot for the control window.
-    control_label   : str – x-tick label for the control bar
+    shuffle_results : dict, optional
+        Same key scheme as results_by_window but for shuffled-Y regressions
+        (keyed as '{W}ms_{target}'). Shown as lighter hatched bars paired with
+        each real bar to visualise the null R² at every window size.
     """
+    bar_w     = 0.35
     n_targets = len(targets)
-    fig, axes = plt.subplots(1, n_targets, figsize=(4 * n_targets, 4), sharey=False)
+    fig, axes = plt.subplots(1, n_targets,
+                             figsize=(5.5 * n_targets, 5.5),
+                             constrained_layout=True)
     if n_targets == 1:
         axes = [axes]
 
-    sup = 'Window expansion: R² vs pre-inflection window'
-    if title:
-        sup += f'  |  {title}'
-    fig.suptitle(sup, fontsize=11, y=1.02)
-
-    for ax, tgt, tgt_lbl in zip(axes, targets, target_labels):
+    for col_i, (ax, tgt, tgt_lbl) in enumerate(zip(axes, targets, target_labels)):
         r2s, lo, hi, sigs = [], [], [], []
         for wms in windows_ms:
             key = f'{wms}ms_{tgt}'
@@ -545,72 +673,113 @@ def plot_window_expansion(results_by_window, windows_ms,
             r2s.append(res['r2_mean'])
             lo.append(res['r2_ci'][0])
             hi.append(res['r2_ci'][1])
-            sigs.append(res.get('sig_fdr', False))
+            sigs.append(res.get('p_val_perm', 1.0) < 0.05)
 
-        r2s  = np.array(r2s,  dtype=float)
-        lo   = np.array(lo,   dtype=float)
-        hi   = np.array(hi,   dtype=float)
-        xs   = np.arange(len(windows_ms))
+        r2s = np.array(r2s, dtype=float)
+        lo  = np.array(lo,  dtype=float)
+        hi  = np.array(hi,  dtype=float)
+
+        if shuffle_results is not None:
+            xs_real  = np.arange(len(windows_ms)) - bar_w / 2
+            xs_shuf  = np.arange(len(windows_ms)) + bar_w / 2
+            xs_ticks = np.arange(len(windows_ms))
+        else:
+            xs_real  = np.arange(len(windows_ms))
+            xs_ticks = xs_real
 
         colors = ['#D55E00' if s else '#888888' for s in sigs]
-        ax.bar(xs, r2s, color=colors, alpha=0.8, width=0.6)
-        ax.errorbar(xs, r2s,
+        ax.bar(xs_real, r2s, color=colors, alpha=0.85, width=bar_w)
+        ax.errorbar(xs_real, r2s,
                     yerr=[r2s - lo, hi - r2s],
                     fmt='none', color='k', capsize=4, lw=1.5)
-        ax.axhline(0, color='k', lw=0.8, ls='--', alpha=0.5)
 
-        x_labels = [f'{w} ms' for w in windows_ms]
-        x_ticks  = list(xs)
+        if shuffle_results is not None:
+            sr2s, slo, shi = [], [], []
+            for wms in windows_ms:
+                skey = f'{wms}ms_{tgt}'
+                if skey not in shuffle_results:
+                    sr2s.append(np.nan); slo.append(np.nan); shi.append(np.nan)
+                    continue
+                sr = shuffle_results[skey]
+                sr2s.append(sr['r2_mean'])
+                slo.append(sr['r2_ci'][0])
+                shi.append(sr['r2_ci'][1])
+            sr2s = np.array(sr2s, dtype=float)
+            slo  = np.array(slo,  dtype=float)
+            shi  = np.array(shi,  dtype=float)
+            ax.bar(xs_shuf, sr2s, color='#56B4E9', alpha=0.6, width=bar_w,
+                   hatch='//', edgecolor='white', linewidth=0.4)
+            ax.errorbar(xs_shuf, sr2s,
+                        yerr=[sr2s - slo, shi - sr2s],
+                        fmt='none', color='#56B4E9', capsize=4, lw=1.5)
 
-        if control_results is not None:
-            ctrl_key = tgt
-            ctrl_x   = len(windows_ms) + 1.0  # gap of 1 unit
-            if ctrl_key in control_results:
-                cr = control_results[ctrl_key]
-                cr2  = cr['r2_mean']
-                clo  = cr['r2_ci'][0]
-                chi  = cr['r2_ci'][1]
-                csig = cr.get('sig_fdr', False)
-                ctrl_color = '#0072B2' if csig else '#56B4E9'
-                ax.bar(ctrl_x, cr2, color=ctrl_color, alpha=0.8, width=0.6,
-                       hatch='//', edgecolor='white', linewidth=0.5)
-                ax.errorbar(ctrl_x, cr2,
-                            yerr=[[cr2 - clo], [chi - cr2]],
-                            fmt='none', color='k', capsize=4, lw=1.5)
-                if csig:
-                    ax.text(ctrl_x, cr2 + (chi - cr2) + 0.002, '*',
-                            ha='center', va='bottom', fontsize=12, color='#0072B2')
-                ax.axvline(len(windows_ms) + 0.4, color='k', lw=0.8,
-                           ls=':', alpha=0.4)
-            x_ticks.append(ctrl_x)
-            x_labels.append(control_label)
+        ax.axhline(0, color='k', lw=1, ls='--', alpha=0.5)
+        ax.set_xticks(xs_ticks)
+        ax.set_xticklabels([str(w) for w in windows_ms], rotation=45, ha='right')
+        ax.set_xlabel('Window (ms)')
+        # target label on y-axis instead of panel title
+        ax.set_ylabel(f'Bootstrap R²\n({tgt_lbl})')
+        ax.locator_params(axis='y', nbins=4)
 
-        ax.set_xticks(x_ticks)
-        ax.set_xticklabels(x_labels, fontsize=9, rotation=20, ha='right')
-        ax.set_xlabel('Window', fontsize=10)
-        ax.set_ylabel('Bootstrap R² (mean ± 95 % CI)', fontsize=9)
-        ax.set_title(tgt_lbl, fontsize=10, fontweight='bold')
-        ax.spines[['top', 'right']].set_visible(False)
-        ax.tick_params(labelsize=8)
-
-        # annotate significance for regular bars
         for xi, (r2, sig) in enumerate(zip(r2s, sigs)):
             if sig:
-                ax.text(xi, r2 + (hi[xi] - r2) + 0.002, '*',
-                        ha='center', va='bottom', fontsize=12, color='#D55E00')
+                ax.text(xs_real[xi], hi[xi] + 0.01, '*',
+                        ha='center', va='bottom', color='#D55E00')
 
-    # legend
+    # legend outside axes in top-right of figure
     from matplotlib.patches import Patch
-    legend_elements = [Patch(facecolor='#D55E00', alpha=0.8, label='FDR sig.'),
-                       Patch(facecolor='#888888', alpha=0.8, label='not sig.')]
-    if control_results is not None:
-        legend_elements += [
-            Patch(facecolor='#0072B2', alpha=0.8, hatch='//', label='ctrl (sig.)'),
-            Patch(facecolor='#56B4E9', alpha=0.8, hatch='//', label='ctrl (n.s.)'),
-        ]
-    axes[-1].legend(handles=legend_elements, fontsize=8, frameon=False,
-                    loc='upper left')
+    legend_elements = [Patch(facecolor='#D55E00', alpha=0.85, label='p < 0.05 (perm.)'),
+                       Patch(facecolor='#888888', alpha=0.85, label='n.s.')]
+    if shuffle_results is not None:
+        legend_elements.append(
+            Patch(facecolor='#56B4E9', alpha=0.6, hatch='//', label='shuffle ctrl')
+        )
+    fig.legend(handles=legend_elements, frameon=False,
+               loc='upper right', bbox_to_anchor=(1.0, 0.95))
 
-    fig.tight_layout()
+    plt.show()
+
+
+def plot_fit_quality_distributions(sp):
+    """Histograms of R² for the ramp-amplitude and exp-decay fits across all spikes."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
+    for ax, vals, xlabel, color in zip(
+        axes,
+        [sp.r_squared_ramp, sp.r_squared_exp],
+        ['Ramp fit R²', 'Exp decay fit R²'],
+        ['C4', 'C6'],
+    ):
+        v = np.asarray(vals, dtype=float)
+        v = v[np.isfinite(v)]
+        ax.hist(v, bins=40, color=color, alpha=0.85, edgecolor='none')
+        med = np.median(v)
+        ax.axvline(med, color='k', lw=2.5, ls='--', label=f'median = {med:.3f}')
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel('Count')
+        ax.legend(frameon=False)
+        ax.locator_params(nbins=4)
+    plt.show()
+
+
+def plot_feature_histograms(df_features):
+    """Histogram of every spike waveform feature column in df_features."""
+    _skip = {'sweep', 'stim_type', 'pink_type', 'spike_num',
+             'stim_exp', 'stim_mean', 'stim_std', 'r_squared_exp', 'r_squared_ramp'}
+    feat_cols = [c for c in df_features.columns if c not in _skip]
+    n = len(feat_cols)
+    ncols = 4
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4, nrows * 3.5),
+                             constrained_layout=True)
+    axes = np.array(axes).flatten()
+    for ax, col in zip(axes, feat_cols):
+        vals = df_features[col].dropna().values
+        color = _FEATURE_COLOR_MAP.get(col, 'steelblue')
+        ax.hist(vals, bins=40, color=color, alpha=0.85, edgecolor='none')
+        ax.set_xlabel(col)
+        ax.set_ylabel('Count')
+        ax.locator_params(nbins=3)
+    for ax in axes[n:]:
+        ax.set_visible(False)
     plt.show()
 

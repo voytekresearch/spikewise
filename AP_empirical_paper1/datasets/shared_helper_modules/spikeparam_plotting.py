@@ -1,9 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import seaborn as sns
-import pandas as pd 
+import pandas as pd
 from scipy.stats import pearsonr
-import os 
+import os
+
+plt.rcParams['font.family'] = 'Helvetica Neue'
 
 
 def plot_corr_heatmap_only_spk(
@@ -12,89 +15,88 @@ def plot_corr_heatmap_only_spk(
     calculate_corr=False,
     corr_threshold=0.1,
     title: str = None,
-    drop_y_label=None,
-    drop_x_label=None,
+    figsize=(14, 11),
 ):
-    """
-    Heatmap with larger correlation numbers, stars, and axis label font sizes.
-    """
-
-    # Clean data
+    """Lower-triangle correlation heatmap with cartoony styling: big stars, white text on dark cells."""
     df_selected = df_features[spike_features]
     df_cleaned = df_selected.replace([np.inf, -np.inf], np.nan).dropna()
     if df_cleaned.empty:
         raise ValueError("No valid data after cleaning.")
 
-    # Correlation and p-values
-    if calculate_corr:
-        rho = df_cleaned.corr()
-    else:
-        rho = df_features[spike_features].corr()
+    rho = df_cleaned.corr() if calculate_corr else df_features[spike_features].corr()
 
     pval = pd.DataFrame(np.zeros_like(rho), index=spike_features, columns=spike_features)
     for row in spike_features:
         for col in spike_features:
-            r, p = pearsonr(df_cleaned[row], df_cleaned[col])
+            _, p = pearsonr(df_cleaned[row], df_cleaned[col])
             pval.at[row, col] = p
 
-    def p_to_star(p, r):
-        if abs(r) < corr_threshold:
-            return ""
-        if p < 0.001: return '***'
-        elif p < 0.01: return '**'
-        elif p < 0.05: return '*'
-        else: return ''
+    n = len(spike_features)
+    mask    = np.triu(np.ones_like(rho, dtype=bool))
+    xlabels = list(spike_features[:-1]) + ['']
+    ylabels = [''] + list(spike_features[1:])
 
-    stars = pd.DataFrame("", index=rho.index, columns=rho.columns, dtype="object")
-    for i in range(len(spike_features)):
-        for j in range(len(spike_features)):
-            stars.iloc[i, j] = p_to_star(pval.iloc[i, j], rho.iloc[i, j])
+    fig, ax = plt.subplots(figsize=figsize)
+    sns.heatmap(rho, mask=mask, annot=False, cmap='coolwarm', center=0,
+                vmin=-1, vmax=1, square=True, linewidths=0, ax=ax,
+                xticklabels=xlabels, yticklabels=ylabels)
 
-    # Trim labels
-    xticks = spike_features.copy()
-    yticks = spike_features.copy()
-    if drop_x_label and drop_x_label in xticks:
-        xticks[xticks.index(drop_x_label)] = ""
-    if drop_y_label and drop_y_label in yticks:
-        yticks[yticks.index(drop_y_label)] = ""
+    cbar = ax.collections[0].colorbar
+    cbar.set_ticks([-1, 0, 1])
+    cbar.set_ticklabels(['-1', '0', '1'])
+    cbar.ax.tick_params(labelsize=22, width=2.5, length=6)
+    for spine in cbar.ax.spines.values():
+        spine.set_visible(True); spine.set_linewidth(2.5); spine.set_color('#1a1a1a')
+    for label in cbar.ax.get_yticklabels():
+        label.set_fontweight('bold'); label.set_fontfamily('Helvetica Neue')
 
-    # Plot
-    mask = np.triu(np.ones_like(rho, dtype=bool))
-    plt.figure(figsize=(11, 9))
-    ax = sns.heatmap(
-        rho,
-        mask=mask,
-        annot=False,
-        fmt=".2f",
-        cmap="coolwarm",
-        center=0,
-        square=True,
-        linewidths=0.5,
-        xticklabels=xticks,
-        yticklabels=yticks,
-        cbar_kws={"label": None}
-    )
+    # L-shaped border only (left + bottom) — avoids rectangle around empty upper triangle
+    for spine in ['top', 'right']:
+        ax.spines[spine].set_visible(False)
+    for spine in ['left', 'bottom']:
+        ax.spines[spine].set_visible(True)
+        ax.spines[spine].set_linewidth(2.5)
+        ax.spines[spine].set_color('#1a1a1a')
 
-    # Add bold correlation values and stars
-    for i in range(len(spike_features)):
-        for j in range(len(spike_features)):
+    _cmap_obj = plt.cm.coolwarm
+    _norm_obj = mcolors.Normalize(vmin=-1, vmax=1)
+    # scale so star fits within ~40% of cell height; number gets remaining ~25%
+    cell_h_in = figsize[1] / n
+    star_fs = max(14, int(cell_h_in * 72 * 0.40))
+    r_fs    = max(10, int(cell_h_in * 72 * 0.22))
+    # positions: star in upper-center of cell, number just below
+    star_y = 0.32
+    num_y  = 0.68
+
+    for i in range(n):
+        for j in range(n):
             if i > j:
                 r_val = rho.iloc[i, j]
-                p = pval.iloc[i, j]
-                sig = p < 0.05
-                fontweight = 'bold' if sig else 'normal'
-                ax.text(j + 0.5, i + 0.5, f"{r_val:.2f}",
-                        ha='center', va='center',
-                        fontsize=13, fontweight=fontweight, color='black')
-                if stars.iloc[i, j] != "":
-                    ax.text(j + 0.5, i + 0.3, stars.iloc[i, j],
-                            ha='center', va='bottom', color='black',
-                            fontsize=14, fontweight='bold')
+                p     = pval.iloc[i, j]
+                sig   = p < 0.05 and abs(r_val) >= corr_threshold
+                rgba      = _cmap_obj(_norm_obj(r_val))
+                luminance = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
+                txt_color = 'white' if luminance < 0.5 else 'black'
 
-    plt.xticks(rotation=45, ha='right', fontsize=13)
-    plt.yticks(rotation=0, fontsize=13)
+                ax.text(j + 0.5, i + num_y, f"{r_val:.2f}",
+                        ha='center', va='center', fontsize=r_fs, color=txt_color,
+                        fontweight='bold' if p < 0.05 else 'normal',
+                        fontfamily='Helvetica Neue')
+                if sig:
+                    star = '***' if p < 0.001 else '**' if p < 0.01 else '*'
+                    ax.text(j + 0.5, i + star_y, star,
+                            ha='center', va='center', fontsize=star_fs,
+                            fontweight='bold', color=txt_color,
+                            fontfamily='Helvetica Neue')
+
+    ax.tick_params(axis='both', which='major', labelsize=22, width=2.5)
+    fig.canvas.draw()
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontweight('bold'); label.set_fontfamily('Helvetica Neue')
     if title:
-        plt.title(title)
+        ax.set_title(title, fontsize=22, fontweight='bold', fontfamily='Helvetica Neue')
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
     plt.tight_layout()
     plt.show()
 
