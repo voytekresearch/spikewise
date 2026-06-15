@@ -122,15 +122,17 @@ def display_feature_table(df_features, nrows=2, save_path=None, blend=0.20):
         'exp_lambda':      'C6',
         'exp_const':       'C6',
         'isi':             'C7',
+        'log_isi':         'C7',
         'r_squared_ramp':  'C4',
         'r_squared_exp':   'C6',
     }
+    # 'log_isi' is listed after 'isi' so whichever the df has gets picked up
     _col_order = ['ramp_amp', 'inflection_time', 'inflection_amp',
                   'peak_amp', 'peak_width', 'peak_sharpness',
-                  'exp_lambda', 'exp_const', 'isi',
+                  'exp_lambda', 'exp_const', 'isi', 'log_isi',
                   'r_squared_ramp', 'r_squared_exp']
     _col_labels_html = {
-        'ramp_amp':        'ramp<br>amp',
+        'ramp_amp':        'ramp amp',
         'inflection_time': 'inflection<br>time',
         'inflection_amp':  'inflection<br>amp',
         'peak_amp':        'peak<br>amp',
@@ -139,6 +141,7 @@ def display_feature_table(df_features, nrows=2, save_path=None, blend=0.20):
         'exp_lambda':      'exp<br>lambda',
         'exp_const':       'exp<br>const',
         'isi':             'log<br>isi',
+        'log_isi':         'log<br>isi',
         'r_squared_ramp':  'r2 ramp<br>fit',
         'r_squared_exp':   'r2 decay<br>fit',
     }
@@ -157,7 +160,10 @@ def display_feature_table(df_features, nrows=2, save_path=None, blend=0.20):
     _df = df_features[_avail].head(nrows).copy()
     if 'isi' in _df.columns:
         _df['isi'] = np.log10(_df['isi'])
+    # log_isi is already logged — no transform needed
     _df = _df.round(2).rename(columns=_col_labels_html)
+    # use sequential 0,1,2... as spike id regardless of original index
+    _df.index = range(len(_df))
     _df.index.name = 'spike id'
     _df = _df.reset_index()
 
@@ -180,23 +186,26 @@ table.spk-df th {{
     font-size: 18px !important;
     font-weight: bold !important;
     border: 2.5px solid #1a1a1a !important;
-    padding: 10px 16px !important;
+    padding: 7px 16px !important;
     text-align: center !important;
     background-color: #ffffff !important;
     color: #1a1a1a !important;
     line-height: 1.3 !important;
     vertical-align: middle !important;
+    white-space: nowrap !important;
+    min-width: 90px !important;
 }}
 table.spk-df td {{
     font-size: 16px !important;
     font-weight: normal !important;
     border: 1.5px solid #1a1a1a !important;
-    padding: 9px 14px !important;
+    padding: 6px 16px !important;
     text-align: center !important;
     background-color: #ffffff !important;
     color: #1a1a1a !important;
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif !important;
     vertical-align: middle !important;
+    white-space: nowrap !important;
 }}
 {_col_css}
 </style>{_html}"""))
@@ -213,6 +222,7 @@ table.spk-df td {{
         if 'isi' in _df_png.columns:
             _df_png['isi'] = np.log10(_df_png['isi'])
         _df_png = _df_png.round(2).rename(columns=_plain_labels)
+        _df_png.index = range(len(_df_png))
         _df_png.index.name = 'spike id'
         _df_png = _df_png.reset_index()
 
