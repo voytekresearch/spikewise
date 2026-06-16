@@ -966,6 +966,150 @@ def plot_metadata_effect_heatmap(df_res):
     plt.show()
 
 
+def plot_feature_distribution_r2(df_master, cluster_pickle_dir, spike_fit_dir,
+                                  r2_type='exp', min_cells=2, n_cols=12):
+    """
+    For each (cell × spike feature) pair with ≥2 clusters, show a KDE distribution
+    of the feature values — same layout as the population cluster histograms — but
+    each cluster's KDE is colored by the mean R² of spikes in that cluster (viridis).
+
+    x-axis : spike feature value
+    y-axis : KDE density
+    color  : mean per-spike R² for each cluster on viridis (dark=low, yellow=high)
+    shared colorbar on the right
+
+    spk_id in the cluster pickle indexes into the spike-fit R² array; spikes
+    whose spk_id exceeds the fit array length are silently skipped.
+    """
+    import pickle
+    import matplotlib.cm as _cm
+    import matplotlib.colors as _mc
+    from scipy.stats import gaussian_kde as _kde
+
+    r2_attr  = 'r_squared_exp'  if r2_type == 'exp'  else 'r_squared_ramp'
+    r2_label = 'Exp decay R²'   if r2_type == 'exp'  else 'Ramp fit R²'
+    ORDINAL    = {'low': 0, 'mid': 1, 'high': 2}
+    SKIP_FEATS = {'spk_times_ms', 'spk_times_idx'}
+
+    cmap = _cm.get_cmap('viridis')
+    norm = _mc.Normalize(vmin=0, vmax=1)
+
+    # ── Load per-spike R² arrays keyed by cell ───────────────────────────
+    r2_arr_by_cell = {}
+    for _pkl_f in glob.glob(os.path.join(spike_fit_dir, 'c*_spike_fit.pkl')):
+        _cid = os.path.basename(_pkl_f).replace('_spike_fit.pkl', '')
+        try:
+            with open(_pkl_f, 'rb') as _fh:
+                _spk = pickle.load(_fh)
+            r2_arr_by_cell[_cid] = np.asarray(getattr(_spk, r2_attr))
+        except Exception:
+            pass
+
+    if not r2_arr_by_cell:
+        print('No spike fit pickles found in', spike_fit_dir)
+        return
+
+    # ── Build (cell, feature) pairs with ≥2 clusters ─────────────────────
+    df_num = df_master.copy()
+    df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+    pairs = (df_num[df_num['num_clusters'] >= 2][['cell_id', 'spike_feature']]
+             .drop_duplicates())
+    pairs = pairs[~pairs['spike_feature'].isin(SKIP_FEATS)]
+    pairs = pairs[pairs['cell_id'].isin(r2_arr_by_cell)]
+
+    # ── One figure per feature ────────────────────────────────────────────
+    for feat in sorted(pairs['spike_feature'].unique()):
+        cells = sorted(
+            pairs[pairs['spike_feature'] == feat]['cell_id'].tolist(),
+            key=lambda c: int(c.lstrip('c'))
+        )
+        if len(cells) < min_cells:
+            continue
+
+        ncols_f = min(n_cols, len(cells))
+        nrows_f = int(np.ceil(len(cells) / ncols_f))
+
+        fig = plt.figure(figsize=(ncols_f * 2.6 + 0.7, nrows_f * 2.6))
+        gs  = fig.add_gridspec(nrows_f, ncols_f + 1,
+                               width_ratios=[1] * ncols_f + [0.05],
+                               hspace=0.55, wspace=0.35)
+        axes    = np.array([[fig.add_subplot(gs[r, c])
+                             for c in range(ncols_f)]
+                            for r in range(nrows_f)])
+        cbar_ax = fig.add_subplot(gs[:, ncols_f])
+        axs = axes.flat
+
+        for ax, cid in zip(axs, cells):
+            pkl_path = os.path.join(cluster_pickle_dir, f'{cid}_cluster_df.pkl')
+            try:
+                cl_df = pd.read_pickle(pkl_path)
+            except Exception:
+                ax.set_visible(False)
+                continue
+
+            col_name = f'{feat}_cluster'
+            if feat not in cl_df.columns or 'spk_id' not in cl_df.columns or col_name not in cl_df.columns:
+                ax.set_visible(False)
+                continue
+
+            r2_arr = r2_arr_by_cell[cid]
+            n_fit  = len(r2_arr)
+
+            _sub = cl_df[[feat, 'spk_id', col_name]].dropna()
+            _sub = _sub[_sub['spk_id'].astype(int) < n_fit]
+            _sub = _sub[_sub[col_name].astype(str).str.lower().isin(ORDINAL)]
+            if _sub.empty:
+                ax.set_visible(False)
+                continue
+
+            _sub = _sub.copy()
+            _sub['r2']    = r2_arr[_sub['spk_id'].astype(int).values]
+            _sub['clust'] = _sub[col_name].astype(str).str.lower()
+
+            any_plotted = False
+            for lbl in ['low', 'mid', 'high']:
+                grp = _sub[_sub['clust'] == lbl]
+                if len(grp) < 5:
+                    continue
+                feat_vals = grp[feat].values
+                mean_r2   = float(np.nanmean(grp['r2'].values))
+                fill_c    = cmap(norm(mean_r2))
+                try:
+                    kde_fn = _kde(feat_vals)
+                    x_grid = np.linspace(feat_vals.min(), feat_vals.max(), 300)
+                    y_grid = kde_fn(x_grid)
+                    ax.fill_between(x_grid, y_grid, alpha=0.55, color=fill_c)
+                    ax.plot(x_grid, y_grid, color=fill_c, lw=1.0)
+                    any_plotted = True
+                except Exception:
+                    pass
+
+            if not any_plotted:
+                ax.set_visible(False)
+                continue
+
+            ax.set_title(cid, fontsize=8, fontweight='bold')
+            ax.set_xlabel(feat.replace('_', ' '), fontsize=7)
+            ax.set_ylabel('density', fontsize=6)
+            ax.tick_params(labelsize=6)
+            sns.despine(ax=ax)
+
+        for ax in list(axs)[len(cells):]:
+            ax.set_visible(False)
+
+        sm = _cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.set_label(r2_label, fontsize=9, fontweight='bold')
+        cbar.ax.tick_params(labelsize=7)
+
+        fig.suptitle(
+            f'{feat.replace("_", " ")}  —  KDE per cluster, color = mean {r2_label} of that cluster',
+            fontsize=11, fontweight='bold'
+        )
+        plt.show()
+
+
 def plot_aggregated_spike_feat(raw_df):
     # 1. Internal Aggregation: Calculate Means and 95% CI
     stats = raw_df.groupby('spike_feature').agg({
