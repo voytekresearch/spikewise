@@ -3094,6 +3094,7 @@ def plot_lfp_block_comparison(
         ('mean_amp',        'Mean amp\n(µV)'),
         ('std_amp',         'Std amp\n(µV)'),
         ('exponent',        'Exponent'),
+        ('offset',          'Offset'),
         ('theta_auc',       'θ AUC\n4–15 Hz'),
         ('total_gamma_auc', 'Total γ\n30–80 Hz'),
         ('slow_gamma_auc',  'Slow γ\n30–60 Hz'),
@@ -3163,9 +3164,11 @@ def plot_lfp_block_comparison(
                 blk['slow_gamma_auc']  = _bauc(fl, al, ff, 30,  60)
                 blk['high_gamma_auc']  = _bauc(fl, al, ff, 60,  80)
                 blk['total_gamma_auc'] = _bauc(fl, al, ff, 30,  80)
+                blk['r_squared']       = float(_sm.r_squared_)
                 _pks_r = np.atleast_2d(_sm.peak_params_) if _sm.n_peaks_ > 0 else np.empty((0, 3))
                 _pk_str_r = ', '.join(f'CF={p[0]:.1f}Hz PW={p[1]:.3f} BW={p[2]:.1f}' for p in _pks_r) or 'none'
-                print(f'  [refit {cid}|{feat}|blk{blk["block"]}] exp={blk["exponent"]:.2f}  '
+                print(f'  [refit {cid}|{feat}|blk{blk["block"]}] R²={blk["r_squared"]:.3f}  '
+                      f'exp={blk["exponent"]:.2f}  '
                       f'θ={blk["theta_auc"]:.4f}  sγ={blk["slow_gamma_auc"]:.4f}  '
                       f'hγ={blk["high_gamma_auc"]:.4f}  totγ={blk["total_gamma_auc"]:.4f}  '
                       f'n_peaks={_sm.n_peaks_}  peaks=[{_pk_str_r}]', flush=True)
@@ -3203,6 +3206,21 @@ def plot_lfp_block_comparison(
             sg_p   = blk.get('slow_gamma_auc', float('nan'))
             hg_p   = blk.get('high_gamma_auc', float('nan'))
             tg_p   = blk.get('total_gamma_auc', float('nan'))
+            # Compute R² from stored model vs raw PSD if not already stored
+            r2_p = blk.get('r_squared', float('nan'))
+            if not np.isfinite(r2_p) and ff_p is not None and fl_p is not None:
+                _raw_psd = blk.get('psd', blk.get('mean_psd'))
+                if _raw_psd is not None:
+                    try:
+                        _ff_arr = np.asarray(ff_p)
+                        _fl_arr = np.asarray(fl_p)
+                        _raw_log = np.log10(np.interp(_ff_arr, blk['freqs'], np.asarray(_raw_psd)))
+                        _ss_res = np.sum((_raw_log - _fl_arr) ** 2)
+                        _ss_tot = np.sum((_raw_log - np.mean(_raw_log)) ** 2)
+                        r2_p = float(1.0 - _ss_res / _ss_tot) if _ss_tot > 0 else float('nan')
+                        blk['r_squared'] = r2_p
+                    except Exception:
+                        pass
             if ff_p is not None and fl_p is not None and al_p is not None:
                 ff_p = np.asarray(ff_p); fl_p = np.asarray(fl_p); al_p = np.asarray(al_p)
                 # Reconstruct peaks: contiguous regions where full_log > ape_log
@@ -3226,7 +3244,7 @@ def plot_lfp_block_comparison(
                 pk_str = ', '.join(_pk_info) or 'none'
             else:
                 pk_str = 'no fit'
-            print(f'  {blk["label"]:10s}  exp={exp_p:.3f}  '
+            print(f'  {blk["label"]:10s}  R²={r2_p:.3f}  exp={exp_p:.3f}  '
                   f'θ={th_p:.4f}  sγ={sg_p:.4f}  hγ={hg_p:.4f}  totγ={tg_p:.4f}  '
                   f'peaks=[{pk_str}]', flush=True)
 
@@ -3345,8 +3363,9 @@ def plot_lfp_block_comparison(
                 fig.add_subplot(gs[0, 1]),  # mean_amp
                 fig.add_subplot(gs[0, 2]),  # std_amp
                 fig.add_subplot(gs[1, 1]),  # exponent
-                fig.add_subplot(gs[1, 2]),  # theta_auc
-                fig.add_subplot(gs[2, 1]),  # total_gamma
+                fig.add_subplot(gs[1, 2]),  # offset
+                fig.add_subplot(gs[2, 1]),  # theta_auc
+                fig.add_subplot(gs[2, 2]),  # total_gamma
                 fig.add_subplot(gs[3, 1]),  # slow_gamma
                 fig.add_subplot(gs[3, 2]),  # high_gamma
             ]
@@ -3369,24 +3388,21 @@ def plot_lfp_block_comparison(
 
                 y0, y1 = ax_b.get_ylim()
                 yspan   = y1 - y0
-                tick    = yspan * 0.025
                 for pair_i in range(len(blocks) - 1):
                     v1, v2 = vals_all[pair_i], vals_all[pair_i + 1]
-                    if not (np.isfinite(v1) and np.isfinite(v2) and v1 != 0):
+                    if not (np.isfinite(v1) and np.isfinite(v2)):
                         continue
-                    pct = (v2 - v1) / abs(v1) * 100
-                    lbl = f'{"↑" if pct >= 0 else "↓"}{abs(pct):.0f}%'
-                    bh  = y1 - yspan * (0.04 + pair_i * 0.14)
-                    ax_b.plot([pair_i, pair_i, pair_i + 1, pair_i + 1],
-                              [bh - tick, bh, bh, bh - tick], lw=5.0, color='#222222')
-                    ax_b.text((pair_i + pair_i + 1) / 2, bh + tick * 1.5,
-                              lbl, ha='center', va='bottom', fontsize=20,
-                              color='#111111', fontweight='bold')
+                    delta = v2 - v1
+                    lbl = f'{"↑" if delta >= 0 else "↓"}Δ={abs(delta):.3g}'
+                    bh  = y1 - yspan * (0.06 + pair_i * 0.14)
+                    ax_b.text((pair_i + pair_i + 1) / 2, bh,
+                              lbl, ha='center', va='top', fontsize=16,
+                              color='#555555', clip_on=False)
 
                 ax_b.set_ylabel(ylabel, fontsize=16, fontweight='bold')
                 ax_b.axhline(0, color='gray', lw=1.5, ls='--')
                 ax_b.set_xticks(range(len(blocks)))
-                if p_i >= 4:  # total γ row and slow/high γ row show x-tick labels
+                if p_i >= 6:  # slow/high γ row shows x-tick labels
                     ax_b.set_xticklabels([blk['label'] for blk in blocks],
                                          fontsize=13, rotation=20, ha='right')
                 else:
@@ -3400,18 +3416,176 @@ def plot_lfp_block_comparison(
             plt.show()
 
 
+def plot_pop_lfp_block_summary(lfp_block_results):
+    """
+    Population-level summary of LFP features across blocks at transition.
+
+    For each LFP feature: bars show mean ± SEM across cells (block 0 vs block 1),
+    individual cell values shown as connected dots, Wilcoxon signed-rank p-value annotated.
+    """
+    from scipy.stats import wilcoxon as _wilcoxon
+
+    bar_specs = [
+        ('mean_amp',        'Mean amp\n(µV)'),
+        ('std_amp',         'Std amp\n(µV)'),
+        ('exponent',        'Exponent'),
+        ('offset',          'Offset'),
+        ('theta_auc',       'θ AUC\n4–15 Hz'),
+        ('total_gamma_auc', 'Total γ\n30–80 Hz'),
+        ('slow_gamma_auc',  'Slow γ\n30–60 Hz'),
+        ('high_gamma_auc',  'High γ\n60–80 Hz'),
+    ]
+
+    _sm_kwargs = dict(aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+                      max_n_peaks=4, min_peak_height=0.0, peak_threshold=1.5, verbose=False)
+
+    # Pre-fit specparam for any blocks missing it
+    for _pblocks in lfp_block_results.values():
+        for _pblk in _pblocks:
+            if _pblk.get('freqs_fit') is not None:
+                continue
+            _ppsd = _pblk.get('psd', _pblk.get('mean_psd'))
+            if _ppsd is None or _pblk.get('freqs') is None:
+                continue
+            try:
+                _psm = SpectralModel(**_sm_kwargs)
+                _pff2, _ppsd2 = interpolate_spectrum(_pblk['freqs'], _ppsd, [58, 62])
+                _psm.fit(_pff2, _ppsd2, freq_range=(1, 90))
+                _pff2 = np.asarray(_psm.freqs)
+                _pfl  = np.asarray(_psm.get_model(component='full',      space='log'))
+                _pal  = np.asarray(_psm.get_model(component='aperiodic', space='log'))
+                def _pbauc(_fl, _al, _ff, _flo, _fhi):
+                    _m = (_ff >= _flo) & (_ff <= _fhi)
+                    _d = np.where(np.isfinite(_fl[_m] - _al[_m]), _fl[_m] - _al[_m], 0.0)
+                    return float(np.trapz(np.clip(_d, 0, None), _ff[_m]))
+                _pblk['freqs_fit']       = _pff2
+                _pblk['full_log']        = _pfl
+                _pblk['ape_log']         = _pal
+                _pblk['exponent']        = float(_psm.get_params('aperiodic_params', 'exponent'))
+                _pblk['offset']          = float(_psm.get_params('aperiodic_params', 'offset'))
+                _pblk['theta_auc']       = _pbauc(_pfl, _pal, _pff2,  4,  15)
+                _pblk['slow_gamma_auc']  = _pbauc(_pfl, _pal, _pff2, 30,  60)
+                _pblk['high_gamma_auc']  = _pbauc(_pfl, _pal, _pff2, 60,  80)
+                _pblk['total_gamma_auc'] = _pbauc(_pfl, _pal, _pff2, 30,  80)
+            except Exception:
+                pass
+
+    # Collect per-cell (v0, v1) pairs for each feature
+    _pairs = {key: [] for key, _ in bar_specs}
+    for blocks in lfp_block_results.values():
+        if len(blocks) < 2:
+            continue
+        b0, b1 = blocks[0], blocks[1]
+        for key, _ in bar_specs:
+            v0 = b0.get(key, float('nan'))
+            v1 = b1.get(key, float('nan'))
+            if np.isfinite(v0) and np.isfinite(v1):
+                _pairs[key].append((v0, v1))
+
+    # Block colors: reuse first two CLR_CLUSTER colors as generic block colors
+    _blk_cols = ['#0072B2', '#D55E00']
+    _blk_labels = ['Pre', 'Post']
+    _SPINE_LW   = 2.5
+    _LBL_FS     = 22
+    _TICK_FS    = 18
+    _STAR_FS    = 24
+    _NS_FS      = 16
+
+    nrows, ncols = 2, 4
+    fig, axes = plt.subplots(nrows, ncols, figsize=(20, 11), squeeze=False)
+
+    for p_i, (ax, (key, ylabel)) in enumerate(zip(axes.flat, bar_specs)):
+        pairs = _pairs[key]
+        if not pairs:
+            ax.set_visible(False)
+            continue
+
+        v0s = np.array([p[0] for p in pairs])
+        v1s = np.array([p[1] for p in pairs])
+        n   = len(pairs)
+
+        # Bars: mean ± SEM with pvc-6 style outlines
+        for b_i, (vals, col) in enumerate(zip([v0s, v1s], _blk_cols)):
+            mu  = np.mean(vals)
+            sem = np.std(vals, ddof=1) / np.sqrt(n)
+            ax.bar(b_i, mu, color=col, alpha=0.75, width=0.55, zorder=2,
+                   edgecolor='#1a1a1a', linewidth=1.8)
+            ax.errorbar(b_i, mu, yerr=sem, fmt='none', color='#111111',
+                        elinewidth=3, capsize=8, capthick=3, zorder=3)
+
+        # Individual cells as connected dots
+        jitter = (np.random.default_rng(p_i).random(n) - 0.5) * 0.16
+        for j, (vv0, vv1) in zip(jitter, pairs):
+            ax.plot([0 + j, 1 + j], [vv0, vv1],
+                    color='#888', lw=1.0, alpha=0.45, zorder=1)
+            ax.scatter([0 + j, 1 + j], [vv0, vv1],
+                       color=[_blk_cols[0], _blk_cols[1]], s=45, alpha=0.8,
+                       zorder=2, edgecolors='none')
+
+        # Wilcoxon signed-rank test
+        try:
+            _, p_val = _wilcoxon(v0s, v1s)
+            star = '***' if p_val < 0.001 else '**' if p_val < 0.01 else '*' if p_val < 0.05 else 'ns'
+            print(f'  [pop Wilcoxon] {key}: n={n} p={p_val:.4f} {star}', flush=True)
+        except Exception as _e:
+            p_val, star = np.nan, 'n/a'
+            print(f'  [pop Wilcoxon] {key}: n={n} FAILED {_e}', flush=True)
+
+        # Expand ylim to leave room for bracket + star
+        y0, y1 = ax.get_ylim()
+        ax.set_ylim(y0, y1 + (y1 - y0) * 0.28)
+        y0, y1 = ax.get_ylim()
+        span = y1 - y0
+
+        # Significance bracket
+        bh = y1 - span * 0.09
+        tk = span * 0.025
+        ax.plot([0, 0, 1, 1], [bh - tk, bh, bh, bh - tk],
+                color='#1a1a1a', lw=2.0)
+        star_fs = _STAR_FS if star not in ('ns', 'n/a') else _NS_FS
+        ax.text(0.5, bh + span * 0.008, star,
+                ha='center', va='bottom', fontsize=star_fs,
+                fontweight='bold', color='#1a1a1a', clip_on=False)
+
+        # n count below bracket ticks
+        ax.text(0.5, bh - tk - span * 0.005, f'n={n}',
+                ha='center', va='top', fontsize=14, color='#555', clip_on=False)
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels([], fontsize=_TICK_FS)
+        ax.set_ylabel(ylabel, fontsize=_LBL_FS, fontweight='bold')
+        ax.axhline(0, color='gray', lw=1.5, ls='--')
+        ax.tick_params(axis='both', which='major', labelsize=_TICK_FS, width=2.5)
+        for spine in ['left', 'bottom']:
+            ax.spines[spine].set_linewidth(_SPINE_LW)
+        sns.despine(ax=ax, offset=8)
+
+    # Shared legend
+    from matplotlib.patches import Patch
+    legend_handles = [Patch(color=_blk_cols[0], alpha=0.75, label='Pre-transition'),
+                      Patch(color=_blk_cols[1], alpha=0.75, label='Post-transition')]
+    fig.legend(handles=legend_handles, fontsize=16, frameon=False,
+               loc='lower center', ncol=2, bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle('Population LFP: pre vs post transition  (mean ± SEM, Wilcoxon signed-rank)',
+                 fontsize=18, fontweight='bold')
+    plt.tight_layout(pad=2.5, w_pad=3.0, h_pad=4.0)
+    plt.show()
+    return fig, axes
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Population transition delta plot
 # ─────────────────────────────────────────────────────────────────────────────
 
 _DELTA_LFP_KEYS = ['theta_auc', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc',
-                   'exponent', 'mean_amp', 'std_amp']
+                   'exponent', 'offset', 'mean_amp', 'std_amp']
 _DELTA_LFP_LABELS = {
     'theta_auc':       'θ AUC',
     'slow_gamma_auc':  'Slow γ\n(30–60)',
     'high_gamma_auc':  'High γ\n(60–80)',
     'total_gamma_auc': 'Total γ\n(30–80)',
     'exponent':        'Exponent',
+    'offset':          'Offset',
     'mean_amp':        'Amplitude',
     'std_amp':         'Std',
 }
@@ -3692,20 +3866,29 @@ def _collect_delta_rows(lfp_block_results, df_transitions, lfp_keys):
 def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_keys=None):
     """Same as plot_transition_deltas but the mean ± SEM crosshair is coloured
     by the sign of the population mean: blue if mean > 0, red if mean < 0.
-
-    Direction-coloured dots (blue/red) are kept.
+    One-sample Wilcoxon signed-rank test (vs 0) annotated below each LFP feature.
     """
+    from scipy.stats import wilcoxon as _wilcoxon
+
     lfp_keys = lfp_keys or _DELTA_LFP_KEYS
     rows_by_wf, _, wf_feats, global_ylim = _collect_delta_rows(
         lfp_block_results, df_transitions, lfp_keys)
 
+    _LBL_FS   = 34
+    _TICK_FS  = 28
+    _TTL_FS   = 32
+    _STAR_FS  = 44
+    _SPINE_LW = 2.5
+
     n_wf  = len(wf_feats)
-    ncols = min(3, n_wf)
+    ncols = 2
     nrows = int(np.ceil(n_wf / ncols))
     n_lk  = len(lfp_keys)
 
+    panel_w = 2.5 + 2.0 * n_lk
+    panel_h = 9.0
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=((0.8 + 0.9 * n_lk) * ncols, 4.0 * nrows),
+                             figsize=(panel_w * ncols, panel_h * nrows),
                              squeeze=False)
     from matplotlib.lines import Line2D
 
@@ -3715,7 +3898,7 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
         n_cells = len(rows)
 
         ax.set_ylim(*global_ylim)
-        ax.axhline(0, color='#888', lw=1.0, ls='--', zorder=1)
+        ax.axhline(0, color='#aaa', lw=2.0, ls='--', zorder=1)
 
         x_ticks, x_labels = [], []
         for xi, lk in enumerate(lfp_keys):
@@ -3727,48 +3910,67 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
             for j, d in zip(jitter, deltas):
                 col = _DIR_COL_POS if d >= 0 else _DIR_COL_NEG
                 ax.scatter(xi + j, d, color=col, edgecolors='white',
-                           linewidths=0.6, s=50, alpha=0.8, zorder=3)
+                           linewidths=0.8, s=100, alpha=0.85, zorder=3)
 
             mu  = float(np.mean(deltas))
             sem = float(np.std(deltas) / np.sqrt(len(deltas)))
             muc = _DIR_COL_POS if mu >= 0 else _DIR_COL_NEG
-            ax.plot([xi - 0.3, xi + 0.3], [mu, mu],
-                    color=muc, lw=2.5, solid_capstyle='round', zorder=4)
+            ax.plot([xi - 0.35, xi + 0.35], [mu, mu],
+                    color=muc, lw=5.0, solid_capstyle='round', zorder=4)
             ax.plot([xi, xi], [mu - sem, mu + sem],
-                    color=muc, lw=1.5, zorder=4)
+                    color=muc, lw=3.0, zorder=4)
+
+            # One-sample Wilcoxon vs 0 — star placed just below x-axis using axes transform
+            star = ''
+            if len(deltas) >= 5:
+                try:
+                    _, p = _wilcoxon(deltas)
+                    star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+                    print(f'  [{wf}|{lk}] n={len(deltas)} p={p:.4f} {star or "ns"}', flush=True)
+                except Exception as _e:
+                    print(f'  [{wf}|{lk}] FAILED: {_e}', flush=True)
+            if star:
+                # get_xaxis_transform: x in data coords, y in axes fraction (0=bottom, -0.x=below)
+                ax.text(xi, -0.10, star, ha='center', va='top',
+                        fontsize=_STAR_FS, fontweight='bold', color='#1a1a1a',
+                        transform=ax.get_xaxis_transform(), clip_on=False)
 
             x_ticks.append(xi)
             x_labels.append(_DELTA_LFP_LABELS.get(lk, lk))
 
         ax.set_xlim(-0.6, n_lk - 0.4)
         ax.set_xticks(x_ticks)
-        ax.set_xticklabels(x_labels, fontsize=9)
+        ax.set_xticklabels(x_labels, fontsize=_TICK_FS, fontweight='bold')
         ax.set_title(f'{_DELTA_WF_LABELS.get(wf, wf)}  (n={n_cells})',
-                     fontsize=11, fontweight='bold')
+                     fontsize=_TTL_FS, fontweight='bold', pad=14)
         if idx % ncols == 0:
-            ax.set_ylabel('Normalised Δ  (post − pre)', fontsize=9)
-        ax.tick_params(labelsize=8)
-        sns.despine(ax=ax)
+            ax.set_ylabel('Normalised Δ  (post − pre)', fontsize=_LBL_FS, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=_TICK_FS, width=2.5, length=6)
+        ax.tick_params(axis='x', length=0)
+        for spine in ['left', 'bottom']:
+            ax.spines[spine].set_linewidth(_SPINE_LW)
+        sns.despine(ax=ax, offset=10)
 
     for idx in range(n_wf, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
 
     legend_handles = [
         Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_POS,
-               markersize=9, label='LFP ↑  when spike-feature cluster: low → high'),
+               markersize=18, label='LFP ↑  (cluster: low → high)'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_NEG,
-               markersize=9, label='LFP ↓  when spike-feature cluster: low → high'),
-        Line2D([0], [0], color=_DIR_COL_POS, lw=2.5, label='mean ± SEM  (positive)'),
-        Line2D([0], [0], color=_DIR_COL_NEG, lw=2.5, label='mean ± SEM  (negative)'),
+               markersize=18, label='LFP ↓  (cluster: low → high)'),
+        Line2D([0], [0], color=_DIR_COL_POS, lw=5.0, label='mean ± SEM  (positive)'),
+        Line2D([0], [0], color=_DIR_COL_NEG, lw=5.0, label='mean ± SEM  (negative)'),
     ]
-    fig.legend(handles=legend_handles, fontsize=9, frameon=False,
-               loc='lower center', ncol=2, bbox_to_anchor=(0.5, -0.04))
+    fig.legend(handles=legend_handles, fontsize=20, frameon=False,
+               loc='lower center', ncol=2, bbox_to_anchor=(0.5, -0.03))
 
     fig.suptitle(
         'LFP change at spike-feature cluster transition  (post − pre, normalised)\n'
-        'Mean bar colour = sign of population mean  ·  all panels share the same y-axis',
-        fontsize=11, y=1.01)
-    plt.tight_layout()
+        'Stars = one-sample Wilcoxon vs 0  ·  all panels share y-axis',
+        fontsize=26, fontweight='bold')
+    fig.subplots_adjust(left=0.08, right=0.97, top=0.93, bottom=0.12,
+                        wspace=0.35, hspace=0.55)
     plt.show()
     return fig, axes
 
