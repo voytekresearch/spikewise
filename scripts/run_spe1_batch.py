@@ -84,6 +84,9 @@ CLUSTER_NB_DIR   = NB_DIR / "cluster_feature_analyses"
 RIDGE_NB_DIR     = NB_DIR / "ridge_regression_analyses"
 PRIORITY_SET = {f"c{n}" for n in PRIORITY_CELLS}
 
+# Cells with no valid waveform clusters — excluded from the clustering phase permanently.
+NO_CLUSTER_CELLS = {"c17", "c18", "c43"}
+
 
 def _cell_num(cell_id: str) -> int:
     return int(cell_id.lstrip("c"))
@@ -299,8 +302,11 @@ def main():
     }
     # Note: FORCE flags for sliding-window ridge are set inside each notebook's parameters cell
 
+    # c17/c18/c43 have no valid waveform clusters — always excluded from clustering phase
+    cluster_cell_ids = [cid for cid in cell_ids if cid not in NO_CLUSTER_CELLS]
+
     if not skip_clustering:
-        print(f"Clustering:      {len(cell_ids)} cells")
+        print(f"Clustering:      {len(cluster_cell_ids)} cells (excluding {sorted(NO_CLUSTER_CELLS & set(cell_ids))})")
     print(f"LFP (priority):  {len(lfp_ids)} cells  {sorted(lfp_ids)}")
     print(f"LFP (np):        {len(lfp_np_ids)} cells")
     print(f"Ridge:           {len(ridge_ids)} cells")
@@ -312,12 +318,16 @@ def main():
     if not skip_clustering:
         cluster_ok, _ = _run_phase(
             run_cluster_nb,
-            [(cid, opts) for cid in cell_ids],
+            [(cid, opts) for cid in cluster_cell_ids],
             args.workers,
             "Phase 1: Cluster notebooks",
         )
     else:
         cluster_ok = list(cell_ids)
+
+    # Cells that skipped clustering are still eligible for LFP/ridge phases
+    if not skip_clustering:
+        cluster_ok = list(cluster_ok) + [cid for cid in cell_ids if cid in NO_CLUSTER_CELLS]
 
     # Phase 2: priority LFP notebooks
     if lfp_ids:
