@@ -3057,6 +3057,444 @@ def plot_temporal_transitions_highlights(df_transitions, cluster_pickle_dir,
 
 # ── LFP block analysis at transition times ───────────────────────────────────
 
+def plot_peri_trajectory_signed(
+    peri_results,
+    df_transitions,
+    lfp_keys=None,
+    lfp_labels=None,
+    wf_labels=None,
+    normalize=True,
+):
+    """
+    Grid of trajectory plots: rows = LFP features, cols = spike waveform features.
+
+    Each panel shows, for one (LFP feat × WF feat) pair, the pre→peri→post
+    trajectory aggregated across all cells that have that waveform transition.
+
+    Sign correction: pairs where the spike cluster went high→low are flipped so
+    that positive always means "LFP increased when spike cluster increased (low→high)".
+    Reference: pre = 0. Y-axis shows Δ from pre (sign-corrected).
+
+    Individual cell lines are drawn in light gray; the mean ± SEM is overlaid.
+    """
+    from scipy.stats import sem as _sem
+
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+    ORDER = ['pre', 'peri', 'post']
+
+    _DEFAULT_LFP = ['exponent', 'theta_auc', 'slow_gamma_auc',
+                    'high_gamma_auc', 'total_gamma_auc', 'mean_amp', 'std_amp']
+    _DEFAULT_LFP_LABELS = {
+        'exponent':        'Aperiodic exp.',
+        'theta_auc':       'θ AUC (4–15 Hz)',
+        'slow_gamma_auc':  'Slow γ (30–60)',
+        'high_gamma_auc':  'High γ (60–80)',
+        'total_gamma_auc': 'Total γ (30–80)',
+        'mean_amp':        'Mean amp (µV)',
+        'std_amp':         'Amp SD (µV)',
+    }
+    _DEFAULT_WF_LABELS = {
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+        'peak_amp':        'Peak Amp',
+        'peak_sharpness':  'Sharpness',
+        'peak_width':      'Peak Width',
+        'inflection_time': 'Infl. Time',
+        'ramp_amp':        'Ramp Amp',
+    }
+
+    if lfp_keys   is None: lfp_keys   = _DEFAULT_LFP
+    if lfp_labels is None: lfp_labels = _DEFAULT_LFP_LABELS
+    if wf_labels  is None: wf_labels  = _DEFAULT_WF_LABELS
+
+    # Direction map: (cell_id, wf_feat) → +1 (low→high) or -1 (high→low)
+    primary = (df_transitions
+               .sort_values('transition_index')
+               .drop_duplicates(subset=['cell_id', 'spike_feature'], keep='first'))
+    direction_map = {}
+    for _, row in primary.iterrows():
+        before = _ORD.get(str(row['cluster_before']).lower(), 1)
+        after  = _ORD.get(str(row['cluster_after']).lower(),  1)
+        direction_map[(row['cell_id'], row['spike_feature'])] = 1 if after >= before else -1
+
+    # Collect per (wf_feat, lfp_feat) a list of (pre, peri, post) Δ-from-pre tuples
+    # peri_val = sign * (peri_lfp - pre_lfp), post_val = sign * (post_lfp - pre_lfp)
+    from collections import defaultdict
+    data = defaultdict(list)   # key = (wf_feat, lfp_feat), val = list of (peri_Δ, post_Δ)
+
+    for (cid, wf_feat), blocks in peri_results.items():
+        block_map = {b['label']: b for b in blocks}
+        if 'pre' not in block_map:
+            continue
+        sign = direction_map.get((cid, wf_feat), 1)
+        pre_blk = block_map['pre']
+        for lk in lfp_keys:
+            pre_val = pre_blk.get(lk, np.nan)
+            if not np.isfinite(pre_val):
+                continue
+            peri_val = block_map['peri'].get(lk, np.nan) if 'peri' in block_map else np.nan
+            post_val = block_map['post'].get(lk, np.nan) if 'post' in block_map else np.nan
+            peri_d = sign * (peri_val - pre_val) if np.isfinite(peri_val) else np.nan
+            post_d = sign * (post_val - pre_val) if np.isfinite(post_val) else np.nan
+            data[(wf_feat, lk)].append((cid, peri_d, post_d))
+
+    # Per-LFP-feature normalisation: SD of post_d across all (cell, wf_feat) pairs
+    norm_sd = {}
+    for lk in lfp_keys:
+        all_post = [post_d for (_, lk2), rows in data.items()
+                    if lk2 == lk for _, _, post_d in rows if np.isfinite(post_d)]
+        norm_sd[lk] = float(np.std(all_post)) if len(all_post) > 1 else 1.0
+
+    wf_feats = sorted({wf for (wf, _) in data})
+    n_rows = len(lfp_keys)
+    n_cols = len(wf_feats)
+    if n_cols == 0:
+        print('No data to plot.')
+        return
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(max(3.0 * n_cols, 6), max(2.5 * n_rows, 5)),
+                             squeeze=False)
+
+    xs = [0, 1, 2]
+    x_labels = ['pre', 'peri', 'post']
+
+    for ri, lk in enumerate(lfp_keys):
+        sd = norm_sd[lk] if normalize else 1.0
+        for ci, wf in enumerate(wf_feats):
+            ax = axes[ri][ci]
+            rows = data.get((wf, lk), [])
+
+            # Individual cell traces (gray)
+            peri_ds = np.array([r[1] for r in rows])
+            post_ds = np.array([r[2] for r in rows])
+            for peri_d, post_d in zip(peri_ds, post_ds):
+                ys = [0, peri_d / sd if np.isfinite(peri_d) else np.nan,
+                         post_d / sd if np.isfinite(post_d) else np.nan]
+                ax.plot(xs, ys, color='gray', lw=0.7, alpha=0.35, zorder=1)
+                ax.scatter(xs, ys, color='gray', s=8, alpha=0.35, zorder=2)
+
+            # Mean ± SEM overlay
+            mean_peri = np.nanmean(peri_ds / sd) if len(peri_ds) else np.nan
+            mean_post = np.nanmean(post_ds / sd) if len(post_ds) else np.nan
+            sem_peri  = _sem(peri_ds[np.isfinite(peri_ds)] / sd) if np.any(np.isfinite(peri_ds)) else 0
+            sem_post  = _sem(post_ds[np.isfinite(post_ds)] / sd) if np.any(np.isfinite(post_ds)) else 0
+            mean_ys   = [0, mean_peri, mean_post]
+            sem_ys    = [0, sem_peri,  sem_post]
+            ax.plot(xs, mean_ys, color='black', lw=2.0, zorder=4)
+            ax.scatter(xs, mean_ys, color='black', s=30, zorder=5)
+            ax.errorbar(xs, mean_ys, yerr=sem_ys, fmt='none',
+                        color='black', capsize=3, lw=1.5, zorder=4)
+
+            ax.axhline(0, color='gray', lw=0.8, ls='--', alpha=0.6)
+
+            # Labels
+            n = sum(np.isfinite(post_ds))
+            if ri == 0:
+                ax.set_title(wf_labels.get(wf, wf) + f'\n(n={n})', fontsize=8, fontweight='bold')
+            if ci == 0:
+                ax.set_ylabel(lfp_labels.get(lk, lk) + ('\n(norm. Δ)' if normalize else '\n(Δ)'),
+                              fontsize=7)
+            ax.set_xticks(xs)
+            ax.set_xticklabels(x_labels if ri == n_rows - 1 else [''] * 3, fontsize=7)
+            sns.despine(ax=ax)
+
+    fig.suptitle(
+        'LFP trajectory: pre → peri → post transition\n'
+        '(sign-corrected: positive = LFP ↑ when spike cluster low→high)',
+        fontsize=10, fontweight='bold', y=1.01,
+    )
+    plt.tight_layout()
+    plt.show()
+
+
+def analyze_lfp_around_transitions(
+    df_transitions,
+    lfp_npy_dir,
+    peri_s=60.0,
+    flank_s=120.0,
+    min_block_s=30.0,
+    fs=2500,
+    freq_range=(1, 90),
+    save_path=None,
+    force=False,
+):
+    """
+    For each (cell, feature) pair in df_transitions, extract three non-overlapping
+    LFP windows around the first detected transition time t₀:
+
+        pre   : [t₀ - flank_s - peri_s/2,  t₀ - peri_s/2]
+        peri  : [t₀ - peri_s/2,             t₀ + peri_s/2]   (centred on t₀)
+        post  : [t₀ + peri_s/2,             t₀ + peri_s/2 + flank_s]
+
+    Windows are clamped to recording boundaries.  Blocks shorter than
+    ``min_block_s`` seconds are skipped.  Spectral features are identical to
+    those computed by ``analyze_lfp_at_transitions``.
+
+    Parameters
+    ----------
+    peri_s : float
+        Duration (s) of the centred "during" window.
+    flank_s : float
+        Duration (s) of each flanking (pre / post) window.
+    min_block_s : float
+        Minimum block duration in seconds; shorter blocks are skipped.
+
+    Returns
+    -------
+    dict mapping (cell_id, spike_feature) → list of block-result dicts,
+    each with keys: block, label, t_start_ms, t_end_ms, n_samples,
+    mean_amp, std_amp, freqs, psd, freqs_fit, full_log, ape_log,
+    exponent, offset, theta_auc, slow_gamma_auc, high_gamma_auc, total_gamma_auc.
+    """
+    import os
+    import pickle
+    from scipy.signal import welch
+    from specparam import SpectralModel
+    try:
+        from specparam.utils import interpolate_spectrum
+    except ImportError:
+        from fooof.utils import interpolate_spectrum
+
+    if save_path and not force and os.path.exists(save_path):
+        with open(save_path, 'rb') as _f:
+            cached = pickle.load(_f)
+        print(f'Loaded cached peri-transition LFP results from {save_path}  '
+              f'(pass force=True to recompute)')
+        return cached
+
+    BLOCK_COLORS  = {'pre': '#0072B2', 'peri': '#009E73', 'post': '#D55E00'}
+    half_peri     = peri_s / 2.0
+    min_samps     = int(min_block_s * fs)
+    results       = {}
+
+    def _fit_block(block, b_idx, label, i0, i1):
+        mean_amp = float(np.mean(block))
+        std_amp  = float(np.std(block))
+        nperseg  = min(len(block), int(fs * 4.0))
+        freqs_w, psd_w = welch(block, fs=fs, nperseg=nperseg,
+                               noverlap=nperseg // 2, scaling='density')
+        fmask     = (freqs_w >= freq_range[0]) & (freqs_w <= freq_range[1])
+        freqs_out = freqs_w[fmask]
+        psd_out   = psd_w[fmask]
+
+        sm = SpectralModel(
+            aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+            max_n_peaks=4, min_peak_height=0.0,
+            peak_threshold=1.5, verbose=False,
+        )
+        try:
+            freqs_sm, psd_sm = interpolate_spectrum(freqs_out, psd_out, [58, 62])
+            sm.fit(freqs_sm, psd_sm, freq_range=freq_range)
+            exponent = float(sm.get_params('aperiodic_params', 'exponent'))
+            offset   = float(sm.get_params('aperiodic_params', 'offset'))
+            full_log = np.asarray(sm.get_model(component='full',      space='log'))
+            ape_log  = np.asarray(sm.get_model(component='aperiodic', space='log'))
+            freqs_fit = np.asarray(sm.freqs)
+
+            def _band_auc(fl, al, ff, flo, fhi):
+                m = (ff >= flo) & (ff <= fhi)
+                d = np.where(np.isfinite(fl[m] - al[m]), fl[m] - al[m], 0.0)
+                return float(np.trapz(np.clip(d, 0, None), ff[m]))
+
+            theta_auc       = _band_auc(full_log, ape_log, freqs_fit,  4,  15)
+            slow_gamma_auc  = _band_auc(full_log, ape_log, freqs_fit, 30,  60)
+            high_gamma_auc  = _band_auc(full_log, ape_log, freqs_fit, 60,  80)
+            total_gamma_auc = _band_auc(full_log, ape_log, freqs_fit, 30,  80)
+            print(f'    [{label}] exp={exponent:.2f}  '
+                  f'θ={theta_auc:.4f}  sγ={slow_gamma_auc:.4f}  '
+                  f'hγ={high_gamma_auc:.4f}', flush=True)
+        except Exception as _e:
+            print(f'    [{label}] specparam warn: {_e}', flush=True)
+            exponent = offset = float('nan')
+            theta_auc = slow_gamma_auc = high_gamma_auc = total_gamma_auc = float('nan')
+            freqs_fit = full_log = ape_log = None
+
+        return {
+            'block':            b_idx,
+            'label':            label,
+            'color':            BLOCK_COLORS[label],
+            't_start_ms':       i0 / fs * 1000.0,
+            't_end_ms':         i1 / fs * 1000.0,
+            'n_samples':        i1 - i0,
+            'mean_amp':         mean_amp,
+            'std_amp':          std_amp,
+            'freqs':            freqs_out,
+            'psd':              psd_out,
+            'freqs_fit':        freqs_fit,
+            'full_log':         full_log,
+            'ape_log':          ape_log,
+            'exponent':         exponent,
+            'offset':           offset,
+            'theta_auc':        theta_auc,
+            'slow_gamma_auc':   slow_gamma_auc,
+            'high_gamma_auc':   high_gamma_auc,
+            'total_gamma_auc':  total_gamma_auc,
+        }
+
+    for cid, cell_grp in df_transitions.groupby('cell_id'):
+        npy_path = os.path.join(lfp_npy_dir, f'{cid}_lfp.npy')
+        if not os.path.exists(npy_path):
+            print(f'  skip {cid}: no LFP file at {npy_path}')
+            continue
+        lfp_raw  = np.load(npy_path).astype(float)
+        n_samps  = len(lfp_raw)
+
+        for feat, feat_grp in cell_grp.groupby('spike_feature'):
+            # Use only the first (primary) transition per (cell, feature)
+            t0_ms    = float(feat_grp.sort_values('transition_index')
+                             ['transition_time_ms'].iloc[0])
+            t0_samp  = int(round(t0_ms * fs / 1000.0))
+
+            windows = [
+                ('pre',  0,
+                 max(0, int(t0_samp - (flank_s + half_peri) * fs)),
+                 max(0, int(t0_samp - half_peri * fs))),
+                ('peri', 1,
+                 max(0, int(t0_samp - half_peri * fs)),
+                 min(n_samps, int(t0_samp + half_peri * fs))),
+                ('post', 2,
+                 min(n_samps, int(t0_samp + half_peri * fs)),
+                 min(n_samps, int(t0_samp + (half_peri + flank_s) * fs))),
+            ]
+
+            block_results = []
+            print(f'  {cid:6s}  {feat:25s}  t₀={t0_ms/1000:.1f}s', flush=True)
+            for label, b_idx, i0, i1 in windows:
+                if i1 - i0 < min_samps:
+                    print(f'    [{label}] skip — only {(i1-i0)/fs:.0f}s < {min_block_s:.0f}s min')
+                    continue
+                block = lfp_raw[i0:i1]
+                block_results.append(_fit_block(block, b_idx, label, i0, i1))
+
+            if block_results:
+                results[(cid, feat)] = block_results
+
+    if save_path:
+        with open(save_path, 'wb') as _f:
+            pickle.dump(results, _f)
+        print(f'Saved: {save_path}')
+
+    return results
+
+
+def plot_lfp_peri_transition_summary(
+    peri_results,
+    df_transitions,
+    lfp_keys=None,
+    lfp_labels=None,
+):
+    """
+    Paired scatter + box plots comparing pre / peri / post LFP features across
+    all (cell, feature) pairs.  One panel per LFP feature.
+
+    Points represent individual (cell × spike-feature) pairs; lines connect the
+    three windows for the same pair.  A Friedman test p-value is shown per panel.
+    """
+    from scipy.stats import friedmanchisquare
+
+    _DEFAULT_KEYS = [
+        'exponent', 'theta_auc', 'slow_gamma_auc', 'high_gamma_auc',
+        'total_gamma_auc', 'mean_amp', 'std_amp',
+    ]
+    _DEFAULT_LABELS = {
+        'exponent':        'Aperiodic exponent',
+        'theta_auc':       'Theta AUC (4–15 Hz)',
+        'slow_gamma_auc':  'Slow γ AUC (30–60 Hz)',
+        'high_gamma_auc':  'High γ AUC (60–80 Hz)',
+        'total_gamma_auc': 'Total γ AUC (30–80 Hz)',
+        'mean_amp':        'Mean amplitude (µV)',
+        'std_amp':         'Amplitude SD (µV)',
+    }
+
+    if lfp_keys   is None: lfp_keys   = _DEFAULT_KEYS
+    if lfp_labels is None: lfp_labels = _DEFAULT_LABELS
+
+    ORDER   = ['pre', 'peri', 'post']
+    COLORS  = {'pre': '#0072B2', 'peri': '#009E73', 'post': '#D55E00'}
+    PALETTE = [COLORS[l] for l in ORDER]
+
+    # Build long-form dataframe
+    rows = []
+    for (cid, feat), blocks in peri_results.items():
+        block_map = {b['label']: b for b in blocks}
+        for lbl in ORDER:
+            if lbl not in block_map:
+                continue
+            for k in lfp_keys:
+                rows.append({
+                    'cell_id':    cid,
+                    'wf_feat':    feat,
+                    'pair':       f'{cid}|{feat}',
+                    'window':     lbl,
+                    'lfp_feat':   k,
+                    'value':      block_map[lbl].get(k, np.nan),
+                })
+    df_long = pd.DataFrame(rows)
+
+    n_lk  = len(lfp_keys)
+    ncols = min(4, n_lk)
+    nrows = int(np.ceil(n_lk / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(ncols * 3.5, nrows * 3.5), squeeze=False)
+
+    for idx, lk in enumerate(lfp_keys):
+        ax  = axes[idx // ncols][idx % ncols]
+        sub = df_long[df_long['lfp_feat'] == lk]
+
+        # Paired lines
+        for pair, grp in sub.groupby('pair'):
+            grp_ord = grp.set_index('window').reindex(ORDER)['value']
+            xs = [ORDER.index(w) for w in grp_ord.index if not np.isnan(grp_ord[w])]
+            ys = [grp_ord[w] for w in grp_ord.index if not np.isnan(grp_ord[w])]
+            if len(xs) >= 2:
+                ax.plot(xs, ys, color='gray', lw=0.7, alpha=0.4, zorder=1)
+
+        # Scatter per window
+        for wi, lbl in enumerate(ORDER):
+            vals = sub[sub['window'] == lbl]['value'].dropna().values
+            ax.scatter([wi] * len(vals), vals, color=COLORS[lbl],
+                       s=25, zorder=3, alpha=0.8)
+
+        # Box
+        sub_pivot = sub.pivot_table(index='pair', columns='window', values='value')
+        data_for_box = [sub_pivot[l].dropna().values for l in ORDER if l in sub_pivot.columns]
+        bp = ax.boxplot(data_for_box, positions=range(len(data_for_box)),
+                        widths=0.4, patch_artist=True,
+                        medianprops=dict(color='black', lw=1.5),
+                        whiskerprops=dict(lw=0.8), capprops=dict(lw=0.8),
+                        flierprops=dict(marker='', lw=0))
+        for patch, lbl in zip(bp['boxes'], ORDER):
+            patch.set_facecolor('none')
+            patch.set_edgecolor(COLORS[lbl])
+            patch.set_linewidth(1.5)
+
+        # Friedman test
+        try:
+            complete = sub_pivot[ORDER].dropna()
+            if len(complete) >= 3:
+                stat, pval = friedmanchisquare(*[complete[l].values for l in ORDER])
+                pstr = f'p={pval:.3f}' if pval >= 0.001 else f'p<0.001'
+                ax.set_title(f'{lfp_labels.get(lk, lk)}\n{pstr}', fontsize=8)
+            else:
+                ax.set_title(lfp_labels.get(lk, lk), fontsize=8)
+        except Exception:
+            ax.set_title(lfp_labels.get(lk, lk), fontsize=8)
+
+        ax.set_xticks(range(len(ORDER)))
+        ax.set_xticklabels(ORDER, fontsize=9)
+        ax.set_ylabel('Value', fontsize=8)
+        sns.despine(ax=ax)
+
+    for idx in range(n_lk, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    fig.suptitle('LFP features: pre / peri / post transition', fontsize=11,
+                 fontweight='bold', y=1.01)
+    plt.tight_layout()
+    plt.show()
+
+
 def analyze_lfp_at_transitions(
     df_transitions,
     lfp_npy_dir,
@@ -3551,11 +3989,9 @@ def plot_lfp_block_comparison(
             ax_spike.plot(times_s, rm, color='black', lw=5.0, zorder=4)
             for t0 in t0s_s:
                 ax_spike.axvline(t0, color='crimson', lw=4.0, ls='--', zorder=5)
-            boundaries_s = [-np.inf] + t0s_s + [np.inf]
-            x_lo = float(times_s[0]); x_hi = float(times_s[-1])
-            for b_i, blk in enumerate(blocks):
-                lo = max(boundaries_s[b_i],  x_lo)
-                hi = min(boundaries_s[b_i+1], x_hi)
+            for blk in blocks:
+                lo = blk['t_start_ms'] / 1000.0
+                hi = blk['t_end_ms']   / 1000.0
                 ax_spike.axvspan(lo, hi, alpha=0.12, color=blk['color'], zorder=1)
             ax_spike.set_yticks([0, 1, 2])
             ax_spike.set_yticklabels(['low', 'mid', 'high'], fontsize=22)
