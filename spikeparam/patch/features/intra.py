@@ -162,7 +162,7 @@ def compute_decay_features(spike, fs, idx_exp_start, idx_exp_end):
     Returns
     -------
     exp_amp : float
-        Exponential amplitdue.
+        Exponential amplitude.
     exp_lambda : float
         Exponential decay.
     exp_const : float

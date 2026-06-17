@@ -104,7 +104,7 @@ def run_cluster_nb(args):
         pm.execute_notebook(
             str(nb), str(nb),
             parameters={"FORCE_CLUSTER": opts["force_cluster"]},
-            kernel_name="python3",
+            kernel_name="spikeparam",
             progress_bar=False,
             log_output=opts["workers"] == 1,
         )

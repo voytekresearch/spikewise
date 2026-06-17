@@ -20,7 +20,7 @@ class Spike:
     def __init__(self, window_length=(10., 10.), thresh_amp=-10., thresh_ms=1.0,
                  pre_peak_ms=(-4., -1.), pre_inflection_ms=1., smooth_frac=0.008,
                  poly_order=1, exp_shift_right=2.0, exp_duration=5.0, corr_thresh=None):
-        
+
         # Settings
         self.window_length = window_length
         self.thresh_amp = thresh_amp
@@ -204,9 +204,9 @@ class Spike:
             poly_order=self.poly_order,
             exp_shift_right=self.exp_shift_right,
             exp_duration=self.exp_duration,
-            corr_thresh=self.corr_thresh
+            corr_thresh=self.corr_thresh,
         )
-        
+
         # Set filtered attributes
         new_sp.fs = self.fs
         new_sp.times = self.times.copy() if self.times is not None else None
@@ -260,7 +260,7 @@ class Spike:
             poly_order=self.poly_order,
             exp_shift_right=self.exp_shift_right,
             exp_duration=self.exp_duration,
-            corr_thresh=self.corr_thresh
+            corr_thresh=self.corr_thresh,
         )
         new_sp.fs = self.fs
         return new_sp
@@ -784,6 +784,7 @@ class Spike:
             self.r_squared_ramp[ind] = np.nan
             self.fit_exp[ind] = np.nan
             self.r_squared_exp[ind] = np.nan
+
 
 
     def gen_df_features(self):

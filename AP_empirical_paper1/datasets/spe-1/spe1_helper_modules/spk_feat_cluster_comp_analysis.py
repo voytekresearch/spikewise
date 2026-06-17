@@ -966,47 +966,170 @@ def plot_metadata_effect_heatmap(df_res):
     plt.show()
 
 
-def plot_feature_distribution_r2(df_master, cluster_pickle_dir, spike_fit_dir,
-                                  r2_type='exp', min_cells=2, n_cols=12):
+def patch_r2_into_cluster_pickles(spike_fit_dir, cluster_pickle_dir, force=False):
     """
-    For each (cell × spike feature) pair with ≥2 clusters, show a KDE distribution
-    of the feature values — same layout as the population cluster histograms — but
-    each cluster's KDE is colored by the mean R² of spikes in that cluster (viridis).
+    One-time patch: reads c*_spike_fit.pkl files, extracts r_squared_exp and
+    r_squared_ramp (per-spike arrays aligned to df_features), and adds them as
+    columns to the corresponding c*_cluster_df.pkl files.
 
-    x-axis : spike feature value
-    y-axis : KDE density
-    color  : mean per-spike R² for each cluster on viridis (dark=low, yellow=high)
-    shared colorbar on the right
-
-    spk_id in the cluster pickle indexes into the spike-fit R² array; spikes
-    whose spk_id exceeds the fit array length are silently skipped.
+    Safe to re-run with force=False (skips cells that already have both columns).
+    Set force=True to overwrite existing R² columns.
     """
     import pickle
-    import matplotlib.cm as _cm
-    import matplotlib.colors as _mc
+
+    for pkl_f in sorted(glob.glob(os.path.join(spike_fit_dir, '*_spike_fit.pkl'))):
+        raw  = os.path.basename(pkl_f).replace('_spike_fit.pkl', '')
+        cid  = raw if raw.startswith('c') else f'c{raw}'
+        cl_path = os.path.join(cluster_pickle_dir, f'{cid}_cluster_df.pkl')
+        if not os.path.exists(cl_path):
+            print(f'  {cid}: no cluster pickle found, skipping')
+            continue
+
+        cl_df = pd.read_pickle(cl_path)
+        if not force and 'r_squared_exp' in cl_df.columns and 'r_squared_ramp' in cl_df.columns:
+            print(f'  {cid}: already patched, skipping')
+            continue
+
+        try:
+            with open(pkl_f, 'rb') as fh:
+                sp = pickle.load(fh)
+            r2_exp  = np.asarray(sp.r_squared_exp)
+            r2_ramp = np.asarray(sp.r_squared_ramp)
+        except Exception as e:
+            print(f'  {cid}: could not load spike fit — {e}')
+            continue
+
+        # spk_id indexes into the spike fit df_features (same length as R² arrays)
+        if 'spk_id' in cl_df.columns:
+            valid = cl_df['spk_id'].astype(int) < len(r2_exp)
+            cl_df['r_squared_exp']  = np.nan
+            cl_df['r_squared_ramp'] = np.nan
+            cl_df.loc[valid, 'r_squared_exp']  = r2_exp[cl_df.loc[valid, 'spk_id'].astype(int).values]
+            cl_df.loc[valid, 'r_squared_ramp'] = r2_ramp[cl_df.loc[valid, 'spk_id'].astype(int).values]
+        else:
+            # no spk_id — align by position if lengths match
+            if len(cl_df) == len(r2_exp):
+                cl_df['r_squared_exp']  = r2_exp
+                cl_df['r_squared_ramp'] = r2_ramp
+            else:
+                print(f'  {cid}: length mismatch (cluster={len(cl_df)}, fit={len(r2_exp)}), skipping')
+                continue
+
+        cl_df.to_pickle(cl_path)
+        print(f'  {cid}: patched  ({valid.sum() if "spk_id" in cl_df.columns else len(cl_df)} spikes)')
+
+    print('Done.')
+
+
+def plot_r2_overview(cluster_pickle_dir, r2_type='exp', n_cols=8):
+    """
+    One KDE panel per cell showing the per-spike R² distribution.
+    Reads r_squared_exp / r_squared_ramp directly from the cluster pickle columns.
+    Run patch_r2_into_cluster_pickles() first if those columns are missing.
+    """
     from scipy.stats import gaussian_kde as _kde
 
-    r2_attr  = 'r_squared_exp'  if r2_type == 'exp'  else 'r_squared_ramp'
+    r2_col   = 'r_squared_exp'  if r2_type == 'exp'  else 'r_squared_ramp'
+    r2_label = 'Exp decay R²'   if r2_type == 'exp'  else 'Ramp fit R²'
+
+    cell_r2 = {}
+    for pkl_f in sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl'))):
+        cid = os.path.basename(pkl_f).replace('_cluster_df.pkl', '')
+        try:
+            df  = pd.read_pickle(pkl_f)
+            if r2_col not in df.columns:
+                continue
+            vals = df[r2_col].dropna().values
+            if len(vals) >= 5:
+                cell_r2[cid] = vals
+        except Exception:
+            pass
+
+    if not cell_r2:
+        print(f'No cluster pickles with {r2_col} found in {cluster_pickle_dir}.')
+        print('Run patch_r2_into_cluster_pickles() first.')
+        return
+    print(f'{len(cell_r2)} cells found with {r2_col}')
+
+    cells   = sorted(cell_r2.keys(), key=lambda c: int(c.lstrip('c')))
+    ncols_f = min(n_cols, len(cells))
+    nrows_f = int(np.ceil(len(cells) / ncols_f))
+
+    fig, axes = plt.subplots(nrows_f, ncols_f,
+                             figsize=(ncols_f * 3.0, nrows_f * 2.8),
+                             squeeze=False)
+    all_axs = list(axes.flat)
+
+    for ax, cid in zip(all_axs, cells):
+        vals = cell_r2[cid]
+        try:
+            kde_fn = _kde(vals)
+            x_grid = np.linspace(max(0, vals.min() - 0.02),
+                                  min(1, vals.max() + 0.02), 300)
+            y_grid = kde_fn(x_grid)
+            ax.fill_between(x_grid, y_grid, alpha=0.4, color='steelblue')
+            ax.plot(x_grid, y_grid, color='steelblue', lw=1.8)
+        except Exception:
+            pass
+        ax.axvline(np.median(vals), color='#333', lw=1.5, ls='--', alpha=0.8)
+        ax.set_title(cid, fontsize=13, fontweight='bold', pad=5)
+        ax.set_xlabel(r2_label, fontsize=11)
+        ax.set_ylabel('Density', fontsize=11)
+        ax.set_xlim(0, 1)
+        ax.tick_params(labelsize=10)
+        sns.despine(ax=ax)
+
+    for ax in all_axs[len(cells):]:
+        ax.set_visible(False)
+
+    fig.suptitle(f'Per-cell {r2_label} distributions  (dashed = median)',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_feature_distribution_r2(df_master, cluster_pickle_dir,
+                                  r2_type='exp', min_cells=2, n_cols=8):
+    """
+    For each (cell × spike feature) pair with ≥2 clusters, show a strip plot:
+
+    x-axis : spike feature value
+    y-axis : cluster label (low / mid / high) with jitter
+    color  : per-spike R² on viridis — read from r_squared_exp / r_squared_ramp
+             columns in the cluster pickle (run patch_r2_into_cluster_pickles first).
+
+    Each dot is one spike.
+    """
+    import matplotlib.cm as _cm
+    import matplotlib.colors as _mc
+
+    r2_col   = 'r_squared_exp'  if r2_type == 'exp'  else 'r_squared_ramp'
     r2_label = 'Exp decay R²'   if r2_type == 'exp'  else 'Ramp fit R²'
     ORDINAL    = {'low': 0, 'mid': 1, 'high': 2}
     SKIP_FEATS = {'spk_times_ms', 'spk_times_idx'}
+    _Y_JITTER  = 0.18
+    _ALPHA     = 0.55
+    _S         = 6
+    _FS_TITLE  = 13
+    _FS_LABEL  = 12
+    _FS_TICK   = 10
 
     cmap = _cm.get_cmap('viridis')
     norm = _mc.Normalize(vmin=0, vmax=1)
 
-    # ── Load per-spike R² arrays keyed by cell ───────────────────────────
-    r2_arr_by_cell = {}
-    for _pkl_f in glob.glob(os.path.join(spike_fit_dir, 'c*_spike_fit.pkl')):
-        _cid = os.path.basename(_pkl_f).replace('_spike_fit.pkl', '')
+    # ── Cells that have R² in their cluster pickle ────────────────────────
+    cells_with_r2 = set()
+    for pkl_f in glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl')):
+        cid = os.path.basename(pkl_f).replace('_cluster_df.pkl', '')
         try:
-            with open(_pkl_f, 'rb') as _fh:
-                _spk = pickle.load(_fh)
-            r2_arr_by_cell[_cid] = np.asarray(getattr(_spk, r2_attr))
+            df = pd.read_pickle(pkl_f)
+            if r2_col in df.columns:
+                cells_with_r2.add(cid)
         except Exception:
             pass
 
-    if not r2_arr_by_cell:
-        print('No spike fit pickles found in', spike_fit_dir)
+    if not cells_with_r2:
+        print(f'No cluster pickles with {r2_col} found. Run patch_r2_into_cluster_pickles() first.')
         return
 
     # ── Build (cell, feature) pairs with ≥2 clusters ─────────────────────
@@ -1015,7 +1138,7 @@ def plot_feature_distribution_r2(df_master, cluster_pickle_dir, spike_fit_dir,
     pairs = (df_num[df_num['num_clusters'] >= 2][['cell_id', 'spike_feature']]
              .drop_duplicates())
     pairs = pairs[~pairs['spike_feature'].isin(SKIP_FEATS)]
-    pairs = pairs[pairs['cell_id'].isin(r2_arr_by_cell)]
+    pairs = pairs[pairs['cell_id'].isin(cells_with_r2)]
 
     # ── One figure per feature ────────────────────────────────────────────
     for feat in sorted(pairs['spike_feature'].unique()):
@@ -1028,18 +1151,20 @@ def plot_feature_distribution_r2(df_master, cluster_pickle_dir, spike_fit_dir,
 
         ncols_f = min(n_cols, len(cells))
         nrows_f = int(np.ceil(len(cells) / ncols_f))
+        panel_w = 3.2
+        panel_h = 2.8
 
-        fig = plt.figure(figsize=(ncols_f * 2.6 + 0.7, nrows_f * 2.6))
+        fig = plt.figure(figsize=(ncols_f * panel_w + 1.0, nrows_f * panel_h + 0.8))
         gs  = fig.add_gridspec(nrows_f, ncols_f + 1,
-                               width_ratios=[1] * ncols_f + [0.05],
-                               hspace=0.55, wspace=0.35)
+                               width_ratios=[1] * ncols_f + [0.04],
+                               hspace=0.7, wspace=0.4)
         axes    = np.array([[fig.add_subplot(gs[r, c])
                              for c in range(ncols_f)]
                             for r in range(nrows_f)])
         cbar_ax = fig.add_subplot(gs[:, ncols_f])
-        axs = axes.flat
+        all_axs = list(axes.flat)
 
-        for ax, cid in zip(axs, cells):
+        for ax, cid in zip(all_axs, cells):
             pkl_path = os.path.join(cluster_pickle_dir, f'{cid}_cluster_df.pkl')
             try:
                 cl_df = pd.read_pickle(pkl_path)
@@ -1048,64 +1173,47 @@ def plot_feature_distribution_r2(df_master, cluster_pickle_dir, spike_fit_dir,
                 continue
 
             col_name = f'{feat}_cluster'
-            if feat not in cl_df.columns or 'spk_id' not in cl_df.columns or col_name not in cl_df.columns:
+            if feat not in cl_df.columns or r2_col not in cl_df.columns or col_name not in cl_df.columns:
                 ax.set_visible(False)
                 continue
 
-            r2_arr = r2_arr_by_cell[cid]
-            n_fit  = len(r2_arr)
-
-            _sub = cl_df[[feat, 'spk_id', col_name]].dropna()
-            _sub = _sub[_sub['spk_id'].astype(int) < n_fit]
+            _sub = cl_df[[feat, r2_col, col_name]].dropna()
             _sub = _sub[_sub[col_name].astype(str).str.lower().isin(ORDINAL)]
             if _sub.empty:
                 ax.set_visible(False)
                 continue
 
             _sub = _sub.copy()
-            _sub['r2']    = r2_arr[_sub['spk_id'].astype(int).values]
+            _sub['r2']    = _sub[r2_col]
             _sub['clust'] = _sub[col_name].astype(str).str.lower()
+            _sub['y_ord'] = _sub['clust'].map(ORDINAL).astype(float)
 
-            any_plotted = False
-            for lbl in ['low', 'mid', 'high']:
-                grp = _sub[_sub['clust'] == lbl]
-                if len(grp) < 5:
-                    continue
-                feat_vals = grp[feat].values
-                mean_r2   = float(np.nanmean(grp['r2'].values))
-                fill_c    = cmap(norm(mean_r2))
-                try:
-                    kde_fn = _kde(feat_vals)
-                    x_grid = np.linspace(feat_vals.min(), feat_vals.max(), 300)
-                    y_grid = kde_fn(x_grid)
-                    ax.fill_between(x_grid, y_grid, alpha=0.55, color=fill_c)
-                    ax.plot(x_grid, y_grid, color=fill_c, lw=1.0)
-                    any_plotted = True
-                except Exception:
-                    pass
+            rng = np.random.default_rng(42)
+            _sub['y_jit'] = _sub['y_ord'] + rng.uniform(-_Y_JITTER, _Y_JITTER, len(_sub))
 
-            if not any_plotted:
-                ax.set_visible(False)
-                continue
+            colors = cmap(norm(_sub['r2'].values))
+            ax.scatter(_sub[feat].values, _sub['y_jit'].values,
+                       c=colors, s=_S, alpha=_ALPHA, linewidths=0, rasterized=True)
 
-            ax.set_title(cid, fontsize=8, fontweight='bold')
-            ax.set_xlabel(feat.replace('_', ' '), fontsize=7)
-            ax.set_ylabel('density', fontsize=6)
-            ax.tick_params(labelsize=6)
+            ax.set_yticks([0, 1, 2])
+            ax.set_yticklabels(['low', 'mid', 'high'], fontsize=_FS_TICK)
+            ax.set_xlabel(feat.replace('_', ' '), fontsize=_FS_LABEL)
+            ax.set_title(cid, fontsize=_FS_TITLE, fontweight='bold', pad=6)
+            ax.tick_params(axis='x', labelsize=_FS_TICK)
             sns.despine(ax=ax)
 
-        for ax in list(axs)[len(cells):]:
+        for ax in all_axs[len(cells):]:
             ax.set_visible(False)
 
         sm = _cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = fig.colorbar(sm, cax=cbar_ax)
-        cbar.set_label(r2_label, fontsize=9, fontweight='bold')
-        cbar.ax.tick_params(labelsize=7)
+        cbar.set_label(r2_label, fontsize=_FS_LABEL, fontweight='bold')
+        cbar.ax.tick_params(labelsize=_FS_TICK)
 
         fig.suptitle(
-            f'{feat.replace("_", " ")}  —  KDE per cluster, color = mean {r2_label} of that cluster',
-            fontsize=11, fontweight='bold'
+            f'{feat.replace("_", " ")}  —  per-spike {r2_label} (color)',
+            fontsize=14, fontweight='bold', y=1.01
         )
         plt.show()
 
