@@ -2432,10 +2432,18 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
             ignore_index=True,
         )
 
+        # Downsample for strip only — boxplot keeps full distribution
+        _N_STRIP = 2000
+        rng_strip = np.random.default_rng(0)
+        strip_df = pd.concat([
+            grp.sample(min(len(grp), _N_STRIP), random_state=int(rng_strip.integers(1e6)))
+            for _, grp in plot_df.groupby("group", sort=False)
+        ], ignore_index=True)
+
         sns.boxplot(data=plot_df, x="group", y="value", order=GROUP_ORDER,
                     palette=PALETTE, showfliers=False, width=0.55,
                     linewidth=2.5, ax=ax)
-        sns.stripplot(data=plot_df, x="group", y="value", order=GROUP_ORDER,
+        sns.stripplot(data=strip_df, x="group", y="value", order=GROUP_ORDER,
                       palette=PALETTE, size=4, alpha=0.45, jitter=True, ax=ax)
 
         ax.axvline(1.5, color="#888888", lw=2.0, ls="--", alpha=0.7)
