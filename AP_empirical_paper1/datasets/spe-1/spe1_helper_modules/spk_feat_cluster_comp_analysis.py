@@ -2390,13 +2390,12 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
     in_fn   = lambda ci, cj: ct_map.get(ci) == "IN"    and ct_map.get(cj) == "IN"
     jux_fn  = lambda ci, cj: _method(pt_map.get(ci)) == "Juxta" and _method(pt_map.get(cj)) == "Juxta"
     wc_fn   = lambda ci, cj: _method(pt_map.get(ci)) == "WC"    and _method(pt_map.get(cj)) == "WC"
-    ic_fn   = lambda ci, cj: cur_map.get(ci) == "IC"   and cur_map.get(cj) == "IC"
-    vc_fn   = lambda ci, cj: cur_map.get(ci) == "VC"   and cur_map.get(cj) == "VC"
 
     wc_nrmse = _group_vals(wc_fn, 0)
     wc_entry = [("Between\nWC–WC", wc_fn, "#0072B2")] if len(wc_nrmse) >= 3 else []
 
-    # (label, mask_fn_or_None, color)  — None = within-cell special case
+    # IC-IC and VC-VC omitted: current_type mixes Juxta and WC recording modalities,
+    # making cross-modality pairs (Juxta-IC vs WC-IC) incomparable and inflating distances.
     group_defs = [
         ("Within\n(all)",        None,    "#555555"),
         ("Between\n(all)",       all_fn,  "#AAAAAA"),
@@ -2404,8 +2403,6 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
         ("Between\nIN–IN",       in_fn,   "#00CCCC"),
         ("Between\nJuxta–Juxta", jux_fn,  "#E69F00"),
         *wc_entry,
-        ("Between\nIC–IC",       ic_fn,   "#009E73"),
-        ("Between\nVC–VC",       vc_fn,   "#D55E00"),
     ]
 
     GROUP_ORDER = [g[0] for g in group_defs]
@@ -2432,19 +2429,14 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
             ignore_index=True,
         )
 
-        # Downsample for strip only — boxplot keeps full distribution
-        _N_STRIP = 2000
-        rng_strip = np.random.default_rng(0)
-        strip_df = pd.concat([
-            grp.sample(min(len(grp), _N_STRIP), random_state=int(rng_strip.integers(1e6)))
-            for _, grp in plot_df.groupby("group", sort=False)
-        ], ignore_index=True)
-
         sns.boxplot(data=plot_df, x="group", y="value", order=GROUP_ORDER,
                     palette=PALETTE, showfliers=False, width=0.55,
                     linewidth=2.5, ax=ax)
-        sns.stripplot(data=strip_df, x="group", y="value", order=GROUP_ORDER,
-                      palette=PALETTE, size=4, alpha=0.45, jitter=True, ax=ax)
+        sns.stripplot(data=plot_df, x="group", y="value", order=GROUP_ORDER,
+                      palette=PALETTE, size=2, alpha=0.15, jitter=True, ax=ax)
+
+        if metric_label == "nRMSE":
+            ax.set_ylim(bottom=0, top=1.5)
 
         ax.axvline(1.5, color="#888888", lw=2.0, ls="--", alpha=0.7)
         ax.set_xlabel("")
@@ -2466,6 +2458,111 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
                       f"median={np.median(vals):.3f}  "
                       f"IQR=[{np.percentile(vals,25):.3f}, {np.percentile(vals,75):.3f}]  "
                       f"n={len(vals)}")
+
+
+def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None):
+    """
+    For each spike waveform feature:
+      within  = |spike - own_cell_mean|   (one value per spike, ~167k)
+      between = |spike - other_cell_mean| (spike of cell i vs mean of every j≠i, ~7M)
+    Boxplot uses full data; stripplot downsampled to 2000/group for readability.
+    """
+    import pickle
+    from pathlib import Path
+
+    WAVEFORM_FEATS = ['peak_amp', 'peak_sharpness', 'peak_width',
+                      'exp_lambda', 'inflection_amp', 'inflection_time']
+    if features is None:
+        features = WAVEFORM_FEATS
+
+    pkl_paths = sorted(Path(cluster_pickle_dir).glob("c*_cluster_df.pkl"),
+                       key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    cell_data = {}
+    for p in pkl_paths:
+        cid = p.stem.split("_")[0]
+        try:
+            df = pickle.load(open(p, "rb"))
+            cell_data[cid] = {
+                feat: df[feat].dropna().values
+                for feat in features if feat in df.columns
+            }
+        except Exception:
+            continue
+
+    cell_ids = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
+
+    # Pre-compute per-cell means for between
+    cell_means_by_feat = {feat: {} for feat in features}
+    for cid in cell_ids:
+        for feat in features:
+            arr = cell_data[cid].get(feat)
+            if arr is not None and len(arr) >= 10:
+                cell_means_by_feat[feat][cid] = float(np.mean(arr))
+
+    fig, axes = plt.subplots(1, len(features), figsize=(3.5 * len(features), 5), sharey=False)
+    if len(features) == 1:
+        axes = [axes]
+
+    rng = np.random.default_rng(0)
+    _N_STRIP = 2000
+
+    for ax, feat in zip(axes, features):
+        means_map = cell_means_by_feat[feat]
+        valid_ids = [c for c in cell_ids if c in means_map]
+        if not valid_ids:
+            ax.set_visible(False)
+            continue
+
+        within_parts, between_parts = [], []
+        for cid in valid_ids:
+            arr = cell_data[cid].get(feat)
+            if arr is None or len(arr) < 10:
+                continue
+            m_self = means_map[cid]
+            within_parts.append(np.abs(arr - m_self))
+            for other in valid_ids:
+                if other == cid:
+                    continue
+                between_parts.append(np.abs(arr - means_map[other]))
+
+        within  = np.concatenate(within_parts)
+        between = np.concatenate(between_parts)
+
+        full_df = pd.concat([
+            pd.DataFrame({"group": "Within",  "value": within}),
+            pd.DataFrame({"group": "Between", "value": between}),
+        ], ignore_index=True)
+
+        strip_df = pd.concat([
+            pd.DataFrame({"group": "Within",  "value": rng.choice(within,  size=min(len(within),  _N_STRIP), replace=False)}),
+            pd.DataFrame({"group": "Between", "value": rng.choice(between, size=min(len(between), _N_STRIP), replace=False)}),
+        ], ignore_index=True)
+
+        PALETTE = {"Within": "#555555", "Between": "#AAAAAA"}
+        ORDER   = ["Within", "Between"]
+
+        sns.boxplot(data=full_df, x="group", y="value", order=ORDER,
+                    palette=PALETTE, showfliers=False, width=0.55,
+                    linewidth=2.0, ax=ax)
+        sns.stripplot(data=strip_df, x="group", y="value", order=ORDER,
+                      palette=PALETTE, size=3, alpha=0.45, jitter=True, ax=ax)
+
+        ax.set_title(feat, fontsize=12, fontweight="bold")
+        ax.set_xlabel("")
+        ax.tick_params(axis="both", labelsize=9)
+        sns.despine(ax=ax)
+
+        for grp, vals in [("Within", within), ("Between", between)]:
+            print(f"  {feat:20s} {grp:8s}: "
+                  f"median={np.median(vals):.4g}  "
+                  f"IQR=[{np.percentile(vals,25):.4g}, {np.percentile(vals,75):.4g}]  "
+                  f"n={len(vals):,}")
+
+    fig.suptitle("Spike feature: within-cell vs between-cell distances",
+                 fontsize=15, fontweight="bold")
+    plt.tight_layout()
+    plt.show()
 
 
 # ── Temporal transition detection ─────────────────────────────────────────────
