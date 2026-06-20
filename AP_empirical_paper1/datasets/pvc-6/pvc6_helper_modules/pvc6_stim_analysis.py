@@ -330,15 +330,36 @@ def f_test_r2(r2_small, r2_big, p_small, p_big, n):
 _DROP_COLS = ['stim_exp', 'stim_mean', 'stim_std', 'log_isi']
 
 
-def prepare_window_df(df_pink_filtered, df_pink_raw_filtered, f, fs, one_ms, window_ms):
+def prepare_window_df(df_pink_filtered, df_pink_raw_filtered, f, fs, one_ms, window_ms,
+                      pickle_dir=None, force_recompute=False):
     """Return a copy of df_pink_filtered with stim features recomputed for window_ms.
 
     For the 5 ms default window, returns df_pink_filtered unchanged.
-    Rows with NaN stim_mean are dropped before returning.
+    Results are cached per window_ms in pickle_dir to avoid recomputing on repeat calls.
     """
     if window_ms == 5:
         return df_pink_filtered.copy()
-    stim_extra = recompute_stim_features(f, fs, df_pink_raw_filtered, one_ms, window_ms=window_ms)
+
+    import pickle as _pkl
+    from pathlib import Path as _Path
+
+    _cache = None
+    if pickle_dir is not None:
+        _cache_path = _Path(pickle_dir) / f'_stim_extra_{window_ms}ms.pkl'
+        if not force_recompute and _cache_path.exists():
+            print(f"  Loading stim features ({window_ms}ms) from cache...")
+            with open(_cache_path, 'rb') as _fh:
+                stim_extra = _pkl.load(_fh)
+        else:
+            print(f"  Computing stim features ({window_ms}ms)...")
+            stim_extra = recompute_stim_features(f, fs, df_pink_raw_filtered, one_ms, window_ms=window_ms)
+            with open(_cache_path, 'wb') as _fh:
+                _pkl.dump(stim_extra, _fh)
+            print(f"  Cached → {_cache_path.name}")
+    else:
+        print(f"  Computing stim features ({window_ms}ms) — pass pickle_dir to cache...")
+        stim_extra = recompute_stim_features(f, fs, df_pink_raw_filtered, one_ms, window_ms=window_ms)
+
     df_w = df_pink_filtered.copy()
     df_w['stim_mean'] = stim_extra[f'stim_mean_{window_ms}ms']
     df_w['stim_std']  = stim_extra[f'stim_std_{window_ms}ms']

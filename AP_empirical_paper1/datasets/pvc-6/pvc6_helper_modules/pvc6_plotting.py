@@ -110,65 +110,101 @@ _STIM_FEATURES = ['stim_mean', 'stim_std', 'stim_exp']
 _SCATTER_COLORS = {'stim_mean': '#E07B54', 'stim_std': '#5B8DB8', 'stim_exp': '#72B26C'}
 
 
-def plot_top_correlations_by_window(df_w, window_ms, n_top=6):
-    """2×3 grid of the top-N spike-feature × stim-feature correlations for a given window.
+def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3):
+    """Grid of spike-feature × stim-feature correlations for a given window.
 
-    Pairs are ranked by |Pearson r|. Style is bold/cartoony with minimal tick clutter.
+    top=False (default): all combinations, compact style.
+                         Rows = stim features, cols = spike features sorted by |r|.
+    top=True:            top_n (default 3) spike features per stim feature, cartoon style
+                         suitable for figures. 3 rows × top_n cols.
     """
-    pairs = []
-    for sf in _SPIKE_FEATURES:
-        for stf in _STIM_FEATURES:
+    from scipy.stats import pearsonr as _pearsonr
+
+    # Collect all valid pairs grouped by stim feature
+    stf_groups = {}
+    for stf in _STIM_FEATURES:
+        group = []
+        for sf in _SPIKE_FEATURES:
             if sf not in df_w.columns or stf not in df_w.columns:
                 continue
             valid = df_w[[sf, stf]].dropna()
             if len(valid) < 10:
                 continue
-            r, p = pearsonr(valid[sf], valid[stf])
-            pairs.append((abs(r), r, p, sf, stf, valid))
+            r, p = _pearsonr(valid[sf], valid[stf])
+            group.append((abs(r), r, p, sf, valid))
+        group.sort(key=lambda x: x[0], reverse=True)
+        if group:
+            stf_groups[stf] = group
 
-    pairs.sort(key=lambda x: x[0], reverse=True)
-    top = pairs[:n_top]
+    if not stf_groups:
+        print("No valid pairs found.")
+        return
 
-    ncols = 3
-    nrows = int(np.ceil(n_top / ncols))
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(11 * ncols, 9 * nrows),
-                             constrained_layout=True)
-    axes = np.array(axes).flatten()
-
-    for ax, (abs_r, r, p, sf, stf, valid) in zip(axes, top):
+    def _draw_ax(ax, abs_r, r, p, sf, stf, valid, cartoon):
         color = _FEATURE_COLOR_MAP.get(sf, '#888')
-        ax.scatter(valid[sf], valid[stf],
-                   s=100, alpha=0.65, color=color, linewidths=0)
+        s, alpha = (100, 0.65) if cartoon else (60, 0.55)
+        ax.scatter(valid[sf], valid[stf], s=s, alpha=alpha, color=color, linewidths=0)
 
-        # regression line
         m, b = np.polyfit(valid[sf], valid[stf], 1)
         xs = np.linspace(valid[sf].min(), valid[sf].max(), 200)
-        ax.plot(xs, m * xs + b, color='#1a1a1a', lw=4, zorder=3)
+        lw = 4 if cartoon else 3
+        ax.plot(xs, m * xs + b, color='#1a1a1a', lw=lw, zorder=3)
 
-        # r / p annotation — bottom-right, no title needed
         p_str = 'p<0.001' if p < 0.001 else f'p={p:.3f}'
+        fs_ann, fs_lab, fs_tick = (28, 34, 28) if cartoon else (18, 20, 16)
         ax.text(0.96, 0.05, f'r = {r:.2f}\n{p_str}',
                 transform=ax.transAxes, ha='right', va='bottom',
-                fontsize=28, fontweight='bold', color='#1a1a1a')
-
-        ax.set_xlabel(sf.replace('_', ' '), fontsize=34, fontweight='bold')
-        ax.set_ylabel(f'{window_ms} ms {stf.replace("_", " ")}', fontsize=34, fontweight='bold')
-
-        ax.tick_params(axis='both', labelsize=28, width=2.5)
+                fontsize=fs_ann, fontweight='bold', color='#1a1a1a')
+        ax.set_xlabel(sf.replace('_', ' '), fontsize=fs_lab, fontweight='bold')
+        ax.set_ylabel(f'{window_ms}ms {stf.replace("_", " ")}', fontsize=fs_lab, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=fs_tick, width=2.5 if cartoon else 2)
         for label in ax.get_xticklabels() + ax.get_yticklabels():
             label.set_fontweight('bold')
+        lw_spine = 2.5 if cartoon else 2
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_linewidth(2.5)
-        ax.spines['bottom'].set_linewidth(2.5)
-
-        # 3 ticks per axis — no clutter
+        ax.spines['left'].set_linewidth(lw_spine)
+        ax.spines['bottom'].set_linewidth(lw_spine)
         ax.locator_params(nbins=3)
 
-    # hide unused axes
-    for ax in axes[len(top):]:
-        ax.set_visible(False)
+    if top:
+        ncols = top_n
+        nrows = len([stf for stf in _STIM_FEATURES if stf in stf_groups])
+        cell_w, cell_h = 11, 9
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(cell_w * ncols, cell_h * nrows),
+                                 constrained_layout=True)
+        axes = np.array(axes).reshape(nrows, ncols)
+        row_idx = 0
+        for stf in _STIM_FEATURES:
+            if stf not in stf_groups:
+                continue
+            for col_idx, (abs_r, r, p, sf, valid) in enumerate(stf_groups[stf][:top_n]):
+                _draw_ax(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid, cartoon=True)
+            for col_idx in range(len(stf_groups[stf][:top_n]), ncols):
+                axes[row_idx, col_idx].set_visible(False)
+            row_idx += 1
+        fig.suptitle(f'Top {top_n} spike × stim correlations — {window_ms} ms window',
+                     fontsize=30, fontweight='bold')
+    else:
+        nrows = len([stf for stf in _STIM_FEATURES if stf in stf_groups])
+        ncols = max(len(g) for g in stf_groups.values())
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(7 * ncols, 7 * nrows),
+                                 constrained_layout=True)
+        axes = np.array(axes).reshape(nrows, ncols)
+        row_idx = 0
+        for stf in _STIM_FEATURES:
+            if stf not in stf_groups:
+                continue
+            group = stf_groups[stf]
+            for col_idx, (abs_r, r, p, sf, valid) in enumerate(group):
+                _draw_ax(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid, cartoon=False)
+            for col_idx in range(len(group), ncols):
+                axes[row_idx, col_idx].set_visible(False)
+            row_idx += 1
+        fig.suptitle(f'All spike × stim correlations — {window_ms} ms window',
+                     fontsize=24, fontweight='bold')
 
     plt.show()
 
