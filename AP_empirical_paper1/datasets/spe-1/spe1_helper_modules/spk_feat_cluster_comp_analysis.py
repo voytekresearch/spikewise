@@ -2492,6 +2492,9 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
     def _cache_path(feat):
         return _cache_dir / f"_feat_wb_{_mode}_{feat}.npz"
 
+    _all_cached = all(_cache_path(f).exists() for f in (features or []))
+    print(f"[spike_feature_wb] mode={_mode}  cache={'HIT — loading' if _all_cached and not force_recompute else 'MISS — computing (will cache after)'}")
+
     rng      = np.random.default_rng(0)
     _N_STRIP = 2000
 
@@ -2533,20 +2536,33 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
     # Sanitised key for npz (no special chars)
     _npz_key = lambda name: name.replace("\n", "_").replace("–", "-").replace(" ", "_")
 
-    # ── Per-feature: load from cache or compute ───────────────────────────────
-    def _get_group_arrays(feat):
+    # ── Per-feature: load plot-ready stats from cache or compute ─────────────
+    # Cache stores only: boxplot stats (5 numbers) + 2000-pt strip sample per group.
+    # Files are ~50 KB each — loads in milliseconds.
+    def _box_stats(vals):
+        q1, med, q3 = np.percentile(vals, [25, 50, 75])
+        iqr = q3 - q1
+        whislo = float(vals[vals >= q1 - 1.5 * iqr].min()) if len(vals) else 0.0
+        whishi = float(vals[vals <= q3 + 1.5 * iqr].max()) if len(vals) else 0.0
+        return np.array([q1, med, q3, whislo, whishi])
+
+    def _get_plot_data(feat):
         cp = _cache_path(feat)
-        required_keys = [_npz_key(g[0]) for g in GROUP_DEFS]
+        stat_keys  = [_npz_key(g[0]) + "_stats"  for g in GROUP_DEFS]
+        strip_keys = [_npz_key(g[0]) + "_strip"  for g in GROUP_DEFS]
+        clip_key   = "clip_top"
+        required   = stat_keys + strip_keys + [clip_key]
 
         if not force_recompute and cp.exists():
             npz = np.load(cp, allow_pickle=False)
-            if all(k in npz for k in required_keys):
+            if all(k in npz for k in required):
                 print(f"  {feat}: loaded from cache")
-                return {g[0]: npz[_npz_key(g[0])] for g in GROUP_DEFS}
+                stats  = {g[0]: npz[_npz_key(g[0]) + "_stats"]  for g in GROUP_DEFS}
+                strips = {g[0]: npz[_npz_key(g[0]) + "_strip"]  for g in GROUP_DEFS}
+                return stats, strips, float(npz[clip_key])
 
         # Load cell data for this feature only
-        cell_data_feat = {}
-        cell_means_feat = {}
+        cell_data_feat, cell_means_feat = {}, {}
         for p in pkl_paths:
             cid = p.stem.split("_")[0]
             try:
@@ -2562,7 +2578,6 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
 
         valid_ids = sorted(cell_data_feat.keys(), key=lambda c: int(c.lstrip("c")))
 
-        # Build pair arrays grouped on the fly (avoids storing all pairs)
         group_parts = {g[0]: [] for g in GROUP_DEFS}
         for ci in valid_ids:
             arr_i = cell_data_feat[ci]
@@ -2574,38 +2589,61 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
                     if fn(ci, cj):
                         group_parts[name].append(vals)
 
-        group_arrays = {
-            name: np.concatenate(parts) if parts else np.array([])
-            for name, parts in group_parts.items()
-        }
+        all_vals_list = []
+        stats, strips = {}, {}
+        for name, parts in group_parts.items():
+            if parts:
+                v = np.concatenate(parts)
+                stats[name]  = _box_stats(v)
+                strips[name] = rng.choice(v, size=min(len(v), _N_STRIP), replace=False)
+                all_vals_list.append(v)
+                print(f"  {feat:20s} {name.replace(chr(10),' '):22s}: "
+                      f"median={np.median(v):.4g}  "
+                      f"IQR=[{np.percentile(v,25):.4g}, {np.percentile(v,75):.4g}]  "
+                      f"n={len(v):,}")
+            else:
+                stats[name]  = np.zeros(5)
+                strips[name] = np.array([])
 
-        # Save as npz (group arrays only — much smaller than raw pairs)
-        np.savez_compressed(cp, **{_npz_key(k): v for k, v in group_arrays.items()})
-        print(f"  {feat}: computed and cached → {cp.name}")
-        return group_arrays
+        clip_top = float(np.percentile(np.concatenate(all_vals_list), 99)) if all_vals_list else 1.0
 
-    def _plot_one(ax, group_arrays, feat, title=None):
-        full_parts, strip_parts = [], []
-        all_vals_for_clip = []
+        save_dict = {_npz_key(k) + "_stats":  v for k, v in stats.items()}
+        save_dict.update({_npz_key(k) + "_strip": v for k, v in strips.items()})
+        save_dict[clip_key] = np.array([clip_top])
+        np.savez(cp, **save_dict)
+        print(f"  {feat}: cached → {cp.name}")
+        return stats, strips, clip_top
+
+    def _plot_one(ax, stats, strips, clip_top, feat, title=None):
+        # Boxplot from pre-computed stats using ax.bxp()
+        bxp_stats = []
         for name, _, _ in GROUP_DEFS:
-            vals = group_arrays[name]
-            full_parts.append(pd.DataFrame({"group": name, "value": vals}))
-            sample = rng.choice(vals, size=min(len(vals), _N_STRIP), replace=False) if len(vals) else np.array([])
-            strip_parts.append(pd.DataFrame({"group": name, "value": sample}))
-            if len(vals):
-                all_vals_for_clip.append(vals)
-        full_df  = pd.concat(full_parts,  ignore_index=True)
-        strip_df = pd.concat(strip_parts, ignore_index=True)
+            s = stats[name]
+            bxp_stats.append(dict(med=s[1], q1=s[0], q3=s[2],
+                                  whislo=s[3], whishi=s[4], fliers=[]))
+        bxp = ax.bxp(bxp_stats, showfliers=False, widths=0.55,
+                     patch_artist=True, medianprops=dict(color="white", lw=2))
+        for patch, (_, _, color) in zip(bxp["boxes"], GROUP_DEFS):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.85)
+        for element in ["whiskers", "caps"]:
+            for line, (_, _, color) in zip(
+                [bxp[element][i*2] for i in range(len(GROUP_DEFS))], GROUP_DEFS
+            ):
+                line.set_color(color)
 
-        sns.boxplot(data=full_df, x="group", y="value", order=GROUP_ORDER,
-                    palette=PALETTE, showfliers=False, width=0.55,
-                    linewidth=2.0, ax=ax)
-        sns.stripplot(data=strip_df, x="group", y="value", order=GROUP_ORDER,
-                      palette=PALETTE, size=3, alpha=0.45, jitter=True, ax=ax)
+        # Stripplot from stored samples
+        rng2 = np.random.default_rng(42)
+        for i, (name, _, color) in enumerate(GROUP_DEFS):
+            samp = strips[name]
+            if len(samp):
+                jitter = rng2.uniform(-0.2, 0.2, size=len(samp))
+                ax.scatter(i + jitter, samp, color=color, s=9, alpha=0.45,
+                           linewidths=0, zorder=2)
 
-        if all_vals_for_clip:
-            clip_top = np.percentile(np.concatenate(all_vals_for_clip), 99)
-            ax.set_ylim(bottom=0, top=clip_top * 1.05)
+        ax.set_xticks(range(len(GROUP_ORDER)))
+        ax.set_xticklabels(GROUP_ORDER, fontsize=9)
+        ax.set_ylim(bottom=0, top=clip_top * 1.05)
 
         if detailed:
             ax.axvline(1.5, color="#888888", lw=1.5, ls="--", alpha=0.7)
@@ -2617,25 +2655,17 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
         ax.tick_params(axis="both", labelsize=9)
         sns.despine(ax=ax)
 
-        for name, _, _ in GROUP_DEFS:
-            vals = group_arrays[name]
-            if len(vals):
-                print(f"  {feat:20s} {name.replace(chr(10),' '):22s}: "
-                      f"median={np.median(vals):.4g}  "
-                      f"IQR=[{np.percentile(vals,25):.4g}, {np.percentile(vals,75):.4g}]  "
-                      f"n={len(vals):,}")
-
     # ── Render ───────────────────────────────────────────────────────────────
     if detailed:
         for feat in features:
-            ga = _get_group_arrays(feat)
-            if not ga:
+            stats, strips, clip_top = _get_plot_data(feat)
+            if not stats:
                 continue
             fw = max(10, len(GROUP_DEFS) * 1.8)
             fig, ax = plt.subplots(figsize=(fw, 5))
             fig.suptitle(f"Spike feature within vs between — {feat}",
                          fontsize=16, fontweight="bold")
-            _plot_one(ax, ga, feat)
+            _plot_one(ax, stats, strips, clip_top, feat)
             plt.tight_layout()
             fig.subplots_adjust(bottom=0.28)
             plt.show()
@@ -2644,11 +2674,11 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
         if len(features) == 1:
             axes = [axes]
         for ax, feat in zip(axes, features):
-            ga = _get_group_arrays(feat)
-            if not ga:
+            stats, strips, clip_top = _get_plot_data(feat)
+            if not stats:
                 ax.set_visible(False)
                 continue
-            _plot_one(ax, ga, feat, title=feat)
+            _plot_one(ax, stats, strips, clip_top, feat, title=feat)
         fig.suptitle("Spike feature: within-cell vs between-cell distances",
                      fontsize=15, fontweight="bold")
         plt.tight_layout()
