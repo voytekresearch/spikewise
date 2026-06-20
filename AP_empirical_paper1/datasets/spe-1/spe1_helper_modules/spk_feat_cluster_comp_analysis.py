@@ -2460,12 +2460,20 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
                       f"n={len(vals)}")
 
 
-def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None):
+def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
+                                          detailed=False, df_master=None,
+                                          cache_dir=None, force_recompute=False):
     """
     For each spike waveform feature:
-      within  = |spike - own_cell_mean|   (one value per spike, ~167k)
-      between = |spike - other_cell_mean| (spike of cell i vs mean of every j≠i, ~7M)
-    Boxplot uses full data; stripplot downsampled to 2000/group for readability.
+      within  = |spike - own_cell_mean|
+      between = |spike - other_cell_mean| for every j≠i
+
+    detailed=False : one figure with all features as subplots, two groups (Within / Between).
+    detailed=True  : one figure per feature, groups broken out by cell type and patch type.
+                     Requires df_master.
+
+    Results are cached per-feature as .npz files (group arrays only, not raw pairs),
+    so subsequent runs load in seconds instead of minutes.
     """
     import pickle
     from pathlib import Path
@@ -2478,91 +2486,173 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None):
     pkl_paths = sorted(Path(cluster_pickle_dir).glob("c*_cluster_df.pkl"),
                        key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
 
-    cell_data = {}
-    for p in pkl_paths:
-        cid = p.stem.split("_")[0]
-        try:
-            df = pickle.load(open(p, "rb"))
-            cell_data[cid] = {
-                feat: df[feat].dropna().values
-                for feat in features if feat in df.columns
-            }
-        except Exception:
-            continue
+    _cache_dir = Path(cache_dir) if cache_dir else Path(cluster_pickle_dir)
+    _mode      = "detailed" if detailed else "simple"
 
-    cell_ids = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
+    def _cache_path(feat):
+        return _cache_dir / f"_feat_wb_{_mode}_{feat}.npz"
 
-    # Pre-compute per-cell means for between
-    cell_means_by_feat = {feat: {} for feat in features}
-    for cid in cell_ids:
-        for feat in features:
-            arr = cell_data[cid].get(feat)
-            if arr is not None and len(arr) >= 10:
-                cell_means_by_feat[feat][cid] = float(np.mean(arr))
-
-    fig, axes = plt.subplots(1, len(features), figsize=(3.5 * len(features), 5), sharey=False)
-    if len(features) == 1:
-        axes = [axes]
-
-    rng = np.random.default_rng(0)
+    rng      = np.random.default_rng(0)
     _N_STRIP = 2000
 
-    for ax, feat in zip(axes, features):
-        means_map = cell_means_by_feat[feat]
-        valid_ids = [c for c in cell_ids if c in means_map]
-        if not valid_ids:
-            ax.set_visible(False)
-            continue
+    # ── Metadata for detailed mode ───────────────────────────────────────────
+    cell_ids_all = sorted(
+        [p.stem.split("_")[0] for p in pkl_paths],
+        key=lambda c: int(c.lstrip("c"))
+    )
 
-        within_parts, between_parts = [], []
-        for cid in valid_ids:
-            arr = cell_data[cid].get(feat)
-            if arr is None or len(arr) < 10:
-                continue
-            m_self = means_map[cid]
-            within_parts.append(np.abs(arr - m_self))
-            for other in valid_ids:
-                if other == cid:
+    if detailed:
+        assert df_master is not None, "detailed=True requires df_master"
+        cell_meta = df_master[["cell_id","cell_type","patch_type"]].drop_duplicates("cell_id").set_index("cell_id")
+        ct_map = cell_meta["cell_type"].to_dict()
+        pt_map = cell_meta["patch_type"].to_dict()
+
+        def _method(pt):
+            return "WC" if isinstance(pt, str) and "WC" in pt else "Juxta"
+
+        has_wc = any(_method(pt_map.get(c)) == "WC" for c in cell_ids_all)
+        GROUP_DEFS = [
+            ("Within\n(all)",        lambda ci, cj: ci == cj,                                                                                "#555555"),
+            ("Between\n(all)",       lambda ci, cj: ci != cj,                                                                                "#AAAAAA"),
+            ("Between\nPC–PC",       lambda ci, cj: ci != cj and ct_map.get(ci) == "PC"    and ct_map.get(cj) == "PC",                       "#CC44CC"),
+            ("Between\nIN–IN",       lambda ci, cj: ci != cj and ct_map.get(ci) == "IN"    and ct_map.get(cj) == "IN",                       "#00CCCC"),
+            ("Between\nJuxta–Juxta", lambda ci, cj: ci != cj and _method(pt_map.get(ci)) == "Juxta" and _method(pt_map.get(cj)) == "Juxta", "#E69F00"),
+        ]
+        if has_wc:
+            GROUP_DEFS.append(
+                ("Between\nWC–WC", lambda ci, cj: ci != cj and _method(pt_map.get(ci)) == "WC" and _method(pt_map.get(cj)) == "WC", "#0072B2")
+            )
+    else:
+        GROUP_DEFS = [
+            ("Within",  lambda ci, cj: ci == cj, "#555555"),
+            ("Between", lambda ci, cj: ci != cj, "#AAAAAA"),
+        ]
+
+    GROUP_ORDER = [g[0] for g in GROUP_DEFS]
+    PALETTE     = {g[0]: g[2] for g in GROUP_DEFS}
+    # Sanitised key for npz (no special chars)
+    _npz_key = lambda name: name.replace("\n", "_").replace("–", "-").replace(" ", "_")
+
+    # ── Per-feature: load from cache or compute ───────────────────────────────
+    def _get_group_arrays(feat):
+        cp = _cache_path(feat)
+        required_keys = [_npz_key(g[0]) for g in GROUP_DEFS]
+
+        if not force_recompute and cp.exists():
+            npz = np.load(cp, allow_pickle=False)
+            if all(k in npz for k in required_keys):
+                print(f"  {feat}: loaded from cache")
+                return {g[0]: npz[_npz_key(g[0])] for g in GROUP_DEFS}
+
+        # Load cell data for this feature only
+        cell_data_feat = {}
+        cell_means_feat = {}
+        for p in pkl_paths:
+            cid = p.stem.split("_")[0]
+            try:
+                df = pickle.load(open(p, "rb"))
+                if feat not in df.columns:
                     continue
-                between_parts.append(np.abs(arr - means_map[other]))
+                arr = df[feat].dropna().values
+                if len(arr) >= 10:
+                    cell_data_feat[cid] = arr
+                    cell_means_feat[cid] = float(np.mean(arr))
+            except Exception:
+                continue
 
-        within  = np.concatenate(within_parts)
-        between = np.concatenate(between_parts)
+        valid_ids = sorted(cell_data_feat.keys(), key=lambda c: int(c.lstrip("c")))
 
-        full_df = pd.concat([
-            pd.DataFrame({"group": "Within",  "value": within}),
-            pd.DataFrame({"group": "Between", "value": between}),
-        ], ignore_index=True)
+        # Build pair arrays grouped on the fly (avoids storing all pairs)
+        group_parts = {g[0]: [] for g in GROUP_DEFS}
+        for ci in valid_ids:
+            arr_i = cell_data_feat[ci]
+            for cj in valid_ids:
+                if cj not in cell_means_feat:
+                    continue
+                vals = np.abs(arr_i - cell_means_feat[cj])
+                for name, fn, _ in GROUP_DEFS:
+                    if fn(ci, cj):
+                        group_parts[name].append(vals)
 
-        strip_df = pd.concat([
-            pd.DataFrame({"group": "Within",  "value": rng.choice(within,  size=min(len(within),  _N_STRIP), replace=False)}),
-            pd.DataFrame({"group": "Between", "value": rng.choice(between, size=min(len(between), _N_STRIP), replace=False)}),
-        ], ignore_index=True)
+        group_arrays = {
+            name: np.concatenate(parts) if parts else np.array([])
+            for name, parts in group_parts.items()
+        }
 
-        PALETTE = {"Within": "#555555", "Between": "#AAAAAA"}
-        ORDER   = ["Within", "Between"]
+        # Save as npz (group arrays only — much smaller than raw pairs)
+        np.savez_compressed(cp, **{_npz_key(k): v for k, v in group_arrays.items()})
+        print(f"  {feat}: computed and cached → {cp.name}")
+        return group_arrays
 
-        sns.boxplot(data=full_df, x="group", y="value", order=ORDER,
+    def _plot_one(ax, group_arrays, feat, title=None):
+        full_parts, strip_parts = [], []
+        all_vals_for_clip = []
+        for name, _, _ in GROUP_DEFS:
+            vals = group_arrays[name]
+            full_parts.append(pd.DataFrame({"group": name, "value": vals}))
+            sample = rng.choice(vals, size=min(len(vals), _N_STRIP), replace=False) if len(vals) else np.array([])
+            strip_parts.append(pd.DataFrame({"group": name, "value": sample}))
+            if len(vals):
+                all_vals_for_clip.append(vals)
+        full_df  = pd.concat(full_parts,  ignore_index=True)
+        strip_df = pd.concat(strip_parts, ignore_index=True)
+
+        sns.boxplot(data=full_df, x="group", y="value", order=GROUP_ORDER,
                     palette=PALETTE, showfliers=False, width=0.55,
                     linewidth=2.0, ax=ax)
-        sns.stripplot(data=strip_df, x="group", y="value", order=ORDER,
+        sns.stripplot(data=strip_df, x="group", y="value", order=GROUP_ORDER,
                       palette=PALETTE, size=3, alpha=0.45, jitter=True, ax=ax)
 
-        ax.set_title(feat, fontsize=12, fontweight="bold")
+        if all_vals_for_clip:
+            clip_top = np.percentile(np.concatenate(all_vals_for_clip), 99)
+            ax.set_ylim(bottom=0, top=clip_top * 1.05)
+
+        if detailed:
+            ax.axvline(1.5, color="#888888", lw=1.5, ls="--", alpha=0.7)
+            _add_group_category_labels(ax, GROUP_ORDER)
         ax.set_xlabel("")
+        ax.set_ylabel(feat if detailed else "absolute deviation", fontsize=11)
+        if title:
+            ax.set_title(title, fontsize=12, fontweight="bold")
         ax.tick_params(axis="both", labelsize=9)
         sns.despine(ax=ax)
 
-        for grp, vals in [("Within", within), ("Between", between)]:
-            print(f"  {feat:20s} {grp:8s}: "
-                  f"median={np.median(vals):.4g}  "
-                  f"IQR=[{np.percentile(vals,25):.4g}, {np.percentile(vals,75):.4g}]  "
-                  f"n={len(vals):,}")
+        for name, _, _ in GROUP_DEFS:
+            vals = group_arrays[name]
+            if len(vals):
+                print(f"  {feat:20s} {name.replace(chr(10),' '):22s}: "
+                      f"median={np.median(vals):.4g}  "
+                      f"IQR=[{np.percentile(vals,25):.4g}, {np.percentile(vals,75):.4g}]  "
+                      f"n={len(vals):,}")
 
-    fig.suptitle("Spike feature: within-cell vs between-cell distances",
-                 fontsize=15, fontweight="bold")
-    plt.tight_layout()
-    plt.show()
+    # ── Render ───────────────────────────────────────────────────────────────
+    if detailed:
+        for feat in features:
+            ga = _get_group_arrays(feat)
+            if not ga:
+                continue
+            fw = max(10, len(GROUP_DEFS) * 1.8)
+            fig, ax = plt.subplots(figsize=(fw, 5))
+            fig.suptitle(f"Spike feature within vs between — {feat}",
+                         fontsize=16, fontweight="bold")
+            _plot_one(ax, ga, feat)
+            plt.tight_layout()
+            fig.subplots_adjust(bottom=0.28)
+            plt.show()
+    else:
+        fig, axes = plt.subplots(1, len(features), figsize=(3.5 * len(features), 5), sharey=False)
+        if len(features) == 1:
+            axes = [axes]
+        for ax, feat in zip(axes, features):
+            ga = _get_group_arrays(feat)
+            if not ga:
+                ax.set_visible(False)
+                continue
+            _plot_one(ax, ga, feat, title=feat)
+        fig.suptitle("Spike feature: within-cell vs between-cell distances",
+                     fontsize=15, fontweight="bold")
+        plt.tight_layout()
+        plt.show()
 
 
 # ── Temporal transition detection ─────────────────────────────────────────────
