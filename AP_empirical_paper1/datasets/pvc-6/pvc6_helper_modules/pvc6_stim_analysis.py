@@ -75,18 +75,20 @@ def random_forest_stim(X, y, X_train, X_test, y_train, y_test, n_bootstraps=1000
 # ── Continuous stimulus regression ───────────────────────────────────────────
 
 def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=1000,
-                                n_perm=1000, alphas=None):
+                                n_perm=1000, alphas=None, standardize_y=True):
     """
     K-fold Ridge regression — aligned with the spe-1 pipeline for paper consistency.
 
     Changes vs original:
       - Features Z-scored (StandardScaler) so beta weights are in comparable units
+      - y Z-scored when standardize_y=True (default) so betas are comparable across
+        different stim features (fully standardized: SD change in y per SD change in x)
       - Alpha tuned via RidgeCV instead of fixed α=1
       - Permutation test (n_perm) for model-level significance
       - Bootstrapped 95% CIs on coefficients and R² retained
 
     Returns dict — all original keys preserved; new keys added:
-      best_alpha, p_val_perm, null_mean, null_std
+      best_alpha, p_val_perm, null_mean, null_std, y_std (SD used to scale y)
     """
     if alphas is None:
         alphas = np.logspace(-3, 3, 100)
@@ -95,17 +97,28 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
     n_samples = X.shape[0]
     n_features = X.shape[1]
 
+    # ── Optionally standardize y (prevents betas being in raw y units) ────────
+    y_scaler = StandardScaler() if standardize_y else None
+    y_fit    = y_scaler.fit_transform(np.asarray(y).reshape(-1, 1)).ravel() if standardize_y else np.asarray(y)
+    y_std_val = float(y_scaler.scale_[0]) if standardize_y else 1.0
+    import pandas as _pd
+    y_fit = _pd.Series(y_fit, index=y.index)
+
+    # ── Drop any non-numeric columns (e.g. stim_type) ────────────────────────
+    X = X.select_dtypes(include=[np.number])
+    n_features = X.shape[1]
+
     # ── Tune alpha on Z-scored features ──────────────────────────────────────
     X_z        = StandardScaler().fit_transform(X)
     alpha_cv   = RidgeCV(alphas=alphas, fit_intercept=True)
-    alpha_cv.fit(X_z, y)
+    alpha_cv.fit(X_z, y_fit)
     best_alpha = float(alpha_cv.alpha_)
 
     # ── Pipeline (scaler inside CV folds to prevent leakage) ─────────────────
     pipe = make_pipeline(StandardScaler(), Ridge(alpha=best_alpha, fit_intercept=True))
 
-    y_pred_cv          = cross_val_predict(pipe, X, y, cv=kf)
-    scores             = cross_val_score(pipe, X, y, cv=kf, scoring='r2')
+    y_pred_cv          = cross_val_predict(pipe, X, y_fit, cv=kf)
+    scores             = cross_val_score(pipe, X, y_fit, cv=kf, scoring='r2')
     adjusted_r2_scores = 1 - ((1 - scores) * (n_samples - 1) / (n_samples - n_features - 1))
 
     print(f"Cross-validated R-squared scores: {scores}")
@@ -116,14 +129,14 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
 
     # ── Permutation test for model significance ───────────────────────────────
     cv_score, perm_scores, p_val_perm = permutation_test_score(
-        pipe, X, y, cv=kf, n_permutations=n_perm,
+        pipe, X, y_fit, cv=kf, n_permutations=n_perm,
         scoring='r2', random_state=random_state, n_jobs=1,
     )
     print(f"Permutation p-value: {p_val_perm:.4f}")
 
     # ── Full-data fit on Z-scored X for coefficient extraction ────────────────
     model = Ridge(alpha=best_alpha, fit_intercept=True)
-    model.fit(X_z, y)
+    model.fit(X_z, y_fit)
     coefficients  = model.coef_
     feature_names = X.columns
 
@@ -134,7 +147,14 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
 
     for _ in range(bootstraps):
         boot_idx = rng.choice(all_indices, size=n_samples, replace=True)
-        X_boot   = X.iloc[boot_idx]; y_boot = y.iloc[boot_idx]
+        X_boot   = X.iloc[boot_idx]
+        y_boot_raw = y.iloc[boot_idx]
+        if standardize_y:
+            y_boot = _pd.Series(
+                StandardScaler().fit_transform(np.asarray(y_boot_raw).reshape(-1,1)).ravel(),
+                index=y_boot_raw.index)
+        else:
+            y_boot = y_boot_raw
         scaler_b = StandardScaler()
         model.fit(scaler_b.fit_transform(X_boot), y_boot)
         bootstrapped_coefs.append(model.coef_)
@@ -190,6 +210,8 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
         "p_val_perm":                 float(p_val_perm),
         "null_mean":                  float(np.mean(perm_scores)),
         "null_std":                   float(np.std(perm_scores)),
+        "y_std":                      y_std_val,
+        "y_standardized":             standardize_y,
     }
 
 

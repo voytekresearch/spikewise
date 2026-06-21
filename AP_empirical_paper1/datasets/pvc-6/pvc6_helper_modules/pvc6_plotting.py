@@ -140,39 +140,65 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3):
         print("No valid pairs found.")
         return
 
-    def _draw_ax(ax, abs_r, r, p, sf, stf, valid, cartoon):
+    def _draw_ax_compact(ax, abs_r, r, p, sf, stf, valid):
         color = _FEATURE_COLOR_MAP.get(sf, '#888')
-        s, alpha = (100, 0.65) if cartoon else (60, 0.55)
-        ax.scatter(valid[sf], valid[stf], s=s, alpha=alpha, color=color, linewidths=0)
-
+        ax.scatter(valid[sf], valid[stf], s=60, alpha=0.55, color=color, linewidths=0)
         m, b = np.polyfit(valid[sf], valid[stf], 1)
         xs = np.linspace(valid[sf].min(), valid[sf].max(), 200)
-        lw = 4 if cartoon else 3
-        ax.plot(xs, m * xs + b, color='#1a1a1a', lw=lw, zorder=3)
-
+        ax.plot(xs, m * xs + b, color='#1a1a1a', lw=3, zorder=3)
         p_str = 'p<0.001' if p < 0.001 else f'p={p:.3f}'
-        fs_ann, fs_lab, fs_tick = (28, 34, 28) if cartoon else (18, 20, 16)
-        ax.text(0.96, 0.05, f'r = {r:.2f}\n{p_str}',
-                transform=ax.transAxes, ha='right', va='bottom',
-                fontsize=fs_ann, fontweight='bold', color='#1a1a1a')
-        ax.set_xlabel(sf.replace('_', ' '), fontsize=fs_lab, fontweight='bold')
-        ax.set_ylabel(f'{window_ms}ms {stf.replace("_", " ")}', fontsize=fs_lab, fontweight='bold')
-        ax.tick_params(axis='both', labelsize=fs_tick, width=2.5 if cartoon else 2)
+        ann_x, ann_y = (0.04, 0.96) if r >= 0 else (0.04, 0.04)
+        ann_va = 'top' if r >= 0 else 'bottom'
+        ax.text(ann_x, ann_y, f'r = {r:.2f}\n{p_str}',
+                transform=ax.transAxes, ha='left', va=ann_va,
+                fontsize=15, fontweight='bold', color='#1a1a1a',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='none', alpha=0.85),
+                zorder=5)
+        ax.set_xlabel(sf.replace('_', ' '), fontsize=16, fontweight='bold')
+        ax.set_ylabel(f'{window_ms}ms {stf.replace("_", " ")}', fontsize=16, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=14, width=2)
         for label in ax.get_xticklabels() + ax.get_yticklabels():
             label.set_fontweight('bold')
-        lw_spine = 2.5 if cartoon else 2
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_linewidth(lw_spine)
-        ax.spines['bottom'].set_linewidth(lw_spine)
+        ax.spines['left'].set_linewidth(2)
+        ax.spines['bottom'].set_linewidth(2)
+        ax.locator_params(nbins=3)
+
+    def _draw_ax_cartoon(ax, abs_r, r, p, sf, stf, valid, first_col=False):
+        color = _FEATURE_COLOR_MAP.get(sf, '#888')
+        ax.scatter(valid[sf], valid[stf], s=200, alpha=0.75, color=color,
+                   linewidths=0, zorder=2)
+        m, b = np.polyfit(valid[sf], valid[stf], 1)
+        xs = np.linspace(valid[sf].min(), valid[sf].max(), 200)
+        ax.plot(xs, m * xs + b, color='#1a1a1a', lw=5, zorder=3)
+        p_str = 'p<0.001' if p < 0.001 else f'p={p:.3f}'
+        ann_x, ann_y = (0.04, 0.96) if r >= 0 else (0.04, 0.04)
+        ann_va = 'top' if r >= 0 else 'bottom'
+        ax.text(ann_x, ann_y, f'r = {r:.2f}\n{p_str}',
+                transform=ax.transAxes, ha='left', va=ann_va,
+                fontsize=68, fontweight='bold', color='#1a1a1a',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='none', alpha=0.9),
+                zorder=5)
+        ax.set_xlabel(sf.replace('_', ' '), fontsize=74, fontweight='bold')
+        if first_col:
+            ax.set_ylabel(f'{window_ms}ms\n{stf.replace("_", " ")}', fontsize=74, fontweight='bold')
+        else:
+            ax.set_ylabel('')
+        ax.tick_params(axis='both', labelsize=70, width=4, length=10)
+        for label in ax.get_xticklabels() + ax.get_yticklabels():
+            label.set_fontweight('bold')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(3)
+        ax.spines['bottom'].set_linewidth(3)
         ax.locator_params(nbins=3)
 
     if top:
         ncols = top_n
         nrows = len([stf for stf in _STIM_FEATURES if stf in stf_groups])
-        cell_w, cell_h = 11, 9
         fig, axes = plt.subplots(nrows, ncols,
-                                 figsize=(cell_w * ncols, cell_h * nrows),
+                                 figsize=(13 * ncols, 11 * nrows),
                                  constrained_layout=True)
         axes = np.array(axes).reshape(nrows, ncols)
         row_idx = 0
@@ -180,12 +206,13 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3):
             if stf not in stf_groups:
                 continue
             for col_idx, (abs_r, r, p, sf, valid) in enumerate(stf_groups[stf][:top_n]):
-                _draw_ax(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid, cartoon=True)
+                _draw_ax_cartoon(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid,
+                                 first_col=(col_idx == 0))
             for col_idx in range(len(stf_groups[stf][:top_n]), ncols):
                 axes[row_idx, col_idx].set_visible(False)
             row_idx += 1
         fig.suptitle(f'Top {top_n} spike × stim correlations — {window_ms} ms window',
-                     fontsize=30, fontweight='bold')
+                     fontsize=28, fontweight='bold')
     else:
         nrows = len([stf for stf in _STIM_FEATURES if stf in stf_groups])
         ncols = max(len(g) for g in stf_groups.values())
@@ -199,7 +226,7 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3):
                 continue
             group = stf_groups[stf]
             for col_idx, (abs_r, r, p, sf, valid) in enumerate(group):
-                _draw_ax(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid, cartoon=False)
+                _draw_ax_compact(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid)
             for col_idx in range(len(group), ncols):
                 axes[row_idx, col_idx].set_visible(False)
             row_idx += 1
@@ -829,6 +856,128 @@ def plot_window_expansion(results_by_window, windows_ms,
                loc='lower center', bbox_to_anchor=(0.5, 1.01),
                ncol=len(legend_elements))
 
+    plt.show()
+
+
+def plot_beta_weights_combined(results_window, window_ms=200):
+    """3 side-by-side horizontal bar charts (one per stim target), shared y-axis.
+
+    Bars colored by spike feature via _FEATURE_COLOR_MAP. Significance stars per feature.
+    Also outputs a bootstrapped R² bar chart as a separate figure.
+    """
+    targets       = ['stim_mean', 'stim_std', 'stim_exp']
+    target_labels = ['stim mean', 'stim std', 'stim exp']
+    stim_colors   = {'stim_mean': '#E07B54', 'stim_std': '#5B8DB8', 'stim_exp': '#72B26C'}
+
+    res = {}
+    for tgt in targets:
+        key = f'{window_ms}ms_{tgt}'
+        if key not in results_window:
+            print(f"Key '{key}' not found in results_window — run window expansion first.")
+            return
+        res[tgt] = results_window[key]
+
+    # Stable feature order sorted by mean |coef| across all targets
+    feat_importance = {}
+    for tgt in targets:
+        for feat, coef in zip(res[tgt]['feature_names'], res[tgt]['coefficients']):
+            feat_importance[feat] = feat_importance.get(feat, 0) + abs(coef)
+    ordered_feats = sorted(feat_importance, key=lambda x: feat_importance[x])
+    n_feats = len(ordered_feats)
+
+    fig, axes = plt.subplots(1, 3, sharey=True,
+                             figsize=(10 * 3, max(14, n_feats * 1.4 + 3)),
+                             constrained_layout=True)
+
+    for col, (ax, tgt, tlbl) in enumerate(zip(axes, targets, target_labels)):
+        r       = res[tgt]
+        feat_df = pd.DataFrame({
+            'Feature':     r['feature_names'],
+            'Coefficient': r['coefficients'],
+            'CI Lower':    r['ci_lower'],
+            'CI Upper':    r['ci_upper'],
+            'p-value':     r['p_values'],
+        }).set_index('Feature').reindex(ordered_feats).dropna()
+
+        ys      = np.arange(len(feat_df))
+        colors  = [_FEATURE_COLOR_MAP.get(f, '#888') for f in feat_df.index]
+        xerr_lo = (feat_df['Coefficient'] - feat_df['CI Lower']).values
+        xerr_hi = (feat_df['CI Upper']    - feat_df['Coefficient']).values
+
+        ax.barh(ys, feat_df['Coefficient'],
+                height=0.7, color=colors, alpha=0.85,
+                edgecolor='#1a1a1a', linewidth=2,
+                xerr=[xerr_lo, xerr_hi],
+                error_kw=dict(ecolor='#1a1a1a', lw=3, capsize=9, capthick=3))
+
+        # significance stars
+        x_max = float(feat_df['CI Upper'].max())
+        for i, (feat, row) in enumerate(feat_df.iterrows()):
+            p    = row['p-value']
+            star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+            if star:
+                ax.text(x_max + abs(x_max) * 0.08, i, star,
+                        va='center', fontsize=44, color='#D55E00', fontweight='bold')
+
+        ax.axvline(0, color='gray', lw=2, ls='--', alpha=0.7)
+        ax.set_title(tlbl, fontsize=44, fontweight='bold', pad=16,
+                     color=stim_colors[tgt])
+        ax.set_xlabel('Beta weight (std.)', fontsize=40, fontweight='bold')
+        ax.tick_params(axis='x', labelsize=36, width=3, length=8)
+        ax.tick_params(axis='y', width=0, length=0)
+        for lbl in ax.get_xticklabels():
+            lbl.set_fontweight('bold')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(3)
+        ax.spines['bottom'].set_linewidth(3)
+        ax.locator_params(axis='x', nbins=4)
+
+        if col == 0:
+            ax.set_yticks(np.arange(n_feats))
+            ax.set_yticklabels([f.replace('_', ' ') for f in ordered_feats],
+                               fontsize=40, fontweight='bold')
+
+    fig.suptitle(f'Beta weights  —  {window_ms} ms window', fontsize=44, fontweight='bold')
+    plt.show()
+
+    # ── Bootstrapped R² bar chart ─────────────────────────────────────────────
+    fig2, ax2 = plt.subplots(figsize=(12, 8), constrained_layout=True)
+    r2_means = [res[tgt]['r2_mean']   for tgt in targets]
+    r2_lo    = [res[tgt]['r2_ci'][0]  for tgt in targets]
+    r2_hi    = [res[tgt]['r2_ci'][1]  for tgt in targets]
+    colors2  = [stim_colors[tgt] for tgt in targets]
+    xerr_lo2 = [m - lo for m, lo in zip(r2_means, r2_lo)]
+    xerr_hi2 = [hi - m for m, hi in zip(r2_means, r2_hi)]
+
+    xs = np.arange(len(targets))
+    ax2.bar(xs, r2_means,
+            color=colors2, alpha=0.85, edgecolor='#1a1a1a', linewidth=2.5,
+            yerr=[xerr_lo2, xerr_hi2],
+            error_kw=dict(ecolor='#1a1a1a', lw=3, capsize=12, capthick=3))
+
+    # permutation p-value stars
+    for i, tgt in enumerate(targets):
+        p_perm = res[tgt].get('p_val_perm', None)
+        if p_perm is not None:
+            star = '***' if p_perm < 0.001 else '**' if p_perm < 0.01 else '*' if p_perm < 0.05 else ''
+            if star:
+                ax2.text(i, r2_hi[i] + 0.003, star,
+                         ha='center', va='bottom', fontsize=44,
+                         color='#D55E00', fontweight='bold')
+
+    ax2.set_xticks(xs)
+    ax2.set_xticklabels(target_labels, fontsize=40, fontweight='bold')
+    ax2.set_ylabel('Bootstrapped R²', fontsize=40, fontweight='bold')
+    ax2.tick_params(axis='y', labelsize=36, width=3, length=8)
+    ax2.tick_params(axis='x', width=0, length=0)
+    for lbl in ax2.get_yticklabels():
+        lbl.set_fontweight('bold')
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
+    ax2.spines['left'].set_linewidth(3)
+    ax2.spines['bottom'].set_linewidth(3)
+    ax2.set_title(f'Model R²  —  {window_ms} ms window', fontsize=44, fontweight='bold')
     plt.show()
 
 
