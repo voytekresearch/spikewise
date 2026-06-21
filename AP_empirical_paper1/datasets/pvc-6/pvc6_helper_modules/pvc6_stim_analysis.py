@@ -130,7 +130,7 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
     # ── Permutation test for model significance ───────────────────────────────
     cv_score, perm_scores, p_val_perm = permutation_test_score(
         pipe, X, y_fit, cv=kf, n_permutations=n_perm,
-        scoring='r2', random_state=random_state, n_jobs=1,
+        scoring='r2', random_state=random_state, n_jobs=-1,
     )
     print(f"Permutation p-value: {p_val_perm:.4f}")
 
@@ -167,8 +167,8 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
                                 for i in range(bootstrapped_coefs.shape[1])])
 
     # ── Bootstrap R² from CV predictions (unbiased, stable CIs) ─────────────
-    # Resample (y, y_pred_cv) pairs — no re-fitting, CIs on held-out R².
-    y_arr      = np.asarray(y)
+    # Resample (y_fit, y_pred_cv) pairs — no re-fitting, CIs on held-out R².
+    y_arr      = np.asarray(y_fit)
     yhat_arr   = np.asarray(y_pred_cv)
     boot_r2    = []
     boot_adjr2 = []
@@ -188,7 +188,7 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
 
     return {
         # ── original keys (unchanged for backward compat) ──
-        "y_true":                     np.asarray(y),
+        "y_true":                     np.asarray(y_fit),
         "y_pred_cv":                  y_pred_cv,
         "coefficients":               coefficients,
         "feature_names":              feature_names,

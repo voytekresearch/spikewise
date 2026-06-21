@@ -549,7 +549,7 @@ def run_ridge_regression(Y, predictor_sets, target_names, n_perm, rng_seed, alph
                 pipe, X_z, y_z, cv=cv_splitter,
                 n_permutations=n_perm, scoring='r2',
                 random_state=rng_seed * 100 + t_idx * 10 + p_idx,
-                n_jobs=1,
+                n_jobs=-1,
             )
 
             ridge_full = Ridge(alpha=best_alpha, fit_intercept=True)
