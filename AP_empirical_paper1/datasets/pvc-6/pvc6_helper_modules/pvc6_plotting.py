@@ -867,6 +867,7 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     Also outputs a bootstrapped R² bar chart as a separate figure.
     """
     from matplotlib.patches import Patch as _Patch
+    from matplotlib.colors import to_rgb as _to_rgb
 
     import matplotlib as _mpl
     _old_hatch_lw = _mpl.rcParams.get('hatch.linewidth', 1.0)
@@ -874,7 +875,12 @@ def plot_beta_weights_combined(results_window, window_ms=200):
 
     targets       = ['stim_mean', 'stim_std', 'stim_exp']
     target_labels = ['stim mean', 'stim std', 'stim exp']
-    hatches       = ['',          '||||',      '////']   # solid, vertical, diagonal
+    stim_colors   = {'stim_mean': '#E07B54', 'stim_std': '#5B8DB8', 'stim_exp': '#72B26C'}
+    hatches       = ['',   '//',   '||']   # solid, sparse diagonal, sparse vertical
+
+    def _is_dark(color):
+        r, g, b = _to_rgb(color)
+        return (0.299*r + 0.587*g + 0.114*b) < 0.45
 
     res = {}
     for tgt in targets:
@@ -910,17 +916,19 @@ def plot_beta_weights_combined(results_window, window_ms=200):
         }).set_index('Feature').reindex(ordered_feats).dropna()
 
         ys      = np.arange(len(feat_df)) * group_sep + offset
-        colors  = [_FEATURE_COLOR_MAP.get(f, '#888') for f in feat_df.index]
         xerr_lo = (feat_df['Coefficient'] - feat_df['CI Lower']).values
         xerr_hi = (feat_df['CI Upper']    - feat_df['Coefficient']).values
 
-        ax.barh(ys, feat_df['Coefficient'],
-                height=bar_h * 0.88,
-                color=colors, alpha=0.85,
-                hatch=hatch, edgecolor='#1a1a1a', linewidth=2,
-                xerr=[xerr_lo, xerr_hi],
-                error_kw=dict(ecolor='#1a1a1a', lw=2.5, capsize=8, capthick=2.5),
-                label=tlbl)
+        for j, (feat, row) in enumerate(feat_df.iterrows()):
+            fc = _FEATURE_COLOR_MAP.get(feat, '#888')
+            ec = 'white' if (_is_dark(fc) and hatch) else '#1a1a1a'
+            ax.barh(ys[j], row['Coefficient'],
+                    height=bar_h * 0.88,
+                    color=fc, alpha=0.85,
+                    hatch=hatch, edgecolor=ec, linewidth=2,
+                    xerr=[[xerr_lo[j]], [xerr_hi[j]]],
+                    error_kw=dict(ecolor='#1a1a1a', lw=2.5, capsize=8, capthick=2.5),
+                    label=tlbl if j == 0 else '_nolegend_')
 
     # significance stars — min p across targets per feature
     all_ci_upper = np.concatenate([res[tgt]['ci_upper'] for tgt in targets])
@@ -957,9 +965,9 @@ def plot_beta_weights_combined(results_window, window_ms=200):
 
     # separate legend figure
     legend_elements = [
-        _Patch(facecolor='#aaa', hatch='',     edgecolor='#1a1a1a', label='stim mean', alpha=0.85),
-        _Patch(facecolor='#aaa', hatch='||||', edgecolor='#1a1a1a', label='stim std',  alpha=0.85),
-        _Patch(facecolor='#aaa', hatch='////', edgecolor='#1a1a1a', label='stim exp',  alpha=0.85),
+        _Patch(facecolor='#aaa', hatch='',   edgecolor='#1a1a1a', label='stim mean', alpha=0.85),
+        _Patch(facecolor='#aaa', hatch='//', edgecolor='#1a1a1a', label='stim std',  alpha=0.85),
+        _Patch(facecolor='#aaa', hatch='||', edgecolor='#1a1a1a', label='stim exp',  alpha=0.85),
     ]
     fig.suptitle(f'Beta weights  —  {window_ms} ms window', fontsize=44, fontweight='bold')
     plt.show()

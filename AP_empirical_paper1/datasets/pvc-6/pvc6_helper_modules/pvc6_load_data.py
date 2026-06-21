@@ -101,20 +101,20 @@ def process_pink_type_info(f, fs):
     pink_type_num = 0
     #pink_stim_dict = {}
     pink_types = []
-    
-    
-    
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+
     # 0 through 66 sweeps
     for i_sweeps in range(66):
-    
-    
+
         #load data
         dset, times = load_sweep(i_sweeps, f, fs)
-    
+
         stim_type, stim_data, r = _classify_stimulus(dset[:, 0])
         pink_type = stim_type
         if stim_type == 'pink':
-            plt.plot(stim_data)
+            t_ms = np.arange(len(stim_data)) / (fs / 1000)
+            ax.plot(t_ms, stim_data)
     
     
         if stim_type == 'pink':
@@ -134,6 +134,13 @@ def process_pink_type_info(f, fs):
                 pink_type = all_pink_noise[r]
             
         pink_types.append(pink_type)
+
+    ax.set_xlabel('Time (ms)', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Stimulus', fontsize=14, fontweight='bold')
+    ax.set_title('Pink noise sweeps', fontsize=14, fontweight='bold')
+    ax.locator_params(axis='x', nbins=6)
+    plt.tight_layout()
+    plt.show()
 
     return pink_types
 
