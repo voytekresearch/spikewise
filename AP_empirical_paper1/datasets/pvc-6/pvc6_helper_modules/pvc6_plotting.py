@@ -860,14 +860,21 @@ def plot_window_expansion(results_by_window, windows_ms,
 
 
 def plot_beta_weights_combined(results_window, window_ms=200):
-    """3 side-by-side horizontal bar charts (one per stim target), shared y-axis.
+    """Single grouped horizontal bar chart: all 3 stim targets on one shared axis.
 
-    Bars colored by spike feature via _FEATURE_COLOR_MAP. Significance stars per feature.
+    Now that y is standardized, betas are directly comparable. Each spike feature
+    gets 3 grouped bars (stim_mean / stim_std / stim_exp), colored by stim target.
     Also outputs a bootstrapped R² bar chart as a separate figure.
     """
+    from matplotlib.patches import Patch as _Patch
+
+    import matplotlib as _mpl
+    _old_hatch_lw = _mpl.rcParams.get('hatch.linewidth', 1.0)
+    _mpl.rcParams['hatch.linewidth'] = 3.5
+
     targets       = ['stim_mean', 'stim_std', 'stim_exp']
     target_labels = ['stim mean', 'stim std', 'stim exp']
-    stim_colors   = {'stim_mean': '#E07B54', 'stim_std': '#5B8DB8', 'stim_exp': '#72B26C'}
+    hatches       = ['',          '||||',      '////']   # solid, vertical, diagonal
 
     res = {}
     for tgt in targets:
@@ -885,11 +892,14 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     ordered_feats = sorted(feat_importance, key=lambda x: feat_importance[x])
     n_feats = len(ordered_feats)
 
-    fig, axes = plt.subplots(1, 3, sharey=True,
-                             figsize=(10 * 3, max(14, n_feats * 1.4 + 3)),
-                             constrained_layout=True)
+    group_sep = 4.0
+    bar_h     = 1.0
+    offsets   = [-bar_h, 0, bar_h]
 
-    for col, (ax, tgt, tlbl) in enumerate(zip(axes, targets, target_labels)):
+    fig, ax = plt.subplots(figsize=(16, max(14, n_feats * group_sep * 0.5 + 3)),
+                           constrained_layout=True)
+
+    for tgt, hatch, offset, tlbl in zip(targets, hatches, offsets, target_labels):
         r       = res[tgt]
         feat_df = pd.DataFrame({
             'Feature':     r['feature_names'],
@@ -899,47 +909,70 @@ def plot_beta_weights_combined(results_window, window_ms=200):
             'p-value':     r['p_values'],
         }).set_index('Feature').reindex(ordered_feats).dropna()
 
-        ys      = np.arange(len(feat_df))
+        ys      = np.arange(len(feat_df)) * group_sep + offset
         colors  = [_FEATURE_COLOR_MAP.get(f, '#888') for f in feat_df.index]
         xerr_lo = (feat_df['Coefficient'] - feat_df['CI Lower']).values
         xerr_hi = (feat_df['CI Upper']    - feat_df['Coefficient']).values
 
         ax.barh(ys, feat_df['Coefficient'],
-                height=0.7, color=colors, alpha=0.85,
-                edgecolor='#1a1a1a', linewidth=2,
+                height=bar_h * 0.88,
+                color=colors, alpha=0.85,
+                hatch=hatch, edgecolor='#1a1a1a', linewidth=2,
                 xerr=[xerr_lo, xerr_hi],
-                error_kw=dict(ecolor='#1a1a1a', lw=3, capsize=9, capthick=3))
+                error_kw=dict(ecolor='#1a1a1a', lw=2.5, capsize=8, capthick=2.5),
+                label=tlbl)
 
-        # significance stars
-        x_max = float(feat_df['CI Upper'].max())
-        for i, (feat, row) in enumerate(feat_df.iterrows()):
-            p    = row['p-value']
-            star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
-            if star:
-                ax.text(x_max + abs(x_max) * 0.08, i, star,
-                        va='center', fontsize=44, color='#D55E00', fontweight='bold')
+    # significance stars — min p across targets per feature
+    all_ci_upper = np.concatenate([res[tgt]['ci_upper'] for tgt in targets])
+    x_max = float(np.nanmax(all_ci_upper))
+    for i, feat in enumerate(ordered_feats):
+        p_vals = []
+        for tgt in targets:
+            feat_list = list(res[tgt]['feature_names'])
+            if feat in feat_list:
+                p_vals.append(res[tgt]['p_values'][feat_list.index(feat)])
+        if not p_vals:
+            continue
+        p    = min(p_vals)
+        star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+        if star:
+            ax.text(x_max + abs(x_max) * 0.06, i * group_sep, star,
+                    va='center', fontsize=44, color='#D55E00', fontweight='bold')
 
-        ax.axvline(0, color='gray', lw=2, ls='--', alpha=0.7)
-        ax.set_title(tlbl, fontsize=44, fontweight='bold', pad=16,
-                     color=stim_colors[tgt])
-        ax.set_xlabel('Beta weight (std.)', fontsize=40, fontweight='bold')
-        ax.tick_params(axis='x', labelsize=36, width=3, length=8)
-        ax.tick_params(axis='y', width=0, length=0)
-        for lbl in ax.get_xticklabels():
-            lbl.set_fontweight('bold')
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_linewidth(3)
-        ax.spines['bottom'].set_linewidth(3)
-        ax.locator_params(axis='x', nbins=4)
+    ax.axvline(0, color='gray', lw=2, ls='--', alpha=0.7)
+    ax.set_yticks(np.arange(n_feats) * group_sep)
+    ax.set_yticklabels([f.replace('_', ' ') for f in ordered_feats],
+                       fontsize=40, fontweight='bold')
+    ax.set_xlabel(f'Beta weight (std.)  —  {window_ms} ms window',
+                  fontsize=40, fontweight='bold')
+    ax.tick_params(axis='x', labelsize=36, width=3, length=8)
+    ax.tick_params(axis='y', width=0, length=0)
+    for lbl in ax.get_xticklabels():
+        lbl.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_linewidth(3)
+    ax.spines['bottom'].set_linewidth(3)
+    ax.locator_params(axis='x', nbins=4)
 
-        if col == 0:
-            ax.set_yticks(np.arange(n_feats))
-            ax.set_yticklabels([f.replace('_', ' ') for f in ordered_feats],
-                               fontsize=40, fontweight='bold')
-
+    # separate legend figure
+    legend_elements = [
+        _Patch(facecolor='#aaa', hatch='',     edgecolor='#1a1a1a', label='stim mean', alpha=0.85),
+        _Patch(facecolor='#aaa', hatch='||||', edgecolor='#1a1a1a', label='stim std',  alpha=0.85),
+        _Patch(facecolor='#aaa', hatch='////', edgecolor='#1a1a1a', label='stim exp',  alpha=0.85),
+    ]
     fig.suptitle(f'Beta weights  —  {window_ms} ms window', fontsize=44, fontweight='bold')
     plt.show()
+
+    fig_leg, ax_leg = plt.subplots(figsize=(8, 1.6))
+    ax_leg.set_axis_off()
+    leg = ax_leg.legend(handles=legend_elements, frameon=False, fontsize=40,
+                        loc='center', ncol=3, handlelength=3, handleheight=2.2)
+    for t in leg.get_texts():
+        t.set_fontweight('bold')
+    plt.show()
+
+    _mpl.rcParams['hatch.linewidth'] = _old_hatch_lw
 
     # ── Bootstrapped R² bar chart ─────────────────────────────────────────────
     fig2, ax2 = plt.subplots(figsize=(12, 8), constrained_layout=True)
