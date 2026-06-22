@@ -871,12 +871,13 @@ def plot_beta_weights_combined(results_window, window_ms=200):
 
     import matplotlib as _mpl
     _old_hatch_lw = _mpl.rcParams.get('hatch.linewidth', 1.0)
-    _mpl.rcParams['hatch.linewidth'] = 3.5
+    _mpl.rcParams['hatch.linewidth'] = 2.5
 
     targets       = ['stim_mean', 'stim_std', 'stim_exp']
     target_labels = ['stim mean', 'stim std', 'stim exp']
     stim_colors   = {'stim_mean': '#E07B54', 'stim_std': '#5B8DB8', 'stim_exp': '#72B26C'}
-    hatches       = ['',   '//',   '||']   # solid, sparse diagonal, sparse vertical
+    hatches       = ['',   '|',   '/']   # solid, vertical (std), diagonal (exp)
+    _EXCLUDE = {'sweep', 'spike_num', 'stim_type', 'pink_type'}
 
     def _is_dark(color):
         r, g, b = _to_rgb(color)
@@ -890,19 +891,20 @@ def plot_beta_weights_combined(results_window, window_ms=200):
             return
         res[tgt] = results_window[key]
 
-    # Stable feature order sorted by mean |coef| across all targets
+    # Stable feature order sorted by mean |coef| — exclude non-waveform columns
     feat_importance = {}
     for tgt in targets:
         for feat, coef in zip(res[tgt]['feature_names'], res[tgt]['coefficients']):
-            feat_importance[feat] = feat_importance.get(feat, 0) + abs(coef)
+            if feat not in _EXCLUDE:
+                feat_importance[feat] = feat_importance.get(feat, 0) + abs(coef)
     ordered_feats = sorted(feat_importance, key=lambda x: feat_importance[x])
     n_feats = len(ordered_feats)
 
-    group_sep = 4.0
-    bar_h     = 1.0
-    offsets   = [-bar_h, 0, bar_h]
+    group_sep = 10.0
+    bar_h     = 3.0
+    offsets   = [bar_h, 0, -bar_h]   # stim_mean top, stim_std mid, stim_exp bottom
 
-    fig, ax = plt.subplots(figsize=(16, max(14, n_feats * group_sep * 0.5 + 3)),
+    fig, ax = plt.subplots(figsize=(28, max(10, n_feats * group_sep * 0.38 + 2)),
                            constrained_layout=True)
 
     for tgt, hatch, offset, tlbl in zip(targets, hatches, offsets, target_labels):
@@ -920,106 +922,188 @@ def plot_beta_weights_combined(results_window, window_ms=200):
         xerr_hi = (feat_df['CI Upper']    - feat_df['Coefficient']).values
 
         for j, (feat, row) in enumerate(feat_df.iterrows()):
-            fc = _FEATURE_COLOR_MAP.get(feat, '#888')
-            ec = 'white' if (_is_dark(fc) and hatch) else '#1a1a1a'
-            ax.barh(ys[j], row['Coefficient'],
-                    height=bar_h * 0.88,
-                    color=fc, alpha=0.85,
-                    hatch=hatch, edgecolor=ec, linewidth=2,
+            if row['p-value'] >= 0.05:
+                continue   # skip non-significant bars
+            fc   = _FEATURE_COLOR_MAP.get(feat, '#888')
+            coef = row['Coefficient']
+            bh   = bar_h * 0.88
+
+            # solid bar with dark border — no hatch here
+            ax.barh(ys[j], coef,
+                    height=bh,
+                    color=fc, alpha=1.0,
+                    edgecolor='#1a1a1a', linewidth=3,
                     xerr=[[xerr_lo[j]], [xerr_hi[j]]],
-                    error_kw=dict(ecolor='#1a1a1a', lw=2.5, capsize=8, capthick=2.5),
+                    error_kw=dict(ecolor='#1a1a1a', lw=4.5, capsize=14, capthick=4.5),
                     label=tlbl if j == 0 else '_nolegend_')
 
-    # significance stars — min p across targets per feature
-    all_ci_upper = np.concatenate([res[tgt]['ci_upper'] for tgt in targets])
-    x_max = float(np.nanmax(all_ci_upper))
-    for i, feat in enumerate(ordered_feats):
-        p_vals = []
-        for tgt in targets:
-            feat_list = list(res[tgt]['feature_names'])
-            if feat in feat_list:
-                p_vals.append(res[tgt]['p_values'][feat_list.index(feat)])
-        if not p_vals:
-            continue
-        p    = min(p_vals)
-        star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
-        if star:
-            ax.text(x_max + abs(x_max) * 0.06, i * group_sep, star,
-                    va='center', fontsize=44, color='#D55E00', fontweight='bold')
+            if hatch == '|':
+                # manual white vertical lines: fixed spacing so density is independent of bar width
+                x_left  = min(0, coef)
+                x_right = max(0, coef)
+                dx = x_right - x_left
+                if dx > 0.01:
+                    n_vlines = max(3, int(dx / 0.08) - 1)
+                    xs_v = np.linspace(x_left, x_right, n_vlines + 2)[1:-1]
+                    ax.vlines(xs_v, ys[j] - bh / 2, ys[j] + bh / 2,
+                              colors='white', linewidth=5, zorder=4)
 
-    ax.axvline(0, color='gray', lw=2, ls='--', alpha=0.7)
+            elif hatch == '/':
+                # manual white diagonal lines — same spacing/thickness as std vlines
+                x_left  = min(0, coef)
+                x_right = max(0, coef)
+                if x_right - x_left > 0.01:
+                    dx_shift = 0.15   # x-run per full bar height ≈ 45° visual
+                    for x_s in np.arange(x_left - dx_shift, x_right + 0.08, 0.08):
+                        if dx_shift < 1e-10:
+                            break
+                        t_lo = max(0.0, (x_left  - x_s) / dx_shift)
+                        t_hi = min(1.0, (x_right - x_s) / dx_shift)
+                        if t_lo >= t_hi:
+                            continue
+                        ax.plot([x_s + t_lo * dx_shift, x_s + t_hi * dx_shift],
+                                [(ys[j] - bh/2) + t_lo * bh, (ys[j] - bh/2) + t_hi * bh],
+                                color='white', lw=5, solid_capstyle='butt', zorder=4)
+
+    # separator lines between feature groups
+    for i in range(n_feats - 1):
+        ax.axhline(i * group_sep + group_sep / 2,
+                   color='#ccc', lw=1.5, ls='-', alpha=0.8, zorder=0)
+
+    ax.axvline(0, color='#444', lw=4, ls='--', alpha=0.85)
     ax.set_yticks(np.arange(n_feats) * group_sep)
     ax.set_yticklabels([f.replace('_', ' ') for f in ordered_feats],
-                       fontsize=40, fontweight='bold')
-    ax.set_xlabel(f'Beta weight (std.)  —  {window_ms} ms window',
-                  fontsize=40, fontweight='bold')
-    ax.tick_params(axis='x', labelsize=36, width=3, length=8)
+                       fontsize=64, fontweight='bold')
+    ax.set_xlabel('Beta weight (std.)', fontsize=64, fontweight='bold')
+    ax.tick_params(axis='x', labelsize=60, width=4, length=10)
     ax.tick_params(axis='y', width=0, length=0)
     for lbl in ax.get_xticklabels():
         lbl.set_fontweight('bold')
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_linewidth(3)
-    ax.spines['bottom'].set_linewidth(3)
+    ax.spines['left'].set_linewidth(4)
+    ax.spines['bottom'].set_linewidth(4)
     ax.locator_params(axis='x', nbins=4)
-
-    # separate legend figure
-    legend_elements = [
-        _Patch(facecolor='#aaa', hatch='',   edgecolor='#1a1a1a', label='stim mean', alpha=0.85),
-        _Patch(facecolor='#aaa', hatch='//', edgecolor='#1a1a1a', label='stim std',  alpha=0.85),
-        _Patch(facecolor='#aaa', hatch='||', edgecolor='#1a1a1a', label='stim exp',  alpha=0.85),
-    ]
-    fig.suptitle(f'Beta weights  —  {window_ms} ms window', fontsize=44, fontweight='bold')
+    fig.suptitle(f'Beta weights  —  {window_ms} ms window', fontsize=56, fontweight='bold')
     plt.show()
 
-    fig_leg, ax_leg = plt.subplots(figsize=(8, 1.6))
+    # ── Manually drawn legend (avoids matplotlib's density-proportional hatch) ─
+    # data coords = inches so 1 unit = 1 inch → correct 45° for diagonal
+    _FW, _FH = 20.0, 3.0
+    _PW, _PH = 3.0, 1.2           # wide, short patch → landscape swatch
+    _PY0     = (_FH - _PH) / 2
+    _LX      = [0.4, 7.2, 14.0]
+    _N       = 3                   # 3 lines → clearly separated
+    _LW      = 5
+
+    fig_leg, ax_leg = plt.subplots(figsize=(_FW, _FH))
     ax_leg.set_axis_off()
-    leg = ax_leg.legend(handles=legend_elements, frameon=False, fontsize=40,
-                        loc='center', ncol=3, handlelength=3, handleheight=2.2)
-    for t in leg.get_texts():
-        t.set_fontweight('bold')
+    ax_leg.set_xlim(0, _FW)
+    ax_leg.set_ylim(0, _FH)
+
+    for _idx, (_xi, _lbl) in enumerate(zip(_LX, ['stim mean', 'stim std', 'stim exp'])):
+        ax_leg.add_patch(_mpl.patches.Rectangle(
+            (_xi, _PY0), _PW, _PH,
+            facecolor='white', edgecolor='#1a1a1a', linewidth=4, zorder=2))
+
+        if _idx == 1:   # vertical lines
+            _xv = np.linspace(_xi, _xi + _PW, _N + 2)[1:-1]
+            ax_leg.vlines(_xv, _PY0, _PY0 + _PH,
+                          colors='#1a1a1a', linewidth=_LW, zorder=3)
+
+        elif _idx == 2:  # diagonal lines — center each line on its x midpoint
+            _dx = _PH   # horizontal run = vertical rise → 45°
+            _xc = np.linspace(_xi, _xi + _PW, _N + 2)[1:-1]  # N midpoint x positions
+            for _xm in _xc:
+                _xs = _xm - _dx / 2    # line would start here if unclipped
+                _xe = _xm + _dx / 2
+                _tl = max(0.0, (_xi       - _xs) / _dx)
+                _th = min(1.0, (_xi + _PW - _xs) / _dx)
+                if _tl >= _th:
+                    continue
+                ax_leg.plot([_xs + _tl * _dx, _xs + _th * _dx],
+                            [_PY0 + _tl * _PH, _PY0 + _th * _PH],
+                            color='#1a1a1a', lw=_LW,
+                            solid_capstyle='butt', zorder=3)
+
+        ax_leg.text(_xi + _PW + 0.25, _FH / 2, _lbl,
+                    ha='left', va='center', fontsize=48, fontweight='bold')
+
+    plt.tight_layout()
     plt.show()
 
-    _mpl.rcParams['hatch.linewidth'] = _old_hatch_lw
+    _mpl.rcParams['hatch.linewidth'] = _old_hatch_lw   # restore
 
     # ── Bootstrapped R² bar chart ─────────────────────────────────────────────
-    fig2, ax2 = plt.subplots(figsize=(12, 8), constrained_layout=True)
+    fig2, ax2 = plt.subplots(figsize=(12, 9), constrained_layout=True)
     r2_means = [res[tgt]['r2_mean']   for tgt in targets]
     r2_lo    = [res[tgt]['r2_ci'][0]  for tgt in targets]
     r2_hi    = [res[tgt]['r2_ci'][1]  for tgt in targets]
-    colors2  = [stim_colors[tgt] for tgt in targets]
     xerr_lo2 = [m - lo for m, lo in zip(r2_means, r2_lo)]
     xerr_hi2 = [hi - m for m, hi in zip(r2_means, r2_hi)]
 
-    xs = np.arange(len(targets))
-    ax2.bar(xs, r2_means,
-            color=colors2, alpha=0.85, edgecolor='#1a1a1a', linewidth=2.5,
-            yerr=[xerr_lo2, xerr_hi2],
-            error_kw=dict(ecolor='#1a1a1a', lw=3, capsize=12, capthick=3))
+    xs       = np.arange(len(targets))
+    r2_hatch = ['', '|', '/']   # solid / vertical stripes / diagonal — same as beta plot
 
-    # permutation p-value stars
+    for i, (tgt, h2) in enumerate(zip(targets, r2_hatch)):
+        # white bar, black border, error bars
+        ax2.bar(xs[i], r2_means[i],
+                color='white', alpha=1.0, edgecolor='#1a1a1a', linewidth=5,
+                width=0.62,
+                yerr=[[xerr_lo2[i]], [xerr_hi2[i]]],
+                error_kw=dict(ecolor='#1a1a1a', lw=5, capsize=16, capthick=5))
+        if h2 == '|':
+            # manual BLACK vertical lines on white bar
+            bar_w = 0.62
+            x_left, x_right = xs[i] - bar_w / 2, xs[i] + bar_w / 2
+            n_vl = max(3, int(bar_w / 0.08) - 1)
+            xs_v = np.linspace(x_left, x_right, n_vl + 2)[1:-1]
+            ax2.vlines(xs_v, 0, r2_means[i], colors='#1a1a1a', linewidth=5, zorder=4)
+        elif h2 == '/':
+            # manual BLACK diagonal lines on white bar
+            bw       = 0.62
+            x_left_b = xs[i] - bw / 2
+            x_right_b = xs[i] + bw / 2
+            bar_top  = r2_means[i]
+            dx_r2    = bw
+            sp_r2    = 0.12
+            for x_s in np.arange(x_left_b - dx_r2, x_right_b + sp_r2, sp_r2):
+                if dx_r2 < 1e-10 or bar_top < 1e-10:
+                    break
+                t_lo = max(0.0, (x_left_b  - x_s) / dx_r2)
+                t_hi = min(1.0, (x_right_b - x_s) / dx_r2)
+                if t_lo >= t_hi:
+                    continue
+                ax2.plot([x_s + t_lo * dx_r2, x_s + t_hi * dx_r2],
+                         [t_lo * bar_top,      t_hi * bar_top],
+                         color='#1a1a1a', lw=5, solid_capstyle='butt', zorder=4)
+
+    # permutation p-value stars — black
     for i, tgt in enumerate(targets):
         p_perm = res[tgt].get('p_val_perm', None)
         if p_perm is not None:
             star = '***' if p_perm < 0.001 else '**' if p_perm < 0.01 else '*' if p_perm < 0.05 else ''
             if star:
-                ax2.text(i, r2_hi[i] + 0.003, star,
-                         ha='center', va='bottom', fontsize=44,
-                         color='#D55E00', fontweight='bold')
+                ax2.text(xs[i], r2_hi[i] + 0.005, star,
+                         ha='center', va='bottom', fontsize=100,
+                         color='black', fontweight='bold')
 
     ax2.set_xticks(xs)
-    ax2.set_xticklabels(target_labels, fontsize=40, fontweight='bold')
-    ax2.set_ylabel('Bootstrapped R²', fontsize=40, fontweight='bold')
-    ax2.tick_params(axis='y', labelsize=36, width=3, length=8)
+    ax2.set_xticklabels(['mean', 'stdev', 'exp'], fontsize=56, fontweight='bold')
+    ax2.set_ylabel('Bootstrapped R²', fontsize=60, fontweight='bold')
+    ax2.tick_params(axis='y', labelsize=52, width=3, length=8)
     ax2.tick_params(axis='x', width=0, length=0)
+    ax2.locator_params(axis='y', nbins=4)
+    ax2.yaxis.set_major_formatter(_mpl.ticker.FormatStrFormatter('%.1f'))
     for lbl in ax2.get_yticklabels():
         lbl.set_fontweight('bold')
     ax2.spines['top'].set_visible(False)
     ax2.spines['right'].set_visible(False)
-    ax2.spines['left'].set_linewidth(3)
-    ax2.spines['bottom'].set_linewidth(3)
-    ax2.set_title(f'Model R²  —  {window_ms} ms window', fontsize=44, fontweight='bold')
+    ax2.spines['left'].set_linewidth(5)
+    ax2.spines['bottom'].set_linewidth(5)
     plt.show()
+
+    _mpl.rcParams['hatch.linewidth'] = _old_hatch_lw
 
 
 def plot_fit_quality_distributions(sp):
