@@ -154,15 +154,15 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3):
                 fontsize=15, fontweight='bold', color='#1a1a1a',
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='none', alpha=0.85),
                 zorder=5)
-        ax.set_xlabel(sf.replace('_', ' '), fontsize=16, fontweight='bold')
-        ax.set_ylabel(f'{window_ms}ms {stf.replace("_", " ")}', fontsize=16, fontweight='bold')
-        ax.tick_params(axis='both', labelsize=14, width=2)
+        ax.set_xlabel(sf.replace('_', ' '), fontsize=22, fontweight='bold')
+        ax.set_ylabel(stf.replace('_', ' ').replace('std', 'stdev'), fontsize=22, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=20, width=2)
         for label in ax.get_xticklabels() + ax.get_yticklabels():
             label.set_fontweight('bold')
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_linewidth(2)
-        ax.spines['bottom'].set_linewidth(2)
+        ax.spines['left'].set_linewidth(4)
+        ax.spines['bottom'].set_linewidth(4)
         ax.locator_params(nbins=3)
 
     def _draw_ax_cartoon(ax, abs_r, r, p, sf, stf, valid, first_col=False):
@@ -173,32 +173,36 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3):
         xs = np.linspace(valid[sf].min(), valid[sf].max(), 200)
         ax.plot(xs, m * xs + b, color='#1a1a1a', lw=5, zorder=3)
         p_str = 'p<0.001' if p < 0.001 else f'p={p:.3f}'
-        ann_x, ann_y = (0.04, 0.96) if r >= 0 else (0.04, 0.04)
-        ann_va = 'top' if r >= 0 else 'bottom'
+        if sf == 'inflection_amp' and stf == 'stim_std':
+            ann_x, ann_y, ann_ha, ann_va = 0.96, 0.96, 'right', 'top'
+        elif r >= 0:
+            ann_x, ann_y, ann_ha, ann_va = 0.04, 0.96, 'left', 'top'
+        else:
+            ann_x, ann_y, ann_ha, ann_va = 0.04, 0.04, 'left', 'bottom'
         ax.text(ann_x, ann_y, f'r = {r:.2f}\n{p_str}',
-                transform=ax.transAxes, ha='left', va=ann_va,
-                fontsize=68, fontweight='bold', color='#1a1a1a',
+                transform=ax.transAxes, ha=ann_ha, va=ann_va,
+                fontsize=80, fontweight='bold', color='#1a1a1a',
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='none', alpha=0.9),
                 zorder=5)
-        ax.set_xlabel(sf.replace('_', ' '), fontsize=74, fontweight='bold')
+        ax.set_xlabel(sf.replace('_', ' '), fontsize=84, fontweight='bold')
         if first_col:
-            ax.set_ylabel(f'{window_ms}ms\n{stf.replace("_", " ")}', fontsize=74, fontweight='bold')
+            ax.set_ylabel(stf.replace('_', ' ').replace('std', 'stdev'), fontsize=84, fontweight='bold')
         else:
             ax.set_ylabel('')
-        ax.tick_params(axis='both', labelsize=70, width=4, length=10)
+        ax.tick_params(axis='both', labelsize=80, width=4, length=10)
         for label in ax.get_xticklabels() + ax.get_yticklabels():
             label.set_fontweight('bold')
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_linewidth(3)
-        ax.spines['bottom'].set_linewidth(3)
+        ax.spines['left'].set_linewidth(5)
+        ax.spines['bottom'].set_linewidth(5)
         ax.locator_params(nbins=3)
 
     if top:
         ncols = top_n
         nrows = len([stf for stf in _STIM_FEATURES if stf in stf_groups])
         fig, axes = plt.subplots(nrows, ncols,
-                                 figsize=(13 * ncols, 11 * nrows),
+                                 figsize=(12 * ncols, 12 * nrows),
                                  constrained_layout=True)
         axes = np.array(axes).reshape(nrows, ncols)
         row_idx = 0
@@ -874,7 +878,7 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     _mpl.rcParams['hatch.linewidth'] = 2.5
 
     targets       = ['stim_mean', 'stim_std', 'stim_exp']
-    target_labels = ['stim mean', 'stim std', 'stim exp']
+    target_labels = ['stim mean', 'stim stdev', 'stim exp']
     stim_colors   = {'stim_mean': '#E07B54', 'stim_std': '#5B8DB8', 'stim_exp': '#72B26C'}
     hatches       = ['',   '|',   '/']   # solid, vertical (std), diagonal (exp)
     _EXCLUDE = {'sweep', 'spike_num', 'stim_type', 'pink_type'}
@@ -989,11 +993,12 @@ def plot_beta_weights_combined(results_window, window_ms=200):
 
     # ── Manually drawn legend (avoids matplotlib's density-proportional hatch) ─
     # data coords = inches so 1 unit = 1 inch → correct 45° for diagonal
-    _FW, _FH = 20.0, 3.0
-    _PW, _PH = 3.0, 1.2           # wide, short patch → landscape swatch
-    _PY0     = (_FH - _PH) / 2
-    _LX      = [0.4, 7.2, 14.0]
-    _N       = 3                   # 3 lines → clearly separated
+    # vertical legend: 3 rows (mean, stdev, exp top→bottom)
+    _FW, _FH = 8.0, 8.0           # square so 1 data unit = 1 inch → correct 45°
+    _PW, _PH = 3.0, 1.2           # landscape patch
+    _PX      = 0.5                 # left edge of all patches
+    _LY      = [5.9, 3.4, 0.9]    # bottom-y of each row (top → bottom)
+    _N       = 3                   # vertical lines per std patch
     _LW      = 5
 
     fig_leg, ax_leg = plt.subplots(figsize=(_FW, _FH))
@@ -1001,32 +1006,31 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     ax_leg.set_xlim(0, _FW)
     ax_leg.set_ylim(0, _FH)
 
-    for _idx, (_xi, _lbl) in enumerate(zip(_LX, ['stim mean', 'stim std', 'stim exp'])):
+    for _idx, (_yi, _lbl) in enumerate(zip(_LY, ['stim mean', 'stim stdev', 'stim exp'])):
         ax_leg.add_patch(_mpl.patches.Rectangle(
-            (_xi, _PY0), _PW, _PH,
+            (_PX, _yi), _PW, _PH,
             facecolor='white', edgecolor='#1a1a1a', linewidth=4, zorder=2))
 
-        if _idx == 1:   # vertical lines
-            _xv = np.linspace(_xi, _xi + _PW, _N + 2)[1:-1]
-            ax_leg.vlines(_xv, _PY0, _PY0 + _PH,
+        if _idx == 1:   # stim stdev — vertical lines
+            _xv = np.linspace(_PX, _PX + _PW, _N + 2)[1:-1]
+            ax_leg.vlines(_xv, _yi, _yi + _PH,
                           colors='#1a1a1a', linewidth=_LW, zorder=3)
 
-        elif _idx == 2:  # diagonal lines — center each line on its x midpoint
-            _dx = _PH   # horizontal run = vertical rise → 45°
-            _xc = np.linspace(_xi, _xi + _PW, _N + 2)[1:-1]  # N midpoint x positions
+        elif _idx == 2:  # stim exp — 2 diagonal lines (45° since units = inches)
+            _dx = _PH
+            _xc = np.linspace(_PX, _PX + _PW, 4)[1:-1]   # 2 midpoints
             for _xm in _xc:
-                _xs = _xm - _dx / 2    # line would start here if unclipped
-                _xe = _xm + _dx / 2
-                _tl = max(0.0, (_xi       - _xs) / _dx)
-                _th = min(1.0, (_xi + _PW - _xs) / _dx)
+                _xs = _xm - _dx / 2
+                _tl = max(0.0, (_PX       - _xs) / _dx)
+                _th = min(1.0, (_PX + _PW - _xs) / _dx)
                 if _tl >= _th:
                     continue
                 ax_leg.plot([_xs + _tl * _dx, _xs + _th * _dx],
-                            [_PY0 + _tl * _PH, _PY0 + _th * _PH],
+                            [_yi  + _tl * _PH, _yi  + _th * _PH],
                             color='#1a1a1a', lw=_LW,
                             solid_capstyle='butt', zorder=3)
 
-        ax_leg.text(_xi + _PW + 0.25, _FH / 2, _lbl,
+        ax_leg.text(_PX + _PW + 0.3, _yi + _PH / 2, _lbl,
                     ha='left', va='center', fontsize=48, fontweight='bold')
 
     plt.tight_layout()
@@ -1053,30 +1057,38 @@ def plot_beta_weights_combined(results_window, window_ms=200):
                 yerr=[[xerr_lo2[i]], [xerr_hi2[i]]],
                 error_kw=dict(ecolor='#1a1a1a', lw=5, capsize=16, capthick=5))
         if h2 == '|':
-            # manual BLACK vertical lines on white bar
-            bar_w = 0.62
-            x_left, x_right = xs[i] - bar_w / 2, xs[i] + bar_w / 2
-            n_vl = max(3, int(bar_w / 0.08) - 1)
-            xs_v = np.linspace(x_left, x_right, n_vl + 2)[1:-1]
-            ax2.vlines(xs_v, 0, r2_means[i], colors='#1a1a1a', linewidth=5, zorder=4)
+            bw      = 0.62
+            x_left  = xs[i] - bw / 2
+            bar_top = r2_means[i]
+            _clip_v = _mpl.patches.Rectangle((x_left, 0), bw, bar_top,
+                                              transform=ax2.transData)
+            ax2.add_patch(_clip_v); _clip_v.set_visible(False)
+            xs_v = np.linspace(x_left, xs[i] + bw / 2, 5)[1:-1]  # 3 lines
+            lc = ax2.vlines(xs_v, 0, bar_top, colors='#1a1a1a', linewidth=5, zorder=4)
+            lc.set_clip_path(_clip_v)
         elif h2 == '/':
-            # manual BLACK diagonal lines on white bar
-            bw       = 0.62
-            x_left_b = xs[i] - bw / 2
+            bw        = 0.62
+            x_left_b  = xs[i] - bw / 2
             x_right_b = xs[i] + bw / 2
-            bar_top  = r2_means[i]
-            dx_r2    = bw
-            sp_r2    = 0.12
-            for x_s in np.arange(x_left_b - dx_r2, x_right_b + sp_r2, sp_r2):
-                if dx_r2 < 1e-10 or bar_top < 1e-10:
-                    break
-                t_lo = max(0.0, (x_left_b  - x_s) / dx_r2)
-                t_hi = min(1.0, (x_right_b - x_s) / dx_r2)
+            bar_top   = r2_means[i]
+            dx_r2     = bw
+            _clip_d = _mpl.patches.Rectangle((x_left_b, 0), bw, bar_top,
+                                              transform=ax2.transData)
+            ax2.add_patch(_clip_d); _clip_d.set_visible(False)
+            # 4 lines with equal perpendicular spacing: parametrise by x-offset
+            # from the corner-to-corner diagonal (δ=-bw → left edge, δ=+bw → right edge)
+            N_diag = 4
+            for delta in np.linspace(-(N_diag - 1) / (N_diag + 1),
+                                      (N_diag - 1) / (N_diag + 1), N_diag) * bw:
+                _xs  = x_left_b + delta      # line runs from (_xs, 0) to (_xs+bw, bar_top)
+                t_lo = max(0.0, (x_left_b  - _xs) / bw)
+                t_hi = min(1.0, (x_right_b - _xs) / bw)
                 if t_lo >= t_hi:
                     continue
-                ax2.plot([x_s + t_lo * dx_r2, x_s + t_hi * dx_r2],
-                         [t_lo * bar_top,      t_hi * bar_top],
-                         color='#1a1a1a', lw=5, solid_capstyle='butt', zorder=4)
+                line, = ax2.plot([_xs + t_lo * bw, _xs + t_hi * bw],
+                                 [t_lo * bar_top,   t_hi * bar_top],
+                                 color='#1a1a1a', lw=5, solid_capstyle='butt', zorder=4)
+                line.set_clip_path(_clip_d)
 
     # permutation p-value stars — black
     for i, tgt in enumerate(targets):
