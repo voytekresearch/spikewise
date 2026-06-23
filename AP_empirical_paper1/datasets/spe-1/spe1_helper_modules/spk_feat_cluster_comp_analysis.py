@@ -771,8 +771,99 @@ def plot_feature_cluster_grid(df_master):
     return fig, ax
 
 
+def select_best_cells_per_feature(cluster_pickle_dir, n_per_feat=3,
+                                   skip_feats=None, min_n=30,
+                                   min_cluster_ratio=0.15,
+                                   min_spread=0.15,
+                                   prefer_bimodal=True):
+    """
+    For each spike feature, return the n_per_feat cells with the best-looking
+    cluster separation, scored as 1 - KDE_overlap between the lowest and
+    highest cluster.
+
+    Filters
+    -------
+    min_n             : minimum spikes per cluster (kills micro-cluster splinters)
+    min_cluster_ratio : smallest cluster must be >= this fraction of total spikes
+                        (kills dominant-cluster + tiny-splinter cases that look sus)
+    min_spread        : each cluster's std must be >= this fraction of the pooled std
+                        (kills spike-like degenerate distributions with near-zero variance)
+    prefer_bimodal    : rank 2-cluster cells before 3+ within each feature
+    """
+    from scipy.stats import gaussian_kde as _kde
+
+    if skip_feats is None:
+        skip_feats = {'spk_times_ms', 'spk_times_idx'}
+
+    scores = {}  # {feat: [(cell_id, separation_score, n_clusters)]}
+
+    for pkl_path in sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl'))):
+        cell_id = os.path.basename(pkl_path).replace('_cluster_df.pkl', '')
+        try:
+            df_cell = pd.read_pickle(pkl_path)
+        except Exception:
+            continue
+
+        for clust_col in [c for c in df_cell.columns if c.endswith('_cluster')]:
+            feat = clust_col.replace('_cluster', '')
+            if feat in skip_feats or feat not in df_cell.columns:
+                continue
+
+            grp_vals = {}
+            for grp in df_cell[clust_col].dropna().unique():
+                vals = df_cell.loc[df_cell[clust_col] == grp, feat].dropna()
+                if len(vals) >= min_n:
+                    grp_vals[grp] = vals.values
+
+            if len(grp_vals) < 2:
+                continue
+
+            # reject if smallest cluster is a tiny splinter
+            total = sum(len(v) for v in grp_vals.values())
+            if min(len(v) for v in grp_vals.values()) / total < min_cluster_ratio:
+                continue
+
+            # reject if any cluster has near-zero variance (spike-like KDE)
+            pooled_std = np.concatenate(list(grp_vals.values())).std()
+            if pooled_std < 1e-10 or any(
+                v.std() / pooled_std < min_spread for v in grp_vals.values()
+            ):
+                continue
+
+            sorted_grps = sorted(grp_vals, key=lambda g: grp_vals[g].mean())
+            lo, hi      = grp_vals[sorted_grps[0]], grp_vals[sorted_grps[-1]]
+            n_clusters  = len(grp_vals)
+
+            all_vals = np.concatenate([lo, hi])
+            pad      = (all_vals.max() - all_vals.min()) * 0.1
+            x_grid   = np.linspace(all_vals.min() - pad, all_vals.max() + pad, 500)
+            try:
+                kde_lo = _kde(lo, bw_method=0.3)(x_grid)
+                kde_hi = _kde(hi, bw_method=0.3)(x_grid)
+            except Exception:
+                continue
+
+            dx      = x_grid[1] - x_grid[0]
+            kde_lo /= kde_lo.sum() * dx
+            kde_hi /= kde_hi.sum() * dx
+            overlap  = np.minimum(kde_lo, kde_hi).sum() * dx
+            scores.setdefault(feat, []).append((cell_id, 1.0 - overlap, n_clusters))
+
+    result = {}
+    for feat, entries in scores.items():
+        if prefer_bimodal:
+            # bimodal (2 clusters) first, then trimodal; within each group sort by separation
+            entries = sorted(entries, key=lambda x: (0 if x[2] == 2 else 1, -x[1]))
+        else:
+            entries = sorted(entries, key=lambda x: -x[1])
+        result[feat] = [c for c, _, _ in entries[:n_per_feat]]
+    return result
+
+
 def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
-                                   min_cells=2, n_cols_per_row=14):
+                                   min_cells=2, n_cols_per_row=14,
+                                   cells_to_plot=None,
+                                   merged_rows=None):
     """
     Small-multiples grid of smooth KDE distributions split by cluster, all cells.
     Features with more than n_cols_per_row cells wrap onto multiple rows.
@@ -807,12 +898,32 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
     isi_feats = [f for f in clustered if f in ISI_FEATS]
     feat_order = wf_feats + isi_feats
 
+    # Features that appear in merged_rows are excluded from auto rows
+    merged_feats = set()
+    if merged_rows:
+        for mr in merged_rows:
+            for _, feat_name in mr['panels']:
+                merged_feats.add(feat_name)
+
     # Build row list with wrapping
-    row_groups = []   # (feat, cell_chunk, is_first_chunk, is_isi)
+    # row_groups entries: (feat_or_None, cells_or_pairs, is_first, is_isi)
+    # feat=None means a merged row; cells_or_pairs is [(cell_id, feat_name), ...]
+    row_groups = []
     n_wf_rows  = 0
     for feat in feat_order:
+        if feat in merged_feats:
+            continue
         is_isi = feat in ISI_FEATS
         cells  = clustered[feat]
+
+        # apply cells_to_plot filter (list = same for all feats; dict = per-feat)
+        if cells_to_plot is not None:
+            allowed = cells_to_plot.get(feat, []) if isinstance(cells_to_plot, dict) \
+                      else cells_to_plot
+            cells = [c for c in cells if c in allowed]
+        if not cells:
+            continue
+
         chunks = [cells[i:i + n_cols_per_row]
                   for i in range(0, len(cells), n_cols_per_row)]
         for ci, chunk in enumerate(chunks):
@@ -820,48 +931,63 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
             if not is_isi:
                 n_wf_rows += 1
 
-    n_rows  = len(row_groups)
-    label_w = 1.8
-    cell_w  = 1.1
-    cell_h  = 1.1
-    fig_w   = label_w + n_cols_per_row * cell_w + 0.3
-    fig_h   = n_rows * cell_h + 0.7
+    # Append merged rows (inserted just before ISI rows)
+    isi_rows   = [(f, c, fi, ii) for f, c, fi, ii in row_groups if ii]
+    row_groups = [(f, c, fi, ii) for f, c, fi, ii in row_groups if not ii]
+    if merged_rows:
+        for mr in merged_rows:
+            row_groups.append((None, mr['panels'], True, mr.get('is_isi', False)))
+            n_wf_rows += 1
+    row_groups += isi_rows
+
+    n_rows      = len(row_groups)
+    actual_cols = max(
+        (len(c) for _, c, _, _ in row_groups), default=1
+    )
+    label_w      = 3.0
+    cell_w       = 3.8
+    cell_h       = 2.6
+    fig_w        = label_w + actual_cols * cell_w + 0.4
+    fig_h        = n_rows  * cell_h + 1.0
 
     fig = plt.figure(figsize=(fig_w, fig_h))
     gs  = fig.add_gridspec(
-        n_rows, n_cols_per_row + 1,
+        n_rows, actual_cols + 1,
         left=label_w / fig_w,
         right=0.99, top=0.94, bottom=0.02,
-        hspace=0.4, wspace=0.08,
-        width_ratios=[0.001] + [1] * n_cols_per_row,
+        hspace=0.35, wspace=0.08,
+        width_ratios=[0.001] + [1] * actual_cols,
     )
 
     for ri, (feat, chunk, is_first, is_isi) in enumerate(row_groups):
-        clust_col  = feat + '_cluster'
+        is_merged  = feat is None   # merged row: chunk = [(cell_id, feat_name), ...]
         row_center = 1 - (ri + 0.5) / n_rows
 
         if is_first:
+            row_label = '' if is_merged else feat.replace('_', ' ')
             fig.text(
                 (label_w * 0.90) / fig_w, row_center,
-                feat, ha='right', va='center',
-                fontsize=20, fontweight='bold',
+                row_label, ha='right', va='center',
+                fontsize=26, fontweight='bold',
                 color='#B22222' if is_isi else 'black',
                 style='italic' if is_isi else 'normal',
             )
 
-        for ci, cell_id in enumerate(chunk):
-            ax = fig.add_subplot(gs[ri, ci + 1])
-            pkl_path = all_pkl.get(cell_id)
+        panels = chunk if is_merged else [(cid, feat) for cid in chunk]
+        for ci, (cell_id, panel_feat) in enumerate(panels):
+            clust_col = panel_feat + '_cluster'
+            ax        = fig.add_subplot(gs[ri, ci + 1])
+            pkl_path  = all_pkl.get(cell_id)
             if pkl_path is not None:
                 try:
                     df_cell = pd.read_pickle(pkl_path)
-                    if clust_col in df_cell.columns and feat in df_cell.columns:
-                        all_vals = df_cell[feat].dropna()
+                    if clust_col in df_cell.columns and panel_feat in df_cell.columns:
+                        all_vals = df_cell[panel_feat].dropna()
                         pad    = (all_vals.max() - all_vals.min()) * 0.08
                         x_grid = np.linspace(all_vals.min() - pad,
                                              all_vals.max() + pad, 300)
                         for grp in sorted(df_cell[clust_col].dropna().unique()):
-                            vals = df_cell.loc[df_cell[clust_col] == grp, feat].dropna()
+                            vals = df_cell.loc[df_cell[clust_col] == grp, panel_feat].dropna()
                             if len(vals) < 5:
                                 continue
                             y   = _kde(vals, bw_method=0.3)(x_grid)
@@ -875,10 +1001,15 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
             ax.set_yticks([])
             for sp in ax.spines.values():
                 sp.set_visible(False)
-            ax.set_facecolor('#f5f5f5' if not is_isi else '#fff0f0')
-            ax.set_title(cell_id, fontsize=13, pad=3, color='#444')
+            ax.set_facecolor('#dddddd' if is_isi else 'white')
+            # merged rows: show "feat label\ncell_id" so panels are self-labelled
+            if is_merged:
+                title = f'{panel_feat.replace("_", " ")}\n{cell_id}'
+            else:
+                title = cell_id
+            ax.set_title(title, fontsize=18, pad=4, color='#444', fontweight='bold')
 
-        for ci in range(len(chunk), n_cols_per_row):
+        for ci in range(len(panels), actual_cols):
             fig.add_subplot(gs[ri, ci + 1]).set_axis_off()
 
     # Separator between waveform and ISI sections
@@ -893,7 +1024,7 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
                   Patch(facecolor='#E69F00', label='mid cluster'),
                   Patch(facecolor='#CC79A7', label='high cluster')]
     fig.legend(handles=legend_els, loc='upper right',
-               bbox_to_anchor=(0.99, 1.0), fontsize=16, frameon=False, ncol=3)
+               bbox_to_anchor=(0.99, 1.0), fontsize=22, frameon=False, ncol=3)
     return fig
 
 
