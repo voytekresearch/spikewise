@@ -10,7 +10,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 from matplotlib.patches import Circle
-from scipy.stats import pearsonr, spearmanr, chi2_contingency, kruskal, mannwhitneyu
+from scipy.stats import pearsonr, spearmanr, chi2_contingency, kruskal, mannwhitneyu, gaussian_kde
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 from statsmodels.stats.multitest import multipletests
 from pop_ridge_utils import _stars
 
@@ -860,10 +862,34 @@ def select_best_cells_per_feature(cluster_pickle_dir, n_per_feat=3,
     return result
 
 
+CLUST_COLORS = {'low': '#0072B2', 'mid': '#E69F00', 'high': '#CC79A7'}
+
+
+def plot_cluster_legend(fontsize=30):
+    ph, pw, gap = 0.28, 0.06, 0.015
+    items = [
+        (0.02, 0.60, CLUST_COLORS['low'],  'low cluster'),
+        (0.68, 0.60, CLUST_COLORS['high'], 'high cluster'),
+        (0.35, 0.12, CLUST_COLORS['mid'],  'mid cluster'),
+    ]
+    fig = plt.figure(figsize=(8, 1.6))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis('off')
+    for x0, y0, color, label in items:
+        ax.add_patch(plt.Rectangle((x0, y0), pw, ph,
+                                   facecolor=color, transform=ax.transAxes))
+        ax.text(x0 + pw + gap, y0 + ph / 2, label, transform=ax.transAxes,
+                fontsize=fontsize, va='center', ha='left', color='black')
+    return fig
+
+
 def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
                                    min_cells=2, n_cols_per_row=14,
                                    cells_to_plot=None,
-                                   merged_rows=None):
+                                   merged_rows=None,
+                                   feature_order=None):
     """
     Small-multiples grid of smooth KDE distributions split by cluster, all cells.
     Features with more than n_cols_per_row cells wrap onto multiple rows.
@@ -871,12 +897,8 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
     spk_times_ms / spk_times_idx excluded.
     Colors: low=blue, mid=green, high=orange. Solid filled KDE curves.
     """
-    from scipy.stats import gaussian_kde as _kde
-    from matplotlib.patches import Patch
-
-    ISI_FEATS    = {'log_isi'}
-    SKIP_FEATS   = {'spk_times_ms', 'spk_times_idx'}
-    CLUST_COLORS = {'low': '#0072B2', 'mid': '#E69F00', 'high': '#CC79A7'}
+    ISI_FEATS  = {'log_isi'}
+    SKIP_FEATS = {'spk_times_ms', 'spk_times_idx'}
 
     df_num = df_master.copy()
     df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
@@ -896,7 +918,13 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
     wf_feats  = sorted([f for f in clustered if f not in ISI_FEATS],
                        key=lambda f: -len(clustered[f]))
     isi_feats = [f for f in clustered if f in ISI_FEATS]
-    feat_order = wf_feats + isi_feats
+
+    if feature_order is not None:
+        _explicit = [f for f in feature_order if f in clustered]
+        _rest     = [f for f in (wf_feats + isi_feats) if f not in set(_explicit)]
+        feat_order = _explicit + _rest
+    else:
+        feat_order = wf_feats + isi_feats
 
     # Features that appear in merged_rows are excluded from auto rows
     merged_feats = set()
@@ -944,39 +972,31 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
     actual_cols = max(
         (len(c) for _, c, _, _ in row_groups), default=1
     )
-    label_w      = 3.0
-    cell_w       = 3.8
-    cell_h       = 2.6
-    fig_w        = label_w + actual_cols * cell_w + 0.4
-    fig_h        = n_rows  * cell_h + 1.0
+    cell_w  = 3.8
+    cell_h  = 2.6
+    fig_w   = actual_cols * cell_w + 0.4
+    fig_h   = n_rows * cell_h + 1.0
+
+    GS_TOP    = 0.97
+    GS_BOTTOM = 0.02
+
+    def _fmt_lbl(s):
+        return '\n'.join(s.split())
 
     fig = plt.figure(figsize=(fig_w, fig_h))
     gs  = fig.add_gridspec(
-        n_rows, actual_cols + 1,
-        left=label_w / fig_w,
-        right=0.99, top=0.94, bottom=0.02,
-        hspace=0.35, wspace=0.08,
-        width_ratios=[0.001] + [1] * actual_cols,
+        n_rows, actual_cols,
+        left=0.20, right=0.99, top=GS_TOP, bottom=GS_BOTTOM,
+        hspace=0.35, wspace=0.28,
     )
 
     for ri, (feat, chunk, is_first, is_isi) in enumerate(row_groups):
-        is_merged  = feat is None   # merged row: chunk = [(cell_id, feat_name), ...]
-        row_center = 1 - (ri + 0.5) / n_rows
-
-        if is_first:
-            row_label = '' if is_merged else feat.replace('_', ' ')
-            fig.text(
-                (label_w * 0.90) / fig_w, row_center,
-                row_label, ha='right', va='center',
-                fontsize=26, fontweight='bold',
-                color='#B22222' if is_isi else 'black',
-                style='italic' if is_isi else 'normal',
-            )
+        is_merged = feat is None
 
         panels = chunk if is_merged else [(cid, feat) for cid in chunk]
         for ci, (cell_id, panel_feat) in enumerate(panels):
             clust_col = panel_feat + '_cluster'
-            ax        = fig.add_subplot(gs[ri, ci + 1])
+            ax        = fig.add_subplot(gs[ri, ci])
             pkl_path  = all_pkl.get(cell_id)
             if pkl_path is not None:
                 try:
@@ -990,7 +1010,7 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
                             vals = df_cell.loc[df_cell[clust_col] == grp, panel_feat].dropna()
                             if len(vals) < 5:
                                 continue
-                            y   = _kde(vals, bw_method=0.3)(x_grid)
+                            y   = gaussian_kde(vals, bw_method=0.3)(x_grid)
                             col = CLUST_COLORS.get(grp, '#888')
                             ax.fill_between(x_grid, y, color=col, alpha=1.0)
                             ax.plot(x_grid, y, color=col, lw=0.6)
@@ -1002,29 +1022,39 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
             for sp in ax.spines.values():
                 sp.set_visible(False)
             ax.set_facecolor('#dddddd' if is_isi else 'white')
-            # merged rows: show "feat label\ncell_id" so panels are self-labelled
-            if is_merged:
-                title = f'{panel_feat.replace("_", " ")}\n{cell_id}'
-            else:
-                title = cell_id
-            ax.set_title(title, fontsize=18, pad=4, color='#444', fontweight='bold')
+            ax.set_title(cell_id, fontsize=30, pad=4, color='#222', fontweight='bold')
+
+            if is_first and ci == 0:
+                if is_merged:
+                    _, first_feat = chunk[0]
+                    lbl   = _fmt_lbl(first_feat.replace('_', ' '))
+                    lcol  = 'black'
+                    lstyl = 'normal'
+                else:
+                    lbl   = _fmt_lbl(feat.replace('_', ' '))
+                    lcol  = '#B22222' if is_isi else 'black'
+                    lstyl = 'italic' if is_isi else 'normal'
+                ax.set_ylabel(lbl, fontsize=36, fontweight='bold', rotation=90,
+                              color=lcol, style=lstyl, labelpad=8,
+                              multialignment='center')
+
+            if is_merged and ci > 0:
+                ax.text(-0.05, 0.5, _fmt_lbl(panel_feat.replace('_', ' ')),
+                        transform=ax.transAxes, rotation=90,
+                        ha='center', va='center', fontsize=36, fontweight='bold',
+                        clip_on=False, color='black', multialignment='center')
 
         for ci in range(len(panels), actual_cols):
-            fig.add_subplot(gs[ri, ci + 1]).set_axis_off()
+            fig.add_subplot(gs[ri, ci]).set_axis_off()
 
     # Separator between waveform and ISI sections
     if wf_feats and isi_feats:
         sep_y = 1 - n_wf_rows / n_rows
         fig.add_artist(plt.Line2D(
-            [label_w / fig_w, 0.99], [sep_y, sep_y],
+            [0.12, 0.99], [sep_y, sep_y],
             color='#888', lw=1.0, ls='--', transform=fig.transFigure,
         ))
 
-    legend_els = [Patch(facecolor='#0072B2', label='low cluster'),
-                  Patch(facecolor='#E69F00', label='mid cluster'),
-                  Patch(facecolor='#CC79A7', label='high cluster')]
-    fig.legend(handles=legend_els, loc='upper right',
-               bbox_to_anchor=(0.99, 1.0), fontsize=22, frameon=False, ncol=3)
     return fig
 
 
