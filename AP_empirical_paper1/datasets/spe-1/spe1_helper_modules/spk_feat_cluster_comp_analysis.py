@@ -2059,9 +2059,14 @@ def plot_population_waveform_grid(
     priority_cells=None,
     nodrift_cells=None,
     cells_to_plot=None,
+    panels_to_plot=None,
     xlim=(-200, 200),
     cols=6,
     figsize_per_panel=(2.6, 2.0),
+    title_fontsize=13,
+    all_black=False,
+    facecolor='#f5f5f5',
+    show_legend=True,
 ):
     """
     Grid of peak-aligned average waveforms by cluster group for all (or selected) cells.
@@ -2111,20 +2116,37 @@ def plot_population_waveform_grid(
     pkl_files = sorted(wf_dir.glob("c*_cluster_waveforms.pkl"),
                        key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
 
-    # Build panels: (cnum, col, col_data)
-    panels = []
+    SKIP_WF_FEATS = {"log_isi", "spk_times_ms", "spk_times_idx"}
+
+    # Index all available waveform data keyed by (cnum, feat_name)
+    wf_index = {}
     for pkl in pkl_files:
         cnum = int(pkl.stem.split("_")[0].lstrip("c"))
-        if cells_to_plot is not None and cnum not in cells_to_plot:
-            continue
-        SKIP_WF_FEATS = {"log_isi", "spk_times_ms", "spk_times_idx"}
         wf_data = pickle.load(open(pkl, "rb"))
         for col, col_data in wf_data.items():
             feat_name = col.replace("_cluster", "")
-            if feat_name in SKIP_WF_FEATS:
+            if feat_name not in SKIP_WF_FEATS:
+                wf_index[(cnum, feat_name)] = (col, col_data)
+
+    # Build ordered panel list
+    if panels_to_plot is not None:
+        # Explicit (cnum, feat) pairs in the requested order
+        panels = []
+        for cnum, feat in panels_to_plot:
+            key = (cnum, feat)
+            if key in wf_index:
+                col, col_data = wf_index[key]
+                panels.append((cnum, col, col_data))
+            else:
+                print(f"Warning: no waveform data for c{cnum} {feat}")
+    else:
+        panels = []
+        for (cnum, feat_name), (col, col_data) in wf_index.items():
+            if cells_to_plot is not None and cnum not in cells_to_plot:
                 continue
             if len([k for k in col_data if k != "t_axis"]) >= 2:
                 panels.append((cnum, col, col_data))
+        panels.sort(key=lambda x: x[0])
 
     if not panels:
         print("No waveform panels found — run cluster notebooks first.")
@@ -2172,23 +2194,32 @@ def plot_population_waveform_grid(
         ax.set_xticks([])
         ax.set_yticks([])
 
-        feat = col.replace("_cluster", "")
-        title_color = "#D55E00" if is_prio else ("#009E73" if is_nd else "#444444")
-        ax.set_title(f"c{cnum} | {feat}", fontsize=13, fontweight="bold",
-                     color=title_color, pad=4)
+        feat = col.replace("_cluster", "").replace("_", " ")
+        tc = "black" if all_black else (
+            "#D55E00" if is_prio else ("#009E73" if is_nd else "#444444"))
 
-        ax.set_facecolor("#f5f5f5")
+        # Feature label (bigger), flush above axes
+        ax.text(0.5, 1.02, feat, transform=ax.transAxes,
+                fontsize=title_fontsize, fontweight='bold', color=tc,
+                ha='center', va='bottom', clip_on=False)
+        # Cell ID (smaller), above feature label
+        ax.text(0.5, 1.02 + title_fontsize / 72 / figsize_per_panel[1] * 1.35,
+                f"c{cnum}", transform=ax.transAxes,
+                fontsize=int(title_fontsize * 0.65), fontweight='bold', color=tc,
+                ha='center', va='bottom', clip_on=False)
+
+        ax.set_facecolor(facecolor)
         for spine in ax.spines.values():
             spine.set_visible(False)
 
     for ax in axes[len(panels):]:
         ax.set_visible(False)
 
-    from matplotlib.lines import Line2D
-    legend_els = [Line2D([0], [0], color=c, lw=2.5, label=lab)
-                  for lab, c in CLUSTER_COLORS.items()]
-    fig.legend(handles=legend_els, loc="lower right", fontsize=13,
-               frameon=False, ncol=3)
+    if show_legend:
+        legend_els = [Line2D([0], [0], color=c, lw=2.5, label=lab)
+                      for lab, c in CLUSTER_COLORS.items()]
+        fig.legend(handles=legend_els, loc="lower right", fontsize=title_fontsize,
+                   frameon=False, ncol=3)
 
     plt.tight_layout(h_pad=0.4, w_pad=0.3)
 
