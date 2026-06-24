@@ -2482,100 +2482,33 @@ def plot_within_vs_between_neuron_distances(df_master, wf_dir, half_win=75,
                       f"n={len(vals)}")
 
 
-def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
+def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75,
+                                 cache_dir=None, force_recompute=False):
     """
     Within  : each spike vs its own cell's mean waveform.
     Between : each spike from cell A vs the mean waveform of cell B
               (and vice versa), across all pairs.
 
     Both sides compare spikes to an average, making within and between
-    directly comparable.
+    directly comparable. Results cached to .npz after first run.
     """
     import pickle
     from pathlib import Path
 
-    spike_fit_dir = Path(spike_fit_dir)
-    spike_pkls = sorted(spike_fit_dir.glob("c*_spike_fit.pkl"),
-                        key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+    _cache_dir  = Path(cache_dir) if cache_dir else Path(wf_dir)
+    _cache_file = _cache_dir / "_spike_to_avg_distances_v2.npz"
+    _N_CACHE    = 200_000
+    _rng        = np.random.default_rng(42)
+    _npz_key    = lambda name: name.replace("\n", "_").replace("–", "-").replace(" ", "_")
 
-    # Load all cells: peak-align and trim both mean and spike matrix
-    cell_data = {}
-    for pkl in spike_pkls:
-        cnum    = int(pkl.stem.split("_")[0].lstrip("c"))
-        cell_id = f"c{cnum}"
-        try:
-            sp = pickle.load(open(pkl, "rb"))
-            W  = np.asarray(sp.spikes, float)
-        except Exception:
-            continue
-        avg      = W.mean(axis=0)
-        peak_idx = int(np.argmax(np.abs(avg)))
-        lo, hi   = peak_idx - half_win, peak_idx + half_win
-        if lo < 0 or hi > W.shape[1]:
-            continue
-        cell_data[cell_id] = (avg[lo:hi], W[:, lo:hi])
-
-    n_spikes_total = sum(v[1].shape[0] for v in cell_data.values())
-    print(f"Loaded {len(cell_data)} cells, {n_spikes_total:,} total spikes")
-
-    # ── Within: each spike vs own cell mean (vectorized per cell, all spikes) ──
-    within_nrmse_l, within_cos_l = [], []
-    for mean_wf, spikes in cell_data.values():
-        denom   = np.max(np.abs(mean_wf)) + 1e-12
-        diff    = spikes - mean_wf
-        nrmse   = np.sqrt(np.mean(diff ** 2, axis=1)) / denom
-        norm_s  = np.linalg.norm(spikes, axis=1)
-        norm_m  = np.linalg.norm(mean_wf) + 1e-12
-        cos     = (spikes @ mean_wf) / (norm_s * norm_m + 1e-12)
-        within_nrmse_l.append(nrmse)
-        within_cos_l.append(cos)
-    within_nrmse = np.concatenate(within_nrmse_l)
-    within_cos   = np.concatenate(within_cos_l)
-
-    # ── Between: each spike of A vs mean of B, and spikes of B vs mean of A ────
-    cell_ids = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
-    # pair_records: list of (ci, cj, nrmse_arr, cos_arr)
-    pair_records = []
-
-    for idx_i, ci in enumerate(cell_ids):
-        for idx_j, cj in enumerate(cell_ids):
-            if idx_j <= idx_i:
-                continue
-            mean_i, spikes_i = cell_data[ci]
-            mean_j, spikes_j = cell_data[cj]
-            denom = max(np.max(np.abs(mean_i)), np.max(np.abs(mean_j))) + 1e-12
-
-            diff_ij  = spikes_i - mean_j
-            nrmse_ij = np.sqrt(np.mean(diff_ij ** 2, axis=1)) / denom
-            norm_si  = np.linalg.norm(spikes_i, axis=1)
-            cos_ij   = (spikes_i @ mean_j) / (norm_si * (np.linalg.norm(mean_j) + 1e-12) + 1e-12)
-
-            diff_ji  = spikes_j - mean_i
-            nrmse_ji = np.sqrt(np.mean(diff_ji ** 2, axis=1)) / denom
-            norm_sj  = np.linalg.norm(spikes_j, axis=1)
-            cos_ji   = (spikes_j @ mean_i) / (norm_sj * (np.linalg.norm(mean_i) + 1e-12) + 1e-12)
-
-            pair_records.append((ci, cj,
-                                 np.concatenate([nrmse_ij, nrmse_ji]),
-                                 np.concatenate([cos_ij,   cos_ji])))
-
-    n_btw_total = sum(len(r[2]) for r in pair_records)
-    print(f"Between: {n_btw_total:,} spike-to-avg comparisons across {len(cell_ids)} cells")
-
-    # ── Metadata maps (per-cell, not per-spike) ─────────────────────────────────
+    # ── Metadata (always needed) ──────────────────────────────────────────────
     meta_cols = ["cell_id", "cell_type", "patch_type", "current_type"]
     cell_meta = df_master[meta_cols].drop_duplicates("cell_id").set_index("cell_id")
-    ct_map  = cell_meta["cell_type"].to_dict()
-    pt_map  = cell_meta["patch_type"].to_dict()
-    cur_map = cell_meta["current_type"].to_dict()
+    ct_map = cell_meta["cell_type"].to_dict()
+    pt_map = cell_meta["patch_type"].to_dict()
 
     def _method(pt):
         return "WC" if isinstance(pt, str) and "WC" in pt else "Juxta"
-
-    # Build per-group arrays by filtering pair_records (903 pairs, not 7M Python list ops)
-    def _group_vals(mask_fn, arr_idx):
-        arrs = [r[2 + arr_idx] for r in pair_records if mask_fn(r[0], r[1])]
-        return np.concatenate(arrs) if arrs else np.array([])
 
     all_fn  = lambda ci, cj: True
     pc_fn   = lambda ci, cj: ct_map.get(ci) == "PC"    and ct_map.get(cj) == "PC"
@@ -2583,11 +2516,127 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
     jux_fn  = lambda ci, cj: _method(pt_map.get(ci)) == "Juxta" and _method(pt_map.get(cj)) == "Juxta"
     wc_fn   = lambda ci, cj: _method(pt_map.get(ci)) == "WC"    and _method(pt_map.get(cj)) == "WC"
 
-    wc_nrmse = _group_vals(wc_fn, 0)
-    wc_entry = [("Between\nWC–WC", wc_fn, "#0072B2")] if len(wc_nrmse) >= 3 else []
+    _BTW_GROUPS = [
+        ("Between\n(all)",       all_fn),
+        ("Between\nPC–PC",       pc_fn),
+        ("Between\nIN–IN",       in_fn),
+        ("Between\nJuxta–Juxta", jux_fn),
+        ("Between\nWC–WC",       wc_fn),
+    ]
+
+    # ── Try cache ─────────────────────────────────────────────────────────────
+    if not force_recompute and _cache_file.exists():
+        print("[spike_to_avg] cache HIT — loading")
+        npz          = np.load(_cache_file, allow_pickle=False)
+        within_nrmse = npz["within_nrmse"]
+        within_rmse  = npz["within_rmse"]
+        within_cos   = npz["within_cos"]
+        has_wc       = bool(npz["has_wc"][0])
+        btw_nrmse    = {name: npz[_npz_key(name) + "_nrmse"] for name, _ in _BTW_GROUPS}
+        btw_rmse     = {name: npz[_npz_key(name) + "_rmse"]  for name, _ in _BTW_GROUPS}
+        btw_cos      = {name: npz[_npz_key(name) + "_cos"]   for name, _ in _BTW_GROUPS}
+    else:
+        # ── Load waveforms ────────────────────────────────────────────────────
+        spike_fit_path = Path(spike_fit_dir)
+        spike_pkls = sorted(spike_fit_path.glob("c*_spike_fit.pkl"),
+                            key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+        cell_data = {}
+        for pkl in spike_pkls:
+            cnum    = int(pkl.stem.split("_")[0].lstrip("c"))
+            cell_id = f"c{cnum}"
+            try:
+                sp = pickle.load(open(pkl, "rb"))
+                W  = np.asarray(sp.spikes, float)
+            except Exception:
+                continue
+            avg      = W.mean(axis=0)
+            peak_idx = int(np.argmax(np.abs(avg)))
+            lo, hi   = peak_idx - half_win, peak_idx + half_win
+            if lo < 0 or hi > W.shape[1]:
+                continue
+            cell_data[cell_id] = (avg[lo:hi], W[:, lo:hi])
+
+        n_spikes_total = sum(v[1].shape[0] for v in cell_data.values())
+        print(f"Loaded {len(cell_data)} cells, {n_spikes_total:,} total spikes")
+
+        # ── Within ────────────────────────────────────────────────────────────
+        within_nrmse_l, within_rmse_l, within_cos_l = [], [], []
+        for mean_wf, spikes in cell_data.values():
+            denom   = np.max(np.abs(mean_wf)) + 1e-12
+            diff    = spikes - mean_wf
+            rmse    = np.sqrt(np.mean(diff ** 2, axis=1))
+            nrmse   = rmse / denom
+            norm_s  = np.linalg.norm(spikes, axis=1)
+            norm_m  = np.linalg.norm(mean_wf) + 1e-12
+            cos     = (spikes @ mean_wf) / (norm_s * norm_m + 1e-12)
+            within_nrmse_l.append(nrmse)
+            within_rmse_l.append(rmse)
+            within_cos_l.append(cos)
+        within_nrmse = np.concatenate(within_nrmse_l)
+        within_rmse  = np.concatenate(within_rmse_l)
+        within_cos   = np.concatenate(within_cos_l)
+
+        # ── Between ───────────────────────────────────────────────────────────
+        cell_ids     = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
+        pair_records = []
+        for idx_i, ci in enumerate(cell_ids):
+            for idx_j, cj in enumerate(cell_ids):
+                if idx_j <= idx_i:
+                    continue
+                mean_i, spikes_i = cell_data[ci]
+                mean_j, spikes_j = cell_data[cj]
+                denom = max(np.max(np.abs(mean_i)), np.max(np.abs(mean_j))) + 1e-12
+
+                diff_ij  = spikes_i - mean_j
+                rmse_ij  = np.sqrt(np.mean(diff_ij ** 2, axis=1))
+                nrmse_ij = rmse_ij / denom
+                norm_si  = np.linalg.norm(spikes_i, axis=1)
+                cos_ij   = (spikes_i @ mean_j) / (norm_si * (np.linalg.norm(mean_j) + 1e-12) + 1e-12)
+
+                diff_ji  = spikes_j - mean_i
+                rmse_ji  = np.sqrt(np.mean(diff_ji ** 2, axis=1))
+                nrmse_ji = rmse_ji / denom
+                norm_sj  = np.linalg.norm(spikes_j, axis=1)
+                cos_ji   = (spikes_j @ mean_i) / (norm_sj * (np.linalg.norm(mean_i) + 1e-12) + 1e-12)
+
+                pair_records.append((ci, cj,
+                                     np.concatenate([nrmse_ij, nrmse_ji]),
+                                     np.concatenate([rmse_ij,  rmse_ji]),
+                                     np.concatenate([cos_ij,   cos_ji])))
+
+        n_btw_total = sum(len(r[2]) for r in pair_records)
+        print(f"Between: {n_btw_total:,} spike-to-avg comparisons across {len(cell_ids)} cells")
+
+        # pair_records cols: (ci, cj, nrmse_arr, rmse_arr, cos_arr)
+        def _group_vals(mask_fn, arr_idx):
+            arrs = [r[2 + arr_idx] for r in pair_records if mask_fn(r[0], r[1])]
+            return np.concatenate(arrs) if arrs else np.array([])
+
+        btw_nrmse = {name: _group_vals(fn, 0) for name, fn in _BTW_GROUPS}
+        btw_rmse  = {name: _group_vals(fn, 1) for name, fn in _BTW_GROUPS}
+        btw_cos   = {name: _group_vals(fn, 2) for name, fn in _BTW_GROUPS}
+        has_wc    = len(btw_nrmse["Between\nWC–WC"]) >= 3
+
+        # ── Save cache ────────────────────────────────────────────────────────
+        def _sample(arr):
+            return _rng.choice(arr, size=_N_CACHE, replace=False) if len(arr) > _N_CACHE else arr
+
+        save_dict = {
+            "within_nrmse": within_nrmse,
+            "within_rmse":  within_rmse,
+            "within_cos":   within_cos,
+            "has_wc":       np.array([int(has_wc)]),
+        }
+        for name, _ in _BTW_GROUPS:
+            save_dict[_npz_key(name) + "_nrmse"] = _sample(btw_nrmse[name])
+            save_dict[_npz_key(name) + "_rmse"]  = _sample(btw_rmse[name])
+            save_dict[_npz_key(name) + "_cos"]   = _sample(btw_cos[name])
+        np.savez(_cache_file, **save_dict)
+        print(f"[spike_to_avg] cached → {_cache_file.name}")
 
     # IC-IC and VC-VC omitted: current_type mixes Juxta and WC recording modalities,
     # making cross-modality pairs (Juxta-IC vs WC-IC) incomparable and inflating distances.
+    wc_entry = [("Between\nWC–WC", wc_fn, "#0072B2")] if has_wc else []
     group_defs = [
         ("Within\n(all)",        None,    "#555555"),
         ("Between\n(all)",       all_fn,  "#AAAAAA"),
@@ -2601,14 +2650,16 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
     PALETTE     = {g[0]: g[2] for g in group_defs}
     fw = max(10, len(group_defs) * 1.8)
 
-    for arr_idx, metric_label in [(0, "nRMSE"), (1, "Cos Sim")]:
-        # Full arrays per group (boxplot + stripplot + printed stats)
+    _within_map = {"nRMSE": within_nrmse, "RMSE": within_rmse, "Cos Sim": within_cos}
+    _btw_map    = {"nRMSE": btw_nrmse,    "RMSE": btw_rmse,    "Cos Sim": btw_cos}
+
+    for metric_label in ["nRMSE", "RMSE", "Cos Sim"]:
         full = {}
         for name, fn, _ in group_defs:
             if fn is None:
-                full[name] = within_nrmse if arr_idx == 0 else within_cos
+                full[name] = _within_map[metric_label]
             else:
-                full[name] = _group_vals(fn, arr_idx)
+                full[name] = _btw_map[metric_label][name]
 
         fig, ax = plt.subplots(figsize=(fw, 6))
         fig.suptitle(
@@ -2627,8 +2678,8 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
         sns.stripplot(data=plot_df, x="group", y="value", order=GROUP_ORDER,
                       palette=PALETTE, size=2, alpha=0.15, jitter=True, ax=ax)
 
-        if metric_label == "nRMSE":
-            ax.set_ylim(bottom=0, top=1.5)
+        if metric_label in ("nRMSE", "RMSE"):
+            ax.set_ylim(bottom=0)
 
         ax.axvline(1.5, color="#888888", lw=2.0, ls="--", alpha=0.7)
         ax.set_xlabel("")
@@ -2683,7 +2734,7 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
     _mode      = "detailed" if detailed else "simple"
 
     def _cache_path(feat):
-        return _cache_dir / f"_feat_wbwf_{_mode}_{feat}.npz"
+        return _cache_dir / f"_feat_wbwf2_{_mode}_{feat}.npz"
 
     _all_cached = all(_cache_path(f).exists() for f in (features or []))
     print(f"[spike_feature_wb] mode={_mode}  cache={'HIT — loading' if _all_cached and not force_recompute else 'MISS — computing (will cache after)'}")
@@ -2757,22 +2808,22 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
 
     def _get_plot_data(feat):
         cp = _cache_path(feat)
-        stat_keys  = [_npz_key(g[0]) + "_stats"  for g in GROUP_DEFS]
-        strip_keys = [_npz_key(g[0]) + "_strip"  for g in GROUP_DEFS]
-        clip_key   = "clip_top"
-        required   = stat_keys + strip_keys + [clip_key]
-
+        required = (
+            [_npz_key(g[0]) + "_nrmse_strip" for g in GROUP_DEFS] +
+            [_npz_key(g[0]) + "_rmse_strip"  for g in GROUP_DEFS] +
+            ["clip_nrmse", "clip_rmse"]
+        )
         if not force_recompute and cp.exists():
             npz = np.load(cp, allow_pickle=False)
             if all(k in npz for k in required):
                 print(f"  {feat}: loaded from cache")
-                stats  = {g[0]: npz[_npz_key(g[0]) + "_stats"]  for g in GROUP_DEFS}
-                strips = {g[0]: npz[_npz_key(g[0]) + "_strip"]  for g in GROUP_DEFS}
-                return stats, strips, float(npz[clip_key])
+                nrmse_strips = {g[0]: npz[_npz_key(g[0]) + "_nrmse_strip"] for g in GROUP_DEFS}
+                rmse_strips  = {g[0]: npz[_npz_key(g[0]) + "_rmse_strip"]  for g in GROUP_DEFS}
+                return nrmse_strips, float(npz["clip_nrmse"]), rmse_strips, float(npz["clip_rmse"])
 
         # For this feature: only cells that have its cluster column in the cluster_df
         feat_cluster_col = f"{feat}_cluster"
-        cell_wf_data = {}  # cid -> (mean_wf, spike_wf_matrix for spikes with this feature)
+        cell_wf_data = {}
         for p in pkl_paths:
             cid = p.stem.split("_")[0]
             if cid not in all_cell_waveforms:
@@ -2788,14 +2839,15 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
                 continue
             spk_ids = valid_rows["spk_id"].astype(int).values
             mean_wf, W_full = all_cell_waveforms[cid]
-            valid_ids_mask = spk_ids[spk_ids < W_full.shape[0]]
-            if len(valid_ids_mask) < 10:
+            valid_spk = spk_ids[spk_ids < W_full.shape[0]]
+            if len(valid_spk) < 10:
                 continue
-            cell_wf_data[cid] = (mean_wf, W_full[valid_ids_mask])
+            cell_wf_data[cid] = (mean_wf, W_full[valid_spk])
 
         valid_ids = sorted(cell_wf_data.keys(), key=lambda c: int(c.lstrip("c")))
 
-        group_parts = {g[0]: [] for g in GROUP_DEFS}
+        nrmse_parts = {g[0]: [] for g in GROUP_DEFS}
+        rmse_parts  = {g[0]: [] for g in GROUP_DEFS}
         for ci in valid_ids:
             mean_i, spikes_i = cell_wf_data[ci]
             for cj in valid_ids:
@@ -2803,109 +2855,99 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
                     continue
                 mean_j, _ = cell_wf_data[cj]
                 denom = max(np.max(np.abs(mean_i)), np.max(np.abs(mean_j))) + 1e-12
-                if ci == cj:
-                    diff = spikes_i - mean_i
-                else:
-                    diff = spikes_i - mean_j
-                vals = np.sqrt(np.mean(diff ** 2, axis=1)) / denom
+                diff  = spikes_i - (mean_i if ci == cj else mean_j)
+                rmse  = np.sqrt(np.mean(diff ** 2, axis=1))
+                nrmse = rmse / denom
                 for name, fn, _ in GROUP_DEFS:
                     if fn(ci, cj):
-                        group_parts[name].append(vals)
+                        nrmse_parts[name].append(nrmse)
+                        rmse_parts[name].append(rmse)
 
-        all_vals_list = []
-        stats, strips = {}, {}
-        for name, parts in group_parts.items():
-            if parts:
-                v = np.concatenate(parts)
-                stats[name]  = _box_stats(v)
-                strips[name] = rng.choice(v, size=min(len(v), _N_STRIP), replace=False)
-                all_vals_list.append(v)
+        nrmse_strips, rmse_strips = {}, {}
+        nrmse_all, rmse_all = [], []
+        for name, _ in [(g[0], None) for g in GROUP_DEFS]:
+            if nrmse_parts[name]:
+                nv = np.concatenate(nrmse_parts[name])
+                rv = np.concatenate(rmse_parts[name])
+                nrmse_strips[name] = rng.choice(nv, size=min(len(nv), _N_STRIP), replace=False)
+                rmse_strips[name]  = rng.choice(rv, size=min(len(rv), _N_STRIP), replace=False)
+                nrmse_all.append(nv); rmse_all.append(rv)
                 print(f"  {feat:20s} {name.replace(chr(10),' '):22s}: "
-                      f"median={np.median(v):.4g}  "
-                      f"IQR=[{np.percentile(v,25):.4g}, {np.percentile(v,75):.4g}]  "
-                      f"n={len(v):,}")
+                      f"nRMSE median={np.median(nv):.4g}  RMSE median={np.median(rv):.4g}  n={len(nv):,}")
             else:
-                stats[name]  = np.zeros(5)
-                strips[name] = np.array([])
+                nrmse_strips[name] = np.array([])
+                rmse_strips[name]  = np.array([])
 
-        clip_top = float(np.percentile(np.concatenate(all_vals_list), 99)) if all_vals_list else 1.0
+        clip_nrmse = float(np.percentile(np.concatenate(nrmse_all), 99)) if nrmse_all else 1.0
+        clip_rmse  = float(np.percentile(np.concatenate(rmse_all),  99)) if rmse_all  else 1.0
 
-        save_dict = {_npz_key(k) + "_stats":  v for k, v in stats.items()}
-        save_dict.update({_npz_key(k) + "_strip": v for k, v in strips.items()})
-        save_dict[clip_key] = np.array([clip_top])
+        save_dict = {"clip_nrmse": np.array([clip_nrmse]), "clip_rmse": np.array([clip_rmse])}
+        for g in GROUP_DEFS:
+            save_dict[_npz_key(g[0]) + "_nrmse_strip"] = nrmse_strips[g[0]]
+            save_dict[_npz_key(g[0]) + "_rmse_strip"]  = rmse_strips[g[0]]
         np.savez(cp, **save_dict)
         print(f"  {feat}: cached → {cp.name}")
-        return stats, strips, clip_top
+        return nrmse_strips, clip_nrmse, rmse_strips, clip_rmse
 
-    def _plot_one(ax, stats, strips, clip_top, feat, title=None):
-        # Boxplot from pre-computed stats using ax.bxp()
-        bxp_stats = []
-        for name, _, _ in GROUP_DEFS:
-            s = stats[name]
-            bxp_stats.append(dict(med=s[1], q1=s[0], q3=s[2],
-                                  whislo=s[3], whishi=s[4], fliers=[]))
-        bxp = ax.bxp(bxp_stats, showfliers=False, widths=0.55,
-                     patch_artist=True, medianprops=dict(color="white", lw=2))
-        for patch, (_, _, color) in zip(bxp["boxes"], GROUP_DEFS):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.85)
-        for element in ["whiskers", "caps"]:
-            for line, (_, _, color) in zip(
-                [bxp[element][i*2] for i in range(len(GROUP_DEFS))], GROUP_DEFS
-            ):
-                line.set_color(color)
-
-        # Stripplot from stored samples
-        rng2 = np.random.default_rng(42)
-        for i, (name, _, color) in enumerate(GROUP_DEFS):
-            samp = strips[name]
-            if len(samp):
-                jitter = rng2.uniform(-0.2, 0.2, size=len(samp))
-                ax.scatter(i + jitter, samp, color=color, s=9, alpha=0.45,
-                           linewidths=0, zorder=2)
-
-        ax.set_xticks(range(len(GROUP_ORDER)))
-        ax.set_xticklabels(GROUP_ORDER, fontsize=9)
+    def _plot_one(ax, strips, clip_top, title, metric_label):
+        plot_df = pd.concat(
+            [pd.DataFrame({"group": name, "value": strips[name]})
+             for name, _, _ in GROUP_DEFS if len(strips[name])],
+            ignore_index=True,
+        )
+        present = [g for g in GROUP_ORDER if g in plot_df["group"].values]
+        sns.boxplot(data=plot_df, x="group", y="value", order=present,
+                    palette=PALETTE, showfliers=False, width=0.55,
+                    linewidth=2.5, ax=ax)
+        sns.stripplot(data=plot_df, x="group", y="value", order=present,
+                      palette=PALETTE, size=3, alpha=0.45, jitter=True, ax=ax)
         ax.set_ylim(bottom=0, top=clip_top * 1.05)
-
         if detailed:
             ax.axvline(1.5, color="#888888", lw=1.5, ls="--", alpha=0.7)
-            _add_group_category_labels(ax, GROUP_ORDER)
+            _add_group_category_labels(ax, present)
         ax.set_xlabel("")
-        ax.set_ylabel("nRMSE", fontsize=11)
-        if title:
-            ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.set_ylabel(metric_label, fontsize=11)
+        ax.set_title(title, fontsize=12, fontweight="bold")
         ax.tick_params(axis="both", labelsize=9)
         sns.despine(ax=ax)
 
     # ── Render ───────────────────────────────────────────────────────────────
+    fw = max(10, len(GROUP_DEFS) * 1.8)
     if detailed:
         for feat in features:
-            stats, strips, clip_top = _get_plot_data(feat)
-            if not stats:
+            result = _get_plot_data(feat)
+            if not result:
                 continue
-            fw = max(10, len(GROUP_DEFS) * 1.8)
-            fig, ax = plt.subplots(figsize=(fw, 5))
-            fig.suptitle(f"Spike feature within vs between — {feat}",
-                         fontsize=16, fontweight="bold")
-            _plot_one(ax, stats, strips, clip_top, feat)
-            plt.tight_layout()
-            fig.subplots_adjust(bottom=0.28)
-            plt.show()
+            nrmse_strips, clip_nrmse, rmse_strips, clip_rmse = result
+            for strips, clip, mlabel in [
+                (nrmse_strips, clip_nrmse, "nRMSE"),
+                (rmse_strips,  clip_rmse,  "RMSE"),
+            ]:
+                fig, ax = plt.subplots(figsize=(fw, 5))
+                fig.suptitle(f"Spike waveform within vs between — {feat} ({mlabel})",
+                             fontsize=16, fontweight="bold")
+                _plot_one(ax, strips, clip, feat, mlabel)
+                plt.tight_layout()
+                fig.subplots_adjust(bottom=0.28)
+                plt.show()
     else:
-        fig, axes = plt.subplots(1, len(features), figsize=(3.5 * len(features), 5), sharey=False)
-        if len(features) == 1:
-            axes = [axes]
-        for ax, feat in zip(axes, features):
-            stats, strips, clip_top = _get_plot_data(feat)
-            if not stats:
-                ax.set_visible(False)
-                continue
-            _plot_one(ax, stats, strips, clip_top, feat, title=feat)
-        fig.suptitle("Spike feature: within-cell vs between-cell distances",
-                     fontsize=15, fontweight="bold")
-        plt.tight_layout()
-        plt.show()
+        for mlabel, metric_idx in [("nRMSE", 0), ("RMSE", 1)]:
+            fig, axes = plt.subplots(1, len(features), figsize=(3.5 * len(features), 5), sharey=False)
+            if len(features) == 1:
+                axes = [axes]
+            for ax, feat in zip(axes, features):
+                result = _get_plot_data(feat)
+                if not result:
+                    ax.set_visible(False)
+                    continue
+                nrmse_strips, clip_nrmse, rmse_strips, clip_rmse = result
+                strips = nrmse_strips if metric_idx == 0 else rmse_strips
+                clip   = clip_nrmse   if metric_idx == 0 else clip_rmse
+                _plot_one(ax, strips, clip, feat, mlabel)
+            fig.suptitle(f"Spike waveform: within-cell vs between-cell ({mlabel})",
+                         fontsize=15, fontweight="bold")
+            plt.tight_layout()
+            plt.show()
 
 
 # ── Temporal transition detection ─────────────────────────────────────────────
