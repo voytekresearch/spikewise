@@ -2652,13 +2652,14 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75):
                       f"n={len(vals)}")
 
 
-def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
-                                          detailed=False, df_master=None,
-                                          cache_dir=None, force_recompute=False):
+def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
+                                          features=None, detailed=False,
+                                          df_master=None, cache_dir=None,
+                                          force_recompute=False, half_win=75):
     """
-    For each spike waveform feature:
-      within  = |spike - own_cell_mean|
-      between = |spike - other_cell_mean| for every j≠i
+    For each spike waveform feature (only cells that have clustering for that feature):
+      within  = waveform nRMSE of each spike vs its own cell's mean waveform
+      between = waveform nRMSE of each spike vs every other cell's mean waveform
 
     detailed=False : one figure with all features as subplots, two groups (Within / Between).
     detailed=True  : one figure per feature, groups broken out by cell type and patch type.
@@ -2682,13 +2683,32 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
     _mode      = "detailed" if detailed else "simple"
 
     def _cache_path(feat):
-        return _cache_dir / f"_feat_wb_{_mode}_{feat}.npz"
+        return _cache_dir / f"_feat_wbwf_{_mode}_{feat}.npz"
 
     _all_cached = all(_cache_path(f).exists() for f in (features or []))
     print(f"[spike_feature_wb] mode={_mode}  cache={'HIT — loading' if _all_cached and not force_recompute else 'MISS — computing (will cache after)'}")
 
     rng      = np.random.default_rng(0)
     _N_STRIP = 2000
+
+    # ── Pre-load all waveforms from spike_fit pickles (done once) ────────────
+    spike_fit_dir = Path(spike_fit_dir)
+    all_cell_waveforms = {}  # cid -> (mean_wf[half_win*2], W[n_spikes, half_win*2])
+    for sp_pkl in sorted(spike_fit_dir.glob("c*_spike_fit.pkl"),
+                         key=lambda p: int(p.stem.split("_")[0].lstrip("c"))):
+        cid = sp_pkl.stem.split("_")[0]
+        try:
+            sp = pickle.load(open(sp_pkl, "rb"))
+            W  = np.asarray(sp.spikes, float)
+        except Exception:
+            continue
+        avg      = W.mean(axis=0)
+        peak_idx = int(np.argmax(np.abs(avg)))
+        lo, hi   = peak_idx - half_win, peak_idx + half_win
+        if lo < 0 or hi > W.shape[1]:
+            continue
+        all_cell_waveforms[cid] = (avg[lo:hi], W[:, lo:hi])
+    print(f"Loaded waveforms for {len(all_cell_waveforms)} cells")
 
     # ── Metadata for detailed mode ───────────────────────────────────────────
     cell_ids_all = sorted(
@@ -2725,12 +2745,9 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
 
     GROUP_ORDER = [g[0] for g in GROUP_DEFS]
     PALETTE     = {g[0]: g[2] for g in GROUP_DEFS}
-    # Sanitised key for npz (no special chars)
     _npz_key = lambda name: name.replace("\n", "_").replace("–", "-").replace(" ", "_")
 
     # ── Per-feature: load plot-ready stats from cache or compute ─────────────
-    # Cache stores only: boxplot stats (5 numbers) + 2000-pt strip sample per group.
-    # Files are ~50 KB each — loads in milliseconds.
     def _box_stats(vals):
         q1, med, q3 = np.percentile(vals, [25, 50, 75])
         iqr = q3 - q1
@@ -2753,30 +2770,44 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
                 strips = {g[0]: npz[_npz_key(g[0]) + "_strip"]  for g in GROUP_DEFS}
                 return stats, strips, float(npz[clip_key])
 
-        # Load cell data for this feature only
-        cell_data_feat, cell_means_feat = {}, {}
+        # For this feature: only cells that have its cluster column in the cluster_df
+        feat_cluster_col = f"{feat}_cluster"
+        cell_wf_data = {}  # cid -> (mean_wf, spike_wf_matrix for spikes with this feature)
         for p in pkl_paths:
             cid = p.stem.split("_")[0]
+            if cid not in all_cell_waveforms:
+                continue
             try:
                 df = pickle.load(open(p, "rb"))
-                if feat not in df.columns:
-                    continue
-                arr = df[feat].dropna().values
-                if len(arr) >= 10:
-                    cell_data_feat[cid] = arr
-                    cell_means_feat[cid] = float(np.mean(arr))
             except Exception:
                 continue
+            if feat_cluster_col not in df.columns:
+                continue
+            valid_rows = df.loc[df[feat_cluster_col].notna()]
+            if len(valid_rows) < 10:
+                continue
+            spk_ids = valid_rows["spk_id"].astype(int).values
+            mean_wf, W_full = all_cell_waveforms[cid]
+            valid_ids_mask = spk_ids[spk_ids < W_full.shape[0]]
+            if len(valid_ids_mask) < 10:
+                continue
+            cell_wf_data[cid] = (mean_wf, W_full[valid_ids_mask])
 
-        valid_ids = sorted(cell_data_feat.keys(), key=lambda c: int(c.lstrip("c")))
+        valid_ids = sorted(cell_wf_data.keys(), key=lambda c: int(c.lstrip("c")))
 
         group_parts = {g[0]: [] for g in GROUP_DEFS}
         for ci in valid_ids:
-            arr_i = cell_data_feat[ci]
+            mean_i, spikes_i = cell_wf_data[ci]
             for cj in valid_ids:
-                if cj not in cell_means_feat:
+                if cj not in cell_wf_data:
                     continue
-                vals = np.abs(arr_i - cell_means_feat[cj])
+                mean_j, _ = cell_wf_data[cj]
+                denom = max(np.max(np.abs(mean_i)), np.max(np.abs(mean_j))) + 1e-12
+                if ci == cj:
+                    diff = spikes_i - mean_i
+                else:
+                    diff = spikes_i - mean_j
+                vals = np.sqrt(np.mean(diff ** 2, axis=1)) / denom
                 for name, fn, _ in GROUP_DEFS:
                     if fn(ci, cj):
                         group_parts[name].append(vals)
@@ -2841,7 +2872,7 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, features=None,
             ax.axvline(1.5, color="#888888", lw=1.5, ls="--", alpha=0.7)
             _add_group_category_labels(ax, GROUP_ORDER)
         ax.set_xlabel("")
-        ax.set_ylabel(feat if detailed else "absolute deviation", fontsize=11)
+        ax.set_ylabel("nRMSE", fontsize=11)
         if title:
             ax.set_title(title, fontsize=12, fontweight="bold")
         ax.tick_params(axis="both", labelsize=9)
