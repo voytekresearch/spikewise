@@ -29,9 +29,15 @@ import pickle
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+import seaborn as sns
+import mne
 from scipy import stats
+from scipy.stats import binomtest
+from specparam import SpectralModel
 from statsmodels.stats.multitest import fdrcorrection
 from tqdm import tqdm
+from IPython.display import display, HTML
 
 
 def _fmt_p(p):
@@ -59,17 +65,24 @@ def _fmt_p_stars(p):
 
 
 def _binom_p(k, n, p, alternative='two-sided'):
-    """Binomial test wrapper — handles both old (binom_test) and new (binomtest) scipy API."""
-    try:
-        from scipy.stats import binomtest
-        return float(binomtest(k, n, p, alternative=alternative).pvalue)
-    except ImportError:
-        return float(stats.binom_test(k, n, p, alternative=alternative))
+    return float(binomtest(k, n, p, alternative=alternative).pvalue)
 
 from ridge_regression_utils import (
     load_cell_data, build_ridge_matrices, get_predictions,
     WAVEFORM_LABELS, WAVEFORM_COLS, FEAT_LABELS,
 )
+
+# Consistent with pvc-6 _FEATURE_COLOR_MAP (C3/C4/C6 from default mpl cycle)
+_WAVEFORM_COLOR_MAP = {
+    'Ramp Amp':    'C4',
+    'Infl. Time':  'C3',
+    'Infl. Amp':   'C3',
+    'Peak Amp':    'C5',
+    'Peak Width':  'C5',
+    'Sharpness':   'C5',
+    'Decay λ':     'C6',
+    'Decay Const': 'C6',
+}
 
 
 # ── Load ──────────────────────────────────────────────────────────────────────
@@ -132,7 +145,6 @@ def merge_hpf_targets(pickle_dir, feat_labels):
     target_labels  : list[str]  14 display labels
     predictor_sets : list[str]
     """
-    import glob
 
     HPF_AMP_STD = {'pre_lfp_amp', 'pre_lfp_std', 'post_lfp_amp', 'post_lfp_std'}
 
@@ -429,7 +441,6 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
         Output of run_r2_tests(). If provided, its sig_r2 flag overrides df_frac
         for the R² heatmap '*' marker (preferred — more meaningful test).
     """
-    import seaborn as sns
 
     n_t = len(target_names)
     n_p = len(predictor_sets)
@@ -591,7 +602,6 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
     Reads y_actual/y_pred saved in each cell's pickle — no cell data reloading needed.
     Only includes cells where the Waveform-only model was significant.
     """
-    import seaborn as sns
     sns.set_theme(style='ticks', font_scale=1.8, rc={
         'axes.linewidth':    4.0,
         'xtick.major.width': 4.0,
@@ -799,7 +809,6 @@ def plot_beta_distributions(beta_pop, df_tests, target_names, target_labels,
                'original' — keep original target_names order
     r2_pop   : output of aggregate_population; required when sort_by='mean_r2'
     """
-    import seaborn as sns
 
     if features is None:
         features = WAVEFORM_LABELS
@@ -901,18 +910,9 @@ def plot_beta_significant_summary(df_tests, target_names, target_labels):
     predict which LFP targets, and the *direction* of that relationship
     (blue stem/dot = β > 0,  orange = β < 0). Stars mark significance level.
     """
-    import seaborn as sns
 
-    sns.set_theme(style='ticks', font_scale=1.8, rc={
-        'axes.linewidth':    4.0,
-        'xtick.major.width': 4.0,
-        'ytick.major.width': 4.0,
-        'xtick.major.size':  9,
-        'ytick.major.size':  9,
-        'lines.linewidth':   4.0,
-    })
-    _FS_SM, _FS_AX, _FS_SUB = 20, 24, 28
-    pos_color, neg_color = '#0072B2', '#D55E00'  # Okabe-Ito blue / vermillion (colour-blind safe)
+    sns.set_theme(style='ticks', rc={'axes.linewidth': 2.5})
+    _FS_ROW, _FS_AX, _FS_STAR = 46, 50, 64
 
     df = df_tests[df_tests['sig_ttest'] &
                   ~df_tests['target_label'].str.contains(r'\(HPF\)')].copy()
@@ -924,42 +924,71 @@ def plot_beta_significant_summary(df_tests, target_names, target_labels):
     df = df.sort_values('abs_beta', ascending=True).reset_index(drop=True)
 
     n = len(df)
-    fig, ax = plt.subplots(figsize=(13, max(6, n * 0.62)))
+    fig, ax = plt.subplots(figsize=(22, max(8, n * 1.1)))
+
+    ci95 = df['sem_beta'] * stats.t.ppf(0.975, (df['n'] - 1).clip(lower=1))
 
     y      = np.arange(n)
-    colors = [pos_color if b >= 0 else neg_color for b in df['mean_beta']]
-    ax.hlines(y, 0, df['mean_beta'], color=colors, linewidth=5.0, alpha=0.85, zorder=2)
-    ax.scatter(df['mean_beta'], y, s=220, color=colors, edgecolor='black',
-               linewidth=2.5, zorder=3)
+    colors = [_WAVEFORM_COLOR_MAP.get(feat, '#888') for feat in df['feature']]
+    ax.hlines(y, 0, df['mean_beta'], color=colors, linewidth=8.0, alpha=0.85, zorder=2)
+    for yi, (b, ci, col) in enumerate(zip(df['mean_beta'], ci95, colors)):
+        ax.errorbar(b, yi, xerr=ci, fmt='none',
+                    ecolor='black', elinewidth=1.2, capsize=7, capthick=1.2, zorder=4)
+    ax.scatter(df['mean_beta'], y, s=1100, color=colors, edgecolor='black',
+               linewidth=2.0, zorder=5)
 
-    x_pad = df['mean_beta'].abs().max() * 0.025
-    for yi, (b, star) in enumerate(zip(df['mean_beta'], df['stars_ttest'])):
-        ax.text(b + (x_pad if b >= 0 else -x_pad), yi, star,
+    # stars at outer CI cap end, vertically centred on the row
+    x_range  = df['mean_beta'].abs().max() + ci95.max()
+    x_pad    = x_range * 0.04
+    ci95_vals = ci95.values
+    for yi, (b, ci, star) in enumerate(zip(df['mean_beta'], ci95_vals, df['stars_ttest'])):
+        cap_x = b + ci if b >= 0 else b - ci
+        ax.text(cap_x + (x_pad if b >= 0 else -x_pad), yi - 0.15, star,
                 ha='left' if b >= 0 else 'right', va='center',
-                fontsize=_FS_AX + 6, fontweight='bold', color='black')
+                fontsize=_FS_STAR, fontweight='bold', color='black')
 
-    ax.axvline(0, color='black', lw=3.0, ls='--', alpha=0.6)
+    # xlim: leave generous room on left for negative CI + stars
+    neg_ci_min = float((df['mean_beta'] - ci95).min())
+    pos_ci_max = float((df['mean_beta'] + ci95).max())
+    xlim_left  = neg_ci_min - abs(neg_ci_min) * 1.6   # 160 % of neg extent
+    xlim_right = pos_ci_max + abs(pos_ci_max) * 0.4
+    ax.set_xlim(xlim_left, xlim_right)
+
+    # 4 clean ticks: one negative, zero, two positive
+    ax.set_xticks([-0.025, 0.0, 0.025, 0.05])
+
+    ax.axvline(0, color='black', lw=5.0, ls='--', alpha=0.7)
+    ax.xaxis.set_major_formatter(plt.FormatStrFormatter('%.2f'))
     ax.set_yticks(y)
-    ax.set_yticklabels(df['row_label'], fontsize=_FS_SM, color='black')
-    ax.set_xlabel('Mean β  (standardized units)', fontsize=_FS_AX, color='black')
+    ax.set_yticklabels(df['row_label'], fontsize=_FS_ROW, color='black')
+    ax.set_xlabel('Mean β  (standardized units)', fontsize=_FS_AX,
+                  fontweight='bold', color='black', labelpad=14)
     ax.set_title('Population-significant spike-waveform → LFP relationships\n'
                  '* = one-sample t-test, mean β ≠ 0 (p < 0.05)',
-                 fontsize=_FS_SUB, fontweight='bold', color='black', pad=22)
-    ax.tick_params(axis='both', labelsize=_FS_SM, colors='black')
-
-    handles = [plt.Line2D([0], [0], marker='o', linestyle='', color=pos_color,
-                          markeredgecolor='black', markeredgewidth=2.0, markersize=16,
-                          label='Positive β'),
-               plt.Line2D([0], [0], marker='o', linestyle='', color=neg_color,
-                          markeredgecolor='black', markeredgewidth=2.0, markersize=16,
-                          label='Negative β')]
-    leg = ax.legend(handles=handles, fontsize=_FS_SM, frameon=False, loc='lower right')
-    for text in leg.get_texts():
-        text.set_color('black')
-
+                 fontsize=_FS_AX, fontweight='bold', color='black', pad=22)
+    ax.tick_params(axis='x', labelsize=_FS_ROW, colors='black', pad=10,
+                   width=3.0, length=10)
+    ax.tick_params(axis='y', left=False)
+    ax.spines['bottom'].set_linewidth(3.0)
+    ax.spines['left'].set_linewidth(4.5)
     sns.despine(ax=ax)
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.42, right=0.92, bottom=0.15, top=0.88)
     plt.show()
+
+    # separate legend — one entry per unique feature in this plot
+    seen, handles = set(), []
+    for feat, col in zip(df['feature'], colors):
+        if feat not in seen:
+            seen.add(feat)
+            handles.append(plt.Line2D([0], [0], marker='o', linestyle='', color=col,
+                                      markeredgecolor='black', markeredgewidth=2.0,
+                                      markersize=24, label=feat))
+    fig_leg, ax_leg = plt.subplots(figsize=(4, max(1.5, len(handles) * 0.8)))
+    ax_leg.axis('off')
+    ax_leg.legend(handles=handles, fontsize=_FS_ROW, frameon=False, loc='center')
+    plt.tight_layout()
+    plt.show()
+
     return fig, ax
 
 
@@ -976,7 +1005,6 @@ def plot_beta_full_summary(df_tests, target_names, target_labels,
     every (target × feature) row is shown, significant or not — useful for
     seeing the full beta profile of a target rather than only its hits.
     """
-    import seaborn as sns
 
     sns.set_theme(style='ticks', font_scale=1.8, rc={
         'axes.linewidth':    4.0,
@@ -1065,7 +1093,6 @@ def plot_beta_heterogeneity(beta_pop, target_names, target_labels, features=None
     push the prediction up in one cell and down in another (β straddles zero).
     Dots are coloured by sign (blue = positive β, orange = negative β).
     """
-    import seaborn as sns
 
     sns.set_theme(style='ticks', font_scale=1.8, rc={
         'axes.linewidth':    4.0,
@@ -1139,7 +1166,6 @@ def plot_r2_distributions(r2_pop, sig_pop, target_names, target_labels,
     sort_by     : predictor set name used to determine row order (default 'Waveform only')
     min_r2_line : draws a vertical reference line at this R² value (practical significance floor)
     """
-    import seaborn as sns
 
     rng   = np.random.default_rng(0)
     n_t   = len(target_names)
@@ -1241,12 +1267,6 @@ def show_beta_tables(df_tests, sig_r2_targets, target_names, target_labels,
                        adds mean and median CV R² column to the table caption
     predictor_set    : str  used to look up R² from r2_pop
     """
-    try:
-        from IPython.display import display, HTML
-    except ImportError:
-        display = print
-        HTML = lambda x: x
-
     tl_map = dict(zip(target_names, target_labels))
     for tn in sig_r2_targets:
         tl = tl_map.get(tn, tn)
@@ -1297,7 +1317,6 @@ def plot_r2_summary(r2_pop, df_r2, target_names, target_labels,
     target_labels : list[str]
     predictor_set : str
     """
-    import seaborn as sns
 
     means, sems, pvals, sig_flags = [], [], [], []
     for tn in target_names:
@@ -1399,7 +1418,6 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
     predictor_set          : str  the main model
     control_predictor_set  : str  the control comparison
     """
-    import seaborn as sns
 
     sns.set_theme(style='ticks', rc={'axes.linewidth': 2.5})
     _FS_TICK, _FS_AX, _FS_ANNOT = 26, 30, 22
@@ -1465,18 +1483,25 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
         ax.axhline(0, color='gray', linestyle='--', linewidth=2.0, alpha=0.6)
         ax.set_ylim(*ylim)
 
-        annot_y = ylim[1] * 0.92
+        y_wf  = ylim[1] * 0.97
+        y_ctl = ylim[1] * 0.82
         for fi, feat in enumerate(feats):
-            tn = win_feat_tn[win][feat]
-            for hi, pn in enumerate(model_order):
-                sig_arr  = np.asarray(sig_pop[tn][pn], dtype=bool)
-                frac_sig = float(sig_arr.mean()) if len(sig_arr) else np.nan
-                row = df_r2[(df_r2['target'] == tn) & (df_r2['predictor_set'] == pn)]
-                star = row.iloc[0]['stars'] if len(row) and row.iloc[0]['sig_r2'] else ''
-                x = fi + (-offset if hi == 0 else offset)
-                ax.text(x, annot_y, f'{frac_sig:.0%}{star}',
-                        ha='center', va='top', fontsize=_FS_ANNOT,
-                        fontweight='bold', color='black', clip_on=False)
+            tn_wf  = win_feat_tn[win][feat]
+            # waveform model annotation
+            sig_wf = np.asarray(sig_pop[tn_wf][predictor_set], dtype=bool)
+            frac_wf = float(sig_wf.mean()) if len(sig_wf) else np.nan
+            row_wf  = df_r2[(df_r2['target'] == tn_wf) &
+                             (df_r2['predictor_set'] == predictor_set)]
+            star_wf = row_wf.iloc[0]['stars'] if len(row_wf) and row_wf.iloc[0]['sig_r2'] else ''
+            ax.text(fi, y_wf, f'{frac_wf:.0%}{star_wf}',
+                    ha='center', va='top', fontsize=_FS_ANNOT,
+                    fontweight='bold', color=model_colors[predictor_set], clip_on=False)
+            # control annotation
+            sig_ctl  = np.asarray(sig_pop[tn_wf][control_predictor_set], dtype=bool)
+            frac_ctl = float(sig_ctl.mean()) if len(sig_ctl) else np.nan
+            ax.text(fi, y_ctl, f'{frac_ctl:.0%}',
+                    ha='center', va='top', fontsize=_FS_ANNOT - 4,
+                    color=model_colors[control_predictor_set], clip_on=False)
 
         ax.set_title(f'{win}-spike LFP', fontsize=_FS_AX, fontweight='bold',
                      color='black', pad=16)
@@ -1527,7 +1552,6 @@ def plot_target_correlations(r2_pop, target_names, target_labels, predictor_set=
     target_labels : list[str]
     predictor_set : str  which predictor set to use (default 'Waveform only')
     """
-    import seaborn as sns
 
     # Build matrix: rows = cells, columns = targets
     mat = np.column_stack([
@@ -1617,8 +1641,6 @@ def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
     -------
     df_r2_raw, df_r2_hpf : pd.DataFrame  R² test results for both versions
     """
-    import glob
-    import seaborn as sns
 
     def _load(suffix):
         pkls = sorted(glob.glob(os.path.join(pickle_dir, f'c*_ridge_results{suffix}.pkl')))
@@ -1678,7 +1700,6 @@ def compare_hpf_versions(pickle_dir, cell_ids, target_names, target_labels,
     df_cmp = pd.DataFrame(rows)
 
     try:
-        from IPython.display import display
         styled = (
             df_cmp.style
             .format({'median_r2': '{:.4f}', 'mean_r2': '{:.4f}', 'HPF/raw': '{:.2f}'})
@@ -1761,7 +1782,6 @@ _PSD_FR   = (1, 90)
 
 
 def _mean_psd(hpf_list, win, lfp_fs):
-    import mne
     half  = _PSD_SEG / 2
     min_s = int(round(lfp_fs * _PSD_SEG * 0.9))
     psds  = []
@@ -1782,7 +1802,6 @@ def _mean_psd(hpf_list, win, lfp_fs):
 
 
 def _psd_fit_plot(ax, freqs, psd, label, color):
-    from specparam import SpectralModel
     sm = SpectralModel(aperiodic_mode='fixed', peak_width_limits=(4., 8.),
                        max_n_peaks=4, peak_threshold=2., verbose=False)
     sm.fit(freqs, psd, freq_range=_PSD_FR)
@@ -1818,7 +1837,6 @@ def plot_prepost_psd_panel(cell_ids, lfp_fs, ncols=6,
     pre_win  : tuple (lo, hi) seconds relative to spike (default _PSD_PRE)
     post_win : tuple (lo, hi) seconds relative to spike (default _PSD_POST)
     """
-    from ridge_regression_utils import load_hpf_lfp_windows, load_cell_data
 
     pre_win  = pre_win  or _PSD_PRE
     post_win = post_win or _PSD_POST
