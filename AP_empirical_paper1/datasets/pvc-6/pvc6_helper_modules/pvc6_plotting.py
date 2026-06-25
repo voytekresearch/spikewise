@@ -926,10 +926,12 @@ def plot_beta_weights_combined(results_window, window_ms=200):
         return
 
     df = pd.DataFrame(rows)
-    # sort: by feature importance (mean |coef| across targets), then by |coef| within
-    feat_imp = df.groupby('feat')['abs_coef'].mean().to_dict()
-    df['feat_imp'] = df['feat'].map(feat_imp)
-    df = df.sort_values(['feat_imp', 'abs_coef'], ascending=[True, True]).reset_index(drop=True)
+    # sort: by feature importance (mean |coef| across targets), then fixed target order within
+    feat_imp  = df.groupby('feat')['abs_coef'].mean().to_dict()
+    tgt_order = {'stim_mean': 0, 'stim_std': 1, 'stim_exp': 2}
+    df['feat_imp']  = df['feat'].map(feat_imp)
+    df['tgt_order'] = df['tgt'].map(tgt_order)
+    df = df.sort_values(['feat_imp', 'tgt_order'], ascending=[True, True]).reset_index(drop=True)
     n  = len(df)
 
     colors   = [_FEATURE_COLOR_MAP.get(f, '#888') for f in df['feat']]
@@ -994,6 +996,13 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=5, prune='both'))
     ax.xaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter('%.2f'))
 
+    # faint horizontal separators between feature groups
+    prev_feat2 = None
+    for feat, yp in zip(df['feat'], y_pos):
+        if prev_feat2 is not None and feat != prev_feat2:
+            ax.axhline(yp - 0.75, color='#aaaaaa', lw=1.5, ls='-', alpha=0.5, zorder=1)
+        prev_feat2 = feat
+
     # y-axis: feature name centered per group
     seen_feats, ytick_pos, ytick_lbl = [], [], []
     for feat in df['feat']:
@@ -1006,7 +1015,7 @@ def plot_beta_weights_combined(results_window, window_ms=200):
 
     ax.set_yticks(ytick_pos)
     ax.set_yticklabels(ytick_lbl, fontsize=_FS_ROW, color='black')
-    ax.set_xlabel(f'Bootstrap β  ({window_ms} ms window)', fontsize=_FS_AX,
+    ax.set_xlabel('Bootstrap β', fontsize=_FS_AX,
                   fontweight='bold', color='black', labelpad=14)
     ax.tick_params(axis='x', labelsize=_FS_ROW, colors='black', pad=10,
                    width=3.0, length=10)
