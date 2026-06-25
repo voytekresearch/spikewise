@@ -2817,6 +2817,8 @@ def plot_waveform_dist_kde(df_master, wf_dir, spike_fit_dir=None, half_win=75,
     within_vals  = npz[wk]
     between_vals = npz[bk]
 
+    clip_x = float(np.percentile(np.concatenate([within_vals, between_vals]), 99))
+
     fig, ax = plt.subplots(figsize=(7, 5))
     sns.kdeplot(within_vals,  ax=ax, color="#555555", lw=2.5,
                 label="Within cell", fill=True, alpha=0.25)
@@ -2824,6 +2826,7 @@ def plot_waveform_dist_kde(df_master, wf_dir, spike_fit_dir=None, half_win=75,
                 label="Between cells (all)", fill=True, alpha=0.25)
     ax.axvline(float(np.median(within_vals)),  color="#555555", lw=1.5, ls="--", alpha=0.8)
     ax.axvline(float(np.median(between_vals)), color="#888888", lw=1.5, ls="--", alpha=0.8)
+    ax.set_xlim(0, clip_x)
     ax.set_xlabel(metric, fontsize=16, fontweight="bold")
     ax.set_ylabel("Density", fontsize=16)
     ax.set_title(f"Within vs Between — {metric} distribution (all spikes)",
@@ -2837,59 +2840,50 @@ def plot_waveform_dist_kde(df_master, wf_dir, spike_fit_dir=None, half_win=75,
     plt.show()
 
 
-def plot_waveform_dist_scatter(df_master, wf_dir, spike_fit_dir, half_win=75,
-                                cache_dir=None, metric="nRMSE"):
-    """Option 2: Per-cell scatter using per-spike medians. x = median within, y = median between."""
+def plot_waveform_dist_scatter(df_master, wf_dir, spike_fit_dir=None, half_win=75,
+                                cache_dir=None, metric="nRMSE", n_pts=5000):
+    """
+    Scatter of within vs between distributions from v2 cache (no new computation).
+    x = subsample of within_nrmse (spike vs own cell mean).
+    y = subsample of Between_(all)_nrmse (spike vs other cell mean).
+    Not paired per spike — shows where the two distributions sit relative to each other.
+    """
     from pathlib import Path
 
-    _cache_dir  = Path(cache_dir or wf_dir)
-    _dots_cache = _cache_dir / "_sorted_dots_v1.npz"
-    _sum_cache  = _cache_dir / "_per_cell_wf_summary_v2.pkl"
+    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v2.npz"
+    if not _cache_file.exists():
+        raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
 
-    # within medians from spike cache; between medians from per-cell summary
-    if not _dots_cache.exists():
-        raise FileNotFoundError("Run plot_waveform_dist_sorted_dots first to build spike cache.")
-    if not _sum_cache.exists():
-        raise FileNotFoundError("Run plot_waveform_dist_sorted_dots or scatter first to build summary cache.")
+    npz = np.load(_cache_file, allow_pickle=False)
+    _key_map = {
+        "nRMSE":   ("within_nrmse",  "Between_(all)_nrmse"),
+        "RMSE":    ("within_rmse",   "Between_(all)_rmse"),
+        "Cos Sim": ("within_cos",    "Between_(all)_cos"),
+    }
+    wk, bk = _key_map[metric]
+    within_vals  = npz[wk]
+    between_vals = npz[bk]
 
-    npz      = np.load(_dots_cache, allow_pickle=True)
-    cell_ids = list(npz["cell_ids"])
-    if metric == "nRMSE":
-        per_cell_within = [npz[f"nrmse_{i}"] for i in range(len(cell_ids))]
-    else:
-        per_cell_within = [npz[f"rmse_{i}"] for i in range(len(cell_ids))]
+    clip = float(np.percentile(np.concatenate([within_vals, between_vals]), 99))
+    within_vals  = within_vals[within_vals  <= clip]
+    between_vals = between_vals[between_vals <= clip]
 
-    npz_btw  = np.load(_cache_dir / "_spike_to_avg_distances_v2.npz", allow_pickle=False)
-    btw_key  = "Between_(all)_nrmse" if metric == "nRMSE" else "Between_(all)_rmse"
-    btw_all  = npz_btw[btw_key]
+    rng = np.random.default_rng(42)
+    x_all = rng.choice(within_vals,  size=min(len(within_vals),  n_pts), replace=False)
+    y_all = rng.choice(between_vals, size=min(len(between_vals), n_pts), replace=False)
+    rng.shuffle(x_all)
+    rng.shuffle(y_all)
 
-    # need per-cell between medians — use per-cell summary for between (spike-to-mean)
-    df_sum   = pd.read_pickle(_sum_cache).set_index("cell_id")
-    bcol     = "mean_between_nrmse" if metric == "nRMSE" else "mean_between_rmse"
-
-    x_vals, y_vals = [], []
-    for cid, wvals in zip(cell_ids, per_cell_within):
-        if cid not in df_sum.index:
-            continue
-        x_vals.append(float(np.median(wvals)))
-        y_vals.append(float(df_sum.loc[cid, bcol]))
-
-    x_vals = np.array(x_vals)
-    y_vals = np.array(y_vals)
-
+    hi = clip * 1.05
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.scatter(x_vals, y_vals, color="#333333", s=70, alpha=0.8,
-               edgecolors="white", linewidths=0.5, zorder=3)
+    ax.scatter(x_all, y_all, color="#333333", s=6, alpha=0.25, linewidths=0, zorder=3)
+    ax.plot([0, hi], [0, hi], color="#888888", lw=1.5, ls="--", alpha=0.6, zorder=1)
+    ax.set_xlim(0, hi)
+    ax.set_ylim(0, hi)
 
-    lo = min(x_vals.min(), y_vals.min()) * 0.85
-    hi = max(x_vals.max(), y_vals.max()) * 1.08
-    ax.plot([lo, hi], [lo, hi], color="#888888", lw=1.5, ls="--", alpha=0.6, zorder=1)
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
-
-    ax.set_xlabel(f"Median within-cell {metric} (per spike)", fontsize=14, fontweight="bold")
-    ax.set_ylabel(f"Mean between-cell {metric} (per spike)", fontsize=14, fontweight="bold")
-    ax.set_title(f"Per-cell within vs between ({metric})", fontsize=15, fontweight="bold")
+    ax.set_xlabel(f"Within-cell {metric} (per spike)", fontsize=14, fontweight="bold")
+    ax.set_ylabel(f"Between-cell {metric} (per spike)", fontsize=14, fontweight="bold")
+    ax.set_title(f"Within vs between distribution ({metric})", fontsize=14, fontweight="bold")
     ax.tick_params(axis="both", labelsize=13)
     for spine in ax.spines.values():
         spine.set_linewidth(2.0)
@@ -2935,10 +2929,8 @@ def plot_waveform_dist_raincloud(df_master, wf_dir, spike_fit_dir=None, half_win
     PAL = {"Within": "#555555", "Between": "#AAAAAA"}
 
     fig, ax = plt.subplots(figsize=(5, 6))
-    sns.violinplot(data=box_df, x="group", y="value", hue="group",
-                   palette=PAL, cut=0, inner=None, alpha=0.35, legend=False, ax=ax)
     sns.boxplot(data=box_df, x="group", y="value", hue="group",
-                palette=PAL, showfliers=False, width=0.18,
+                palette=PAL, showfliers=False, width=0.35,
                 linewidth=2.0, legend=False, ax=ax)
     sns.stripplot(data=strip_df, x="group", y="value", hue="group",
                   palette=PAL, size=3, alpha=0.4, jitter=True, legend=False, ax=ax)
@@ -3045,26 +3037,58 @@ def plot_waveform_dist_sorted_dots(df_master, wf_dir, spike_fit_dir, half_win=75
     all_within = np.concatenate(per_cell)
     clip_top   = float(np.percentile(all_within, 99))
 
-    fig, ax = plt.subplots(figsize=(11, 5))
-    ax.axhspan(btw_q25, btw_q75, color="#AAAAAA", alpha=0.25, zorder=1, label="Between cells (IQR)")
-    ax.axhline(btw_median, color="#888888", lw=2.0, ls="--", alpha=0.9, zorder=2, label="Between cells (median)")
+    C_LOW  = "#555555"
+    C_MID  = "#E07B39"
+    C_HIGH = "#C0392B"
+
+    from matplotlib.patches import Patch
+    import matplotlib.lines as mlines
+
+    # ── main figure ──────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(11, 6))
+    ax.axhspan(btw_q25, btw_q75, color="#CCCCCC", alpha=0.40, zorder=1)
+    ax.axhline(btw_median, color="#555555", lw=3.0, ls="--", alpha=0.9, zorder=2)
 
     for xi, vals in enumerate(per_cell):
         sub = rng.choice(vals, size=min(len(vals), n_strip), replace=False)
-        sub = np.clip(sub, 0, clip_top)
+        sub = sub[sub <= clip_top]
         jitter = rng.uniform(-0.3, 0.3, size=len(sub))
-        ax.scatter(xi + jitter, sub, color="#333333", s=4, alpha=0.25, zorder=3, linewidths=0)
+        mask_low  = sub <  btw_q25
+        mask_mid  = (sub >= btw_q25) & (sub <= btw_q75)
+        mask_high = sub >  btw_q75
+        for mask, col, alph in [(mask_low, C_LOW, 0.25),
+                                 (mask_mid, C_MID, 0.60),
+                                 (mask_high, C_HIGH, 0.70)]:
+            if mask.any():
+                ax.scatter(xi + jitter[mask], sub[mask], color=col,
+                           s=22, alpha=alph, zorder=3, linewidths=0)
+
+    for xi, vals in enumerate(per_cell):
+        ax.scatter(xi, float(np.median(vals)), color="#000000", s=70,
+                   zorder=4, marker="D", linewidths=0)
 
     ax.set_xticks([])
-    ax.set_xlabel("Cells (sorted by within-cell variability)", fontsize=14)
-    ax.set_ylabel(metric, fontsize=14, fontweight="bold")
-    ax.set_title("Within-cell waveform variability vs between-cell distance", fontsize=15, fontweight="bold")
-    ax.set_ylim(bottom=0, top=clip_top)
-    ax.legend(fontsize=12)
-    ax.tick_params(axis="y", labelsize=13)
+    ax.set_xlabel("Cells by within-cell variability →", fontsize=36, labelpad=14)
+    ax.set_ylabel(metric, fontsize=38, fontweight="bold", labelpad=10)
+    ax.set_ylim(bottom=0, top=clip_top * 1.05)
+    ax.set_yticks([0.0, 0.2, 0.4])
+    ax.tick_params(axis="y", labelsize=34, pad=8)
     for spine in ax.spines.values():
-        spine.set_linewidth(2.0)
+        spine.set_linewidth(2.5)
     sns.despine(ax=ax)
+    fig.subplots_adjust(bottom=0.18, left=0.13, right=0.98)
+    plt.show()
+
+    # ── legend figure ─────────────────────────────────────────────────────────
+    fig_leg, ax_leg = plt.subplots(figsize=(5, 2.5))
+    ax_leg.axis("off")
+    h_band  = Patch(facecolor="#CCCCCC", alpha=0.6, label="Between-cell nRMSE (IQR)")
+    h_med_b = mlines.Line2D([], [], color="#555555", lw=3.0, ls="--",
+                             label="Between-cell nRMSE (median)")
+    h_spike = mlines.Line2D([], [], marker="o", color="w", markerfacecolor=C_LOW,
+                             markersize=16, label="Single spike-to-avg nRMSE")
+    ax_leg.legend(handles=[h_band, h_med_b, h_spike],
+                  fontsize=24, frameon=False, loc="center")
     plt.tight_layout()
     plt.show()
 
