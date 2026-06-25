@@ -1401,19 +1401,10 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
     """
     import seaborn as sns
 
-    sns.set_theme(style='ticks', font_scale=1.8, rc={
-        'axes.linewidth':    3.0,
-        'xtick.major.width': 3.0,
-        'ytick.major.width': 3.0,
-        'xtick.major.size':  8,
-        'ytick.major.size':  8,
-        'patch.linewidth':   3.0,
-        'lines.linewidth':   3.0,
-        'figure.titlesize':  24,
-    })
-    _FS_SM, _FS_AX, _FS_SUB = 18, 22, 26
+    sns.set_theme(style='ticks', rc={'axes.linewidth': 2.5})
+    _FS_TICK, _FS_AX, _FS_ANNOT = 26, 30, 22
 
-    feat_order   = ['LFP Amp', 'LFP Std', 'Gamma AUC', 'Exponent', 'Theta AUC']
+    feat_order   = ['LFP Amp', 'LFP Std']   # only significant targets
     win_order    = ['Pre', 'Post']
     model_order  = [predictor_set, control_predictor_set]
     model_colors = {predictor_set: '#1976D2', control_predictor_set: '#9E9E9E'}
@@ -1421,7 +1412,6 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
 
     tl_idx = {tl: i for i, tl in enumerate(target_labels)}
 
-    # feature -> target name, per window (only keep features present in both windows)
     win_feat_tn = {win: {} for win in win_order}
     for win in win_order:
         for feat in feat_order:
@@ -1430,7 +1420,6 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
                 win_feat_tn[win][feat] = target_names[tl_idx[tl]]
     feats = [f for f in feat_order if all(f in win_feat_tn[w] for w in win_order)]
 
-    # ── build one long-form df per side, and a shared whisker-based y-range ──
     side_dfs = []
     whisk_hi, whisk_lo = [], []
     for win in win_order:
@@ -1450,14 +1439,14 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
 
     y_top = max(whisk_hi)
     y_bot = min(0.0, min(whisk_lo))
-    pad   = (y_top - y_bot) * 0.08
-    ylim  = (y_bot - pad, y_top + pad)
+    pad   = (y_top - y_bot) * 0.10
+    ylim  = (y_bot - pad, y_top + pad * 2.5)   # extra headroom for annotations
 
     box_w  = 0.65
-    offset = box_w / 4   # seaborn's dodge offset for 2 hue levels at this width
+    offset = box_w / 4
 
-    fig, axes = plt.subplots(1, 2, figsize=(max(15, len(feats) * 4.4), 7.5),
-                             sharey=True, gridspec_kw={'wspace': 0.05})
+    fig, axes = plt.subplots(1, 2, figsize=(10, 7),
+                             sharey=True, gridspec_kw={'wspace': 0.08})
 
     for ax, win, df_plot in zip(axes, win_order, side_dfs):
         sns.boxplot(data=df_plot, x='feat', y='r2', hue='model', order=feats,
@@ -1466,18 +1455,17 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
                     width=box_w, dodge=True, fliersize=0, ax=ax,
                     showmeans=True,
                     meanprops=dict(marker='D', markerfacecolor='white',
-                                   markeredgecolor='black', markeredgewidth=2.0,
-                                   markersize=9, zorder=5),
-                    boxprops=dict(linewidth=3.0, alpha=0.85),
-                    medianprops=dict(linewidth=3.0, color='black'),
-                    whiskerprops=dict(linewidth=3.0),
-                    capprops=dict(linewidth=3.0))
+                                   markeredgecolor='black', markeredgewidth=2.5,
+                                   markersize=11, zorder=5),
+                    boxprops=dict(linewidth=2.5, alpha=0.85),
+                    medianprops=dict(linewidth=2.5, color='black'),
+                    whiskerprops=dict(linewidth=2.5),
+                    capprops=dict(linewidth=2.5))
         ax.get_legend().remove()
-        ax.axhline(0, color='gray', linestyle='--', linewidth=2.5, alpha=0.6)
+        ax.axhline(0, color='gray', linestyle='--', linewidth=2.0, alpha=0.6)
         ax.set_ylim(*ylim)
 
-        # annotations at a fixed height *relative to the axes* — never overlap boxes
-        trans = ax.get_xaxis_transform()
+        annot_y = ylim[1] * 0.92
         for fi, feat in enumerate(feats):
             tn = win_feat_tn[win][feat]
             for hi, pn in enumerate(model_order):
@@ -1486,37 +1474,37 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
                 row = df_r2[(df_r2['target'] == tn) & (df_r2['predictor_set'] == pn)]
                 star = row.iloc[0]['stars'] if len(row) and row.iloc[0]['sig_r2'] else ''
                 x = fi + (-offset if hi == 0 else offset)
-                ax.text(x, 1.02, f'{frac_sig:.0%}{star}',
-                        ha='center', va='bottom', fontsize=_FS_SM - 4, fontweight='bold',
-                        color='black', transform=trans, clip_on=False)
+                ax.text(x, annot_y, f'{frac_sig:.0%}{star}',
+                        ha='center', va='top', fontsize=_FS_ANNOT,
+                        fontweight='bold', color='black', clip_on=False)
 
+        ax.set_title(f'{win}-spike LFP', fontsize=_FS_AX, fontweight='bold',
+                     color='black', pad=16)
         ax.set_xlabel('')
-        ax.set_ylabel('CV R²' if ax is axes[0] else '', fontsize=_FS_AX, color='black')
-        ax.tick_params(axis='x', labelsize=_FS_SM, colors='black')
-        ax.tick_params(axis='y', labelsize=_FS_SM, colors='black', left=(ax is axes[0]))
+        ax.set_ylabel('CV R²' if ax is axes[0] else '', fontsize=_FS_AX,
+                      fontweight='bold', color='black')
+        ax.tick_params(axis='x', labelsize=_FS_TICK, colors='black', pad=8)
+        ax.tick_params(axis='y', labelsize=_FS_TICK, colors='black',
+                       left=(ax is axes[0]))
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4))
+        for spine in ax.spines.values():
+            spine.set_linewidth(2.5)
         sns.despine(ax=ax, left=(ax is axes[1]), right=(ax is axes[0]))
-
-    fig.text(0.5, 1.04,
-             '% = fraction of cells individually significant   |   '
-             '* = population-level significant (median R² > 0)   |   '
-             '◇ mean,  — median',
-             ha='center', fontsize=_FS_SM, style='italic', color='black')
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=model_colors[m], alpha=0.85,
                              label=model_labels[m]) for m in model_order]
-    fig.legend(handles=handles, fontsize=_FS_SM, frameon=False, labelcolor='black',
-               loc='upper right', bbox_to_anchor=(0.99, 1.10))
+    fig.legend(handles=handles, fontsize=_FS_ANNOT, frameon=False,
+               labelcolor='black', loc='lower center',
+               bbox_to_anchor=(0.5, -0.08), ncol=2)
 
-    fig.tight_layout(rect=[0, 0, 0.88, 0.92])
+    fig.subplots_adjust(bottom=0.18, left=0.15, right=0.97, top=0.88)
 
-    # ── dashed divider between the two panels, placed using final (post-layout)
-    # axes positions ──
     fig.canvas.draw()
     pos_l, pos_r = axes[0].get_position(), axes[1].get_position()
     x_div = (pos_l.x1 + pos_r.x0) / 2
     y0, y1 = min(pos_l.y0, pos_r.y0), max(pos_l.y1, pos_r.y1)
     fig.add_artist(plt.Line2D([x_div, x_div], [y0, y1], transform=fig.transFigure,
-                              color='black', linestyle='--', linewidth=4.0, alpha=0.6))
+                              color='black', linestyle='--', linewidth=3.0, alpha=0.5))
 
     plt.show()
     return fig, axes
