@@ -3045,7 +3045,7 @@ def plot_waveform_dist_sorted_dots(df_master, wf_dir, spike_fit_dir, half_win=75
     import matplotlib.lines as mlines
 
     # ── main figure ──────────────────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(11, 6))
+    fig, ax = plt.subplots(figsize=(9.5, 6))
     ax.axhspan(btw_q25, btw_q75, color="#CCCCCC", alpha=0.40, zorder=1)
     ax.axhline(btw_median, color="#555555", lw=3.0, ls="--", alpha=0.9, zorder=2)
 
