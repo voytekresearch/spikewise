@@ -1425,7 +1425,7 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
     feat_order   = ['LFP Amp', 'LFP Std']   # only significant targets
     win_order    = ['Pre', 'Post']
     model_order  = [predictor_set, control_predictor_set]
-    model_colors = {predictor_set: '#1976D2', control_predictor_set: '#9E9E9E'}
+    model_colors = {predictor_set: '#00838F', control_predictor_set: '#9E9E9E'}
     model_labels = {predictor_set: 'Waveform model', control_predictor_set: 'Log-ISI control'}
 
     tl_idx = {tl: i for i, tl in enumerate(target_labels)}
@@ -1483,12 +1483,10 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
         ax.axhline(0, color='gray', linestyle='--', linewidth=2.0, alpha=0.6)
         ax.set_ylim(*ylim)
 
-        y_wf  = ylim[1] * 0.97
-        y_ctl = ylim[1] * 0.82
+        y_wf = ylim[1] * 0.97
         for fi, feat in enumerate(feats):
-            tn_wf  = win_feat_tn[win][feat]
-            # waveform model annotation
-            sig_wf = np.asarray(sig_pop[tn_wf][predictor_set], dtype=bool)
+            tn_wf   = win_feat_tn[win][feat]
+            sig_wf  = np.asarray(sig_pop[tn_wf][predictor_set], dtype=bool)
             frac_wf = float(sig_wf.mean()) if len(sig_wf) else np.nan
             row_wf  = df_r2[(df_r2['target'] == tn_wf) &
                              (df_r2['predictor_set'] == predictor_set)]
@@ -1496,12 +1494,6 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
             ax.text(fi, y_wf, f'{frac_wf:.0%}{star_wf}',
                     ha='center', va='top', fontsize=_FS_ANNOT,
                     fontweight='bold', color=model_colors[predictor_set], clip_on=False)
-            # control annotation
-            sig_ctl  = np.asarray(sig_pop[tn_wf][control_predictor_set], dtype=bool)
-            frac_ctl = float(sig_ctl.mean()) if len(sig_ctl) else np.nan
-            ax.text(fi, y_ctl, f'{frac_ctl:.0%}',
-                    ha='center', va='top', fontsize=_FS_ANNOT - 4,
-                    color=model_colors[control_predictor_set], clip_on=False)
 
         ax.set_title(f'{win}-spike LFP', fontsize=_FS_AX, fontweight='bold',
                      color='black', pad=16)
@@ -1516,13 +1508,15 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
             spine.set_linewidth(2.5)
         sns.despine(ax=ax, left=(ax is axes[1]), right=(ax is axes[0]))
 
-    handles = [plt.Rectangle((0, 0), 1, 1, color=model_colors[m], alpha=0.85,
-                             label=model_labels[m]) for m in model_order]
-    fig.legend(handles=handles, fontsize=_FS_ANNOT, frameon=False,
+    box_handles = [plt.Rectangle((0, 0), 1, 1, color=model_colors[m], alpha=0.85,
+                                 label=model_labels[m]) for m in model_order]
+    note_handle = plt.Line2D([0], [0], linestyle='none', marker='',
+                             label='% = cells with permutation p<0.05; * population Wilcoxon (FDR)')
+    fig.legend(handles=box_handles + [note_handle], fontsize=_FS_ANNOT, frameon=False,
                labelcolor='black', loc='lower center',
-               bbox_to_anchor=(0.5, -0.08), ncol=2)
+               bbox_to_anchor=(0.5, -0.10), ncol=1)
 
-    fig.subplots_adjust(bottom=0.18, left=0.15, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.24, left=0.15, right=0.97, top=0.88)
 
     fig.canvas.draw()
     pos_l, pos_r = axes[0].get_position(), axes[1].get_position()
