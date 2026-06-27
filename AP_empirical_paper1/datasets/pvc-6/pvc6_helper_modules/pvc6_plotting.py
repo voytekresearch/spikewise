@@ -282,7 +282,7 @@ def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_sp
 def plot_confusion_matrix(best_model, X_test, y_test):
     """Confusion matrix for a trained classifier on test data."""
     from sklearn.metrics import confusion_matrix
-    cm      = confusion_matrix(y_test, best_model.predict(X_test))
+    cm      = confusion_matrix(y_test, best_model.predict(X_test), labels=best_model.classes_)
     display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=best_model.classes_)
 
     fig, ax = plt.subplots(figsize=(11, 5))
