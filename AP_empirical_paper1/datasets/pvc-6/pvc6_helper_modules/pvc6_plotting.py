@@ -767,107 +767,123 @@ def plot_window_expansion(results_by_window, windows_ms,
                           targets=('stim_mean', 'stim_std', 'stim_exp'),
                           target_labels=('stim mean', 'stim std', 'stim exp'),
                           title='',
-                          shuffle_results=None):
+                          shuffle_results=None,
+                          results_by_window_2=None,
+                          shuffle_results_2=None,
+                          cell_labels=('Cell 1', 'Cell 2')):
     """
     Compare ridge regression R² (bootstrap mean + 95 % CI) across pre-inflection
-    window sizes for one or more stimulus targets.
-
-    Parameters
-    ----------
-    results_by_window : dict
-        Keyed as '{W}ms_{target}', e.g. '5ms_stim_mean'.
-    windows_ms      : list of int   – window sizes tested (x-axis)
-    targets         : tuple of str  – target names (separate subplots)
-    target_labels   : tuple of str  – display labels for targets
-    title           : str           – figure suptitle suffix
-    shuffle_results : dict, optional
-        Same key scheme as results_by_window but for shuffled-Y regressions
-        (keyed as '{W}ms_{target}'). Shown as lighter hatched bars paired with
-        each real bar to visualise the null R² at every window size.
+    window sizes. When results_by_window_2 is provided, both cells are shown as
+    side-by-side grouped bars (solid = cell 1, hatched = cell 2).
     """
-    bar_w     = 0.35
+    _FS_AX  = 28
+    _FS_TK  = 24
+    _FS_STR = 34
+    _LW_SP  = 2.5
+    _COL_SIG = '#D55E00'
+    _COL_NS  = '#888888'
+    _COL_SHF = '#56B4E9'
+
+    two_cells = results_by_window_2 is not None
+
+    if two_cells:
+        bar_w  = 0.32
+        gap    = 0.06
+        offset = (bar_w + gap) / 2
+    else:
+        bar_w  = 0.38
+        offset = 0.0
+
     n_targets = len(targets)
     fig, axes = plt.subplots(1, n_targets,
-                             figsize=(5.5 * n_targets, 5.5),
+                             figsize=(8 * n_targets, 7),
                              constrained_layout=True)
     if n_targets == 1:
         axes = [axes]
 
-    for col_i, (ax, tgt, tgt_lbl) in enumerate(zip(axes, targets, target_labels)):
+    def _extract(results, tgt):
         r2s, lo, hi, sigs = [], [], [], []
         for wms in windows_ms:
             key = f'{wms}ms_{tgt}'
-            if key not in results_by_window:
+            if key not in results:
                 r2s.append(np.nan); lo.append(np.nan); hi.append(np.nan); sigs.append(False)
                 continue
-            res = results_by_window[key]
+            res = results[key]
             r2s.append(res['r2_mean'])
             lo.append(res['r2_ci'][0])
             hi.append(res['r2_ci'][1])
             sigs.append(res.get('p_val_perm', 1.0) < 0.05)
+        return (np.array(r2s, dtype=float), np.array(lo, dtype=float),
+                np.array(hi, dtype=float), sigs)
 
-        r2s = np.array(r2s, dtype=float)
-        lo  = np.array(lo,  dtype=float)
-        hi  = np.array(hi,  dtype=float)
-
-        if shuffle_results is not None:
-            xs_real  = np.arange(len(windows_ms)) - bar_w / 2
-            xs_shuf  = np.arange(len(windows_ms)) + bar_w / 2
-            xs_ticks = np.arange(len(windows_ms))
-        else:
-            xs_real  = np.arange(len(windows_ms))
-            xs_ticks = xs_real
-
-        colors = ['#D55E00' if s else '#888888' for s in sigs]
-        ax.bar(xs_real, r2s, color=colors, alpha=0.85, width=bar_w)
-        ax.errorbar(xs_real, r2s,
+    def _draw_bars(ax, xs, r2s, lo, hi, sigs, hatch='', alpha=0.88, star_offset=0.0):
+        colors = [_COL_SIG if s else _COL_NS for s in sigs]
+        ax.bar(xs, r2s, color=colors, alpha=alpha, width=bar_w,
+               hatch=hatch, edgecolor='white' if hatch else 'none',
+               linewidth=1.5, zorder=3)
+        ax.errorbar(xs, r2s,
                     yerr=[r2s - lo, hi - r2s],
-                    fmt='none', color='k', capsize=4, lw=1.5)
-
-        if shuffle_results is not None:
-            sr2s, slo, shi = [], [], []
-            for wms in windows_ms:
-                skey = f'{wms}ms_{tgt}'
-                if skey not in shuffle_results:
-                    sr2s.append(np.nan); slo.append(np.nan); shi.append(np.nan)
-                    continue
-                sr = shuffle_results[skey]
-                sr2s.append(sr['r2_mean'])
-                slo.append(sr['r2_ci'][0])
-                shi.append(sr['r2_ci'][1])
-            sr2s = np.array(sr2s, dtype=float)
-            slo  = np.array(slo,  dtype=float)
-            shi  = np.array(shi,  dtype=float)
-            ax.bar(xs_shuf, sr2s, color='#56B4E9', alpha=0.6, width=bar_w,
-                   hatch='//', edgecolor='white', linewidth=0.4)
-            ax.errorbar(xs_shuf, sr2s,
-                        yerr=[sr2s - slo, shi - sr2s],
-                        fmt='none', color='#56B4E9', capsize=4, lw=1.5)
-
-        ax.axhline(0, color='k', lw=1, ls='--', alpha=0.5)
-        ax.set_xticks(xs_ticks)
-        ax.set_xticklabels([str(w) for w in windows_ms], rotation=45, ha='right')
-        ax.set_xlabel('Window (ms)')
-        # target label on y-axis instead of panel title
-        ax.set_ylabel(f'Bootstrap R²\n({tgt_lbl})')
-        ax.locator_params(axis='y', nbins=4)
-
-        for xi, (r2, sig) in enumerate(zip(r2s, sigs)):
+                    fmt='none', color='black', capsize=6, capthick=2.5, lw=2.5, zorder=4)
+        for xi, (r2v, sig, h) in enumerate(zip(r2s, sigs, hi)):
             if sig:
-                ax.text(xs_real[xi], hi[xi] + 0.01, '*',
-                        ha='center', va='bottom', color='#D55E00')
+                ax.text(xs[xi] + star_offset, h + 0.005, '*',
+                        ha='center', va='bottom', fontsize=_FS_STR,
+                        fontweight='bold', color=_COL_SIG)
 
-    # legend outside axes in top-right of figure
-    from matplotlib.patches import Patch
-    legend_elements = [Patch(facecolor='#D55E00', alpha=0.85, label='p < 0.05 (perm.)'),
-                       Patch(facecolor='#888888', alpha=0.85, label='n.s.')]
-    if shuffle_results is not None:
-        legend_elements.append(
-            Patch(facecolor='#56B4E9', alpha=0.6, hatch='//', label='shuffle ctrl')
-        )
+    for ax, tgt, tgt_lbl in zip(axes, targets, target_labels):
+        xs_ticks = np.arange(len(windows_ms))
+        xs1 = xs_ticks - offset if two_cells else xs_ticks
+        xs2 = xs_ticks + offset if two_cells else None
+
+        r2s1, lo1, hi1, sigs1 = _extract(results_by_window, tgt)
+        _draw_bars(ax, xs1, r2s1, lo1, hi1, sigs1,
+                   hatch='', alpha=0.88,
+                   star_offset=-bar_w * 0.15 if two_cells else 0.0)
+
+        if two_cells:
+            r2s2, lo2, hi2, sigs2 = _extract(results_by_window_2, tgt)
+            _draw_bars(ax, xs2, r2s2, lo2, hi2, sigs2,
+                       hatch='//', alpha=0.75,
+                       star_offset=bar_w * 0.15)
+
+        ax.axhline(0, color='black', lw=2.0, ls='--', alpha=0.5, zorder=2)
+        ax.set_xticks(xs_ticks)
+        ax.set_xticklabels([str(w) for w in windows_ms],
+                           rotation=45, ha='right', fontsize=_FS_TK, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=_FS_TK, width=_LW_SP)
+        ax.tick_params(axis='x', width=_LW_SP)
+        for lbl in ax.get_yticklabels():
+            lbl.set_fontweight('bold')
+        ax.set_xlabel('Pre-spike window (ms)', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+        ax.set_ylabel('Bootstrap R²', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+        ax.set_title(tgt_lbl, fontsize=_FS_AX, fontweight='bold', pad=10)
+        ax.locator_params(axis='y', nbins=4)
+        for spine in ax.spines.values():
+            spine.set_linewidth(_LW_SP)
+            spine.set_color('black')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if two_cells:
+        legend_elements = [
+            matplotlib.patches.Patch(facecolor=_COL_SIG, alpha=0.88,
+                                     label=f'p<0.05 — {cell_labels[0]}'),
+            matplotlib.patches.Patch(facecolor=_COL_NS,  alpha=0.88,
+                                     label=f'n.s. — {cell_labels[0]}'),
+            matplotlib.patches.Patch(facecolor=_COL_SIG, alpha=0.75, hatch='//',
+                                     edgecolor='white', label=f'p<0.05 — {cell_labels[1]}'),
+            matplotlib.patches.Patch(facecolor=_COL_NS,  alpha=0.75, hatch='//',
+                                     edgecolor='white', label=f'n.s. — {cell_labels[1]}'),
+        ]
+    else:
+        legend_elements = [
+            matplotlib.patches.Patch(facecolor=_COL_SIG, alpha=0.88, label='p < 0.05 (permutation)'),
+            matplotlib.patches.Patch(facecolor=_COL_NS,  alpha=0.88, label='n.s.'),
+        ]
     fig.legend(handles=legend_elements, frameon=False,
-               loc='lower center', bbox_to_anchor=(0.5, 1.01),
-               ncol=len(legend_elements))
+               loc='upper center', bbox_to_anchor=(0.5, 1.08),
+               ncol=len(legend_elements), fontsize=_FS_TK - 2,
+               prop={'size': _FS_TK - 2, 'weight': 'bold'})
 
     plt.show()
 
