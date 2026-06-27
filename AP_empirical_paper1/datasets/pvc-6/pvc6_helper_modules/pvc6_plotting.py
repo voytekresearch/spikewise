@@ -470,10 +470,8 @@ def plot_ridge_results_grid(results_dict, keys, labels=None, ys=None):
             elif ys is not None:
                 y = np.asarray(ys[key])
                 if len(y) != len(yhat):
-                    raise ValueError(
-                        f"y size {len(y)} != y_pred_cv size {len(yhat)} for key '{key}'. "
-                        "Set FORCE_RERUN=True to regenerate pickles."
-                    )
+                    print(f"Warning: y size {len(y)} != y_pred_cv size {len(yhat)} for '{key}' — skipping scatter.")
+                    continue
             else:
                 continue
             r2   = res['r2_mean']

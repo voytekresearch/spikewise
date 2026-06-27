@@ -6,11 +6,14 @@ from sklearn.metrics import accuracy_score, r2_score
 from sklearn.utils import resample
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
-from scipy.stats import ttest_1samp, pearsonr
+from scipy.stats import ttest_1samp, pearsonr, f as scipy_f
 from scipy.signal import find_peaks
 from statsmodels.stats.multitest import fdrcorrection
+from neurodsp import spectral as neurodsp_spectral
+from pathlib import Path
 import numpy as np
-
+import pandas as pd
+import pickle
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -32,7 +35,7 @@ def bootstrap_model(model, X_train, y_train, X_test, y_test, n_bootstraps=1000):
 
 def logistic_regression_stim(X, y, X_train, X_test, y_train, y_test):
     """Multinomial logistic regression + bootstrapped accuracy."""
-    model = LogisticRegression(multi_class='multinomial', solver='lbfgs')
+    model = LogisticRegression(solver='lbfgs')
     accs = bootstrap_model(model, X_train, y_train, X_test, y_test)
     return model, accs
 
@@ -101,8 +104,7 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
     y_scaler = StandardScaler() if standardize_y else None
     y_fit    = y_scaler.fit_transform(np.asarray(y).reshape(-1, 1)).ravel() if standardize_y else np.asarray(y)
     y_std_val = float(y_scaler.scale_[0]) if standardize_y else 1.0
-    import pandas as _pd
-    y_fit = _pd.Series(y_fit, index=y.index)
+    y_fit = pd.Series(y_fit, index=y.index)
 
     # ── Drop any non-numeric columns (e.g. stim_type) ────────────────────────
     X = X.select_dtypes(include=[np.number])
@@ -150,7 +152,7 @@ def run_ridge_regression_kfold(X, y, n_splits=5, random_state=42, bootstraps=100
         X_boot   = X.iloc[boot_idx]
         y_boot_raw = y.iloc[boot_idx]
         if standardize_y:
-            y_boot = _pd.Series(
+            y_boot = pd.Series(
                 StandardScaler().fit_transform(np.asarray(y_boot_raw).reshape(-1,1)).ravel(),
                 index=y_boot_raw.index)
         else:
@@ -279,10 +281,6 @@ def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50, offset_ms=
     pd.DataFrame indexed identically to df_pink_raw with columns:
         stim_mean_<suffix>, stim_std_<suffix>, stim_exp_<suffix>
     """
-    import pandas as _pd
-    from scipy.signal import find_peaks as _find_peaks
-    from neurodsp import spectral as _spectral
-
     thresh_mv = -10
     thresh_ms = one_ms * 1
 
@@ -298,7 +296,7 @@ def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50, offset_ms=
         stim = np.array(dset[:, 0])
         data = np.array(dset[:, 1])
 
-        idx_peaks, _ = _find_peaks(data, height=thresh_mv, distance=thresh_ms)
+        idx_peaks, _ = find_peaks(data, height=thresh_mv, distance=thresh_ms)
 
         for orig_idx, row in sweep_group.iterrows():
             spike_num = int(row['spike_num'])
@@ -319,7 +317,7 @@ def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50, offset_ms=
             std_vals[pos]  = np.std(w_stim)
 
             try:
-                fxx, pxx = _spectral.compute_spectrum(
+                fxx, pxx = neurodsp_spectral.compute_spectrum(
                     w_stim, fs, method='welch',
                     window='hann', nperseg=len(w_stim),
                 )
@@ -331,7 +329,7 @@ def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50, offset_ms=
                 pass
 
     suffix = f'{window_ms}ms' if offset_ms == 0 else f'ctrl_{offset_ms}to{offset_ms + window_ms}ms'
-    return _pd.DataFrame(
+    return pd.DataFrame(
         {f'stim_mean_{suffix}': mean_vals,
          f'stim_std_{suffix}':  std_vals,
          f'stim_exp_{suffix}':  exp_vals},
@@ -341,11 +339,10 @@ def recompute_stim_features(f, fs, df_pink_raw, one_ms, window_ms=50, offset_ms=
 
 def f_test_r2(r2_small, r2_big, p_small, p_big, n):
     """F-test whether the larger model explains significantly more variance than the smaller one."""
-    import scipy.stats as stats
     num   = (r2_big - r2_small) / (p_big - p_small)
     denom = (1 - r2_big) / (n - p_big - 1)
     F     = num / denom
-    p     = 1 - stats.f.cdf(F, p_big - p_small, n - p_big - 1)
+    p     = 1 - scipy_f.cdf(F, p_big - p_small, n - p_big - 1)
     return F, p
 
 
@@ -362,21 +359,18 @@ def prepare_window_df(df_pink_filtered, df_pink_raw_filtered, f, fs, one_ms, win
     if window_ms == 5:
         return df_pink_filtered.copy()
 
-    import pickle as _pkl
-    from pathlib import Path as _Path
-
     _cache = None
     if pickle_dir is not None:
-        _cache_path = _Path(pickle_dir) / f'_stim_extra_{window_ms}ms.pkl'
+        _cache_path = Path(pickle_dir) / f'_stim_extra_{window_ms}ms.pkl'
         if not force_recompute and _cache_path.exists():
             print(f"  Loading stim features ({window_ms}ms) from cache...")
             with open(_cache_path, 'rb') as _fh:
-                stim_extra = _pkl.load(_fh)
+                stim_extra = pickle.load(_fh)
         else:
             print(f"  Computing stim features ({window_ms}ms)...")
             stim_extra = recompute_stim_features(f, fs, df_pink_raw_filtered, one_ms, window_ms=window_ms)
             with open(_cache_path, 'wb') as _fh:
-                _pkl.dump(stim_extra, _fh)
+                pickle.dump(stim_extra, _fh)
             print(f"  Cached → {_cache_path.name}")
     else:
         print(f"  Computing stim features ({window_ms}ms) — pass pickle_dir to cache...")
