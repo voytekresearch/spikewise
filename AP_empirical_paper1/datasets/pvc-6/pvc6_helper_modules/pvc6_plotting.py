@@ -2,6 +2,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.ticker
 import matplotlib.patches
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -744,22 +745,79 @@ def plot_feature_importance_categorical(best_model, X, bootstrap_importances):
     plt.show()
 
 # Function to plot bootstrapped accuracies as histograms
-def plot_bootstrap_histograms(bootstrapped_results, model_names):
-    n = len(bootstrapped_results)
-    fig, axes = plt.subplots(1, n, figsize=(6 * n, 5), constrained_layout=True)
-    if n == 1:
-        axes = [axes]
-    for ax, accs, model_name in zip(axes, bootstrapped_results, model_names):
-        accs_mean = np.mean(accs)
-        accs_ci   = np.percentile(accs, [2.5, 97.5])
-        sns.histplot(accs, kde=True, bins=30, ax=ax)
-        ax.axvline(accs_mean,   color='red',  ls='--', lw=2, label=f'Mean: {accs_mean:.3f}')
-        ax.axvline(accs_ci[0],  color='gray', ls=':',  lw=1.5,
-                   label=f'95% CI [{accs_ci[0]:.3f},{accs_ci[1]:.3f}]')
-        ax.axvline(accs_ci[1],  color='gray', ls=':',  lw=1.5)
-        ax.set_xlabel(f'Accuracy  ({model_name})')
-        ax.set_ylabel('Frequency')
-        ax.legend(frameon=False)
+def plot_bootstrap_histograms(bootstrapped_results, model_names, overlay=False):
+    _FS_AX  = 28
+    _FS_TK  = 24
+    _LW_SP  = 2.5
+    _COLORS = ['#AED6F1', '#2980B9', '#1A5276']  # light → dark blue
+
+    all_accs = np.concatenate(bootstrapped_results)
+    x_pad = (all_accs.max() - all_accs.min()) * 0.05
+    xlim = (all_accs.min() - x_pad, all_accs.max() + x_pad)
+
+    def _style_ax(ax):
+        ax.set_xlim(xlim)
+        ax.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(0.05))
+        ax.tick_params(axis='both', labelsize=_FS_TK, width=_LW_SP)
+        for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+            lbl.set_fontweight('bold')
+        for spine in ax.spines.values():
+            spine.set_linewidth(_LW_SP)
+            spine.set_color('black')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if overlay:
+        fig, ax = plt.subplots(figsize=(10, 7), constrained_layout=True)
+        # Minimum absolute bandwidth: jitter near-zero-variance distributions
+        _global_range = all_accs.max() - all_accs.min()
+        _min_bw = max(_global_range * 0.02, 0.005)
+        for accs, model_name, col in zip(bootstrapped_results, model_names, _COLORS):
+            accs_mean = np.mean(accs)
+            _std = np.std(accs)
+            _accs_plot = (accs + np.random.default_rng(42).normal(0, _min_bw, size=len(accs))
+                          if _std < _min_bw else accs)
+            sns.kdeplot(_accs_plot, ax=ax, color=col, lw=3.5, fill=True, alpha=0.45,
+                        label=f'{model_name}  (mean={accs_mean:.3f})')
+            ax.axvline(accs_mean, color=col, ls='--', lw=2.5, zorder=5)
+        ax.set_xlabel('Bootstrap accuracy', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+        ax.set_ylabel('Density', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+        ax.set_title('Bootstrap accuracy distributions', fontsize=_FS_AX, fontweight='bold', pad=14)
+        leg = ax.legend(frameon=False, fontsize=_FS_TK,
+                        prop={'size': _FS_TK, 'weight': 'bold'},
+                        loc='upper center', bbox_to_anchor=(0.5, -0.18),
+                        ncol=1)
+        _style_ax(ax)
+    else:
+        n = len(bootstrapped_results)
+        fig, axes = plt.subplots(1, n, figsize=(8 * n, 7), constrained_layout=True)
+        if n == 1:
+            axes = [axes]
+        _global_range = all_accs.max() - all_accs.min()
+        _min_bw = max(_global_range * 0.02, 0.005)
+        for ax, accs, model_name, col in zip(axes, bootstrapped_results, model_names, _COLORS):
+            accs_mean = np.mean(accs)
+            accs_ci   = np.percentile(accs, [2.5, 97.5])
+            _std = np.std(accs)
+            _accs_plot = (accs + np.random.default_rng(42).normal(0, _min_bw, size=len(accs))
+                          if _std < _min_bw else accs)
+            sns.histplot(_accs_plot, kde=True, bins=30, ax=ax,
+                         color='#0072B2', alpha=0.65, edgecolor='white',
+                         line_kws={'lw': 3.0, 'color': '#0072B2'})
+            ax.axvline(accs_mean, color='black', ls='--', lw=3.0, zorder=5)
+            ax.axvline(accs_ci[0], color='black', ls=':', lw=2.0, zorder=5)
+            ax.axvline(accs_ci[1], color='black', ls=':', lw=2.0, zorder=5)
+            xlim_mid = (xlim[0] + xlim[1]) / 2
+            txt_x, txt_ha = (0.97, 'right') if accs_mean < xlim_mid else (0.03, 'left')
+            ax.text(txt_x, 0.97, f'Mean = {accs_mean:.3f}',
+                    transform=ax.transAxes, ha=txt_ha, va='top',
+                    fontsize=_FS_AX + 4, fontweight='bold',
+                    bbox=dict(facecolor='white', edgecolor='none', alpha=0.0, pad=4))
+            ax.set_xlabel('Bootstrap accuracy', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+            ax.set_ylabel('Count', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+            ax.set_title(model_name, fontsize=_FS_AX, fontweight='bold', pad=14)
+            _style_ax(ax)
+
     plt.show()
 
 
@@ -772,34 +830,25 @@ def plot_window_expansion(results_by_window, windows_ms,
                           shuffle_results_2=None,
                           cell_labels=('Cell 1', 'Cell 2')):
     """
-    Compare ridge regression R² (bootstrap mean + 95 % CI) across pre-inflection
-    window sizes. When results_by_window_2 is provided, both cells are shown as
-    side-by-side grouped bars (solid = cell 1, hatched = cell 2).
+    Line plot of bootstrap R² (mean ± 95% CI shaded band) across window sizes.
+    Filled circles = permutation p<0.05; open circles = n.s.
+    Shuffle shown as dashed line with shaded band.
     """
-    _FS_AX  = 28
-    _FS_TK  = 24
-    _FS_STR = 34
-    _LW_SP  = 2.5
+    _FS_AX   = 28
+    _FS_TK   = 24
+    _FS_STR  = 36
+    _LW_SP   = 2.5
+    _LW_LINE = 3.5
     _COL_SIG = '#D55E00'
-    _COL_NS  = '#888888'
     _COL_SHF = '#56B4E9'
 
     two_cells = results_by_window_2 is not None
-
-    if two_cells:
-        bar_w  = 0.32
-        gap    = 0.06
-        offset = (bar_w + gap) / 2
-    else:
-        bar_w  = 0.38
-        offset = 0.0
-
     n_targets = len(targets)
-    fig, axes = plt.subplots(1, n_targets,
-                             figsize=(8 * n_targets, 7),
-                             constrained_layout=True)
+
+    fig, axes = plt.subplots(1, n_targets, figsize=(8 * n_targets, 7))
     if n_targets == 1:
         axes = [axes]
+    fig.subplots_adjust(top=0.80, bottom=0.20, left=0.08, right=0.97, wspace=0.35)
 
     def _extract(results, tgt):
         r2s, lo, hi, sigs = [], [], [], []
@@ -816,38 +865,48 @@ def plot_window_expansion(results_by_window, windows_ms,
         return (np.array(r2s, dtype=float), np.array(lo, dtype=float),
                 np.array(hi, dtype=float), sigs)
 
-    def _draw_bars(ax, xs, r2s, lo, hi, sigs, hatch='', alpha=0.88, star_offset=0.0):
-        colors = [_COL_SIG if s else _COL_NS for s in sigs]
-        ax.bar(xs, r2s, color=colors, alpha=alpha, width=bar_w,
-               hatch=hatch, edgecolor='white' if hatch else 'none',
-               linewidth=1.5, zorder=3)
+    def _draw_line(ax, xs, r2s, lo, hi, sigs, color, label='', lw=_LW_LINE,
+                   ls='-'):
+        ax.plot(xs, r2s, color=color, lw=lw, ls=ls, zorder=3,
+                label=label, solid_capstyle='round')
         ax.errorbar(xs, r2s,
                     yerr=[r2s - lo, hi - r2s],
-                    fmt='none', color='black', capsize=6, capthick=2.5, lw=2.5, zorder=4)
-        for xi, (r2v, sig, h) in enumerate(zip(r2s, sigs, hi)):
+                    fmt='none', color=color, capsize=7, capthick=2.5,
+                    lw=2.0, zorder=4)
+        for xi, (r2v, sig) in enumerate(zip(r2s, sigs)):
+            if np.isnan(r2v):
+                continue
             if sig:
-                ax.text(xs[xi] + star_offset, h + 0.005, '*',
+                ax.scatter(xs[xi], r2v, s=110, color=color,
+                           edgecolors='black', linewidths=1.5, zorder=5)
+            else:
+                ax.scatter(xs[xi], r2v, s=110, facecolors='white',
+                           edgecolors=color, linewidths=2.0, zorder=5)
+        for xi, (hv, sig) in enumerate(zip(hi, sigs)):
+            if sig and not np.isnan(hv):
+                ax.text(xs[xi], hv + 0.012, '*',
                         ha='center', va='bottom', fontsize=_FS_STR,
-                        fontweight='bold', color=_COL_SIG)
+                        fontweight='bold', color=color)
+
+    xs = np.arange(len(windows_ms))
 
     for ax, tgt, tgt_lbl in zip(axes, targets, target_labels):
-        xs_ticks = np.arange(len(windows_ms))
-        xs1 = xs_ticks - offset if two_cells else xs_ticks
-        xs2 = xs_ticks + offset if two_cells else None
-
         r2s1, lo1, hi1, sigs1 = _extract(results_by_window, tgt)
-        _draw_bars(ax, xs1, r2s1, lo1, hi1, sigs1,
-                   hatch='', alpha=0.88,
-                   star_offset=-bar_w * 0.15 if two_cells else 0.0)
+        lbl1 = cell_labels[0] if two_cells else ''
+        _draw_line(ax, xs, r2s1, lo1, hi1, sigs1, color=_COL_SIG, label=lbl1)
 
         if two_cells:
             r2s2, lo2, hi2, sigs2 = _extract(results_by_window_2, tgt)
-            _draw_bars(ax, xs2, r2s2, lo2, hi2, sigs2,
-                       hatch='//', alpha=0.75,
-                       star_offset=bar_w * 0.15)
+            _draw_line(ax, xs, r2s2, lo2, hi2, sigs2,
+                       color='#0072B2', label=cell_labels[1])
 
-        ax.axhline(0, color='black', lw=2.0, ls='--', alpha=0.5, zorder=2)
-        ax.set_xticks(xs_ticks)
+        if shuffle_results is not None:
+            sr2s, slo, shi, ssigs = _extract(shuffle_results, tgt)
+            _draw_line(ax, xs, sr2s, slo, shi, ssigs,
+                       color=_COL_SHF, label='shuffle', lw=2.5, ls='--')
+
+        ax.axhline(0, color='black', lw=1.8, ls='--', alpha=0.4, zorder=1)
+        ax.set_xticks(xs)
         ax.set_xticklabels([str(w) for w in windows_ms],
                            rotation=45, ha='right', fontsize=_FS_TK, fontweight='bold')
         ax.tick_params(axis='y', labelsize=_FS_TK, width=_LW_SP)
@@ -856,7 +915,7 @@ def plot_window_expansion(results_by_window, windows_ms,
             lbl.set_fontweight('bold')
         ax.set_xlabel('Pre-spike window (ms)', fontsize=_FS_AX, fontweight='bold', labelpad=10)
         ax.set_ylabel('Bootstrap R²', fontsize=_FS_AX, fontweight='bold', labelpad=10)
-        ax.set_title(tgt_lbl, fontsize=_FS_AX, fontweight='bold', pad=10)
+        ax.set_title(tgt_lbl, fontsize=_FS_AX, fontweight='bold', pad=14)
         ax.locator_params(axis='y', nbins=4)
         for spine in ax.spines.values():
             spine.set_linewidth(_LW_SP)
@@ -864,26 +923,128 @@ def plot_window_expansion(results_by_window, windows_ms,
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
-    if two_cells:
-        legend_elements = [
-            matplotlib.patches.Patch(facecolor=_COL_SIG, alpha=0.88,
-                                     label=f'p<0.05 — {cell_labels[0]}'),
-            matplotlib.patches.Patch(facecolor=_COL_NS,  alpha=0.88,
-                                     label=f'n.s. — {cell_labels[0]}'),
-            matplotlib.patches.Patch(facecolor=_COL_SIG, alpha=0.75, hatch='//',
-                                     edgecolor='white', label=f'p<0.05 — {cell_labels[1]}'),
-            matplotlib.patches.Patch(facecolor=_COL_NS,  alpha=0.75, hatch='//',
-                                     edgecolor='white', label=f'n.s. — {cell_labels[1]}'),
-        ]
-    else:
-        legend_elements = [
-            matplotlib.patches.Patch(facecolor=_COL_SIG, alpha=0.88, label='p < 0.05 (permutation)'),
-            matplotlib.patches.Patch(facecolor=_COL_NS,  alpha=0.88, label='n.s.'),
-        ]
-    fig.legend(handles=legend_elements, frameon=False,
-               loc='upper center', bbox_to_anchor=(0.5, 1.08),
-               ncol=len(legend_elements), fontsize=_FS_TK - 2,
+    # legend from first axis handles
+    handles, labels_ = axes[0].get_legend_handles_labels()
+    # add sig/ns dot legend entries
+    handles += [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='#555555',
+               markeredgecolor='black', markersize=10, label='p < 0.05 (perm.)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='white',
+               markeredgecolor='#555555', markersize=10, markeredgewidth=2,
+               label='n.s.'),
+    ]
+    labels_ += ['p < 0.05 (perm.)', 'n.s.']
+    fig.legend(handles, labels_, frameon=False,
+               loc='upper center', bbox_to_anchor=(0.5, 1.0),
+               ncol=len(handles), fontsize=_FS_TK - 2,
                prop={'size': _FS_TK - 2, 'weight': 'bold'})
+
+    plt.show()
+
+
+def plot_window_expansion_lines(results_list, windows_ms,
+                                cell_labels,
+                                targets=('stim_mean', 'stim_std', 'stim_exp'),
+                                target_labels=('stim mean', 'stim std', 'stim exp')):
+    """
+    Line plot of bootstrap R² across window sizes for multiple cells.
+
+    Each cell gets a distinct line color + shaded 95% CI band. Significant windows
+    are marked with a filled circle; non-significant with an open circle. Stars are
+    placed at the top of the panel for significant windows per cell.
+
+    Parameters
+    ----------
+    results_list : list of dict   – one results_by_window dict per cell
+    windows_ms   : list of int    – window sizes (x-axis)
+    cell_labels  : list of str    – label per cell for legend
+    targets      : tuple of str
+    target_labels: tuple of str
+    """
+    _FS_AX   = 28
+    _FS_TK   = 24
+    _FS_STR  = 32
+    _LW_SP   = 2.5
+    _LW_LINE = 3.5
+    _COLORS  = ['#D55E00', '#0072B2', '#009E73', '#CC79A7']
+    _ALPHAS  = [0.18, 0.18, 0.18, 0.18]
+
+    n_targets = len(targets)
+    n_cells   = len(results_list)
+    xs        = np.arange(len(windows_ms))
+
+    fig, axes = plt.subplots(1, n_targets, figsize=(8 * n_targets, 7))
+    if n_targets == 1:
+        axes = [axes]
+
+    fig.subplots_adjust(top=0.82, bottom=0.18, left=0.08, right=0.97, wspace=0.35)
+
+    for ax, tgt, tgt_lbl in zip(axes, targets, target_labels):
+        for ci, (results, label) in enumerate(zip(results_list, cell_labels)):
+            col = _COLORS[ci % len(_COLORS)]
+            r2s, lo, hi, sigs = [], [], [], []
+            for wms in windows_ms:
+                key = f'{wms}ms_{tgt}'
+                if key not in results:
+                    r2s.append(np.nan); lo.append(np.nan)
+                    hi.append(np.nan); sigs.append(False)
+                    continue
+                res = results[key]
+                r2s.append(res['r2_mean'])
+                lo.append(res['r2_ci'][0])
+                hi.append(res['r2_ci'][1])
+                sigs.append(res.get('p_val_perm', 1.0) < 0.05)
+
+            r2s = np.array(r2s, dtype=float)
+            lo  = np.array(lo,  dtype=float)
+            hi  = np.array(hi,  dtype=float)
+
+            ax.fill_between(xs, lo, hi, color=col, alpha=_ALPHAS[ci], zorder=2)
+            ax.plot(xs, r2s, color=col, lw=_LW_LINE, zorder=3,
+                    label=label, solid_capstyle='round')
+
+            # filled dot = sig, open dot = n.s.
+            for xi, (r2v, sig) in enumerate(zip(r2s, sigs)):
+                if np.isnan(r2v):
+                    continue
+                if sig:
+                    ax.scatter(xs[xi], r2v, s=120, color=col,
+                               zorder=4, edgecolors='black', linewidths=1.5)
+                else:
+                    ax.scatter(xs[xi], r2v, s=120, facecolors='white',
+                               edgecolors=col, linewidths=2.0, zorder=4)
+
+            # stars just above the CI upper bound
+            star_offset = ci * 0.04 * (np.nanmax(hi) - np.nanmin(lo) + 1e-6)
+            for xi, (hv, sig) in enumerate(zip(hi, sigs)):
+                if sig and not np.isnan(hv):
+                    ax.text(xs[xi], hv + star_offset + 0.008, '*',
+                            ha='center', va='bottom', fontsize=_FS_STR,
+                            fontweight='bold', color=col)
+
+        ax.axhline(0, color='black', lw=1.8, ls='--', alpha=0.4, zorder=1)
+        ax.set_xticks(xs)
+        ax.set_xticklabels([str(w) for w in windows_ms],
+                           rotation=45, ha='right', fontsize=_FS_TK, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=_FS_TK, width=_LW_SP)
+        ax.tick_params(axis='x', width=_LW_SP)
+        for lbl in ax.get_yticklabels():
+            lbl.set_fontweight('bold')
+        ax.set_xlabel('Pre-spike window (ms)', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+        ax.set_ylabel('Bootstrap R²', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+        ax.set_title(tgt_lbl, fontsize=_FS_AX, fontweight='bold', pad=16)
+        ax.locator_params(axis='y', nbins=4)
+        for spine in ax.spines.values():
+            spine.set_linewidth(_LW_SP)
+            spine.set_color('black')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    handles, labels_ = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels_, frameon=False,
+               loc='upper center', bbox_to_anchor=(0.5, 1.0),
+               ncol=n_cells, fontsize=_FS_TK,
+               prop={'size': _FS_TK, 'weight': 'bold'})
 
     plt.show()
 
@@ -1164,5 +1325,58 @@ def plot_feature_histograms(df_features):
         ax.locator_params(nbins=3)
     for ax in axes[n:]:
         ax.set_visible(False)
+    plt.show()
+
+
+def plot_feature_correlation_matrix(df_features, title=''):
+    _FS_AX = 26
+    _FS_TK = 20
+    _LW_SP = 2.0
+    _SKIP  = {'sweep', 'stim_type', 'pink_type', 'spike_num',
+              'stim_exp', 'stim_mean', 'stim_std', 'r_squared_exp',
+              'r_squared_ramp', 'log_isi'}
+    _LABELS = {
+        'peak_amp':       'Peak amp',
+        'peak_width':     'Peak width',
+        'peak_sharpness': 'Peak sharpness',
+        'exp_lambda':     'Exp λ',
+        'exp_const':      'Exp const',
+        'inflection_time':'Inflection time',
+        'inflection_amp': 'Inflection amp',
+        'ramp_amp':       'Ramp amp',
+    }
+
+    feat_cols = [c for c in df_features.columns if c not in _SKIP]
+    corr = df_features[feat_cols].corr(method='pearson')
+    labels = [_LABELS.get(c, c) for c in feat_cols]
+
+    n = len(feat_cols)
+    fig, ax = plt.subplots(figsize=(n * 1.1 + 1.5, n * 1.1 + 1.0), constrained_layout=True)
+
+    im = ax.imshow(corr.values, vmin=-1, vmax=1, cmap='RdBu_r', aspect='auto')
+
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=_FS_TK, fontweight='bold')
+    ax.set_yticklabels(labels, fontsize=_FS_TK, fontweight='bold')
+
+    for i in range(n):
+        for j in range(n):
+            val = corr.values[i, j]
+            txt_col = 'white' if abs(val) > 0.6 else 'black'
+            ax.text(j, i, f'{val:.2f}', ha='center', va='center',
+                    fontsize=_FS_TK - 4, fontweight='bold', color=txt_col)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.03)
+    cbar.set_label('Pearson r', fontsize=_FS_AX - 2, fontweight='bold')
+    cbar.ax.tick_params(labelsize=_FS_TK - 2)
+    for lbl in cbar.ax.get_yticklabels():
+        lbl.set_fontweight('bold')
+
+    if title:
+        ax.set_title(title, fontsize=_FS_AX, fontweight='bold', pad=14)
+
+    for spine in ax.spines.values():
+        spine.set_linewidth(_LW_SP)
     plt.show()
 
