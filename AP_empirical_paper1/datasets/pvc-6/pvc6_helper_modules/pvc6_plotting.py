@@ -252,27 +252,27 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3):
     plt.show()
 
 def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_spks):
-    """Mean ± SD spike waveform derivative for each stimulus type (constant / ramp / pink)."""
-    mean_constant_spks = np.mean(all_constant_spks, axis=0)
-    std_constant_spks = np.std(all_constant_spks, axis=0)
-    
-    mean_ramp_spks = np.mean(all_ramp_spks, axis=0)
-    std_ramp_spks = np.std(all_ramp_spks, axis=0)
-    
-    mean_pink_spks = np.mean(all_pink_spks, axis=0)
-    std_pink_spks = np.std(all_pink_spks, axis=0)
-    
+    """Mean ± SD spike waveform for each stimulus type. Pass None to skip a type."""
     plt.figure(figsize=(10, 6))
-    
-    plt.plot(mean_constant_spks, label='Mean Constant Spikes', color='green', linewidth=4)
-    plt.fill_between(range(len(mean_constant_spks)), mean_constant_spks - std_constant_spks, mean_constant_spks + std_constant_spks, color='green', alpha=0.3)
-    
-    plt.plot(mean_ramp_spks, label='Mean Ramp Spikes', color='purple', linewidth=4)
-    plt.fill_between(range(len(mean_ramp_spks)), mean_ramp_spks - std_ramp_spks, mean_ramp_spks + std_ramp_spks, color='purple', alpha=0.3)
-    
-    plt.plot(mean_pink_spks, label='Mean Pink Spikes', color='hotpink', linewidth=4)
-    plt.fill_between(range(len(mean_pink_spks)), mean_pink_spks - std_pink_spks, mean_pink_spks + std_pink_spks, color='lightpink', alpha=0.3)
-    
+
+    if all_constant_spks is not None:
+        mean_c = np.mean(all_constant_spks, axis=0)
+        std_c  = np.std(all_constant_spks, axis=0)
+        plt.plot(mean_c, label='Mean Constant Spikes', color='green', linewidth=4)
+        plt.fill_between(range(len(mean_c)), mean_c - std_c, mean_c + std_c, color='green', alpha=0.3)
+
+    if all_ramp_spks is not None:
+        mean_r = np.mean(all_ramp_spks, axis=0)
+        std_r  = np.std(all_ramp_spks, axis=0)
+        plt.plot(mean_r, label='Mean Ramp Spikes', color='purple', linewidth=4)
+        plt.fill_between(range(len(mean_r)), mean_r - std_r, mean_r + std_r, color='purple', alpha=0.3)
+
+    if all_pink_spks is not None:
+        mean_p = np.mean(all_pink_spks, axis=0)
+        std_p  = np.std(all_pink_spks, axis=0)
+        plt.plot(mean_p, label='Mean Pink Spikes', color='hotpink', linewidth=4)
+        plt.fill_between(range(len(mean_p)), mean_p - std_p, mean_p + std_p, color='lightpink', alpha=0.3)
+
     plt.xlabel('Time (ms)')
     plt.ylabel('Voltage')
     plt.xlim(1600, 2400)
@@ -286,7 +286,9 @@ def plot_confusion_matrix(best_model, X_test, y_test):
     cm      = confusion_matrix(y_test, best_model.predict(X_test), labels=best_model.classes_)
     display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=best_model.classes_)
 
-    fig, ax = plt.subplots(figsize=(11, 5))
+    n_classes = len(best_model.classes_)
+    fig_size  = 5 + 2 * n_classes
+    fig, ax = plt.subplots(figsize=(fig_size, fig_size))
     display.plot(cmap='Blues', ax=ax, xticks_rotation=0, values_format='d')
     ax.set_aspect('equal')
 

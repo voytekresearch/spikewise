@@ -23,13 +23,19 @@ from pvc6_plotting import *
 # ── Categorical stimulus classifiers ─────────────────────────────────────────
 
 def bootstrap_model(model, X_train, y_train, X_test, y_test, n_bootstraps=1000):
-    """Bootstrap accuracy distribution for a fitted classifier."""
+    """Bootstrap accuracy distribution for a fitted classifier.
+
+    Refits `model` on the full training set at the end so its `classes_`
+    reflect all observed labels, not whichever bootstrap resample happened
+    to be drawn last (a resample can drop rare classes entirely).
+    """
     bootstrapped_accuracies = []
     for _ in range(n_bootstraps):
         X_resampled, y_resampled = resample(X_train, y_train, random_state=None)
         model.fit(X_resampled, y_resampled)
         y_pred = model.predict(X_test)
         bootstrapped_accuracies.append(accuracy_score(y_test, y_pred))
+    model.fit(X_train, y_train)
     return np.array(bootstrapped_accuracies)
 
 
@@ -72,6 +78,7 @@ def random_forest_stim(X, y, X_train, X_test, y_train, y_test, n_bootstraps=1000
         bootstrapped_accuracies.append(accuracy_score(y_test, y_pred))
         bootstrapped_importances.append(best_model.feature_importances_)
 
+    best_model.fit(X_train, y_train)
     return best_model, np.array(bootstrapped_accuracies), np.array(bootstrapped_importances)
 
 
