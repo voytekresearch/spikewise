@@ -106,7 +106,7 @@ def set_plot_style():
 _SPIKE_FEATURES = [
     'ramp_amp', 'inflection_time', 'inflection_amp',
     'peak_amp', 'peak_width', 'peak_sharpness',
-    'exp_lambda', 'exp_const', 'log_isi',
+    'exp_lambda', 'exp_const',
 ]
 _STIM_FEATURES = ['stim_mean', 'stim_std', 'stim_exp']
 
@@ -904,8 +904,14 @@ def plot_window_expansion(results_by_window, windows_ms,
 
         if shuffle_results is not None:
             sr2s, slo, shi, ssigs = _extract(shuffle_results, tgt)
+            shuf_lbl = f'shuffle ({cell_labels[0]})' if two_cells else 'shuffle'
             _draw_line(ax, xs, sr2s, slo, shi, ssigs,
-                       color=_COL_SHF, label='shuffle', lw=2.5, ls='--')
+                       color=_COL_SHF, label=shuf_lbl, lw=2.5, ls='--')
+
+        if shuffle_results_2 is not None and two_cells:
+            sr2s2, slo2, shi2, ssigs2 = _extract(shuffle_results_2, tgt)
+            _draw_line(ax, xs, sr2s2, slo2, shi2, ssigs2,
+                       color='#AAAAAA', label=f'shuffle ({cell_labels[1]})', lw=2.5, ls='--')
 
         ax.axhline(0, color='black', lw=1.8, ls='--', alpha=0.4, zorder=1)
         ax.set_xticks(xs)
