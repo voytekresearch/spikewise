@@ -836,21 +836,21 @@ def plot_window_expansion(results_by_window, windows_ms,
     Filled circles = permutation p<0.05; open circles = n.s.
     Shuffle shown as dashed line with shaded band.
     """
-    _FS_AX   = 28
-    _FS_TK   = 24
-    _FS_STR  = 36
-    _LW_SP   = 2.5
-    _LW_LINE = 3.5
+    _FS_AX   = 40
+    _FS_TK   = 32
+    _FS_STR  = 48
+    _LW_SP   = 3.0
+    _LW_LINE = 5.0
     _COL_SIG = '#D55E00'
     _COL_SHF = '#56B4E9'
 
     two_cells = results_by_window_2 is not None
     n_targets = len(targets)
 
-    fig, axes = plt.subplots(1, n_targets, figsize=(8 * n_targets, 7))
+    fig, axes = plt.subplots(1, n_targets, figsize=(8 * n_targets, 6))
     if n_targets == 1:
         axes = [axes]
-    fig.subplots_adjust(top=0.80, bottom=0.20, left=0.08, right=0.97, wspace=0.35)
+    fig.subplots_adjust(top=0.88, bottom=0.26, left=0.08, right=0.97, wspace=0.5)
 
     def _extract(results, tgt):
         r2s, lo, hi, sigs = [], [], [], []
@@ -868,27 +868,24 @@ def plot_window_expansion(results_by_window, windows_ms,
                 np.array(hi, dtype=float), sigs)
 
     def _draw_line(ax, xs, r2s, lo, hi, sigs, color, label='', lw=_LW_LINE,
-                   ls='-'):
+                   ls='-', show_markers=True):
         ax.plot(xs, r2s, color=color, lw=lw, ls=ls, zorder=3,
                 label=label, solid_capstyle='round')
+        if not show_markers:
+            return
         ax.errorbar(xs, r2s,
                     yerr=[r2s - lo, hi - r2s],
-                    fmt='none', color=color, capsize=7, capthick=2.5,
-                    lw=2.0, zorder=4)
+                    fmt='none', color=color, capsize=10, capthick=3.5,
+                    lw=3.0, zorder=4)
         for xi, (r2v, sig) in enumerate(zip(r2s, sigs)):
             if np.isnan(r2v):
                 continue
             if sig:
-                ax.scatter(xs[xi], r2v, s=110, color=color,
-                           edgecolors='black', linewidths=1.5, zorder=5)
+                ax.scatter(xs[xi], r2v, s=220, color=color,
+                           edgecolors='black', linewidths=2.0, zorder=5)
             else:
-                ax.scatter(xs[xi], r2v, s=110, facecolors='white',
-                           edgecolors=color, linewidths=2.0, zorder=5)
-        for xi, (hv, sig) in enumerate(zip(hi, sigs)):
-            if sig and not np.isnan(hv):
-                ax.text(xs[xi], hv + 0.012, '*',
-                        ha='center', va='bottom', fontsize=_FS_STR,
-                        fontweight='bold', color=color)
+                ax.scatter(xs[xi], r2v, s=220, facecolors='white',
+                           edgecolors=color, linewidths=3.0, zorder=5)
 
     xs = np.arange(len(windows_ms))
 
@@ -906,12 +903,14 @@ def plot_window_expansion(results_by_window, windows_ms,
             sr2s, slo, shi, ssigs = _extract(shuffle_results, tgt)
             shuf_lbl = f'shuffle ({cell_labels[0]})' if two_cells else 'shuffle'
             _draw_line(ax, xs, sr2s, slo, shi, ssigs,
-                       color=_COL_SHF, label=shuf_lbl, lw=2.5, ls='--')
+                       color='#F5A86E', label=shuf_lbl, lw=2.5, ls='--',
+                       show_markers=False)
 
         if shuffle_results_2 is not None and two_cells:
             sr2s2, slo2, shi2, ssigs2 = _extract(shuffle_results_2, tgt)
             _draw_line(ax, xs, sr2s2, slo2, shi2, ssigs2,
-                       color='#AAAAAA', label=f'shuffle ({cell_labels[1]})', lw=2.5, ls='--')
+                       color='#AAAAAA', label=f'shuffle ({cell_labels[1]})', lw=2.5, ls='--',
+                       show_markers=False)
 
         ax.axhline(0, color='black', lw=1.8, ls='--', alpha=0.4, zorder=1)
         ax.set_xticks(xs)
@@ -922,7 +921,10 @@ def plot_window_expansion(results_by_window, windows_ms,
         for lbl in ax.get_yticklabels():
             lbl.set_fontweight('bold')
         ax.set_xlabel('Pre-spike window (ms)', fontsize=_FS_AX, fontweight='bold', labelpad=10)
-        ax.set_ylabel('Bootstrap R²', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+        if ax is axes[0]:
+            ax.set_ylabel('Bootstrap R²', fontsize=_FS_AX, fontweight='bold', labelpad=10)
+        else:
+            ax.set_ylabel('')
         ax.set_title(tgt_lbl, fontsize=_FS_AX, fontweight='bold', pad=14)
         ax.locator_params(axis='y', nbins=4)
         for spine in ax.spines.values():
@@ -931,22 +933,24 @@ def plot_window_expansion(results_by_window, windows_ms,
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
-    # legend from first axis handles
+    plt.show()
+
+    # ── Separate legend figure ────────────────────────────────────────────────
     handles, labels_ = axes[0].get_legend_handles_labels()
-    # add sig/ns dot legend entries
     handles += [
         Line2D([0], [0], marker='o', color='w', markerfacecolor='#555555',
-               markeredgecolor='black', markersize=10, label='p < 0.05 (perm.)'),
+               markeredgecolor='black', markersize=24, label='p < 0.05 (perm.)'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='white',
-               markeredgecolor='#555555', markersize=10, markeredgewidth=2,
+               markeredgecolor='#555555', markersize=24, markeredgewidth=3.5,
                label='n.s.'),
     ]
     labels_ += ['p < 0.05 (perm.)', 'n.s.']
-    fig.legend(handles, labels_, frameon=False,
-               loc='upper center', bbox_to_anchor=(0.5, 1.0),
-               ncol=len(handles), fontsize=_FS_TK - 2,
-               prop={'size': _FS_TK - 2, 'weight': 'bold'})
-
+    fig_leg, ax_leg = plt.subplots(figsize=(max(4, len(handles) * 3.5), 1.8))
+    ax_leg.axis('off')
+    ax_leg.legend(handles, labels_, frameon=False, loc='center',
+                  ncol=len(handles),
+                  prop={'size': _FS_TK, 'weight': 'bold'})
+    plt.tight_layout()
     plt.show()
 
 
