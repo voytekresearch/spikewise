@@ -850,7 +850,7 @@ def plot_window_expansion(results_by_window, windows_ms,
     fig, axes = plt.subplots(1, n_targets, figsize=(8 * n_targets, 6))
     if n_targets == 1:
         axes = [axes]
-    fig.subplots_adjust(top=0.88, bottom=0.26, left=0.08, right=0.97, wspace=0.5)
+    fig.subplots_adjust(top=0.88, bottom=0.26, left=0.08, right=0.97, wspace=0.15)
 
     def _extract(results, tgt):
         r2s, lo, hi, sigs = [], [], [], []
@@ -947,10 +947,12 @@ def plot_window_expansion(results_by_window, windows_ms,
                label='n.s.'),
     ]
     labels_ += ['p < 0.05 (perm.)', 'n.s.']
-    fig_leg, ax_leg = plt.subplots(figsize=(5, len(handles) * 0.7))
+    import math
+    ncols_leg = math.ceil(len(handles) / 2)
+    fig_leg, ax_leg = plt.subplots(figsize=(ncols_leg * 4, 2.5))
     ax_leg.axis('off')
-    ax_leg.legend(handles, labels_, frameon=False, loc='center left',
-                  ncol=1,
+    ax_leg.legend(handles, labels_, frameon=False, loc='center',
+                  ncol=ncols_leg,
                   prop={'size': _FS_TK, 'weight': 'bold'})
     plt.tight_layout()
     plt.show()
