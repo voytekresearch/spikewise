@@ -901,15 +901,17 @@ def plot_window_expansion(results_by_window, windows_ms,
 
         if shuffle_results is not None:
             sr2s, slo, shi, ssigs = _extract(shuffle_results, tgt)
-            shuf_lbl = f'shuffle ({cell_labels[0]})' if two_cells else 'shuffle'
+            _short0 = cell_labels[0].split(' (')[0] if two_cells else ''
+            shuf_lbl = f'shuffle ({_short0})' if two_cells else 'shuffle'
             _draw_line(ax, xs, sr2s, slo, shi, ssigs,
                        color='#F5A86E', label=shuf_lbl, lw=2.5, ls='--',
                        show_markers=False)
 
         if shuffle_results_2 is not None and two_cells:
             sr2s2, slo2, shi2, ssigs2 = _extract(shuffle_results_2, tgt)
+            _short1 = cell_labels[1].split(' (')[0]
             _draw_line(ax, xs, sr2s2, slo2, shi2, ssigs2,
-                       color='#AAAAAA', label=f'shuffle ({cell_labels[1]})', lw=2.5, ls='--',
+                       color='#AAAAAA', label=f'shuffle ({_short1})', lw=2.5, ls='--',
                        show_markers=False)
 
         ax.axhline(0, color='black', lw=1.8, ls='--', alpha=0.4, zorder=1)
@@ -945,10 +947,10 @@ def plot_window_expansion(results_by_window, windows_ms,
                label='n.s.'),
     ]
     labels_ += ['p < 0.05 (perm.)', 'n.s.']
-    fig_leg, ax_leg = plt.subplots(figsize=(max(4, len(handles) * 3.5), 1.8))
+    fig_leg, ax_leg = plt.subplots(figsize=(5, len(handles) * 0.7))
     ax_leg.axis('off')
-    ax_leg.legend(handles, labels_, frameon=False, loc='center',
-                  ncol=len(handles),
+    ax_leg.legend(handles, labels_, frameon=False, loc='center left',
+                  ncol=1,
                   prop={'size': _FS_TK, 'weight': 'bold'})
     plt.tight_layout()
     plt.show()
