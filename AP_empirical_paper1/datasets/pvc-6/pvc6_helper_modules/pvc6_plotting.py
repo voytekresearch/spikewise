@@ -958,7 +958,8 @@ def plot_window_expansion(results_by_window, windows_ms,
     labels_ += ['p < 0.05 (perm.)', 'n.s.']
     import math
     ncols_leg = math.ceil(len(handles) / 2)
-    fig_leg, ax_leg = plt.subplots(figsize=(ncols_leg * 4, 2.5))
+    fig_leg, ax_leg = plt.subplots(figsize=(ncols_leg * 4, 2.5), facecolor='white')
+    ax_leg.set_facecolor('white')
     ax_leg.axis('off')
     ax_leg.legend(handles, labels_, frameon=False, loc='center',
                   ncol=ncols_leg,
@@ -1228,16 +1229,17 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     fig.subplots_adjust(left=ax_left, right=ax_right, bottom=ax_bot, top=ax_top)
     plt.show()
 
-    # legend: stim target → dot style
-    tgt_label_map = {'stim_mean': 'Stim mean', 'stim_std': 'Stim std', 'stim_exp': 'Stim exp'}
+    # legend: stim target → dot style, include window info if per-feature
     handles_leg = []
     for tgt in targets:
         h = _DOT_HATCH[tgt]
+        tgt_short = tgt.split('_')[1]
+        lbl = f'Stim {tgt_short} ({_wms[tgt]} ms)'
         patch = matplotlib.patches.Patch(facecolor='white', edgecolor='black',
-                                         linewidth=2, hatch=h,
-                                         label=tgt_label_map[tgt])
+                                         linewidth=2, hatch=h, label=lbl)
         handles_leg.append(patch)
-    fig_leg, ax_leg = plt.subplots(figsize=(4, 2.5))
+    fig_leg, ax_leg = plt.subplots(figsize=(4, 2.5), facecolor='white')
+    ax_leg.set_facecolor('white')
     ax_leg.axis('off')
     ax_leg.legend(handles=handles_leg, fontsize=_FS_ROW, frameon=False, loc='center')
     plt.tight_layout()
@@ -1296,8 +1298,7 @@ def plot_beta_weights_combined(results_window, window_ms=200):
                          fontsize=100, color='black', fontweight='bold')
 
     ax2.set_xticks(xs2)
-    _xlbls = [f'{t.split("_")[1]}\n({_wms[t]} ms)' for t in targets]
-    ax2.set_xticklabels(_xlbls, fontsize=56, fontweight='bold')
+    ax2.set_xticklabels(['mean', 'stdev', 'exp'], fontsize=56, fontweight='bold')
     ax2.set_ylabel('Bootstrapped R²', fontsize=60, fontweight='bold')
     ax2.tick_params(axis='y', labelsize=52, width=3, length=8)
     ax2.tick_params(axis='x', width=0, length=0)
