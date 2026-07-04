@@ -114,29 +114,33 @@ _STIM_FEATURES = ['stim_mean', 'stim_std', 'stim_exp']
 _SCATTER_COLORS = {'stim_mean': '#E07B54', 'stim_std': '#5B8DB8', 'stim_exp': '#72B26C'}
 
 
-def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3):
+def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3, df_w_dict=None):
     """Grid of spike-feature × stim-feature correlations for a given window.
 
     top=False (default): all combinations, compact style.
-                         Rows = stim features, cols = spike features sorted by |r|.
-    top=True:            top_n (default 3) spike features per stim feature, cartoon style
-                         suitable for figures. 3 rows × top_n cols.
+    top=True:            top_n (default 3) spike features per stim feature, cartoon style.
+    df_w_dict:           optional {stim_feat: df_w} — each stim row uses its own df_w
+                         (e.g. per-feature best window). window_ms ignored for title when set.
     """
     from scipy.stats import pearsonr as _pearsonr
 
     # Collect all valid pairs grouped by stim feature
     stf_groups = {}
     for stf in _STIM_FEATURES:
+        _df = df_w_dict[stf] if (df_w_dict is not None and stf in df_w_dict) else df_w
         group = []
         for sf in _SPIKE_FEATURES:
-            if sf not in df_w.columns or stf not in df_w.columns:
+            if sf not in _df.columns or stf not in _df.columns:
                 continue
-            valid = df_w[[sf, stf]].dropna()
+            valid = _df[[sf, stf]].dropna()
             if len(valid) < 10:
                 continue
             r, p = _pearsonr(valid[sf], valid[stf])
             group.append((abs(r), r, p, sf, valid))
         group.sort(key=lambda x: x[0], reverse=True)
+        # when top=True, only keep significant pairs
+        if top:
+            group = [g for g in group if g[2] < 0.05]
         if group:
             stf_groups[stf] = group
 
@@ -227,8 +231,13 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3):
             for col_idx in range(len(stf_groups[stf][:top_n]), ncols):
                 axes[row_idx, col_idx].set_visible(False)
             row_idx += 1
-        fig.suptitle(f'Top {top_n} spike × stim correlations — {window_ms} ms window',
-                     fontsize=28, fontweight='bold')
+        if df_w_dict is not None and isinstance(window_ms, dict):
+            _wlbl = ', '.join(f'{t.split("_")[1]}: {window_ms[t]} ms' for t in _STIM_FEATURES if t in window_ms)
+            fig.suptitle(f'Top {top_n} spike × stim correlations — per-feature best window ({_wlbl})',
+                         fontsize=28, fontweight='bold')
+        else:
+            fig.suptitle(f'Top {top_n} spike × stim correlations — {window_ms} ms window',
+                         fontsize=28, fontweight='bold')
     else:
         nrows = len([stf for stf in _STIM_FEATURES if stf in stf_groups])
         ncols = max(len(g) for g in stf_groups.values())
@@ -847,7 +856,7 @@ def plot_window_expansion(results_by_window, windows_ms,
     two_cells = results_by_window_2 is not None
     n_targets = len(targets)
 
-    fig, axes = plt.subplots(1, n_targets, figsize=(8 * n_targets, 6))
+    fig, axes = plt.subplots(1, n_targets, figsize=(8 * n_targets, 6), sharey=True)
     if n_targets == 1:
         axes = [axes]
     fig.subplots_adjust(top=0.88, bottom=0.26, left=0.08, right=0.97, wspace=0.15)
@@ -928,7 +937,7 @@ def plot_window_expansion(results_by_window, windows_ms,
         else:
             ax.set_ylabel('')
         ax.set_title(tgt_lbl, fontsize=_FS_AX, fontweight='bold', pad=14)
-        ax.locator_params(axis='y', nbins=4)
+        ax.locator_params(axis='y', nbins=5)
         for spine in ax.spines.values():
             spine.set_linewidth(_LW_SP)
             spine.set_color('black')
@@ -1086,9 +1095,11 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     sns.set_theme(style='ticks', rc={'axes.linewidth': 2.5})
     _FS_ROW, _FS_AX, _FS_STAR = 40, 46, 52
 
+    # window_ms can be a single int or a dict {target: ms}
+    _wms = window_ms if isinstance(window_ms, dict) else {t: window_ms for t in targets}
     res = {}
     for tgt in targets:
-        key = f'{window_ms}ms_{tgt}'
+        key = f'{_wms[tgt]}ms_{tgt}'
         if key not in results_window:
             print(f"Key '{key}' not found in results_window — run window expansion first.")
             return
@@ -1285,7 +1296,8 @@ def plot_beta_weights_combined(results_window, window_ms=200):
                          fontsize=100, color='black', fontweight='bold')
 
     ax2.set_xticks(xs2)
-    ax2.set_xticklabels(['mean', 'stdev', 'exp'], fontsize=56, fontweight='bold')
+    _xlbls = [f'{t.split("_")[1]}\n({_wms[t]} ms)' for t in targets]
+    ax2.set_xticklabels(_xlbls, fontsize=56, fontweight='bold')
     ax2.set_ylabel('Bootstrapped R²', fontsize=60, fontweight='bold')
     ax2.tick_params(axis='y', labelsize=52, width=3, length=8)
     ax2.tick_params(axis='x', width=0, length=0)
