@@ -213,14 +213,13 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
     else:
 
         # Pre-compute peak-aligned waveforms and a shared time axis.
-        # Use model.indices[:, 3] (Spike-class-identified peak within window)
-        # rather than argmax — argmax can pick a neighboring spike that has
-        # entered the window in fast-firing cells, which shifts the entire
-        # alignment and places control points at the wrong time.
+        # Use argmax(|w|) on each raw waveform — same as the May-7 working version.
+        # (June-13 "fix" used model.indices[i][3] which is always the hardcoded
+        # threshold-crossing index 150, not the actual spike peak.)
         valid_inds = [i for i in inds if i not in model.inds_error and i < len(model.spikes)]
         if peak_align and valid_inds:
             raw_wfs   = [model.spikes[i] for i in valid_inds]
-            peak_idxs = [int(model.indices[i][3]) for i in valid_inds]
+            peak_idxs = [int(np.argmax(np.abs(w))) for w in raw_wfs]
             pre       = max(peak_idxs)
             aligned_arr, t_aligned = _peak_align(raw_wfs, model.times, wght,
                                                   peak_idxs=peak_idxs)
