@@ -889,7 +889,9 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
                                    min_cells=2, n_cols_per_row=14,
                                    cells_to_plot=None,
                                    merged_rows=None,
-                                   feature_order=None):
+                                   feature_order=None,
+                                   cell_w=3.8, cell_h=2.6,
+                                   title_fontsize=30, ylabel_fontsize=36):
     """
     Small-multiples grid of smooth KDE distributions split by cluster, all cells.
     Features with more than n_cols_per_row cells wrap onto multiple rows.
@@ -972,8 +974,6 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
     actual_cols = max(
         (len(c) for _, c, _, _ in row_groups), default=1
     )
-    cell_w  = 3.8
-    cell_h  = 2.6
     fig_w   = actual_cols * cell_w + 0.4
     fig_h   = n_rows * cell_h + 1.0
 
@@ -1022,7 +1022,7 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
             for sp in ax.spines.values():
                 sp.set_visible(False)
             ax.set_facecolor('#dddddd' if is_isi else 'white')
-            ax.set_title(cell_id, fontsize=30, pad=4, color='#222', fontweight='bold')
+            ax.set_title(cell_id, fontsize=title_fontsize, pad=4, color='#222', fontweight='bold')
 
             if is_first and ci == 0:
                 if is_merged:
@@ -1034,14 +1034,14 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
                     lbl   = _fmt_lbl(feat.replace('_', ' '))
                     lcol  = '#B22222' if is_isi else 'black'
                     lstyl = 'italic' if is_isi else 'normal'
-                ax.set_ylabel(lbl, fontsize=36, fontweight='bold', rotation=90,
+                ax.set_ylabel(lbl, fontsize=ylabel_fontsize, fontweight='bold', rotation=90,
                               color=lcol, style=lstyl, labelpad=8,
                               multialignment='center')
 
             if is_merged and ci > 0:
                 ax.text(-0.05, 0.5, _fmt_lbl(panel_feat.replace('_', ' ')),
                         transform=ax.transAxes, rotation=90,
-                        ha='center', va='center', fontsize=36, fontweight='bold',
+                        ha='center', va='center', fontsize=ylabel_fontsize, fontweight='bold',
                         clip_on=False, color='black', multialignment='center')
 
         for ci in range(len(panels), actual_cols):
