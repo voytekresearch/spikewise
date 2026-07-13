@@ -865,23 +865,18 @@ def select_best_cells_per_feature(cluster_pickle_dir, n_per_feat=3,
 CLUST_COLORS = {'low': '#0072B2', 'mid': '#E69F00', 'high': '#CC79A7'}
 
 
-def plot_cluster_legend(fontsize=30):
-    ph, pw, gap = 0.28, 0.06, 0.015
-    items = [
-        (0.02, 0.60, CLUST_COLORS['low'],  'low cluster'),
-        (0.68, 0.60, CLUST_COLORS['high'], 'high cluster'),
-        (0.35, 0.12, CLUST_COLORS['mid'],  'mid cluster'),
+def plot_cluster_legend(fontsize=22):
+    handles = [
+        Patch(facecolor=CLUST_COLORS['low'],  label='low cluster'),
+        Patch(facecolor=CLUST_COLORS['high'], label='high cluster'),
+        Patch(facecolor=CLUST_COLORS['mid'],  label='mid cluster'),
     ]
-    fig = plt.figure(figsize=(8, 1.6))
-    ax = fig.add_axes([0, 0, 1, 1])
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
+    fig, ax = plt.subplots(figsize=(4, 1.4))
     ax.axis('off')
-    for x0, y0, color, label in items:
-        ax.add_patch(plt.Rectangle((x0, y0), pw, ph,
-                                   facecolor=color, transform=ax.transAxes))
-        ax.text(x0 + pw + gap, y0 + ph / 2, label, transform=ax.transAxes,
-                fontsize=fontsize, va='center', ha='left', color='black')
+    ax.legend(handles=handles, loc='center', ncol=1, fontsize=fontsize,
+              frameon=False, handlelength=1.2, handleheight=1.0,
+              handletextpad=0.5)
+    fig.tight_layout()
     return fig
 
 
@@ -1138,6 +1133,186 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
         fig.add_artist(plt.Line2D(
             [0.12, 0.99], [sep_y, sep_y],
             color=col, lw=lw, transform=fig.transFigure,
+        ))
+
+    return fig
+
+
+def plot_cluster_waveform_grid(df_master, cluster_pickle_dir,
+                                min_cells=2, n_cols_per_row=14,
+                                cells_to_plot=None,
+                                cells_to_exclude=None,
+                                feature_order=None,
+                                feature_labels=None,
+                                cell_w=3.5, cell_h=2.8,
+                                title_fontsize=30, ylabel_fontsize=36,
+                                hspace=0.35,
+                                half_win=75):
+    """
+    Same row/column layout as plot_feature_distribution_grid but shows
+    mean ± std cluster waveforms instead of KDE distributions.
+    log_isi and timing features are excluded (no waveform data).
+    """
+    import pickle as _pkl
+
+    SKIP_FEATS = {'log_isi', 'spk_times_ms', 'spk_times_idx'}
+
+    df_num = df_master.copy()
+    df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+
+    all_wf_pkl = {
+        os.path.basename(p).replace('_cluster_waveforms.pkl', ''): p
+        for p in glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_waveforms.pkl'))
+    }
+
+    clustered = {}
+    for feat, grp in df_num[df_num['num_clusters'] >= 2].groupby('spike_feature'):
+        if feat in SKIP_FEATS:
+            continue
+        cells = sorted(grp['cell_id'].unique(), key=lambda c: int(c.lstrip('c')))
+        cells = [c for c in cells if c in all_wf_pkl]
+        if len(cells) >= min_cells:
+            clustered[feat] = cells
+
+    feat_order = sorted(clustered, key=lambda f: -len(clustered[f]))
+    if feature_order is not None:
+        _explicit = [f for f in feature_order if f in clustered]
+        _rest     = [f for f in feat_order if f not in set(_explicit)]
+        feat_order = _explicit + _rest
+
+    row_groups = []
+    for feat in feat_order:
+        cells = clustered[feat]
+        if cells_to_plot is not None:
+            if isinstance(cells_to_plot, dict):
+                allowed = cells_to_plot.get(feat)
+                if allowed is not None:
+                    cells = [c for c in cells if c in allowed]
+            else:
+                cells = [c for c in cells if c in cells_to_plot]
+        if cells_to_exclude is not None:
+            if isinstance(cells_to_exclude, dict):
+                excluded = cells_to_exclude.get(feat, [])
+                cells = [c for c in cells if c not in excluded]
+            else:
+                cells = [c for c in cells if c not in cells_to_exclude]
+        if not cells:
+            continue
+        chunks = [cells[i:i + n_cols_per_row] for i in range(0, len(cells), n_cols_per_row)]
+        for ci, chunk in enumerate(chunks):
+            row_groups.append((feat, chunk, ci == 0))
+
+    _SPACER = '__spacer__'
+    rows_final    = []
+    height_ratios = []
+    for i, (feat, chunk, is_first) in enumerate(row_groups):
+        if is_first and i > 0:
+            rows_final.append((_SPACER, [], False))
+            height_ratios.append(0.4)
+        rows_final.append((feat, chunk, is_first))
+        height_ratios.append(1.0)
+
+    n_rows      = len(rows_final)
+    actual_cols = max((len(c) for _, c, _ in row_groups), default=1)
+    fig_w = actual_cols * cell_w + 0.4
+    fig_h = (len(row_groups) + sum(1 for r in rows_final if r[0] == _SPACER) * 0.4) * cell_h + 1.0
+
+    GS_TOP    = 0.97
+    GS_BOTTOM = 0.02
+
+    def _fmt_lbl(s):
+        return '\n'.join(s.split())
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs  = fig.add_gridspec(
+        n_rows, actual_cols,
+        left=0.18, right=0.99, top=GS_TOP, bottom=GS_BOTTOM,
+        hspace=hspace, wspace=0.28,
+        height_ratios=height_ratios,
+    )
+
+    spacer_axes   = []
+    feat_first_ax = {}
+    feat_last_ax  = {}
+
+    for ri, (feat, chunk, is_first) in enumerate(rows_final):
+        if feat == _SPACER:
+            ax_sp = fig.add_subplot(gs[ri, 0])
+            spacer_axes.append(ax_sp)
+            for ci in range(1, actual_cols):
+                fig.add_subplot(gs[ri, ci]).set_axis_off()
+            continue
+
+        clust_col = feat + '_cluster'
+        for ci, cell_id in enumerate(chunk):
+            ax = fig.add_subplot(gs[ri, ci])
+            pkl_path = all_wf_pkl.get(cell_id)
+
+            if pkl_path is not None:
+                try:
+                    wf_data = _pkl.load(open(pkl_path, 'rb'))
+                    if clust_col in wf_data:
+                        col_data = wf_data[clust_col]
+                        t_axis   = col_data['t_axis']
+                        cluster_items = [(lab, v) for lab, v in col_data.items()
+                                         if lab != 't_axis']
+                        # Amplitude outlier guard (same as plot_population_waveform_grid)
+                        peak_amps = [np.nanmax(np.abs(v['mean']))
+                                     if np.any(np.isfinite(v['mean'])) else np.nan
+                                     for _, v in cluster_items]
+                        valid_peaks = [p for p in peak_amps if np.isfinite(p)]
+                        amp_lo = np.median(valid_peaks) * 0.1 if len(valid_peaks) > 1 else 0.0
+                        for (grp, vals), peak in zip(cluster_items, peak_amps):
+                            if not np.isfinite(peak) or peak < amp_lo:
+                                continue
+                            mean_wf = vals['mean']
+                            std_wf  = vals.get('std')
+                            col     = CLUST_COLORS.get(grp, '#888')
+                            t = t_axis[:len(mean_wf)]
+                            ax.plot(t, mean_wf, color=col, lw=1.8)
+                            if std_wf is not None:
+                                ax.fill_between(t, mean_wf - std_wf, mean_wf + std_wf,
+                                                color=col, alpha=0.2)
+                        ax.set_xlim(-half_win, half_win)
+                except Exception:
+                    pass
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+            ax.set_facecolor('white')
+            ax.set_title(cell_id, fontsize=title_fontsize, pad=4,
+                         color='#222', fontweight='bold')
+
+            if ci == 0:
+                if feat not in feat_first_ax:
+                    feat_first_ax[feat] = ax
+                feat_last_ax[feat] = ax
+
+        for ci in range(len(chunk), actual_cols):
+            fig.add_subplot(gs[ri, ci]).set_axis_off()
+
+    # Vertical labels centred across wrapped rows
+    for feat_name, ax_top in feat_first_ax.items():
+        ax_bot = feat_last_ax[feat_name]
+        p_top  = ax_top.get_position()
+        p_bot  = ax_bot.get_position()
+        y_mid  = (p_top.y1 + p_bot.y0) / 2
+        _fl    = feature_labels or {}
+        lbl    = _fl.get(feat_name, _fmt_lbl(feat_name.replace('_', ' ')))
+        fig.text(0.15, y_mid, lbl,
+                 fontsize=ylabel_fontsize, fontweight='bold',
+                 rotation=90, ha='center', va='center', color='black')
+
+    # Separator lines between feature groups
+    for ax_sp in spacer_axes:
+        pos   = ax_sp.get_position()
+        sep_y = pos.y0 + pos.height / 2
+        ax_sp.set_axis_off()
+        fig.add_artist(plt.Line2D(
+            [0.12, 0.99], [sep_y, sep_y],
+            color='#aaaaaa', lw=2.0, transform=fig.transFigure,
         ))
 
     return fig
