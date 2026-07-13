@@ -1147,7 +1147,8 @@ def plot_cluster_waveform_grid(df_master, cluster_pickle_dir,
                                 cell_w=3.5, cell_h=2.8,
                                 title_fontsize=30, ylabel_fontsize=36,
                                 hspace=0.35,
-                                half_win=75):
+                                half_win=75,
+                                max_rows=None):
     """
     Same row/column layout as plot_feature_distribution_grid but shows
     mean ± std cluster waveforms instead of KDE distributions.
@@ -1201,6 +1202,9 @@ def plot_cluster_waveform_grid(df_master, cluster_pickle_dir,
         chunks = [cells[i:i + n_cols_per_row] for i in range(0, len(cells), n_cols_per_row)]
         for ci, chunk in enumerate(chunks):
             row_groups.append((feat, chunk, ci == 0))
+
+    if max_rows is not None and len(row_groups) > max_rows:
+        row_groups = row_groups[:max_rows]
 
     _SPACER = '__spacer__'
     rows_final    = []
