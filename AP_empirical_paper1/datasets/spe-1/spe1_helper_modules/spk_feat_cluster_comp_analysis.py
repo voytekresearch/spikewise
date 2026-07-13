@@ -888,14 +888,18 @@ def plot_cluster_legend(fontsize=30):
 def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
                                    min_cells=2, n_cols_per_row=14,
                                    cells_to_plot=None,
+                                   cells_to_exclude=None,
                                    merged_rows=None,
                                    feature_order=None,
                                    cell_w=3.8, cell_h=2.6,
                                    title_fontsize=30, ylabel_fontsize=36,
                                    clip_pct=2, min_bw_frac=0.05,
                                    feature_bw_overrides=None,
+                                   feature_bw_abs=None,
+                                   cell_bw_abs=None,
                                    feature_labels=None,
-                                   feature_min_vals=None):
+                                   feature_min_vals=None,
+                                   hspace=0.35):
     """
     Small-multiples grid of smooth KDE distributions split by cluster, all cells.
     Features with more than n_cols_per_row cells wrap onto multiple rows.
@@ -958,6 +962,12 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
                     cells = [c for c in cells if c in allowed]
             else:
                 cells = [c for c in cells if c in cells_to_plot]
+        if cells_to_exclude is not None:
+            if isinstance(cells_to_exclude, dict):
+                excluded = cells_to_exclude.get(feat, [])
+                cells = [c for c in cells if c not in excluded]
+            else:
+                cells = [c for c in cells if c not in cells_to_exclude]
         if not cells:
             continue
 
@@ -1003,12 +1013,15 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
     fig = plt.figure(figsize=(fig_w, fig_h))
     gs  = fig.add_gridspec(
         n_rows, actual_cols,
-        left=0.20, right=0.99, top=GS_TOP, bottom=GS_BOTTOM,
-        hspace=0.35, wspace=0.28,
+        left=0.18, right=0.99, top=GS_TOP, bottom=GS_BOTTOM,
+        hspace=hspace, wspace=0.28,
         height_ratios=height_ratios,
     )
 
     spacer_axes = []  # (ax, is_isi_boundary) — for drawing lines after layout
+    feat_first_ax   = {}  # feat -> ci-0 ax of its first row (for label y-top)
+    feat_last_ax    = {}  # feat -> ci-0 ax of its last row  (for label y-bot)
+    feat_is_isi_map = {}  # feat -> bool
 
     for ri, (feat, chunk, is_first, is_isi) in enumerate(rows_final):
         if feat == _SPACER:
@@ -1045,6 +1058,12 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
                         x_grid = np.linspace(lo - pad, hi + pad, 300)
                         _bw_frac   = (feature_bw_overrides or {}).get(panel_feat, min_bw_frac)
                         min_abs_bw = (hi - lo) * _bw_frac
+                        _abs_floor = (feature_bw_abs or {}).get(panel_feat, 0)
+                        if _abs_floor > min_abs_bw:
+                            min_abs_bw = _abs_floor
+                        _cell_floor = (cell_bw_abs or {}).get((cell_id, panel_feat), 0)
+                        if _cell_floor > min_abs_bw:
+                            min_abs_bw = _cell_floor
                         for grp in sorted(df_cell[clust_col].dropna().unique()):
                             vals = df_cell.loc[df_cell[clust_col] == grp, panel_feat].dropna()
                             if _feat_min is not None:
@@ -1067,19 +1086,19 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
             ax.set_facecolor('#dddddd' if is_isi else 'white')
             ax.set_title(cell_id, fontsize=title_fontsize, pad=4, color='#222', fontweight='bold')
 
-            if is_first and ci == 0:
+            if ci == 0 and not is_merged:
+                if feat not in feat_first_ax:
+                    feat_first_ax[feat] = ax
+                feat_last_ax[feat]    = ax
+                feat_is_isi_map[feat] = is_isi
+
+            if is_first and ci == 0 and is_merged:
                 _fl = feature_labels or {}
-                if is_merged:
-                    _, first_feat = chunk[0]
-                    lbl   = _fl.get(first_feat, _fmt_lbl(first_feat.replace('_', ' ')))
-                    lcol  = 'black'
-                    lstyl = 'normal'
-                else:
-                    lbl   = _fl.get(feat, _fmt_lbl(feat.replace('_', ' ')))
-                    lcol  = '#B22222' if is_isi else 'black'
-                    lstyl = 'italic' if is_isi else 'normal'
+                _, first_feat = chunk[0]
+                lbl = _fl.get(first_feat, _fmt_lbl(first_feat.replace('_', ' ')))
                 ax.set_ylabel(lbl, fontsize=ylabel_fontsize, fontweight='bold', rotation=90,
-                              color=lcol, style=lstyl, labelpad=8,
+                              color='black', style='normal', labelpad=10,
+                              ha='center', va='center',
                               multialignment='center')
 
             if is_merged and ci > 0:
@@ -1093,13 +1112,29 @@ def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
         for ci in range(len(panels), actual_cols):
             fig.add_subplot(gs[ri, ci]).set_axis_off()
 
+    # Place feature row labels centred vertically across all wrapped rows
+    for feat_name, ax_top in feat_first_ax.items():
+        ax_bot   = feat_last_ax[feat_name]
+        p_top    = ax_top.get_position()
+        p_bot    = ax_bot.get_position()
+        y_mid    = (p_top.y1 + p_bot.y0) / 2
+        is_isi_f = feat_is_isi_map[feat_name]
+        _fl      = feature_labels or {}
+        lbl      = _fl.get(feat_name, _fmt_lbl(feat_name.replace('_', ' ')))
+        lcol     = '#B22222' if is_isi_f else 'black'
+        lstyl    = 'italic'  if is_isi_f else 'normal'
+        fig.text(0.15, y_mid, lbl,
+                 fontsize=ylabel_fontsize, fontweight='bold',
+                 rotation=90, ha='center', va='center',
+                 color=lcol, style=lstyl)
+
     # Draw separator lines at feature boundaries
     for ax_sp, is_isi_boundary in spacer_axes:
         pos   = ax_sp.get_position()
         sep_y = pos.y0 + pos.height / 2
         ax_sp.set_axis_off()
-        lw  = 2.0  if is_isi_boundary else 0.6
-        col = '#444' if is_isi_boundary else '#cccccc'
+        lw  = 3.5  if is_isi_boundary else 2.0
+        col = 'black' if is_isi_boundary else '#aaaaaa'
         fig.add_artist(plt.Line2D(
             [0.12, 0.99], [sep_y, sep_y],
             color=col, lw=lw, transform=fig.transFigure,
