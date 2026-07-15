@@ -3917,7 +3917,7 @@ def find_temporal_transitions(cluster_pickle_dir, r2_thresh=0.80, min_k=0.02,
 
 
 def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
-                               n_cols=4, rolling_n=50):
+                               n_cols=4, rolling_n=50, used_pairs=None):
     """
     For each detected transition, plot cluster label vs spike time with the
     changepoint marked. Shows the rolling mean cluster label alongside individual
@@ -3929,6 +3929,10 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
     cluster_pickle_dir : str  path to cluster_pickles/
     n_cols           : int  subplot columns (default 4)
     rolling_n        : int  window for rolling mean (default 50 spikes)
+    used_pairs       : set of (cell_id, spike_feature) tuples that were used in
+                       the transition point LFP analysis. These panels get a
+                       highlighted background and the sigmoid/inflection overlay.
+                       If None, all panels get the full overlay.
     """
     if len(df_transitions) == 0:
         print('No transitions to plot.')
@@ -3944,6 +3948,7 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
     })
     _FS_TICK, _FS_AX, _FS_SUB = 11, 12, 17
     trans_color = '#CC79A7'  # Okabe-Ito reddish purple (colour-blind safe, distinct from cluster colours)
+    highlight_bg = '#FFF3E0'  # light amber background for used pairs
 
     ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
                'Low': 0, 'Mid': 1, 'High': 2}
@@ -3953,8 +3958,26 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
     def _to_ord(l):
         return ORDINAL.get(str(l).strip(), 1)
 
-    # One panel per (cell_id, spike_feature) group — supports multi-sigmoid
-    groups   = list(df_transitions.groupby(['cell_id', 'spike_feature'], sort=False))
+    FEAT_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
+                  'inflection_time', 'inflection_amp', 'log_isi']
+
+    def _feat_sort_key(feat):
+        try:
+            return FEAT_ORDER.index(feat)
+        except ValueError:
+            return len(FEAT_ORDER)
+
+    def _cell_sort_key(cid):
+        try:
+            return int(str(cid).lstrip('c'))
+        except ValueError:
+            return 0
+
+    # Sort by feature order then cell number
+    groups = sorted(
+        df_transitions.groupby(['cell_id', 'spike_feature'], sort=False),
+        key=lambda x: (_feat_sort_key(x[0][1]), _cell_sort_key(x[0][0]))
+    )
     n_panels = len(groups)
 
     n_rows = int(np.ceil(n_panels / n_cols))
@@ -3978,6 +4001,8 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
         popt   = first.get('sigmoid_popt')
         n_sigs = int(first.get('n_transitions', 1))
 
+        is_used = (used_pairs is None) or ((cid, feat) in used_pairs)
+
         pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
         try:
             df = pd.read_pickle(pkl)
@@ -3996,6 +4021,10 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
         labels = sub[col].values
         ord_l  = np.array([_to_ord(l) for l in labels], dtype=float)
 
+        # Highlight background for pairs used in transition point analysis
+        if is_used:
+            ax.set_facecolor(highlight_bg)
+
         # Scatter
         for lbl in np.unique(labels):
             mask = labels == lbl
@@ -4007,33 +4036,34 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
         rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
         ax.plot(times, rm.values, color='black', lw=3.5, zorder=5, alpha=0.6)
 
-        # Multi-sigmoid curve from stored popt
-        if popt is not None:
-            try:
-                t_fit = np.linspace(times[0], times[-1], 400)
-                ax.plot(t_fit, _multi_sigmoid(t_fit, popt),
-                        color=trans_color, lw=3.5, zorder=6)
-            except Exception:
-                pass
-
-        # One dashed line + label per transition in the group
+        # Sigmoid curve and inflection lines — only for used pairs
         title_parts = []
-        for _, tr_row in group.sort_values('transition_index').iterrows():
-            t_tr  = float(tr_row['transition_time_ms'])
-            k_val = float(tr_row['transition_sharpness_k'])
-            cl_b  = tr_row['cluster_before']
-            cl_a  = tr_row['cluster_after']
-            ax.axvline(t_tr / 1000.0, color=trans_color, lw=2.5, ls='--',
-                       zorder=7, alpha=0.85)
-            ax.text(t_tr / 1000.0, 2.15, f'  {t_tr/1000:.1f}s',
-                    color=trans_color, fontsize=_FS_TICK - 1,
-                    fontweight='bold', va='top', clip_on=True)
-            k_str = f'k={k_val:.3f}/s' if np.isfinite(k_val) else 'k=?'
-            title_parts.append(f'{cl_b}→{cl_a} {k_str}')
+        if is_used:
+            if popt is not None:
+                try:
+                    t_fit = np.linspace(times[0], times[-1], 400)
+                    ax.plot(t_fit, _multi_sigmoid(t_fit, popt),
+                            color=trans_color, lw=3.5, zorder=6)
+                except Exception:
+                    pass
+
+            for _, tr_row in group.sort_values('transition_index').iterrows():
+                t_tr  = float(tr_row['transition_time_ms'])
+                k_val = float(tr_row['transition_sharpness_k'])
+                cl_b  = tr_row['cluster_before']
+                cl_a  = tr_row['cluster_after']
+                ax.axvline(t_tr / 1000.0, color=trans_color, lw=2.5, ls='--',
+                           zorder=7, alpha=0.85)
+                ax.text(t_tr / 1000.0, 2.15, f'  {t_tr/1000:.1f}s',
+                        color=trans_color, fontsize=_FS_TICK - 1,
+                        fontweight='bold', va='top', clip_on=True)
+                k_str = f'k={k_val:.3f}/s' if np.isfinite(k_val) else 'k=?'
+                title_parts.append(f'{cl_b}→{cl_a} {k_str}')
 
         r2_str  = f'R²={r2_val:.2f}' if np.isfinite(r2_val) else 'R²=?'
         sig_tag = f'({n_sigs}σ)' if n_sigs > 1 else ''
-        ax.set_title(f'{cid}  ·  {feat}  {sig_tag}\n{r2_str}  ' + '   '.join(title_parts),
+        title_extra = ('  ' + '   '.join(title_parts)) if title_parts else ''
+        ax.set_title(f'{cid}  ·  {feat}  {sig_tag}\n{r2_str}{title_extra}',
                      fontsize=_FS_AX, fontweight='bold', color='black')
 
         ax.set_yticks([0, 1, 2])
