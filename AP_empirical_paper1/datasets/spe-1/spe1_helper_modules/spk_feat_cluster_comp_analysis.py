@@ -5601,14 +5601,14 @@ def plot_pop_lfp_block_summary(lfp_block_results, bar_keys=None):
 _DELTA_LFP_KEYS = ['theta_auc', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc',
                    'exponent', 'offset', 'mean_amp', 'std_amp']
 _DELTA_LFP_LABELS = {
-    'theta_auc':       'θ AUC',
-    'slow_gamma_auc':  'Slow γ\n(30–60)',
-    'high_gamma_auc':  'High γ\n(60–80)',
-    'total_gamma_auc': 'Total γ\n(30–80)',
-    'exponent':        'Exponent',
-    'offset':          'Offset',
-    'mean_amp':        'Amplitude',
-    'std_amp':         'Std',
+    'theta_auc':       'Theta AUC',
+    'slow_gamma_auc':  'Slow gamma\n(30–60 Hz)',
+    'high_gamma_auc':  'High gamma\n(60–80 Hz)',
+    'total_gamma_auc': 'Gamma AUC',
+    'exponent':        'Aperiodic exponent',
+    'offset':          'Aperiodic offset',
+    'mean_amp':        'Mean amplitude',
+    'std_amp':         'Stdev',
 }
 _DELTA_WF_LABELS = {
     'exp_lambda':      'Exp λ',
@@ -6001,22 +6001,23 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
     # One subplot per LFP metric; x-axis = spike features
     ncols   = 3
     nrows   = int(np.ceil(n_lk / ncols))
-    panel_w = 1.8 + 1.5 * n_wf
-    panel_h = 7.0
+    panel_w = 2.2 + 1.2 * n_wf
+    panel_h = 5.5
     fig, axes = plt.subplots(nrows, ncols,
                              figsize=(panel_w * ncols, panel_h * nrows),
                              squeeze=False)
 
     for li, lk in enumerate(lfp_keys):
         ax = axes[li // ncols][li % ncols]
-        ax.axhline(0, color='#aaa', lw=2.0, ls='--', zorder=1)
+        ax.axhline(0, color='#ccc', lw=1.5, ls='--', zorder=1)
 
         panel_vals = [v for wf in wf_feats for v in data[wf][lk]]
         if panel_vals:
-            _pm = max(abs(min(panel_vals)), abs(max(panel_vals))) * 1.25
+            _pm = max(abs(min(panel_vals)), abs(max(panel_vals))) * 1.35
             ax.set_ylim(-_pm, _pm)
 
         x_ticks, x_labels = [], []
+        star_info = []   # (xi, star_y, star_str) collected after ylim is set
         for xi, wf in enumerate(wf_feats):
             x_ticks.append(xi)
             x_labels.append(_WF_SHORT.get(wf, wf))
@@ -6024,18 +6025,19 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
             if not deltas:
                 continue
 
+            col = _SPIKE_FEAT_COLORS.get(wf, '#888888')
             rng    = np.random.default_rng(li * 100 + xi)
-            jitter = (rng.random(len(deltas)) - 0.5) * 0.28
-            ax.scatter(xi + jitter, deltas, color='#888888', edgecolors='white',
-                       linewidths=0.4, s=70, alpha=0.70, zorder=3)
+            jitter = (rng.random(len(deltas)) - 0.5) * 0.30
+            ax.scatter(xi + jitter, deltas, color=col, edgecolors='white',
+                       linewidths=0.5, s=55, alpha=0.75, zorder=3)
 
             mu  = float(np.mean(deltas))
             sem = float(np.std(deltas, ddof=1) / np.sqrt(len(deltas)))
             muc = DOT_COL if mu >= 0 else NEG_COL
-            ax.plot([xi - 0.28, xi + 0.28], [mu, mu],
-                    color=muc, lw=4.5, solid_capstyle='round', zorder=4)
+            ax.plot([xi - 0.30, xi + 0.30], [mu, mu],
+                    color=muc, lw=5.0, solid_capstyle='round', zorder=5)
             ax.plot([xi, xi], [mu - sem, mu + sem],
-                    color=muc, lw=2.5, zorder=4)
+                    color=muc, lw=2.5, zorder=5)
 
             star = ''
             if len(deltas) >= 5:
@@ -6046,40 +6048,242 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
                 except Exception as _e:
                     print(f'  [{lk}|{wf}] FAILED: {_e}', flush=True)
             if star:
-                ax.text(xi, -0.06, star, ha='center', va='top',
-                        fontsize=_STAR_FS, fontweight='bold', color='#1a1a1a',
-                        transform=ax.get_xaxis_transform(), clip_on=False)
+                star_y = mu + sem   # will place just above the SEM bar
+                star_info.append((xi, star_y, star))
 
         ax.set_xlim(-0.6, n_wf - 0.4)
         ax.set_xticks(x_ticks)
         ax.set_xticklabels(x_labels, fontsize=_TICK_FS, fontweight='bold',
                            rotation=35, ha='right')
-        ax.set_title(_DELTA_LFP_LABELS.get(lk, lk), fontsize=_TTL_FS, fontweight='bold', pad=10)
-        ax.set_ylabel('% change: high − low cluster', fontsize=_LBL_FS - 2, fontweight='bold')
+        ax.set_title(_DELTA_LFP_LABELS.get(lk, lk), fontsize=_TTL_FS, fontweight='bold', pad=12)
+        ax.set_ylabel('% change\nhigh − low cluster state', fontsize=_LBL_FS, fontweight='bold')
         ax.tick_params(axis='y', labelsize=_TICK_FS, width=2.0, length=5)
         ax.tick_params(axis='x', length=0)
         for spine in ['left', 'bottom']:
             ax.spines[spine].set_linewidth(_SPINE_LW)
         sns.despine(ax=ax, offset=8)
 
+        # place significance stars above SEM bar
+        y_lo, y_hi = ax.get_ylim()
+        y_range = y_hi - y_lo
+        for xi, star_y, star in star_info:
+            ax.text(xi, star_y + y_range * 0.03, star,
+                    ha='center', va='bottom',
+                    fontsize=_STAR_FS, fontweight='bold', color='#1a1a1a', zorder=6)
+
     for li in range(n_lk, nrows * ncols):
         axes[li // ncols][li % ncols].set_visible(False)
 
+    # Legend as a standalone figure returned separately
+    fig_leg, ax_leg = plt.subplots(figsize=(6, 1.6))
+    ax_leg.axis('off')
     legend_handles = [
         Line2D([0], [0], marker='o', color='w', markerfacecolor='#888888',
-               markersize=12, label='Individual transition'),
-        Line2D([0], [0], color=DOT_COL,  lw=4, label='Mean ± SEM  (positive)'),
-        Line2D([0], [0], color=NEG_COL,  lw=4, label='Mean ± SEM  (negative)'),
+               markersize=14, label='Individual transition (colored by feature)'),
+        Line2D([0], [0], color=DOT_COL, lw=5, label='Mean ± SEM  (positive direction)'),
+        Line2D([0], [0], color=NEG_COL, lw=5, label='Mean ± SEM  (negative direction)'),
     ]
-    fig.legend(handles=legend_handles, fontsize=_FS_SM, frameon=False,
-               loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.01))
+    ax_leg.legend(handles=legend_handles, fontsize=_FS_AX, frameon=False,
+                  loc='center', ncol=1, handlelength=2.5)
+    fig_leg.tight_layout()
+
     fig.suptitle(
         'LFP % change: high vs. low cluster state\n'
-        'Stars = one-sample Wilcoxon vs 0   (+  = higher in high cluster state)',
-        fontsize=_FS_TTL, fontweight='bold', y=0.98)
-    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
-    plt.show()
-    return fig, axes
+        '* p<0.05, ** p<0.01, *** p<0.001  (one-sample Wilcoxon vs 0; '
+        'positive = higher in high cluster state)',
+        fontsize=_FS_SUB, fontweight='bold', y=1.01)
+    plt.tight_layout()
+    return fig, axes, fig_leg
+
+
+def plot_lfp_metrics_low_vs_high(lfp_block_results, df_transitions,
+                                  lfp_keys=None, figsize=None):
+    """
+    Strip plot of LFP scalar metrics for low vs high cluster state,
+    one panel per metric, grouped by spike feature.
+    Two dot clusters per feature (low left, high right) with paired lines.
+    Stats: Wilcoxon signed-rank (paired) per feature.
+    Returns (fig, fig_legend).
+    """
+    from scipy.stats import wilcoxon as _wilcoxon
+    from matplotlib.lines import Line2D
+    import seaborn as sns
+    from collections import defaultdict
+
+    lfp_keys = lfp_keys or ['mean_amp', 'std_amp', 'exponent', 'offset',
+                              'theta_auc', 'total_gamma_auc']
+
+    _LFP_UNITS = {
+        'mean_amp':        'µV',
+        'std_amp':         'µV',
+        'exponent':        r'µV² Hz$^{-1}$',
+        'offset':          'µV²',
+        'theta_auc':       'a.u.',
+        'total_gamma_auc': 'a.u.',
+        'slow_gamma_auc':  'a.u.',
+        'high_gamma_auc':  'a.u.',
+    }
+
+    LOW_COL  = '#0072B2'
+    HIGH_COL = '#CC79A7'
+
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+    _sign_lookup = {}
+    for _, row in df_transitions.iterrows():
+        before = _ORD.get(str(row.get('cluster_before', '')).lower(), -1)
+        after  = _ORD.get(str(row.get('cluster_after',  '')).lower(), -1)
+        if before < 0 or after < 0 or before == after:
+            continue
+        _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = (
+            1 if after > before else -1)
+
+    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
+                'inflection_time', 'inflection_amp', 'log_isi']
+    _WF_SHORT = {
+        'peak_width':      'peak\nwidth',
+        'peak_amp':        'peak\namp',
+        'exp_lambda':      'exp\nλ',
+        'peak_sharpness':  'peak\nsharp.',
+        'inflection_time': 'infl.\ntime',
+        'inflection_amp':  'infl.\namp',
+        'log_isi':         'log\nISI',
+    }
+
+    # Collect paired (low, high) values per feature × metric
+    feat_data = defaultdict(lambda: defaultdict(lambda: {'low': [], 'high': []}))
+    wf_seen = set()
+
+    for key, blocks in lfp_block_results.items():
+        cid, feat = key[0], key[1]
+        t_idx = int(key[2]) if len(key) > 2 else 0
+        sign  = _sign_lookup.get((cid, feat, t_idx))
+        if sign is None:
+            continue
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' not in bmap or 'post' not in bmap:
+            continue
+        b_pre, b_post = bmap['pre'], bmap['post']
+        for lk in lfp_keys:
+            v_pre  = b_pre.get(lk)
+            v_post = b_post.get(lk)
+            if v_pre is None or v_post is None:
+                continue
+            v_pre, v_post = float(v_pre), float(v_post)
+            if sign == 1:   # low→high: pre=low state, post=high state
+                feat_data[feat][lk]['low'].append(v_pre)
+                feat_data[feat][lk]['high'].append(v_post)
+            else:           # high→low: pre=high state, post=low state
+                feat_data[feat][lk]['low'].append(v_post)
+                feat_data[feat][lk]['high'].append(v_pre)
+        wf_seen.add(feat)
+
+    wf_feats = [f for f in WF_ORDER if f in wf_seen]
+    n_wf = len(wf_feats)
+    n_lk = len(lfp_keys)
+
+    ncols   = 3
+    nrows   = int(np.ceil(n_lk / ncols))
+    panel_w = 1.2 + 0.95 * n_wf
+    panel_h = 6.2
+    fw = figsize[0] if figsize else panel_w * ncols
+    fh = figsize[1] if figsize else panel_h * nrows
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fw, fh), squeeze=False)
+
+    for li, lk in enumerate(lfp_keys):
+        ax = axes[li // ncols][li % ncols]
+        x_ticks, x_labels = [], []
+
+        for xi, feat in enumerate(wf_feats):
+            x_lo = xi - 0.22
+            x_hi = xi + 0.22
+            x_ticks.append(xi)
+            x_labels.append(_WF_SHORT.get(feat, feat))
+
+            d = feat_data[feat][lk]
+            lo_vals = np.array(d['low'])
+            hi_vals = np.array(d['high'])
+            if len(lo_vals) == 0:
+                continue
+
+            rng = np.random.default_rng(li * 100 + xi)
+
+            # Paired lines (behind dots)
+            for lv, hv in zip(lo_vals, hi_vals):
+                ax.plot([x_lo, x_hi], [lv, hv], color='#aaaaaa', lw=1.8, alpha=0.75, zorder=1)
+
+            # Dots
+            j_lo = rng.uniform(-0.07, 0.07, size=len(lo_vals))
+            j_hi = rng.uniform(-0.07, 0.07, size=len(hi_vals))
+            ax.scatter(x_lo + j_lo, lo_vals, color=LOW_COL, s=90, alpha=0.80,
+                       edgecolors='white', linewidths=0.8, zorder=3)
+            ax.scatter(x_hi + j_hi, hi_vals, color=HIGH_COL, s=90, alpha=0.80,
+                       edgecolors='white', linewidths=0.8, zorder=3)
+
+            # Mean ± SEM crosshairs
+            for xc, vals, col in [(x_lo, lo_vals, LOW_COL), (x_hi, hi_vals, HIGH_COL)]:
+                mu  = float(np.mean(vals))
+                sem = float(np.std(vals, ddof=1) / np.sqrt(len(vals))) if len(vals) > 1 else 0
+                ax.plot([xc - 0.15, xc + 0.15], [mu, mu],
+                        color=col, lw=6.0, solid_capstyle='round', zorder=5)
+                ax.plot([xc, xc], [mu - sem, mu + sem],
+                        color=col, lw=1.8, zorder=5)
+
+            # Paired Wilcoxon signed-rank
+            star = ''
+            if len(lo_vals) >= 5:
+                try:
+                    _, p = _wilcoxon(lo_vals, hi_vals)
+                    star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+                    print(f'  [{lk}|{feat}] n={len(lo_vals)} p={p:.4f} {star or "ns"}', flush=True)
+                except Exception as _e:
+                    print(f'  [{lk}|{feat}] FAILED: {_e}', flush=True)
+            if star:
+                y_top = max(np.max(lo_vals), np.max(hi_vals))
+                y_rng = np.ptp(np.concatenate([lo_vals, hi_vals]))
+                bh = y_top + y_rng * 0.12
+                tk = y_rng * 0.03
+                ax.plot([x_lo, x_lo, x_hi, x_hi],
+                        [bh - tk, bh, bh, bh - tk],
+                        color='#333', lw=1.2, zorder=6)
+                ax.text(xi, bh + tk * 0.5, star,
+                        ha='center', va='bottom',
+                        fontsize=42, fontweight='bold', color='#1a1a1a', zorder=7)
+
+        ax.set_xlim(-0.6, n_wf - 0.4)
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, rotation=0, ha='center')
+        ax.tick_params(axis='x', labelsize=22, length=0)
+        for lbl in ax.get_xticklabels():
+            lbl.set_fontweight('bold')
+        ax.set_ylabel(_LFP_UNITS.get(lk, ''), fontsize=20, fontweight='bold')
+        ax.set_title(_DELTA_LFP_LABELS.get(lk, lk), fontsize=28, fontweight='bold', pad=14)
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4))
+        ax.tick_params(axis='y', labelsize=18, width=2.0, length=5)
+        sns.despine(ax=ax, offset=8)
+
+    for li in range(n_lk, nrows * ncols):
+        axes[li // ncols][li % ncols].set_visible(False)
+
+    # Separate legend figure
+    fig_leg, ax_leg = plt.subplots(figsize=(6, 1.4))
+    ax_leg.axis('off')
+    handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=LOW_COL,
+               markersize=13, label='Lower cluster state'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=HIGH_COL,
+               markersize=13, label='Higher cluster state'),
+        Line2D([0], [0], color='#aaaaaa', lw=2.0, label='Paired transition'),
+    ]
+    ax_leg.legend(handles=handles, fontsize=_FS_AX, frameon=False,
+                  loc='center', ncol=3, handlelength=2.5)
+    fig_leg.tight_layout()
+
+    fig.suptitle(
+        'LFP metrics: low vs. high cluster state\n'
+        '* p<0.05  ** p<0.01  *** p<0.001  (Wilcoxon signed-rank, paired)',
+        fontsize=22, fontweight='bold', y=1.01)
+    fig.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
+    return fig, fig_leg
 
 
 def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(1, 90),
@@ -6246,11 +6450,10 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
             except Exception: pass
             try: _, p_g = _wilcoxon(d['diff_gamma'])
             except Exception: pass
-        # Bonferroni: multiply by number of bands tested
-        p_t_adj = min(p_t * 2, 1.0)
-        p_g_adj = min(p_g * 2, 1.0)
+        p_t_adj = p_t
+        p_g_adj = p_g
         sig = (p_t_adj < sig_alpha) or (p_g_adj < sig_alpha)
-        feat_stats[feat] = (n, p_t, p_g, sig)
+        feat_stats[feat] = (n, p_t, p_g, p_t_adj, p_g_adj, sig)
         mark = '*' if sig else 'ns'
         print(f'  [{feat}] n={n}  θ p={p_t:.4f} (adj {p_t_adj:.4f})  '
               f'γ p={p_g:.4f} (adj {p_g_adj:.4f})  {mark}', flush=True)
@@ -6264,19 +6467,36 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
     ncols   = min(3, n_feats)
     nrows   = int(np.ceil(n_feats / ncols)) if n_feats > 0 else 1
 
-    fw = figsize[0] if figsize else 6.0 * ncols
-    fh = figsize[1] if figsize else 5.0 * nrows
+    _wf_seen = set()
+    for key, blocks in lfp_block_results.items():
+        feat = key[1]
+        t_idx = int(key[2]) if len(key) > 2 else 0
+        if _sign_lookup.get((key[0], feat, t_idx)) is None:
+            continue
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' in bmap and 'post' in bmap:
+            _wf_seen.add(feat)
+    _n_wf = len([f for f in WF_ORDER if f in _wf_seen])
+    total_w = (1.2 + 0.95 * _n_wf) * 3
+    fw = figsize[0] if figsize else total_w
+    fh = figsize[1] if figsize else 6.2 * nrows
     fig, axes = plt.subplots(nrows, ncols, figsize=(fw, fh), squeeze=False)
 
     for idx, feat in enumerate(show_feats):
         ax = axes[idx // ncols][idx % ncols]
         d  = feat_display[feat]
-        n, p_t, p_g, sig = feat_stats[feat]
+        n, p_t, p_g, p_t_adj, p_g_adj, sig = feat_stats[feat]
 
-        def _star(p): return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
-        p_line = f'θ {_star(p_t)} (p={p_t:.3f})   γ {_star(p_g)} (p={p_g:.3f})'
-        ax.set_title(f'{FEAT_LABELS.get(feat, feat)}  (n={n})\n{p_line}',
-                     fontsize=_FS_SUB, fontweight='bold')
+        def _star(p): return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+        sig_parts = []
+        if p_t_adj < sig_alpha:
+            sig_parts.append(f'Theta {_star(p_t)}')
+        if p_g_adj < sig_alpha:
+            sig_parts.append(f'Gamma {_star(p_g)}')
+        title = f'{FEAT_LABELS.get(feat, feat)}  (n={n})'
+        if sig_parts:
+            title += '\n' + '   '.join(sig_parts)
+        ax.set_title(title, fontsize=28, fontweight='bold')
 
         for state, col in [('low', LOW_COL), ('high', HIGH_COL)]:
             for arr in d[f'{state}_raw']:
@@ -6286,8 +6506,7 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
             if fits:
                 mn  = np.mean(np.array(fits), axis=0)
                 sem = np.std(np.array(fits),  axis=0, ddof=1) / np.sqrt(n)
-                lbl = f'{"Low" if state == "low" else "High"} cluster (n={n})'
-                ax.plot(common_freqs, mn, color=col, lw=3.0, zorder=5, label=lbl)
+                ax.plot(common_freqs, mn, color=col, lw=3.0, zorder=5)
                 ax.fill_between(common_freqs, mn - sem, mn + sem,
                                 color=col, alpha=0.25, zorder=4)
 
@@ -6297,23 +6516,34 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
                 ax.plot(common_freqs, mn_ape, color=col, lw=1.5, ls='--',
                         alpha=0.65, zorder=3)
 
-        ax.set_xlabel('Frequency (Hz)', fontsize=_FS_AX)
+        ax.set_xlabel('Frequency (Hz)', fontsize=20)
+        ax.tick_params(axis='both', labelsize=18)
         if idx % ncols == 0:
-            ax.set_ylabel('log₁₀ power (re: population mean)', fontsize=_FS_SM)
+            ax.set_ylabel('log(power)', fontsize=20)
         ax.set_xlim(_f_lo, _f_hi)
-        ax.legend(fontsize=_FS_SM, frameon=False)
         sns.despine(ax=ax)
 
     for idx in range(n_feats, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
 
-    title_note = f'sig. features only (p<{sig_alpha})' if sig_feats else 'all features (none significant)'
     fig.suptitle(
-        f'LFP spectra: low vs high cluster state  [{title_note}]\n'
+        'LFP power spectra: low vs. high cluster state\n'
         'thin=raw PSD · dashed=aperiodic · solid±shade=specparam fit±SEM',
-        fontsize=_FS_TTL, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    return fig
+        fontsize=22, fontweight='bold', y=1.02)
+    fig.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
+
+    from matplotlib.lines import Line2D
+    fig_leg, ax_leg = plt.subplots(figsize=(7, 1.4))
+    ax_leg.axis('off')
+    handles = [
+        Line2D([0], [0], color=LOW_COL,  lw=3.0, label='Lower cluster state'),
+        Line2D([0], [0], color=HIGH_COL, lw=3.0, label='Higher cluster state'),
+    ]
+    ax_leg.legend(handles=handles, fontsize=_FS_AX, frameon=False,
+                  loc='center', ncol=2, handlelength=2.5)
+    fig_leg.tight_layout()
+
+    return fig, fig_leg
 
 
 def compute_whole_recording_psds(df_transitions, lfp_npy_dir, fs=2500,
