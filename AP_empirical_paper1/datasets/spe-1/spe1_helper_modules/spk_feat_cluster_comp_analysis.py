@@ -5062,12 +5062,16 @@ def plot_lfp_block_comparison(
     df_transitions,
     cluster_pickle_dir,
     rolling_n=50,
+    bar_keys=None,
 ):
     """
     For each (cell, feature) in lfp_block_results, plot a 3-panel figure:
       Left  : rolling mean of cluster labels with transition time(s) marked
       Middle: overlaid PSDs (raw + specparam fit) per block
-      Right : grouped bar chart of exponent, theta AUC, gamma AUC, std per block
+      Right : grouped bar chart of LFP metrics per block
+
+    bar_keys : list of (metric_key, label) tuples to show in the bar panel.
+               Defaults to all metrics if None.
     """
     import matplotlib.gridspec as gridspec
     import seaborn as sns
@@ -5084,7 +5088,7 @@ def plot_lfp_block_comparison(
     _sm_kwargs = dict(aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
                       max_n_peaks=4, min_peak_height=0.0, peak_threshold=1.5, verbose=False)
 
-    bar_specs = [
+    _all_bar_specs = [
         ('mean_amp',        'Mean amp\n(µV)'),
         ('std_amp',         'Std amp\n(µV)'),
         ('exponent',        'Exponent'),
@@ -5094,6 +5098,9 @@ def plot_lfp_block_comparison(
         ('slow_gamma_auc',  'Slow γ\n30–60 Hz'),
         ('high_gamma_auc',  'High γ\n60–80 Hz'),
     ]
+    _bar_key_set = set(bar_keys) if bar_keys is not None else None
+    bar_specs = [s for s in _all_bar_specs
+                 if _bar_key_set is None or s[0] in _bar_key_set]
     _auc_keys = {'theta_auc', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc'}
 
     # Pre-scan all blocks for global y-limits (bar features + PSD)
@@ -5276,14 +5283,18 @@ def plot_lfp_block_comparison(
             'lines.linewidth':     3.5,
         }
         with plt.rc_context(_rc):
-            # ── Flat 4-row × 3-col layout (tight_layout works correctly with flat GridSpec) ──
-            # Col 0: spike (rows 0-1) + PSD (rows 2-3); Cols 1-2: bar panels
-            fig = plt.figure(figsize=(26, 15))
-            gs  = gridspec.GridSpec(4, 3, figure=fig,
+            # ── Flat grid layout: Col 0 = spike (top half) + PSD (bottom half); Cols 1-2 = bars ──
+            _n_bar      = len(bar_specs)
+            _bar_ncols  = 2
+            _bar_nrows  = int(np.ceil(_n_bar / _bar_ncols))
+            _grid_nrows = max(4, _bar_nrows)  # keep left panels at 4 rows min
+            _half       = _grid_nrows // 2
+            fig = plt.figure(figsize=(26, 3.75 * _grid_nrows))
+            gs  = gridspec.GridSpec(_grid_nrows, 3, figure=fig,
                                     width_ratios=[1.3, 1.0, 1.0],
                                     wspace=0.5, hspace=0.7)
-            ax_spike = fig.add_subplot(gs[0:2, 0])
-            ax_psd   = fig.add_subplot(gs[2:4, 0])
+            ax_spike = fig.add_subplot(gs[0:_half, 0])
+            ax_psd   = fig.add_subplot(gs[_half:, 0])
 
             # ── Top-left: spike rolling mean ──────────────────────────────
             for lbl in np.unique(labels):
@@ -5306,7 +5317,7 @@ def plot_lfp_block_comparison(
             sns.despine(ax=ax_spike, offset=10)
 
             # ── Bottom-left: PSDs + specparam ────────────────────────────
-            _added_band_labels = {'theta': False, 'slow_gamma': False, 'high_gamma': False}
+            _added_band_labels = {'theta': False, 'slow_gamma': False, 'high_gamma': False, 'total_gamma': False}
             for blk in blocks:
                 freqs, psd = blk['freqs'], blk.get('psd', blk.get('mean_psd'))
                 dur_s = blk.get('n_samples', blk.get('n_spikes', 0))
@@ -5325,11 +5336,21 @@ def plot_lfp_block_comparison(
                     ax_psd.semilogy(ff, 10**al, color=blk['color'],
                                     lw=3.0, ls='--', alpha=0.85)
                     if fl is not None:
-                        _shade_bands = [
-                            ('theta',      4,  15, 'mediumpurple', 'θ (4–15 Hz)'),
-                            ('slow_gamma', 30, 60, 'goldenrod',    'slow γ (30–60 Hz)'),
-                            ('high_gamma', 60, 80, 'tomato',       'high γ (60–80 Hz)'),
-                        ]
+                        _bar_key_names = {s[0] for s in bar_specs}
+                        _use_total_gamma = ('total_gamma_auc' in _bar_key_names and
+                                            'slow_gamma_auc' not in _bar_key_names and
+                                            'high_gamma_auc' not in _bar_key_names)
+                        if _use_total_gamma:
+                            _shade_bands = [
+                                ('theta',       4,  15, 'mediumpurple', 'θ (4–15 Hz)'),
+                                ('total_gamma', 30, 80, 'goldenrod',    'γ (30–80 Hz)'),
+                            ]
+                        else:
+                            _shade_bands = [
+                                ('theta',      4,  15, 'mediumpurple', 'θ (4–15 Hz)'),
+                                ('slow_gamma', 30, 60, 'goldenrod',    'slow γ (30–60 Hz)'),
+                                ('high_gamma', 60, 80, 'tomato',       'high γ (60–80 Hz)'),
+                            ]
                         for _bkey, _blo, _bhi, _bcol, _blbl_str in _shade_bands:
                             _bm = (ff >= _blo) & (ff <= _bhi)
                             if _bm.any():
@@ -5353,14 +5374,8 @@ def plot_lfp_block_comparison(
 
             # ── Bar panels directly in the flat GridSpec ──────────────────
             _bar_axes = [
-                fig.add_subplot(gs[0, 1]),  # mean_amp
-                fig.add_subplot(gs[0, 2]),  # std_amp
-                fig.add_subplot(gs[1, 1]),  # exponent
-                fig.add_subplot(gs[1, 2]),  # offset
-                fig.add_subplot(gs[2, 1]),  # theta_auc
-                fig.add_subplot(gs[2, 2]),  # total_gamma
-                fig.add_subplot(gs[3, 1]),  # slow_gamma
-                fig.add_subplot(gs[3, 2]),  # high_gamma
+                fig.add_subplot(gs[bi // _bar_ncols, 1 + (bi % _bar_ncols)])
+                for bi in range(_n_bar)
             ]
             for p_i, (ax_b, (key, ylabel)) in enumerate(zip(_bar_axes, bar_specs)):
                 vals_all = [blk.get(key, float('nan')) for blk in blocks]
@@ -5395,7 +5410,7 @@ def plot_lfp_block_comparison(
                 ax_b.set_ylabel(ylabel, fontsize=16, fontweight='bold')
                 ax_b.axhline(0, color='gray', lw=1.5, ls='--')
                 ax_b.set_xticks(range(len(blocks)))
-                if p_i >= 6:  # slow/high γ row shows x-tick labels
+                if p_i >= len(bar_specs) - 1:  # last bar shows x-tick labels
                     ax_b.set_xticklabels([blk['label'] for blk in blocks],
                                          fontsize=13, rotation=20, ha='right')
                 else:
@@ -5409,16 +5424,19 @@ def plot_lfp_block_comparison(
             plt.show()
 
 
-def plot_pop_lfp_block_summary(lfp_block_results):
+def plot_pop_lfp_block_summary(lfp_block_results, bar_keys=None):
     """
     Population-level summary of LFP features across blocks at transition.
 
     For each LFP feature: bars show mean ± SEM across cells (block 0 vs block 1),
     individual cell values shown as connected dots, Wilcoxon signed-rank p-value annotated.
+
+    bar_keys : optional list of metric keys to include (e.g. ['total_gamma_auc']).
+               Defaults to all metrics.
     """
     from scipy.stats import wilcoxon as _wilcoxon
 
-    bar_specs = [
+    _all_bar_specs = [
         ('mean_amp',        'Mean amp\n(µV)'),
         ('std_amp',         'Std amp\n(µV)'),
         ('exponent',        'Exponent'),
@@ -5428,6 +5446,9 @@ def plot_pop_lfp_block_summary(lfp_block_results):
         ('slow_gamma_auc',  'Slow γ\n30–60 Hz'),
         ('high_gamma_auc',  'High γ\n60–80 Hz'),
     ]
+    _bar_key_set = set(bar_keys) if bar_keys is not None else None
+    bar_specs = [s for s in _all_bar_specs
+                 if _bar_key_set is None or s[0] in _bar_key_set]
 
     _sm_kwargs = dict(aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
                       max_n_peaks=4, min_peak_height=0.0, peak_threshold=1.5, verbose=False)
@@ -5484,8 +5505,12 @@ def plot_pop_lfp_block_summary(lfp_block_results):
     _STAR_FS    = 24
     _NS_FS      = 16
 
-    nrows, ncols = 2, 4
-    fig, axes = plt.subplots(nrows, ncols, figsize=(20, 11), squeeze=False)
+    n_specs = len(bar_specs)
+    ncols = min(4, n_specs)
+    nrows = int(np.ceil(n_specs / ncols))
+    fig_w = 5 * ncols
+    fig_h = 5.5 * nrows
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h), squeeze=False)
 
     for p_i, (ax, (key, ylabel)) in enumerate(zip(axes.flat, bar_specs)):
         pairs = _pairs[key]
@@ -5985,6 +6010,111 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
                         wspace=0.35, hspace=0.55)
     plt.show()
     return fig, axes
+
+
+def plot_lfp_avg_psd_per_feature(lfp_block_results, freq_range=(1, 90), figsize=None):
+    """
+    For each spike feature, plot the population-average PSD (pre / peri / post)
+    across all transitions, with ±SEM shading (in log space), plus the mean
+    specparam fit overlaid as a dashed line.
+    """
+    import seaborn as sns
+    from collections import defaultdict
+
+    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
+                'inflection_time', 'inflection_amp', 'log_isi']
+    BLOCK_COLORS  = {'pre': '#0072B2', 'peri': '#009E73', 'post': '#D55E00'}
+    BLOCK_LABELS  = {'pre': 'Pre', 'peri': 'Peri', 'post': 'Post'}
+    BLOCK_ORDER   = ['pre', 'peri', 'post']
+    FEAT_LABELS   = {
+        'peak_width':      'Peak width',
+        'peak_amp':        'Peak amp',
+        'exp_lambda':      'Exp lambda',
+        'peak_sharpness':  'Peak sharpness',
+        'inflection_time': 'Inflection time',
+        'inflection_amp':  'Inflection amp',
+        'log_isi':         'Log ISI',
+    }
+
+    _f_lo, _f_hi = freq_range
+    common_freqs = np.linspace(_f_lo, _f_hi, 300)
+
+    # group log-PSDs and specparam fits by (feat, block_label)
+    feat_log_psds = defaultdict(lambda: defaultdict(list))
+    feat_fit_logs = defaultdict(lambda: defaultdict(list))
+
+    for key, blocks in lfp_block_results.items():
+        feat = key[1]
+        bmap = {b['label']: b for b in blocks}
+        for lbl in BLOCK_ORDER:
+            blk = bmap.get(lbl)
+            if blk is None:
+                continue
+            psd   = blk.get('psd', blk.get('mean_psd'))
+            freqs = blk.get('freqs')
+            if psd is None or freqs is None:
+                continue
+            psd_i = np.interp(common_freqs, freqs, psd)
+            feat_log_psds[feat][lbl].append(np.log10(np.clip(psd_i, 1e-15, None)))
+
+            if blk.get('freqs_fit') is not None and blk.get('full_log') is not None:
+                ff = np.asarray(blk['freqs_fit'])
+                fl = np.asarray(blk['full_log'])
+                _m = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(fl)
+                if _m.sum() > 5:
+                    fl_i = np.interp(common_freqs, ff[_m], fl[_m])
+                    feat_fit_logs[feat][lbl].append(fl_i)
+
+    all_feats = [f for f in WF_ORDER if f in feat_log_psds]
+    n_feats   = len(all_feats)
+    ncols     = min(4, n_feats)
+    nrows     = int(np.ceil(n_feats / ncols))
+
+    fw = figsize[0] if figsize else 5.5 * ncols
+    fh = figsize[1] if figsize else 4.5 * nrows
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fw, fh), squeeze=False)
+
+    for idx, feat in enumerate(all_feats):
+        ax = axes[idx // ncols][idx % ncols]
+        for lbl in BLOCK_ORDER:
+            log_psds = feat_log_psds[feat].get(lbl, [])
+            if not log_psds:
+                continue
+            arr       = np.array(log_psds)
+            mean_log  = np.mean(arr, axis=0)
+            sem_log   = np.std(arr, axis=0, ddof=1) / np.sqrt(len(arr))
+            col       = BLOCK_COLORS[lbl]
+            n         = len(arr)
+            ax.semilogy(common_freqs, 10**mean_log, color=col, lw=2.5,
+                        label=f'{BLOCK_LABELS[lbl]} (n={n})')
+            ax.fill_between(common_freqs,
+                            10**(mean_log - sem_log),
+                            10**(mean_log + sem_log),
+                            color=col, alpha=0.18)
+
+            fit_logs = feat_fit_logs[feat].get(lbl, [])
+            if fit_logs:
+                mean_fit = np.mean(np.array(fit_logs), axis=0)
+                ax.semilogy(common_freqs, 10**mean_fit, color=col,
+                            lw=3.5, ls='--', alpha=0.85)
+
+        ax.set_title(FEAT_LABELS.get(feat, feat), fontsize=15, fontweight='bold')
+        ax.set_xlabel('Frequency (Hz)', fontsize=13)
+        if idx % ncols == 0:
+            ax.set_ylabel('PSD (µV²/Hz)', fontsize=13)
+        ax.set_xlim(_f_lo, _f_hi)
+        ax.legend(fontsize=10, frameon=False)
+        ax.yaxis.set_major_locator(plt.LogLocator(numticks=4))
+        ax.yaxis.set_minor_locator(plt.NullLocator())
+        sns.despine(ax=ax)
+
+    for idx in range(n_feats, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    fig.suptitle('Population-average LFP around spike cluster transitions',
+                 fontsize=16, fontweight='bold', y=1.01)
+    plt.tight_layout()
+    return fig
 
 
 def plot_transition_deltas_by_celltype(lfp_block_results, df_transitions,
