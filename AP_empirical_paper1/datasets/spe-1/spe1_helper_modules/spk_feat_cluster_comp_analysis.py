@@ -3917,73 +3917,84 @@ def find_temporal_transitions(cluster_pickle_dir, r2_thresh=0.80, min_k=0.02,
 
 
 def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
-                               n_cols=4, rolling_n=50, used_pairs=None):
+                               df_master=None,
+                               n_cols=10, rolling_n=50, used_pairs=None,
+                               skip_feats=None,
+                               cells_to_exclude=None,
+                               pairs_to_exclude_transitions=None,
+                               manual_transitions=None,
+                               feature_labels=None,
+                               cell_w=3.5, cell_h=2.8,
+                               title_fontsize=52, ylabel_fontsize=62,
+                               hspace=0.5,
+                               min_cells=2):
     """
-    For each detected transition, plot cluster label vs spike time with the
-    changepoint marked. Shows the rolling mean cluster label alongside individual
-    spike labels to make the transition visible.
+    Temporal trajectory grid matching the layout of plot_feature_distribution_grid.
+
+    Shows ALL cells with ≥2 clusters per feature (same as distribution plot).
+    Cells with a detected sigmoid transition (from df_transitions) get the
+    sigmoid curve + inflection line overlaid. If used_pairs is provided, only
+    those cells also get a highlighted background.
 
     Parameters
     ----------
     df_transitions   : output of find_temporal_transitions
-    cluster_pickle_dir : str  path to cluster_pickles/
-    n_cols           : int  subplot columns (default 4)
-    rolling_n        : int  window for rolling mean (default 50 spikes)
-    used_pairs       : set of (cell_id, spike_feature) tuples that were used in
-                       the transition point LFP analysis. These panels get a
-                       highlighted background and the sigmoid/inflection overlay.
-                       If None, all panels get the full overlay.
+    cluster_pickle_dir : str
+    df_master        : DataFrame from compile_experiment_results — used to determine
+                       which cells to show per feature (same as distribution grid).
+                       If None, falls back to cells in df_transitions only.
+    n_cols           : panels per row (default 10, matching distribution grid)
+    rolling_n        : rolling-mean window in spikes
+    used_pairs       : set of (cell_id, spike_feature) — get highlighted background.
+                       If None, all transitioning cells get the highlight.
+    skip_feats       : set of feature names to exclude (default: timing features only)
+    cells_to_exclude : dict {feature: [cell_ids]} or set — same as distribution grid
+    feature_labels   : dict mapping feature name → display label
+    cell_w / cell_h  : inches per panel (default matches distribution grid)
+    title_fontsize   : cell title font size
+    ylabel_fontsize  : feature label font size
+    hspace           : vertical space between rows
+    min_cells        : minimum cells to show a feature row
     """
-    if len(df_transitions) == 0:
-        print('No transitions to plot.')
-        return
+    if skip_feats is None:
+        skip_feats = {'spk_times_ms', 'spk_times_idx'}
 
-    sns.set_theme(style='ticks', font_scale=1.3, rc={
-        'axes.linewidth':    2.5,
-        'xtick.major.width': 2.5,
-        'ytick.major.width': 2.5,
-        'xtick.major.size':  6,
-        'ytick.major.size':  6,
-        'lines.linewidth':   2.5,
-    })
-    _FS_TICK, _FS_AX, _FS_SUB = 11, 12, 17
-    trans_color = '#CC79A7'  # Okabe-Ito reddish purple (colour-blind safe, distinct from cluster colours)
-    highlight_bg = '#FFF3E0'  # light amber background for used pairs
-
-    ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
-               'Low': 0, 'Mid': 1, 'High': 2}
-    CLR = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
-           'Low': '#0072B2', 'Mid': '#009E73', 'High': '#D55E00'}
-
-    def _to_ord(l):
-        return ORDINAL.get(str(l).strip(), 1)
+    _DEFAULT_FEAT_LABELS = {
+        'peak_width':      'peak\nwidth',
+        'peak_amp':        'peak\namp',
+        'exp_lambda':      'exp\nλ',
+        'peak_sharpness':  'peak\nsharp.',
+        'inflection_time': 'infl.\ntime',
+        'inflection_amp':  'infl.\namp',
+        'log_isi':         'log\nISI',
+    }
+    _fl = {**_DEFAULT_FEAT_LABELS, **(feature_labels or {})}
 
     FEAT_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
                   'inflection_time', 'inflection_amp', 'log_isi']
 
-    def _feat_sort_key(feat):
-        try:
-            return FEAT_ORDER.index(feat)
-        except ValueError:
-            return len(FEAT_ORDER)
+    def _cell_key(c):
+        try:    return int(str(c).lstrip('c'))
+        except: return 0
 
-    def _cell_sort_key(cid):
-        try:
-            return int(str(cid).lstrip('c'))
-        except ValueError:
-            return 0
+    sns.set_theme(style='ticks', font_scale=1.0, rc={
+        'axes.linewidth': 1.5, 'xtick.major.width': 1.5,
+        'ytick.major.width': 1.5,
+    })
+    trans_color  = '#E63946'   # red — distinct from all cluster colors, reads as event
+    highlight_bg = '#FFF3E0'
 
-    # Sort by feature order then cell number
-    groups = sorted(
-        df_transitions.groupby(['cell_id', 'spike_feature'], sort=False),
-        key=lambda x: (_feat_sort_key(x[0][1]), _cell_sort_key(x[0][0]))
-    )
-    n_panels = len(groups)
+    ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
+               'Low': 0, 'Mid': 1, 'High': 2}
+    CLR = {'low':  CLUST_COLORS['low'],
+           'high': CLUST_COLORS['high'],
+           'mid':  CLUST_COLORS['mid'],
+           'Low':  CLUST_COLORS['low'],
+           'High': CLUST_COLORS['high'],
+           'Mid':  CLUST_COLORS['mid']}
 
-    n_rows = int(np.ceil(n_panels / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(n_cols * 4.8, n_rows * 3.5),
-                             squeeze=False)
+    def _to_ord(l):
+        return ORDINAL.get(str(l).strip(), 1)
 
     def _multi_sigmoid(t_, popt_):
         b   = popt_[0]
@@ -3994,94 +4005,218 @@ def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
             val = val + L_ / (1.0 + np.exp(np.clip(-k_*(t_-t0_), -500, 500)))
         return val
 
-    for ax_i, ((cid, feat), group) in enumerate(groups):
-        ax    = axes[ax_i // n_cols][ax_i % n_cols]
-        first = group.iloc[0]
-        r2_val = float(first.get('sigmoid_r2', float('nan')))
-        popt   = first.get('sigmoid_popt')
-        n_sigs = int(first.get('n_transitions', 1))
+    # Build transition lookup: (cell_id, feat) -> group DataFrame
+    trans_lookup = {
+        (cid, feat): grp
+        for (cid, feat), grp in df_transitions.groupby(['cell_id', 'spike_feature'])
+    }
+    # Merge in manual overrides: {(cell_id, feat): [time_ms, ...]}
+    _manual = manual_transitions or {}
+    for (cid_m, feat_m), times_ms in _manual.items():
+        rows = [{'cell_id': cid_m, 'spike_feature': feat_m,
+                 'transition_index': i, 'transition_time_ms': float(t)}
+                for i, t in enumerate(times_ms)]
+        trans_lookup[(cid_m, feat_m)] = pd.DataFrame(rows)
 
-        is_used = (used_pairs is None) or ((cid, feat) in used_pairs)
+    # Build per-feature cell lists — same logic as distribution grid
+    if df_master is not None:
+        df_num = df_master.copy()
+        df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+        feat_cells_all = {}
+        for feat in FEAT_ORDER:
+            if feat in skip_feats:
+                continue
+            sub = df_num[
+                (df_num['spike_feature'] == feat) &
+                (df_num['num_clusters'] >= 2)
+            ]
+            cells = sorted(sub['cell_id'].unique(), key=_cell_key)
+            if cells_to_exclude:
+                excl = cells_to_exclude.get(feat, []) if isinstance(cells_to_exclude, dict) else cells_to_exclude
+                cells = [c for c in cells if c not in excl]
+            if len(cells) >= min_cells:
+                feat_cells_all[feat] = cells
+    else:
+        # Fallback: only cells with detected transitions
+        feat_cells_all = {}
+        for feat in FEAT_ORDER:
+            if feat in skip_feats:
+                continue
+            sub = df_transitions[df_transitions['spike_feature'] == feat]
+            if sub.empty:
+                continue
+            cells = sorted(sub['cell_id'].unique(), key=_cell_key)
+            if cells_to_exclude:
+                excl = cells_to_exclude.get(feat, []) if isinstance(cells_to_exclude, dict) else cells_to_exclude
+                cells = [c for c in cells if c not in excl]
+            if len(cells) >= min_cells:
+                feat_cells_all[feat] = cells
 
-        pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
-        try:
-            df = pd.read_pickle(pkl)
-        except FileNotFoundError:
-            ax.set_visible(False)
+    # Order waveform features by cell count, log_isi always last (same as distribution grid)
+    WAVEFORM_FEATS = [f for f in FEAT_ORDER if f != 'log_isi']
+    feat_order = sorted(
+        [f for f in feat_cells_all if f != 'log_isi'],
+        key=lambda f: (-len(feat_cells_all[f]), WAVEFORM_FEATS.index(f) if f in WAVEFORM_FEATS else 99)
+    )
+    if 'log_isi' in feat_cells_all:
+        feat_order.append('log_isi')
+
+    # Build row_groups with spacers between features (like distribution grid)
+    _SPACER = '__spacer__'
+    row_groups    = []   # (feat, [cell_ids], is_first_chunk)
+    rows_final    = []
+    height_ratios = []
+
+    for feat in feat_order:
+        cells = feat_cells_all[feat]
+        chunks = [cells[i:i+n_cols] for i in range(0, len(cells), n_cols)]
+        for ci, chunk in enumerate(chunks):
+            row_groups.append((feat, chunk, ci == 0))
+
+    for i, (feat, chunk, is_first) in enumerate(row_groups):
+        if is_first and i > 0:
+            rows_final.append((_SPACER, [], False))
+            height_ratios.append(0.35)
+        rows_final.append((feat, chunk, is_first))
+        height_ratios.append(1.0)
+
+    n_rows      = len(rows_final)
+    actual_cols = n_cols
+    fig_w = actual_cols * cell_w + 1.2   # extra left margin for labels
+    fig_h = (len(row_groups) + sum(1 for r in rows_final if r[0] == _SPACER) * 0.35) * cell_h + 0.5
+
+    GS_LEFT, GS_RIGHT = 0.18, 0.99
+    GS_TOP,  GS_BOT   = 0.99, 0.03
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs  = fig.add_gridspec(
+        n_rows, actual_cols,
+        left=GS_LEFT, right=GS_RIGHT, top=GS_TOP, bottom=GS_BOT,
+        hspace=hspace, wspace=0.25,
+        height_ratios=height_ratios,
+    )
+
+    spacer_axes   = []
+    feat_first_ax = {}
+    feat_last_ax  = {}
+
+    for ri, (feat, chunk, is_first) in enumerate(rows_final):
+        if feat == _SPACER:
+            ax_sp = fig.add_subplot(gs[ri, 0])
+            spacer_axes.append(ax_sp)
+            for ci in range(1, actual_cols):
+                fig.add_subplot(gs[ri, ci]).set_axis_off()
             continue
 
-        col = f'{feat}_cluster'
-        if col not in df.columns:
-            ax.set_visible(False)
-            continue
+        for ci, cid in enumerate(chunk):
+            ax = fig.add_subplot(gs[ri, ci])
 
-        sub    = df[['spk_times_ms', col]].dropna()
-        sub    = sub.sort_values('spk_times_ms').reset_index(drop=True)
-        times  = sub['spk_times_ms'].values / 1000.0
-        labels = sub[col].values
-        ord_l  = np.array([_to_ord(l) for l in labels], dtype=float)
+            # Look up transition data for this cell×feature
+            grp_df = trans_lookup.get((cid, feat), pd.DataFrame())
+            _excl_trans = pairs_to_exclude_transitions or set()
+            has_transition = not grp_df.empty and (cid, feat) not in _excl_trans
+            is_used = has_transition and ((used_pairs is None) or ((cid, feat) in used_pairs))
 
-        # Highlight background for pairs used in transition point analysis
-        if is_used:
-            ax.set_facecolor(highlight_bg)
+            pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
+            try:
+                df_cell = pd.read_pickle(pkl)
+            except FileNotFoundError:
+                ax.set_axis_off(); continue
 
-        # Scatter
-        for lbl in np.unique(labels):
-            mask = labels == lbl
-            ax.scatter(times[mask], ord_l[mask],
-                       color=CLR.get(str(lbl), 'gray'),
-                       s=14, alpha=0.45, linewidths=0, zorder=2)
+            col = f'{feat}_cluster'
+            if col not in df_cell.columns:
+                ax.set_axis_off(); continue
 
-        # Rolling mean
-        rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
-        ax.plot(times, rm.values, color='black', lw=3.5, zorder=5, alpha=0.6)
+            sub    = df_cell[['spk_times_ms', col]].dropna().sort_values('spk_times_ms')
+            times  = sub['spk_times_ms'].values / 1000.0
+            labels = sub[col].values
+            ord_l  = np.array([_to_ord(l) for l in labels], dtype=float)
 
-        # Sigmoid curve and inflection lines — only for used pairs
-        title_parts = []
-        if is_used:
-            if popt is not None:
-                try:
-                    t_fit = np.linspace(times[0], times[-1], 400)
-                    ax.plot(t_fit, _multi_sigmoid(t_fit, popt),
-                            color=trans_color, lw=3.5, zorder=6)
-                except Exception:
-                    pass
+            if is_used:
+                ax.set_facecolor(highlight_bg)
 
-            for _, tr_row in group.sort_values('transition_index').iterrows():
-                t_tr  = float(tr_row['transition_time_ms'])
-                k_val = float(tr_row['transition_sharpness_k'])
-                cl_b  = tr_row['cluster_before']
-                cl_a  = tr_row['cluster_after']
-                ax.axvline(t_tr / 1000.0, color=trans_color, lw=2.5, ls='--',
-                           zorder=7, alpha=0.85)
-                ax.text(t_tr / 1000.0, 2.15, f'  {t_tr/1000:.1f}s',
-                        color=trans_color, fontsize=_FS_TICK - 1,
-                        fontweight='bold', va='top', clip_on=True)
-                k_str = f'k={k_val:.3f}/s' if np.isfinite(k_val) else 'k=?'
-                title_parts.append(f'{cl_b}→{cl_a} {k_str}')
+            for lbl in np.unique(labels):
+                mask = labels == lbl
+                ax.scatter(times[mask], ord_l[mask],
+                           color=CLR.get(str(lbl), 'gray'),
+                           s=30, alpha=0.6, linewidths=0, zorder=2)
 
-        r2_str  = f'R²={r2_val:.2f}' if np.isfinite(r2_val) else 'R²=?'
-        sig_tag = f'({n_sigs}σ)' if n_sigs > 1 else ''
-        title_extra = ('  ' + '   '.join(title_parts)) if title_parts else ''
-        ax.set_title(f'{cid}  ·  {feat}  {sig_tag}\n{r2_str}{title_extra}',
-                     fontsize=_FS_AX, fontweight='bold', color='black')
+            rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
+            ax.plot(times, rm.values, color='black', lw=4.0, zorder=5, alpha=0.8)
 
-        ax.set_yticks([0, 1, 2])
-        ax.set_yticklabels(['low', 'mid', 'high'], fontsize=_FS_TICK, color='black')
-        ax.set_xlabel('Time (s)', fontsize=_FS_AX, color='black')
-        ax.tick_params(axis='both', labelsize=_FS_TICK, colors='black')
-        sns.despine(ax=ax)
+            if has_transition:
+                for _, tr_row in grp_df.sort_values('transition_index').iterrows():
+                    t_tr = float(tr_row['transition_time_ms']) / 1000.0
+                    ax.axvline(t_tr, color=trans_color, lw=9.0, ls='--', zorder=7, alpha=0.9)
 
-    # Hide unused axes
-    for ax_i in range(n_panels, n_rows * n_cols):
-        axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
+            ax.set_title(cid, fontsize=title_fontsize, fontweight='bold', pad=2)
 
-    fig.suptitle('Temporal transitions in cluster membership\n'
-                 'Black = rolling mean   |   Purple curve = sigmoid fit   |   '
-                 'Purple dashed = sigmoid inflection (t₀)   |   Colour = cluster label',
-                 fontsize=_FS_SUB, fontweight='bold', color='black', y=1.01)
+            ax.set_yticks([0, 1, 2])
+            if ci == 0:
+                ax.set_yticklabels(['low', 'mid', 'high'], fontsize=title_fontsize - 2)
+            else:
+                ax.set_yticklabels([])
+            ax.set_xlabel('')
+            ax.tick_params(axis='x', labelsize=0, length=3)
+            ax.tick_params(axis='y', length=0)
+            sns.despine(ax=ax)
+
+            if ci == 0:
+                if feat not in feat_first_ax:
+                    feat_first_ax[feat] = ax
+                feat_last_ax[feat] = ax
+
+        for ci in range(len(chunk), actual_cols):
+            fig.add_subplot(gs[ri, ci]).set_axis_off()
+
+    # Vertical feature labels centred across wrapped rows
+    for feat_name, ax_top in feat_first_ax.items():
+        ax_bot = feat_last_ax[feat_name]
+        p_top  = ax_top.get_position()
+        p_bot  = ax_bot.get_position()
+        y_mid  = (p_top.y1 + p_bot.y0) / 2
+        lbl    = _fl.get(feat_name, feat_name.replace('_', '\n'))
+        fig.text(0.10, y_mid, lbl,
+                 fontsize=ylabel_fontsize, fontweight='bold',
+                 rotation=90, ha='center', va='center', color='black')
+
+    # Separator lines between feature groups
+    for ax_sp in spacer_axes:
+        pos   = ax_sp.get_position()
+        sep_y = pos.y0 + pos.height / 2
+        ax_sp.set_axis_off()
+        fig.add_artist(plt.Line2D(
+            [0.06, GS_RIGHT], [sep_y, sep_y],
+            color='#aaaaaa', lw=2.0, transform=fig.transFigure,
+        ))
+
+    # Single "Time (s)" label centred at the bottom of the figure
+    fig.text(0.58, 0.005, 'Time (s)', ha='center', va='bottom',
+             fontsize=ylabel_fontsize, color='black')
+
+    return fig
+
+
+def plot_temporal_transition_legend(fontsize=14):
+    """Standalone legend for plot_temporal_transitions."""
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Patch(facecolor=CLUST_COLORS['low'],  label='low cluster'),
+        Patch(facecolor=CLUST_COLORS['high'], label='high cluster'),
+        Patch(facecolor=CLUST_COLORS['mid'],  label='mid cluster'),
+        Line2D([0], [0], color='black', lw=2.5,              label='rolling mean'),
+        Line2D([0], [0], color='#E63946', lw=2.5, ls='--',   label='detected transition'),
+        Patch(facecolor='#FFF3E0', edgecolor='#D55E00', lw=1.5,
+              label='used in LFP supp. analysis'),
+    ]
+    fig, ax = plt.subplots(figsize=(4.5, 2.2))
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=1, fontsize=fontsize,
+              frameon=False, handlelength=1.5, handleheight=1.0, handletextpad=0.6)
     fig.tight_layout()
-    plt.show()
+    return fig
 
 
 def plot_temporal_transitions_highlights(df_transitions, cluster_pickle_dir,
