@@ -4423,7 +4423,8 @@ def plot_peri_trajectory_signed(
     from collections import defaultdict
     data = defaultdict(list)   # key = (wf_feat, lfp_feat), val = list of (peri_Δ, post_Δ)
 
-    for (cid, wf_feat), blocks in peri_results.items():
+    for key, blocks in peri_results.items():
+        cid, wf_feat = key[0], key[1]
         block_map = {b['label']: b for b in blocks}
         if 'pre' not in block_map:
             continue
@@ -4642,34 +4643,35 @@ def analyze_lfp_around_transitions(
         n_samps  = len(lfp_raw)
 
         for feat, feat_grp in cell_grp.groupby('spike_feature'):
-            # Use only the first (primary) transition per (cell, feature)
-            t0_ms    = float(feat_grp.sort_values('transition_index')
-                             ['transition_time_ms'].iloc[0])
-            t0_samp  = int(round(t0_ms * fs / 1000.0))
+            # Process every detected transition (not just the primary one)
+            for _, tr_row in feat_grp.sort_values('transition_index').iterrows():
+                t_idx   = int(tr_row['transition_index'])
+                t0_ms   = float(tr_row['transition_time_ms'])
+                t0_samp = int(round(t0_ms * fs / 1000.0))
 
-            windows = [
-                ('pre',  0,
-                 max(0, int(t0_samp - (flank_s + half_peri) * fs)),
-                 max(0, int(t0_samp - half_peri * fs))),
-                ('peri', 1,
-                 max(0, int(t0_samp - half_peri * fs)),
-                 min(n_samps, int(t0_samp + half_peri * fs))),
-                ('post', 2,
-                 min(n_samps, int(t0_samp + half_peri * fs)),
-                 min(n_samps, int(t0_samp + (half_peri + flank_s) * fs))),
-            ]
+                windows = [
+                    ('pre',  0,
+                     max(0, int(t0_samp - (flank_s + half_peri) * fs)),
+                     max(0, int(t0_samp - half_peri * fs))),
+                    ('peri', 1,
+                     max(0, int(t0_samp - half_peri * fs)),
+                     min(n_samps, int(t0_samp + half_peri * fs))),
+                    ('post', 2,
+                     min(n_samps, int(t0_samp + half_peri * fs)),
+                     min(n_samps, int(t0_samp + (half_peri + flank_s) * fs))),
+                ]
 
-            block_results = []
-            print(f'  {cid:6s}  {feat:25s}  t₀={t0_ms/1000:.1f}s', flush=True)
-            for label, b_idx, i0, i1 in windows:
-                if i1 - i0 < min_samps:
-                    print(f'    [{label}] skip — only {(i1-i0)/fs:.0f}s < {min_block_s:.0f}s min')
-                    continue
-                block = lfp_raw[i0:i1]
-                block_results.append(_fit_block(block, b_idx, label, i0, i1))
+                block_results = []
+                print(f'  {cid:6s}  {feat:25s}  t{t_idx}={t0_ms/1000:.1f}s', flush=True)
+                for label, b_idx, i0, i1 in windows:
+                    if i1 - i0 < min_samps:
+                        print(f'    [{label}] skip — only {(i1-i0)/fs:.0f}s < {min_block_s:.0f}s min')
+                        continue
+                    block = lfp_raw[i0:i1]
+                    block_results.append(_fit_block(block, b_idx, label, i0, i1))
 
-            if block_results:
-                results[(cid, feat)] = block_results
+                if block_results:
+                    results[(cid, feat, t_idx)] = block_results
 
     if save_path:
         with open(save_path, 'wb') as _f:
@@ -4717,7 +4719,8 @@ def plot_lfp_peri_transition_summary(
 
     # Build long-form dataframe
     rows = []
-    for (cid, feat), blocks in peri_results.items():
+    for key, blocks in peri_results.items():
+        cid, feat = key[0], key[1]
         block_map = {b['label']: b for b in blocks}
         for lbl in ORDER:
             if lbl not in block_map:
@@ -5121,7 +5124,8 @@ def plot_lfp_block_comparison(
         _global_ylims[key] = (bot, top)
     _psd_ylim = (min(_psd_mins) * 0.5, max(_psd_maxs) * 2.0) if _psd_mins else None
 
-    for (cid, feat), blocks in lfp_block_results.items():
+    for key, blocks in lfp_block_results.items():
+        cid, feat = key[0], key[1]
         if not blocks:
             continue
 
@@ -5619,7 +5623,8 @@ def compute_transition_deltas(lfp_block_results, df_transitions, lfp_keys=None):
         direction_map[(row['cell_id'], row['spike_feature'])] = 1 if after >= before else -1
 
     raw_by_key = defaultdict(list)   # (cell_id, wf_feat) -> [{lfp_key: raw_delta, ...}]
-    for (cid, wf_feat), blocks in lfp_block_results.items():
+    for key, blocks in lfp_block_results.items():
+        cid, wf_feat = key[0], key[1]
         if len(blocks) < 2:
             continue
         b0, b1   = blocks[0], blocks[1]
@@ -5691,7 +5696,8 @@ def plot_transition_deltas(lfp_block_results, df_transitions, lfp_keys=None):
     rows_by_wf = defaultdict(list)
 
     # pass 1: collect raw deltas, sign-corrected for waveform direction
-    for (cid, wf_feat), blocks in lfp_block_results.items():
+    for key, blocks in lfp_block_results.items():
+        cid, wf_feat = key[0], key[1]
         if len(blocks) < 2:
             continue
         b0, b1 = blocks[0], blocks[1]
@@ -5805,30 +5811,47 @@ def _collect_delta_rows(lfp_block_results, df_transitions, lfp_keys):
 
     Returns (rows_by_wf, norm_sd, wf_feats, global_ylim).
     Each row dict has keys: 'cell', '_sign', and one float per lk (normalised).
+
+    Keys in lfp_block_results may be 2-tuples (cell, feat) or 3-tuples
+    (cell, feat, transition_index).  Direction is resolved per transition when
+    the index is available, otherwise falls back to the primary transition.
+    Delta is computed as post − pre (requires both blocks to be present).
     """
     _ORD = {'low': 0, 'mid': 1, 'high': 2}
 
-    direction_map = {}
-    primary = (df_transitions
-               .sort_values('transition_index')
-               .drop_duplicates(subset=['cell_id', 'spike_feature'], keep='first'))
-    for _, row in primary.iterrows():
+    # Build per-transition direction map keyed by (cell_id, feat, t_idx)
+    per_trans_dir = {}
+    for _, row in df_transitions.iterrows():
         before = _ORD.get(str(row['cluster_before']).lower(), 1)
         after  = _ORD.get(str(row['cluster_after']).lower(),  1)
         sign   = 1 if after >= before else -1
-        direction_map[(row['cell_id'], row['spike_feature'])] = sign
+        per_trans_dir[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = sign
+
+    # Fallback: primary-transition direction map keyed by (cell_id, feat)
+    primary_dir = {(c, f): per_trans_dir[(c, f, 0)]
+                   for (c, f, ti) in per_trans_dir if ti == 0}
 
     from collections import defaultdict
     rows_by_wf = defaultdict(list)
-    for (cid, wf_feat), blocks in lfp_block_results.items():
-        if len(blocks) < 2:
-            continue
-        b0, b1 = blocks[0], blocks[1]
-        sign = direction_map.get((cid, wf_feat), 1)
+    for key, blocks in lfp_block_results.items():
+        cid, wf_feat = key[0], key[1]
+        t_idx = key[2] if len(key) > 2 else None
+
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' not in bmap or 'post' not in bmap:
+            continue  # need both endpoints
+
+        if t_idx is not None:
+            sign = per_trans_dir.get((cid, wf_feat, t_idx),
+                                     primary_dir.get((cid, wf_feat), 1))
+        else:
+            sign = primary_dir.get((cid, wf_feat), 1)
+
+        b_pre, b_post = bmap['pre'], bmap['post']
         row = {'cell': cid, '_sign': sign}
         for lk in lfp_keys:
-            if lk in b0 and lk in b1:
-                row[lk] = sign * (float(b1[lk]) - float(b0[lk]))
+            if lk in b_pre and lk in b_post:
+                row[lk] = sign * (float(b_post[lk]) - float(b_pre[lk]))
         rows_by_wf[wf_feat].append(row)
 
     all_rows = [r for rows in rows_by_wf.values() for r in rows]
