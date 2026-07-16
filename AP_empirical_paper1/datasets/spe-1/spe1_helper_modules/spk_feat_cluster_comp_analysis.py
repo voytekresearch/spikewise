@@ -5992,10 +5992,10 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
     n_wf     = len(wf_feats)
     n_lk     = len(lfp_keys)
 
-    _LBL_FS   = 17
-    _TICK_FS  = 13
-    _TTL_FS   = 17
-    _STAR_FS  = 20
+    _LBL_FS   = _FS_AX
+    _TICK_FS  = _FS_SM
+    _TTL_FS   = _FS_SUB
+    _STAR_FS  = _FS_TTL
     _SPINE_LW = 2.0
 
     # One subplot per LFP metric; x-axis = spike features
@@ -6071,12 +6071,12 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
         Line2D([0], [0], color=DOT_COL,  lw=4, label='Mean ± SEM  (positive)'),
         Line2D([0], [0], color=NEG_COL,  lw=4, label='Mean ± SEM  (negative)'),
     ]
-    fig.legend(handles=legend_handles, fontsize=14, frameon=False,
+    fig.legend(handles=legend_handles, fontsize=_FS_SM, frameon=False,
                loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.01))
     fig.suptitle(
         'LFP % change: high vs. low cluster state\n'
         'Stars = one-sample Wilcoxon vs 0   (+  = higher in high cluster state)',
-        fontsize=18, fontweight='bold', y=0.98)
+        fontsize=_FS_TTL, fontweight='bold', y=0.98)
     plt.tight_layout(rect=[0, 0.05, 1, 0.95])
     plt.show()
     return fig, axes
@@ -6276,7 +6276,7 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
         def _star(p): return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
         p_line = f'θ {_star(p_t)} (p={p_t:.3f})   γ {_star(p_g)} (p={p_g:.3f})'
         ax.set_title(f'{FEAT_LABELS.get(feat, feat)}  (n={n})\n{p_line}',
-                     fontsize=12, fontweight='bold')
+                     fontsize=_FS_SUB, fontweight='bold')
 
         for state, col in [('low', LOW_COL), ('high', HIGH_COL)]:
             for arr in d[f'{state}_raw']:
@@ -6297,11 +6297,11 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
                 ax.plot(common_freqs, mn_ape, color=col, lw=1.5, ls='--',
                         alpha=0.65, zorder=3)
 
-        ax.set_xlabel('Frequency (Hz)', fontsize=12)
+        ax.set_xlabel('Frequency (Hz)', fontsize=_FS_AX)
         if idx % ncols == 0:
-            ax.set_ylabel('log₁₀ power (re: population mean)', fontsize=10)
+            ax.set_ylabel('log₁₀ power (re: population mean)', fontsize=_FS_SM)
         ax.set_xlim(_f_lo, _f_hi)
-        ax.legend(fontsize=10, frameon=False)
+        ax.legend(fontsize=_FS_SM, frameon=False)
         sns.despine(ax=ax)
 
     for idx in range(n_feats, nrows * ncols):
@@ -6311,9 +6311,519 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
     fig.suptitle(
         f'LFP spectra: low vs high cluster state  [{title_note}]\n'
         'thin=raw PSD · dashed=aperiodic · solid±shade=specparam fit±SEM',
-        fontsize=12, fontweight='bold', y=1.02)
+        fontsize=_FS_TTL, fontweight='bold', y=1.02)
     plt.tight_layout()
     return fig
+
+
+def compute_whole_recording_psds(df_transitions, lfp_npy_dir, fs=2500,
+                                  freq_range=(1, 90), include_no_transition=True,
+                                  save_path=None, force=False):
+    """
+    Compute specparam fits on the full LFP recording for each cell.
+
+    Transitioning cells → one entry per (cell, feat, t_idx) row in df_transitions.
+    Non-transitioning cells (LFP file exists but no row in df_transitions) →
+    one entry with feat='no_transition', t_idx=0.  Include/exclude via
+    `include_no_transition`.
+
+    Returns a dict formatted like peri_results:
+        (cell_id, feat, t_idx) → [{'label': 'full', 'full_log': ..., ...}]
+    """
+    import os, pickle
+    from scipy.signal import welch
+    from specparam import SpectralModel
+    try:
+        from specparam.utils import interpolate_spectrum
+    except ImportError:
+        from fooof.utils import interpolate_spectrum
+
+    if save_path and not force and os.path.exists(save_path):
+        with open(save_path, 'rb') as _f:
+            cached = pickle.load(_f)
+        print(f'Loaded cached whole-recording PSDs from {save_path}')
+        return cached
+
+    _f_lo, _f_hi = freq_range
+    _sm_kwargs = dict(aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+                      max_n_peaks=4, min_peak_height=0.0,
+                      peak_threshold=1.5, verbose=False)
+
+    cell_psd_cache = {}
+
+    def _fit_cell(cid):
+        if cid in cell_psd_cache:
+            return cell_psd_cache[cid]
+        lfp_path = os.path.join(lfp_npy_dir, f'{cid}_lfp.npy')
+        if not os.path.exists(lfp_path):
+            cell_psd_cache[cid] = None
+            return None
+        lfp = np.load(lfp_path)
+        nperseg = min(len(lfp), int(fs * 4.0))
+        freqs_w, psd_w = welch(lfp, fs=fs, nperseg=nperseg,
+                               noverlap=nperseg // 2, scaling='density')
+        fmask = (freqs_w >= _f_lo) & (freqs_w <= _f_hi)
+        freqs_out, psd_out = freqs_w[fmask], psd_w[fmask]
+        try:
+            sm = SpectralModel(**_sm_kwargs)
+            freqs_sm, psd_sm = interpolate_spectrum(freqs_out, psd_out, [58, 62])
+            sm.fit(freqs_sm, psd_sm, freq_range=freq_range)
+            _ff  = np.asarray(sm.freqs)
+            _fl  = np.asarray(sm.get_model(component='full',      space='log'))
+            _al  = np.asarray(sm.get_model(component='aperiodic', space='log'))
+            def _auc(flo, fhi):
+                m = (_ff >= flo) & (_ff <= fhi)
+                d = np.where(np.isfinite(_fl[m] - _al[m]), _fl[m] - _al[m], 0.0)
+                return float(np.trapz(np.clip(d, 0, None), _ff[m]))
+            blk = dict(
+                label='full',
+                freqs=freqs_out.tolist(),
+                psd=psd_out.tolist(),
+                freqs_fit=_ff.tolist(),
+                full_log=_fl.tolist(),
+                ape_log=_al.tolist(),
+                mean_amp=float(np.mean(np.abs(lfp))),
+                std_amp=float(np.std(lfp)),
+                exponent=float(sm.get_params('aperiodic_params', 'exponent')),
+                offset=float(sm.get_params('aperiodic_params', 'offset')),
+                theta_auc=_auc(4, 15),
+                slow_gamma_auc=_auc(30, 60),
+                high_gamma_auc=_auc(60, 80),
+                total_gamma_auc=_auc(30, 80),
+            )
+        except Exception as e:
+            print(f'  specparam failed for {cid}: {e}')
+            cell_psd_cache[cid] = None
+            return None
+        cell_psd_cache[cid] = blk
+        return blk
+
+    results = {}
+    transitioning_cells = set(df_transitions['cell_id'].unique())
+
+    for _, row in df_transitions.iterrows():
+        cid  = row['cell_id']
+        feat = row['spike_feature']
+        tidx = int(row['transition_index'])
+        blk  = _fit_cell(cid)
+        if blk is None:
+            continue
+        results[(cid, feat, tidx)] = [blk]
+
+    if include_no_transition:
+        import re
+        lfp_files = [f for f in os.listdir(lfp_npy_dir) if f.endswith('_lfp.npy')]
+        for fname in sorted(lfp_files):
+            cid = fname.replace('_lfp.npy', '')
+            if cid in transitioning_cells:
+                continue
+            blk = _fit_cell(cid)
+            if blk is None:
+                continue
+            results[(cid, 'no_transition', 0)] = [blk]
+        n_no_trans = sum(1 for k in results if k[1] == 'no_transition')
+        print(f'  no-transition cells added: {n_no_trans}')
+
+    print(f'compute_whole_recording_psds: {len(results)} entries across '
+          f'{len(cell_psd_cache)} cells')
+
+    if save_path:
+        with open(save_path, 'wb') as _f:
+            pickle.dump(results, _f)
+        print(f'  saved → {save_path}')
+    return results
+
+
+def plot_lfp_metrics_by_feature_group(lfp_block_results,
+                                       metric_keys=None, figsize=None):
+    """
+    Strip + crosshair plots of absolute LFP scalar metrics grouped by spike feature.
+
+    For each entry in lfp_block_results:
+      - If 'pre' and 'post' blocks exist: metric = mean(pre_val, post_val)
+      - If a single 'full' block exists: metric = full_val
+
+    One subplot per metric.  X-axis = feature group.  Each dot = one event.
+    Black crosshair = mean ± SEM.  Kruskal-Wallis p across all groups in title.
+    No-transition group shown in gray if present.
+    """
+    from scipy.stats import kruskal as _kruskal, mannwhitneyu as _mwu
+    from itertools import combinations as _combos
+    import seaborn as sns
+
+    def _fdr_bh(pvals):
+        """Benjamini-Hochberg FDR correction. Returns adjusted p-values."""
+        pvals = np.asarray(pvals)
+        n = len(pvals)
+        if n == 0:
+            return pvals
+        order = np.argsort(pvals)
+        ranks = np.empty(n, dtype=int)
+        ranks[order] = np.arange(1, n + 1)
+        adj = np.minimum(1.0, pvals * n / ranks)
+        # enforce monotonicity
+        adj_sorted = adj[order]
+        for i in range(n - 2, -1, -1):
+            adj_sorted[i] = min(adj_sorted[i], adj_sorted[i + 1])
+        adj[order] = adj_sorted
+        return adj
+
+    _DEFAULT_METRICS = [
+        ('mean_amp',        'Mean amp (µV)'),
+        ('std_amp',         'Std amp (µV)'),
+        ('exponent',        'Exponent'),
+        ('offset',          'Offset'),
+        ('theta_auc',       'θ AUC  4–15 Hz'),
+        ('total_gamma_auc', 'Total γ AUC  30–80 Hz'),
+    ]
+    if metric_keys is not None:
+        metric_specs = [(k, l) for k, l in _DEFAULT_METRICS if k in metric_keys]
+    else:
+        metric_specs = _DEFAULT_METRICS
+
+    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
+                'inflection_time', 'inflection_amp', 'log_isi', 'no_transition']
+    FEAT_LABELS = {
+        'peak_width':      'Peak\nwidth',
+        'peak_amp':        'Peak\namp',
+        'exp_lambda':      'Exp λ',
+        'peak_sharpness':  'Peak\nsharp.',
+        'inflection_time': 'Infl.\ntime',
+        'inflection_amp':  'Infl.\namp',
+        'log_isi':         'Log\nISI',
+        'no_transition':   'No\ntrans.',
+    }
+    _NO_TRANS_COLOR = '#888888'
+
+    # ── collect scalar metrics per event, grouped by feature ──────────────────
+    from collections import defaultdict
+    feat_data = defaultdict(lambda: defaultdict(list))
+
+    for key, blocks in lfp_block_results.items():
+        feat = key[1]
+        bmap = {b['label']: b for b in blocks}
+        for mk, _ in metric_specs:
+            if 'pre' in bmap and 'post' in bmap:
+                v_pre  = bmap['pre'].get(mk)
+                v_post = bmap['post'].get(mk)
+                if v_pre is not None and v_post is not None:
+                    feat_data[feat][mk].append((v_pre + v_post) / 2.0)
+            elif 'full' in bmap:
+                v = bmap['full'].get(mk)
+                if v is not None:
+                    feat_data[feat][mk].append(v)
+
+    feat_present = [f for f in WF_ORDER if f in feat_data]
+    if not feat_present:
+        print('plot_lfp_metrics_by_feature_group: no data found')
+        return None
+
+    colored_feats = [f for f in feat_present if f != 'no_transition']
+    feat_colors = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in colored_feats}
+    if 'no_transition' in feat_present:
+        feat_colors['no_transition'] = _NO_TRANS_COLOR
+
+    n_met  = len(metric_specs)
+    ncols  = min(3, n_met)
+    nrows  = int(np.ceil(n_met / ncols))
+    fw = figsize[0] if figsize else 4.5 * ncols
+    fh = figsize[1] if figsize else 4.5 * nrows
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fw, fh), squeeze=False)
+
+    rng = np.random.default_rng(42)
+
+    for m_i, (mk, ylabel) in enumerate(metric_specs):
+        ax = axes[m_i // ncols][m_i % ncols]
+
+        groups = [feat_data[f][mk] for f in feat_present]
+        if all(len(g) == 0 for g in groups):
+            ax.set_visible(False)
+            continue
+
+        # Kruskal-Wallis across non-empty groups
+        non_empty_idx = [i for i, g in enumerate(groups) if len(g) >= 2]
+        non_empty     = [groups[i] for i in non_empty_idx]
+        p_kw = np.nan
+        if len(non_empty) >= 2:
+            try:
+                _, p_kw = _kruskal(*non_empty)
+            except Exception:
+                pass
+
+        def _star(p):
+            if np.isnan(p): return 'n/a'
+            return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+
+        ax.set_title(f'{ylabel}\nKruskal-Wallis p={p_kw:.3f} {_star(p_kw)}',
+                     fontsize=_FS_SUB, fontweight='bold')
+
+        for xi, feat in enumerate(feat_present):
+            vals = np.array(feat_data[feat][mk])
+            if len(vals) == 0:
+                continue
+            col = feat_colors[feat]
+            jitter = rng.uniform(-0.18, 0.18, size=len(vals))
+            ax.scatter(xi + jitter, vals, color=col, s=35, alpha=0.65,
+                       edgecolors='none', zorder=3)
+            mu  = np.mean(vals)
+            sem = np.std(vals, ddof=1) / np.sqrt(len(vals)) if len(vals) > 1 else 0
+            ax.plot([xi - 0.25, xi + 0.25], [mu, mu],
+                    color='#111', lw=2.5, solid_capstyle='round', zorder=5)
+            ax.plot([xi, xi], [mu - sem, mu + sem],
+                    color='#111', lw=1.5, zorder=5)
+
+        ax.set_xticks(range(len(feat_present)))
+        ax.set_xticklabels([FEAT_LABELS.get(f, f) for f in feat_present],
+                           fontsize=_FS_SM, rotation=30, ha='right')
+        ax.set_ylabel(ylabel if m_i % ncols == 0 else '', fontsize=_FS_AX)
+        ax.axhline(0, color='#aaa', lw=0.8, ls='--', zorder=1)
+        ax.tick_params(axis='y', labelsize=_FS_SM)
+        sns.despine(ax=ax)
+
+        # post-hoc pairwise Mann-Whitney U when KW is significant
+        if not np.isnan(p_kw) and p_kw < 0.05 and len(non_empty_idx) >= 2:
+            pairs = list(_combos(non_empty_idx, 2))
+            raw_ps = []
+            for i, j in pairs:
+                try:
+                    _, pp = _mwu(groups[i], groups[j], alternative='two-sided')
+                except Exception:
+                    pp = np.nan
+                raw_ps.append(pp)
+            raw_ps = np.array(raw_ps)
+            adj_ps = _fdr_bh(raw_ps)
+
+            # prefer FDR-corrected; fall back to nominal if none survive
+            fdr_sig  = [(pairs[k], adj_ps[k], False)
+                        for k in range(len(pairs))
+                        if not np.isnan(adj_ps[k]) and adj_ps[k] < 0.05]
+            nom_sig  = [(pairs[k], raw_ps[k], True)
+                        for k in range(len(pairs))
+                        if not np.isnan(raw_ps[k]) and raw_ps[k] < 0.05]
+            show_pairs = fdr_sig if fdr_sig else nom_sig  # (pair, p, is_nominal)
+
+            if show_pairs:
+                y_top   = ax.get_ylim()[1]
+                y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+                step    = y_range * 0.12
+                tk      = y_range * 0.02
+                x_heights = {xi2: y_top for xi2 in range(len(feat_present))}
+                # draw shortest-span pairs first to minimise crossing
+                for (i, j), ap, nominal in sorted(show_pairs, key=lambda x: x[0][1] - x[0][0]):
+                    bh = max(x_heights[i], x_heights[j]) + step * 0.25
+                    ax.plot([i, i, j, j], [bh - tk, bh, bh, bh - tk],
+                            color='#333', lw=1.2, zorder=6)
+                    label = _star(ap) + ('†' if nominal else '')
+                    ax.text((i + j) / 2, bh + tk * 0.3, label,
+                            ha='center', va='bottom', fontsize=7.5,
+                            fontweight='bold', color='#333', zorder=7)
+                    x_heights[i] = bh + step * 0.55
+                    x_heights[j] = bh + step * 0.55
+                new_top = max(x_heights.values()) + step * 0.4
+                ax.set_ylim(ax.get_ylim()[0], new_top)
+                if not fdr_sig:
+                    ax.text(0.99, 0.01, '† nominal p, uncorrected',
+                            transform=ax.transAxes, ha='right', va='bottom',
+                            fontsize=6, color='#555', style='italic')
+
+    for idx in range(n_met, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    fig.tight_layout(pad=2.5)
+    return fig
+
+
+def plot_lfp_psd_by_feature_group(lfp_block_results, df_transitions,
+                                   freq_range=(1, 90), figsize=None):
+    """
+    Compare absolute LFP spectra across spike-feature groups.
+
+    For each transition event (cell, feat, t_idx) computes the mean LFP PSD
+    across pre and post blocks.  Groups by spike_feature.
+
+    Normalization removes between-cell amplitude differences while preserving
+    between-feature level differences:
+        per_cell_mean = mean(mean_psd) across all that cell's transitions
+        display = (value − per_cell_mean[cell]) + global_grand_mean
+
+    Figure 1 — overlay: all feature groups on one axes (mean ± SEM).
+    Figure 2 — grid: one subplot per feature, y-axis shared across all panels
+                so you can visually compare levels.
+
+    Returns (fig_overlay, fig_grid).
+    """
+    import seaborn as sns
+    from collections import defaultdict
+
+    _f_lo, _f_hi = freq_range
+    common_freqs = np.linspace(_f_lo, _f_hi, 300)
+
+    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
+                'inflection_time', 'inflection_amp', 'log_isi', 'no_transition']
+    FEAT_LABELS = {
+        'peak_width':      'Peak width',
+        'peak_amp':        'Peak amp',
+        'exp_lambda':      'Exp λ',
+        'peak_sharpness':  'Peak sharpness',
+        'inflection_time': 'Inflection time',
+        'inflection_amp':  'Inflection amp',
+        'log_isi':         'Log ISI',
+        'no_transition':   'No transition',
+    }
+    _NO_TRANS_COLOR = '#888888'
+    feat_colors = {}
+
+    def _interp_fit(blk, comp):
+        ff = blk.get('freqs_fit')
+        fl = blk.get(comp)
+        if ff is None or fl is None:
+            return None
+        ff = np.asarray(ff); fl = np.asarray(fl)
+        mask = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(fl)
+        return np.interp(common_freqs, ff[mask], fl[mask]) if mask.sum() >= 5 else None
+
+    # ── first pass: collect mean full/ape/raw PSD per event ──────────────────
+    # events[feat] = list of (cid, mean_full, mean_ape, mean_raw)
+    events = defaultdict(list)
+
+    def _interp_raw(blk):
+        ff = blk.get('freqs')
+        ps = blk.get('psd', blk.get('mean_psd'))
+        if ff is None or ps is None:
+            return None
+        ff = np.asarray(ff); ps = np.asarray(ps)
+        ps = np.clip(ps, 1e-30, None)
+        mask = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(np.log10(ps))
+        return np.interp(common_freqs, ff[mask], np.log10(ps[mask])) if mask.sum() >= 5 else None
+
+    for key, blocks in lfp_block_results.items():
+        cid, feat = key[0], key[1]
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' in bmap and 'post' in bmap:
+            pre_full  = _interp_fit(bmap['pre'],  'full_log')
+            post_full = _interp_fit(bmap['post'], 'full_log')
+            if pre_full is None or post_full is None:
+                continue
+            mean_full = (pre_full + post_full) / 2.0
+            pre_ape   = _interp_fit(bmap['pre'],  'ape_log')
+            post_ape  = _interp_fit(bmap['post'], 'ape_log')
+            mean_ape  = (pre_ape + post_ape) / 2.0 if (pre_ape is not None and post_ape is not None) else None
+            pre_raw   = _interp_raw(bmap['pre'])
+            post_raw  = _interp_raw(bmap['post'])
+            mean_raw  = (pre_raw + post_raw) / 2.0 if (pre_raw is not None and post_raw is not None) else None
+        elif 'full' in bmap:
+            mean_full = _interp_fit(bmap['full'], 'full_log')
+            if mean_full is None:
+                continue
+            mean_ape  = _interp_fit(bmap['full'], 'ape_log')
+            mean_raw  = _interp_raw(bmap['full'])
+        else:
+            continue
+        events[feat].append((cid, mean_full, mean_ape, mean_raw))
+
+    if not events:
+        print('plot_lfp_psd_by_feature_group: no valid entries found')
+        return None, None
+
+    # ── second pass: collect raw PSDs per feature group ──────────────────────
+    feat_display     = {}
+    feat_display_ape = {}
+    feat_display_raw = {}
+    feat_present = [f for f in WF_ORDER if f in events]
+
+    colored_feats = [f for f in feat_present if f != 'no_transition']
+    for feat in colored_feats:
+        feat_colors[feat] = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+    if 'no_transition' in feat_present:
+        feat_colors['no_transition'] = _NO_TRANS_COLOR
+
+    for feat in feat_present:
+        feat_display[feat]     = [mf for _, mf, _, _  in events[feat]]
+        feat_display_ape[feat] = [ma for _, _,  ma, _ in events[feat] if ma is not None]
+        feat_display_raw[feat] = [mr for _, _,  _,  mr in events[feat] if mr is not None]
+
+    # ── Figure 1: overlay ─────────────────────────────────────────────────────
+    fw = figsize[0] if figsize else 8.0
+    fh = figsize[1] if figsize else 5.5
+    fig_ov, ax_ov = plt.subplots(figsize=(fw, fh))
+
+    for feat in feat_present:
+        arr = np.array(feat_display[feat])
+        n   = len(arr)
+        mn  = np.mean(arr, axis=0)
+        col = feat_colors[feat]
+        is_ctrl = feat == 'no_transition'
+        # full specparam model — mean line only, no SEM fill
+        ax_ov.plot(common_freqs, mn, color=col, lw=2.5, zorder=5,
+                   ls='--' if is_ctrl else '-',
+                   label=f'{FEAT_LABELS.get(feat, feat)} (n={n})')
+        # aperiodic component (dashed, same color, thinner)
+        if feat_display_ape.get(feat):
+            mn_ape = np.mean(np.array(feat_display_ape[feat]), axis=0)
+            ax_ov.plot(common_freqs, mn_ape, color=col, lw=1.2,
+                       ls=':' if is_ctrl else '--', alpha=0.6, zorder=4)
+
+    ax_ov.set_xlabel('Frequency (Hz)', fontsize=_FS_AX)
+    ax_ov.set_ylabel('$\log_{10}$ power', fontsize=_FS_AX)
+    ax_ov.set_xlim(_f_lo, _f_hi)
+    ax_ov.legend(fontsize=_FS_SM, frameon=False, loc='upper right',
+                 title='solid=full model · dashed=aperiodic', title_fontsize=_FS_SM - 2)
+    sns.despine(ax=ax_ov)
+    fig_ov.tight_layout()
+
+    # ── Figure 2: per-feature grid (shared y-axis) ────────────────────────────
+    n_feats = len(feat_present)
+    ncols   = min(3, n_feats)
+    nrows   = int(np.ceil(n_feats / ncols)) if n_feats else 1
+    fw2 = figsize[0] if figsize else 5.5 * ncols
+    fh2 = figsize[1] if figsize else 4.5 * nrows
+    fig_gr, axes = plt.subplots(nrows, ncols, figsize=(fw2, fh2),
+                                sharey=True, squeeze=False)
+
+    all_vals = np.concatenate([np.array(feat_display[f]).ravel() for f in feat_present])
+    ypad = (np.nanmax(all_vals) - np.nanmin(all_vals)) * 0.08
+    ylims = (np.nanmin(all_vals) - ypad, np.nanmax(all_vals) + ypad)
+
+    for idx, feat in enumerate(feat_present):
+        ax  = axes[idx // ncols][idx % ncols]
+        arr = np.array(feat_display[feat])
+        n   = len(arr)
+        col = feat_colors[feat]
+
+        # thin raw PSD lines
+        for row in feat_display_raw.get(feat, []):
+            ax.plot(common_freqs, row, color=col, lw=0.5, alpha=0.15, zorder=2)
+
+        # mean full specparam model ± SEM
+        mn  = np.mean(arr, axis=0)
+        sem = np.std(arr,  axis=0, ddof=1) / np.sqrt(n)
+        ax.plot(common_freqs, mn, color=col, lw=2.5, zorder=5)
+        ax.fill_between(common_freqs, mn - sem, mn + sem,
+                        color=col, alpha=0.25, zorder=4)
+
+        # mean aperiodic component (dashed)
+        if feat_display_ape.get(feat):
+            mn_ape = np.mean(np.array(feat_display_ape[feat]), axis=0)
+            ax.plot(common_freqs, mn_ape, color=col, lw=1.5,
+                    ls='--', alpha=0.65, zorder=3)
+
+        ax.set_title(f'{FEAT_LABELS.get(feat, feat)}  (n={n})',
+                     fontsize=_FS_SUB, fontweight='bold', color=col)
+        ax.set_xlabel('Frequency (Hz)', fontsize=_FS_AX)
+        if idx % ncols == 0:
+            ax.set_ylabel('$\log_{10}$ power', fontsize=_FS_AX)
+        ax.set_xlim(_f_lo, _f_hi)
+        ax.set_ylim(*ylims)
+        sns.despine(ax=ax)
+
+    for idx in range(n_feats, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    fig_gr.suptitle('LFP PSD per spike-feature group  (shared y-axis)\n'
+                    'thin=raw PSD · dashed=aperiodic · solid±shade=specparam fit±SEM',
+                    fontsize=_FS_SUB, fontweight='bold')
+    fig_gr.tight_layout()
+    return fig_ov, fig_gr
 
 
 def plot_transition_deltas_by_celltype(lfp_block_results, df_transitions,
