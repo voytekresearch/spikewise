@@ -5108,6 +5108,8 @@ def plot_lfp_block_comparison(
     _psd_mins, _psd_maxs = [], []
     for _blks in lfp_block_results.values():
         for _blk in _blks:
+            if _blk.get('label') == 'peri':
+                continue
             for key, _ in bar_specs:
                 v = _blk.get(key, float('nan'))
                 if np.isfinite(v):
@@ -5135,6 +5137,7 @@ def plot_lfp_block_comparison(
         cid, feat = key[0], key[1]
         if not blocks:
             continue
+        blocks = [b for b in blocks if b.get('label') != 'peri']
 
         # Ensure every block has valid specparam fit + AUC
         for blk in blocks:
@@ -5901,63 +5904,115 @@ def _collect_delta_rows(lfp_block_results, df_transitions, lfp_keys):
 
 
 def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_keys=None):
-    """Same as plot_transition_deltas but the mean ± SEM crosshair is coloured
-    by the sign of the population mean: blue if mean > 0, red if mean < 0.
-    One-sample Wilcoxon signed-rank test (vs 0) annotated below each LFP feature.
     """
+    For each spike feature × LFP metric, show the sign-corrected % change
+    aligned to the low→high direction.
+
+    All transitions are flipped so that positive values always mean
+    "LFP metric increased when cluster went from low to high state."
+    High→Low transitions are flipped (sign = −1) so the comparison is unified.
+
+    % change = sign × (post − pre) / mean(|pre|, |post|) × 100
+    One-sample Wilcoxon vs 0 annotated per metric.
+    """
+    import seaborn as sns
     from scipy.stats import wilcoxon as _wilcoxon
+    from matplotlib.lines import Line2D
+
+    DOT_COL = '#0072B2'
 
     lfp_keys = lfp_keys or _DELTA_LFP_KEYS
-    rows_by_wf, _, wf_feats, global_ylim = _collect_delta_rows(
-        lfp_block_results, df_transitions, lfp_keys)
 
-    _LBL_FS   = 34
-    _TICK_FS  = 28
-    _TTL_FS   = 32
-    _STAR_FS  = 44
+    # Sign lookup: +1 if cluster increased (low→high), −1 if decreased (high→low)
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+    _sign_lookup = {}
+    for _, row in df_transitions.iterrows():
+        before = _ORD.get(str(row.get('cluster_before', '')).lower(), -1)
+        after  = _ORD.get(str(row.get('cluster_after',  '')).lower(), -1)
+        if before < 0 or after < 0 or before == after:
+            continue
+        _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = (
+            1 if after > before else -1)
+
+    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
+                'inflection_time', 'inflection_amp', 'log_isi']
+
+    from collections import defaultdict
+    data    = defaultdict(lambda: defaultdict(list))   # feat → lk → [pct values]
+    wf_seen = set()
+
+    for key, blocks in lfp_block_results.items():
+        cid, feat = key[0], key[1]
+        t_idx = int(key[2]) if len(key) > 2 else 0
+        sign  = _sign_lookup.get((cid, feat, t_idx))
+        if sign is None:
+            continue
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' not in bmap or 'post' not in bmap:
+            continue
+        b_pre, b_post = bmap['pre'], bmap['post']
+        for lk in lfp_keys:
+            v_pre  = b_pre.get(lk)
+            v_post = b_post.get(lk)
+            if v_pre is not None and v_post is not None:
+                v_pre_f  = float(v_pre)
+                v_post_f = float(v_post)
+                denom = (abs(v_pre_f) + abs(v_post_f)) / 2.0
+                if denom > 1e-10:
+                    pct = sign * 100.0 * (v_post_f - v_pre_f) / denom
+                    data[feat][lk].append(pct)
+        wf_seen.add(feat)
+
+    wf_feats = [f for f in WF_ORDER if f in wf_seen]
+
+    all_vals = [v for feat in wf_feats for vals in data[feat].values() for v in vals]
+    _ymax    = max(abs(min(all_vals)), abs(max(all_vals))) * 1.25 if all_vals else 1.0
+    global_ylim = (-_ymax, _ymax)
+
+    _LBL_FS   = 28
+    _TICK_FS  = 22
+    _TTL_FS   = 26
+    _STAR_FS  = 32
     _SPINE_LW = 2.5
 
-    n_wf  = len(wf_feats)
-    ncols = 2
-    nrows = int(np.ceil(n_wf / ncols))
-    n_lk  = len(lfp_keys)
-
-    panel_w = 2.5 + 2.0 * n_lk
+    n_wf    = len(wf_feats)
+    ncols   = 2
+    nrows   = int(np.ceil(n_wf / ncols))
+    n_lk    = len(lfp_keys)
+    panel_w = 2.5 + 2.2 * n_lk
     panel_h = 9.0
     fig, axes = plt.subplots(nrows, ncols,
                              figsize=(panel_w * ncols, panel_h * nrows),
                              squeeze=False)
-    from matplotlib.lines import Line2D
 
     for idx, wf in enumerate(wf_feats):
-        ax      = axes[idx // ncols][idx % ncols]
-        rows    = rows_by_wf[wf]
-        n_cells = len(rows)
-
+        ax = axes[idx // ncols][idx % ncols]
         ax.set_ylim(*global_ylim)
         ax.axhline(0, color='#aaa', lw=2.0, ls='--', zorder=1)
 
         x_ticks, x_labels = [], []
         for xi, lk in enumerate(lfp_keys):
-            deltas = [r[lk] for r in rows if lk in r]
+            x_ticks.append(xi)
+            x_labels.append(_DELTA_LFP_LABELS.get(lk, lk))
+            deltas = data[wf][lk]
             if not deltas:
                 continue
 
-            jitter = (np.random.default_rng(xi).random(len(deltas)) - 0.5) * 0.3
+            rng    = np.random.default_rng(xi)
+            jitter = (rng.random(len(deltas)) - 0.5) * 0.30
             for j, d in zip(jitter, deltas):
-                col = _DIR_COL_POS if d >= 0 else _DIR_COL_NEG
+                col = DOT_COL if d >= 0 else '#CC79A7'
                 ax.scatter(xi + j, d, color=col, edgecolors='white',
-                           linewidths=0.8, s=100, alpha=0.85, zorder=3)
+                           linewidths=0.6, s=90, alpha=0.85, zorder=3)
 
             mu  = float(np.mean(deltas))
-            sem = float(np.std(deltas) / np.sqrt(len(deltas)))
-            muc = _DIR_COL_POS if mu >= 0 else _DIR_COL_NEG
-            ax.plot([xi - 0.35, xi + 0.35], [mu, mu],
+            sem = float(np.std(deltas, ddof=1) / np.sqrt(len(deltas)))
+            muc = DOT_COL if mu >= 0 else '#CC79A7'
+            ax.plot([xi - 0.30, xi + 0.30], [mu, mu],
                     color=muc, lw=5.0, solid_capstyle='round', zorder=4)
             ax.plot([xi, xi], [mu - sem, mu + sem],
-                    color=muc, lw=3.0, zorder=4)
+                    color=muc, lw=2.5, zorder=4)
 
-            # One-sample Wilcoxon vs 0 — star placed just below x-axis using axes transform
             star = ''
             if len(deltas) >= 5:
                 try:
@@ -5967,21 +6022,18 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
                 except Exception as _e:
                     print(f'  [{wf}|{lk}] FAILED: {_e}', flush=True)
             if star:
-                # get_xaxis_transform: x in data coords, y in axes fraction (0=bottom, -0.x=below)
-                ax.text(xi, -0.10, star, ha='center', va='top',
+                ax.text(xi, -0.08, star, ha='center', va='top',
                         fontsize=_STAR_FS, fontweight='bold', color='#1a1a1a',
                         transform=ax.get_xaxis_transform(), clip_on=False)
 
-            x_ticks.append(xi)
-            x_labels.append(_DELTA_LFP_LABELS.get(lk, lk))
-
+        n_trans = len(data[wf][lfp_keys[0]]) if lfp_keys else 0
         ax.set_xlim(-0.6, n_lk - 0.4)
         ax.set_xticks(x_ticks)
         ax.set_xticklabels(x_labels, fontsize=_TICK_FS, fontweight='bold')
-        ax.set_title(f'{_DELTA_WF_LABELS.get(wf, wf)}  (n={n_cells})',
+        ax.set_title(f'{_DELTA_WF_LABELS.get(wf, wf)}  (n={n_trans})',
                      fontsize=_TTL_FS, fontweight='bold', pad=14)
         if idx % ncols == 0:
-            ax.set_ylabel('Normalised Δ  (post − pre)', fontsize=_LBL_FS, fontweight='bold')
+            ax.set_ylabel('% change  (low→high aligned)', fontsize=_LBL_FS - 4, fontweight='bold')
         ax.tick_params(axis='y', labelsize=_TICK_FS, width=2.5, length=6)
         ax.tick_params(axis='x', length=0)
         for spine in ['left', 'bottom']:
@@ -5992,41 +6044,41 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
         axes[idx // ncols][idx % ncols].set_visible(False)
 
     legend_handles = [
-        Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_POS,
-               markersize=18, label='LFP ↑  (cluster: low → high)'),
-        Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_NEG,
-               markersize=18, label='LFP ↓  (cluster: low → high)'),
-        Line2D([0], [0], color=_DIR_COL_POS, lw=5.0, label='mean ± SEM  (positive)'),
-        Line2D([0], [0], color=_DIR_COL_NEG, lw=5.0, label='mean ± SEM  (negative)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=DOT_COL,
+               markersize=16, label='Positive (LFP ↑ with cluster level)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='#CC79A7',
+               markersize=16, label='Negative (LFP ↓ with cluster level)'),
     ]
     fig.legend(handles=legend_handles, fontsize=20, frameon=False,
                loc='lower center', ncol=2, bbox_to_anchor=(0.5, -0.03))
-
     fig.suptitle(
-        'LFP change at spike-feature cluster transition  (post − pre, normalised)\n'
-        'Stars = one-sample Wilcoxon vs 0  ·  all panels share y-axis',
-        fontsize=26, fontweight='bold')
+        'LFP % change aligned to low→high cluster direction\n'
+        '(High→Low transitions flipped so + = LFP increases with cluster level)\n'
+        'Stars = one-sample Wilcoxon vs 0',
+        fontsize=24, fontweight='bold')
     fig.subplots_adjust(left=0.08, right=0.97, top=0.93, bottom=0.12,
                         wspace=0.35, hspace=0.55)
     plt.show()
     return fig, axes
 
 
-def plot_lfp_avg_psd_per_feature(lfp_block_results, freq_range=(1, 90), figsize=None):
+def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(1, 90), figsize=None):
     """
-    For each spike feature, plot the population-average PSD (pre / peri / post)
-    across all transitions, with ±SEM shading (in log space), plus the mean
-    specparam fit overlaid as a dashed line.
+    For each spike feature, plot the mean PSD + specparam fit for transitions where
+    the spike cluster *increased* (blue) vs *decreased* (pink), using the post-period
+    block for each transition.
+
+    PSDs are averaged in log space (geometric mean). Thin line = mean raw PSD;
+    thick line = mean specparam fit. ±SEM shading around the specparam fit.
     """
     import seaborn as sns
     from collections import defaultdict
 
     WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
                 'inflection_time', 'inflection_amp', 'log_isi']
-    BLOCK_COLORS  = {'pre': '#0072B2', 'peri': '#009E73', 'post': '#D55E00'}
-    BLOCK_LABELS  = {'pre': 'Pre', 'peri': 'Peri', 'post': 'Post'}
-    BLOCK_ORDER   = ['pre', 'peri', 'post']
-    FEAT_LABELS   = {
+    INC_COLOR = '#0072B2'   # blue  = cluster increased
+    DEC_COLOR = '#CC79A7'   # pink  = cluster decreased
+    FEAT_LABELS = {
         'peak_width':      'Peak width',
         'peak_amp':        'Peak amp',
         'exp_lambda':      'Exp lambda',
@@ -6036,36 +6088,80 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, freq_range=(1, 90), figsize=
         'log_isi':         'Log ISI',
     }
 
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+    _sign_lookup = {}
+    for _, row in df_transitions.iterrows():
+        before = _ORD.get(str(row.get('cluster_before', '')).lower(), 1)
+        after  = _ORD.get(str(row.get('cluster_after',  '')).lower(), 1)
+        sign   = 1 if after >= before else -1
+        _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = sign
+
     _f_lo, _f_hi = freq_range
     common_freqs = np.linspace(_f_lo, _f_hi, 300)
 
-    # group log-PSDs and specparam fits by (feat, block_label)
-    feat_log_psds = defaultdict(lambda: defaultdict(list))
-    feat_fit_logs = defaultdict(lambda: defaultdict(list))
+    # Assign each block to its actual cluster state:
+    #   Low→High:  pre → LOW state,  post → HIGH state
+    #   High→Low:  pre → HIGH state, post → LOW state
+    #
+    # Normalize within each transition to the geometric mean of the two blocks
+    # (mean of log-PSDs), so between-cell amplitude differences cancel while
+    # spectral shape is preserved. y-axis becomes "relative to within-transition mean".
+    feat_data = defaultdict(lambda: {'low': [], 'high': [], 'low_fit': [], 'high_fit': []})
 
     for key, blocks in lfp_block_results.items():
-        feat = key[1]
-        bmap = {b['label']: b for b in blocks}
-        for lbl in BLOCK_ORDER:
-            blk = bmap.get(lbl)
-            if blk is None:
-                continue
+        cid, feat = key[0], key[1]
+        t_idx = int(key[2]) if len(key) > 2 else 0
+        sign  = _sign_lookup.get((cid, feat, t_idx), 1)
+        state_map = {'pre': 'low' if sign == 1 else 'high',
+                     'post': 'high' if sign == 1 else 'low'}
+
+        bmap = {b['label']: b for b in blocks if b.get('label') in ('pre', 'post')}
+        if 'pre' not in bmap or 'post' not in bmap:
+            continue
+
+        # Compute within-transition geometric mean baseline (PSD)
+        pre_psd   = bmap['pre'].get('psd',  bmap['pre'].get('mean_psd'))
+        post_psd  = bmap['post'].get('psd', bmap['post'].get('mean_psd'))
+        pre_freq  = bmap['pre'].get('freqs')
+        post_freq = bmap['post'].get('freqs')
+        if pre_psd is None or post_psd is None or pre_freq is None or post_freq is None:
+            continue
+        pre_i   = np.clip(np.interp(common_freqs, pre_freq,  pre_psd),  1e-15, None)
+        post_i  = np.clip(np.interp(common_freqs, post_freq, post_psd), 1e-15, None)
+        log_baseline = (np.log10(pre_i) + np.log10(post_i)) / 2.0
+
+        # Compute within-transition geometric mean baseline (specparam fit)
+        pre_ff  = bmap['pre'].get('freqs_fit');  pre_fl  = bmap['pre'].get('full_log')
+        post_ff = bmap['post'].get('freqs_fit'); post_fl = bmap['post'].get('full_log')
+        fit_baseline = None
+        if all(x is not None for x in [pre_ff, pre_fl, post_ff, post_fl]):
+            pre_ff  = np.asarray(pre_ff);  pre_fl  = np.asarray(pre_fl)
+            post_ff = np.asarray(post_ff); post_fl = np.asarray(post_fl)
+            _mp = (pre_ff  >= _f_lo) & (pre_ff  <= _f_hi) & np.isfinite(pre_fl)
+            _mq = (post_ff >= _f_lo) & (post_ff <= _f_hi) & np.isfinite(post_fl)
+            if _mp.sum() > 5 and _mq.sum() > 5:
+                pre_fit_i  = np.interp(common_freqs, pre_ff[_mp],  pre_fl[_mp])
+                post_fit_i = np.interp(common_freqs, post_ff[_mq], post_fl[_mq])
+                fit_baseline = (pre_fit_i + post_fit_i) / 2.0
+
+        for lbl, blk in bmap.items():
+            state = state_map[lbl]
             psd   = blk.get('psd', blk.get('mean_psd'))
             freqs = blk.get('freqs')
-            if psd is None or freqs is None:
-                continue
-            psd_i = np.interp(common_freqs, freqs, psd)
-            feat_log_psds[feat][lbl].append(np.log10(np.clip(psd_i, 1e-15, None)))
+            if psd is not None and freqs is not None:
+                psd_i = np.clip(np.interp(common_freqs, freqs, psd), 1e-15, None)
+                feat_data[feat][state].append(np.log10(psd_i) - log_baseline)
 
-            if blk.get('freqs_fit') is not None and blk.get('full_log') is not None:
-                ff = np.asarray(blk['freqs_fit'])
-                fl = np.asarray(blk['full_log'])
-                _m = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(fl)
-                if _m.sum() > 5:
-                    fl_i = np.interp(common_freqs, ff[_m], fl[_m])
-                    feat_fit_logs[feat][lbl].append(fl_i)
+            if fit_baseline is not None:
+                ff = blk.get('freqs_fit'); fl = blk.get('full_log')
+                if ff is not None and fl is not None:
+                    ff = np.asarray(ff); fl = np.asarray(fl)
+                    _m = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(fl)
+                    if _m.sum() > 5:
+                        fl_i = np.interp(common_freqs, ff[_m], fl[_m])
+                        feat_data[feat][state + '_fit'].append(fl_i - fit_baseline)
 
-    all_feats = [f for f in WF_ORDER if f in feat_log_psds]
+    all_feats = [f for f in WF_ORDER if feat_data[f]['low'] or feat_data[f]['high']]
     n_feats   = len(all_feats)
     ncols     = min(4, n_feats)
     nrows     = int(np.ceil(n_feats / ncols))
@@ -6076,43 +6172,36 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, freq_range=(1, 90), figsize=
 
     for idx, feat in enumerate(all_feats):
         ax = axes[idx // ncols][idx % ncols]
-        for lbl in BLOCK_ORDER:
-            log_psds = feat_log_psds[feat].get(lbl, [])
-            if not log_psds:
-                continue
-            arr       = np.array(log_psds)
-            mean_log  = np.mean(arr, axis=0)
-            sem_log   = np.std(arr, axis=0, ddof=1) / np.sqrt(len(arr))
-            col       = BLOCK_COLORS[lbl]
-            n         = len(arr)
-            ax.semilogy(common_freqs, 10**mean_log, color=col, lw=2.5,
-                        label=f'{BLOCK_LABELS[lbl]} (n={n})')
-            ax.fill_between(common_freqs,
-                            10**(mean_log - sem_log),
-                            10**(mean_log + sem_log),
-                            color=col, alpha=0.18)
+        d  = feat_data[feat]
 
-            fit_logs = feat_fit_logs[feat].get(lbl, [])
-            if fit_logs:
-                mean_fit = np.mean(np.array(fit_logs), axis=0)
-                ax.semilogy(common_freqs, 10**mean_fit, color=col,
-                            lw=3.5, ls='--', alpha=0.85)
+        ax.axhline(0, color='#bbb', lw=1.0, ls='--', zorder=1)
+        for state, col, lbl in [('low', INC_COLOR, 'Low cluster'), ('high', DEC_COLOR, 'High cluster')]:
+            fit_list = d[state + '_fit']
+            if not fit_list:
+                continue
+            n       = len(fit_list)
+            arr_f   = np.array(fit_list)
+            mn_fit  = np.mean(arr_f, axis=0)
+            sem_fit = np.std(arr_f, axis=0, ddof=1) / np.sqrt(n)
+            ax.plot(common_freqs, mn_fit, color=col, lw=2.5, zorder=3,
+                    label=f'{lbl} (n={n})')
+            ax.fill_between(common_freqs, mn_fit - sem_fit, mn_fit + sem_fit,
+                            color=col, alpha=0.22, zorder=2)
 
         ax.set_title(FEAT_LABELS.get(feat, feat), fontsize=15, fontweight='bold')
         ax.set_xlabel('Frequency (Hz)', fontsize=13)
         if idx % ncols == 0:
-            ax.set_ylabel('PSD (µV²/Hz)', fontsize=13)
+            ax.set_ylabel('Relative power (log, re: within-transition mean)', fontsize=10)
         ax.set_xlim(_f_lo, _f_hi)
         ax.legend(fontsize=10, frameon=False)
-        ax.yaxis.set_major_locator(plt.LogLocator(numticks=4))
-        ax.yaxis.set_minor_locator(plt.NullLocator())
         sns.despine(ax=ax)
 
     for idx in range(n_feats, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
 
-    fig.suptitle('Population-average LFP around spike cluster transitions',
-                 fontsize=16, fontweight='bold', y=1.01)
+    fig.suptitle('LFP spectra: low vs high spike cluster state\n'
+                 '(specparam fit ± SEM, normalized to within-transition mean)',
+                 fontsize=13, fontweight='bold', y=1.01)
     plt.tight_layout()
     return fig
 
