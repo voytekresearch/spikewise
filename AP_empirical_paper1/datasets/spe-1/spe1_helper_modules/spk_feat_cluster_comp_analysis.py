@@ -5905,25 +5905,25 @@ def _collect_delta_rows(lfp_block_results, df_transitions, lfp_keys):
 
 def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_keys=None):
     """
-    For each spike feature × LFP metric, show the sign-corrected % change
-    aligned to the low→high direction.
+    For each LFP metric, show % change (high − low cluster state) across spike features.
 
-    All transitions are flipped so that positive values always mean
-    "LFP metric increased when cluster went from low to high state."
-    High→Low transitions are flipped (sign = −1) so the comparison is unified.
+    Subplots = LFP metrics; x-axis = spike features.
 
     % change = sign × (post − pre) / mean(|pre|, |post|) × 100
-    One-sample Wilcoxon vs 0 annotated per metric.
+    where sign = +1 for low→high transitions, −1 for high→low, so positive always
+    means the LFP metric was higher in the high cluster state.
+
+    Stars = one-sample Wilcoxon vs 0.
     """
     import seaborn as sns
     from scipy.stats import wilcoxon as _wilcoxon
     from matplotlib.lines import Line2D
 
-    DOT_COL = '#0072B2'
+    DOT_COL  = '#0072B2'
+    NEG_COL  = '#CC79A7'
 
     lfp_keys = lfp_keys or _DELTA_LFP_KEYS
 
-    # Sign lookup: +1 if cluster increased (low→high), −1 if decreased (high→low)
     _ORD = {'low': 0, 'mid': 1, 'high': 2}
     _sign_lookup = {}
     for _, row in df_transitions.iterrows():
@@ -5936,10 +5936,20 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
 
     WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
                 'inflection_time', 'inflection_amp', 'log_isi']
+    _WF_SHORT = {
+        'peak_width':      'Peak W',
+        'peak_amp':        'Peak A',
+        'exp_lambda':      'Exp λ',
+        'peak_sharpness':  'Sharpness',
+        'inflection_time': 'Infl. T',
+        'inflection_amp':  'Infl. A',
+        'log_isi':         'Log ISI',
+    }
 
     from collections import defaultdict
-    data    = defaultdict(lambda: defaultdict(list))   # feat → lk → [pct values]
-    wf_seen = set()
+    data         = defaultdict(lambda: defaultdict(list))   # feat → lk → [pct values]
+    auc_filtered = defaultdict(lambda: defaultdict(int))    # feat → lk → n_skipped
+    wf_seen      = set()
 
     for key, blocks in lfp_block_results.items():
         cid, feat = key[0], key[1]
@@ -5957,59 +5967,73 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
             if v_pre is not None and v_post is not None:
                 v_pre_f  = float(v_pre)
                 v_post_f = float(v_post)
+                # AUC metrics: require both blocks to have a detected peak.
+                # If either is 0 (no peak found by specparam), the % change is
+                # meaningless (always ±200%), so skip this pair.
+                if lk.endswith('_auc') and (v_pre_f < 1e-10 or v_post_f < 1e-10):
+                    auc_filtered[feat][lk] += 1
+                    continue
                 denom = (abs(v_pre_f) + abs(v_post_f)) / 2.0
                 if denom > 1e-10:
                     pct = sign * 100.0 * (v_post_f - v_pre_f) / denom
                     data[feat][lk].append(pct)
         wf_seen.add(feat)
 
+    # Report filtering for AUC metrics
+    for feat in sorted(wf_seen):
+        for lk in lfp_keys:
+            if lk.endswith('_auc') and auc_filtered[feat][lk] > 0:
+                n_kept = len(data[feat][lk])
+                n_skip = auc_filtered[feat][lk]
+                print(f'  [{feat}|{lk}] kept={n_kept} skipped={n_skip} '
+                      f'(no peak in ≥1 block)', flush=True)
+
     wf_feats = [f for f in WF_ORDER if f in wf_seen]
+    n_wf     = len(wf_feats)
+    n_lk     = len(lfp_keys)
 
-    all_vals = [v for feat in wf_feats for vals in data[feat].values() for v in vals]
-    _ymax    = max(abs(min(all_vals)), abs(max(all_vals))) * 1.25 if all_vals else 1.0
-    global_ylim = (-_ymax, _ymax)
+    _LBL_FS   = 17
+    _TICK_FS  = 13
+    _TTL_FS   = 17
+    _STAR_FS  = 20
+    _SPINE_LW = 2.0
 
-    _LBL_FS   = 28
-    _TICK_FS  = 22
-    _TTL_FS   = 26
-    _STAR_FS  = 32
-    _SPINE_LW = 2.5
-
-    n_wf    = len(wf_feats)
-    ncols   = 2
-    nrows   = int(np.ceil(n_wf / ncols))
-    n_lk    = len(lfp_keys)
-    panel_w = 2.5 + 2.2 * n_lk
-    panel_h = 9.0
+    # One subplot per LFP metric; x-axis = spike features
+    ncols   = 3
+    nrows   = int(np.ceil(n_lk / ncols))
+    panel_w = 1.8 + 1.5 * n_wf
+    panel_h = 7.0
     fig, axes = plt.subplots(nrows, ncols,
                              figsize=(panel_w * ncols, panel_h * nrows),
                              squeeze=False)
 
-    for idx, wf in enumerate(wf_feats):
-        ax = axes[idx // ncols][idx % ncols]
-        ax.set_ylim(*global_ylim)
+    for li, lk in enumerate(lfp_keys):
+        ax = axes[li // ncols][li % ncols]
         ax.axhline(0, color='#aaa', lw=2.0, ls='--', zorder=1)
 
+        panel_vals = [v for wf in wf_feats for v in data[wf][lk]]
+        if panel_vals:
+            _pm = max(abs(min(panel_vals)), abs(max(panel_vals))) * 1.25
+            ax.set_ylim(-_pm, _pm)
+
         x_ticks, x_labels = [], []
-        for xi, lk in enumerate(lfp_keys):
+        for xi, wf in enumerate(wf_feats):
             x_ticks.append(xi)
-            x_labels.append(_DELTA_LFP_LABELS.get(lk, lk))
+            x_labels.append(_WF_SHORT.get(wf, wf))
             deltas = data[wf][lk]
             if not deltas:
                 continue
 
-            rng    = np.random.default_rng(xi)
-            jitter = (rng.random(len(deltas)) - 0.5) * 0.30
-            for j, d in zip(jitter, deltas):
-                col = DOT_COL if d >= 0 else '#CC79A7'
-                ax.scatter(xi + j, d, color=col, edgecolors='white',
-                           linewidths=0.6, s=90, alpha=0.85, zorder=3)
+            rng    = np.random.default_rng(li * 100 + xi)
+            jitter = (rng.random(len(deltas)) - 0.5) * 0.28
+            ax.scatter(xi + jitter, deltas, color='#888888', edgecolors='white',
+                       linewidths=0.4, s=70, alpha=0.70, zorder=3)
 
             mu  = float(np.mean(deltas))
             sem = float(np.std(deltas, ddof=1) / np.sqrt(len(deltas)))
-            muc = DOT_COL if mu >= 0 else '#CC79A7'
-            ax.plot([xi - 0.30, xi + 0.30], [mu, mu],
-                    color=muc, lw=5.0, solid_capstyle='round', zorder=4)
+            muc = DOT_COL if mu >= 0 else NEG_COL
+            ax.plot([xi - 0.28, xi + 0.28], [mu, mu],
+                    color=muc, lw=4.5, solid_capstyle='round', zorder=4)
             ax.plot([xi, xi], [mu - sem, mu + sem],
                     color=muc, lw=2.5, zorder=4)
 
@@ -6018,70 +6042,77 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
                 try:
                     _, p = _wilcoxon(deltas)
                     star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
-                    print(f'  [{wf}|{lk}] n={len(deltas)} p={p:.4f} {star or "ns"}', flush=True)
+                    print(f'  [{lk}|{wf}] n={len(deltas)} p={p:.4f} {star or "ns"}', flush=True)
                 except Exception as _e:
-                    print(f'  [{wf}|{lk}] FAILED: {_e}', flush=True)
+                    print(f'  [{lk}|{wf}] FAILED: {_e}', flush=True)
             if star:
-                ax.text(xi, -0.08, star, ha='center', va='top',
+                ax.text(xi, -0.06, star, ha='center', va='top',
                         fontsize=_STAR_FS, fontweight='bold', color='#1a1a1a',
                         transform=ax.get_xaxis_transform(), clip_on=False)
 
-        n_trans = len(data[wf][lfp_keys[0]]) if lfp_keys else 0
-        ax.set_xlim(-0.6, n_lk - 0.4)
+        ax.set_xlim(-0.6, n_wf - 0.4)
         ax.set_xticks(x_ticks)
-        ax.set_xticklabels(x_labels, fontsize=_TICK_FS, fontweight='bold')
-        ax.set_title(f'{_DELTA_WF_LABELS.get(wf, wf)}  (n={n_trans})',
-                     fontsize=_TTL_FS, fontweight='bold', pad=14)
-        if idx % ncols == 0:
-            ax.set_ylabel('% change  (low→high aligned)', fontsize=_LBL_FS - 4, fontweight='bold')
-        ax.tick_params(axis='y', labelsize=_TICK_FS, width=2.5, length=6)
+        ax.set_xticklabels(x_labels, fontsize=_TICK_FS, fontweight='bold',
+                           rotation=35, ha='right')
+        ax.set_title(_DELTA_LFP_LABELS.get(lk, lk), fontsize=_TTL_FS, fontweight='bold', pad=10)
+        ax.set_ylabel('% change: high − low cluster', fontsize=_LBL_FS - 2, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=_TICK_FS, width=2.0, length=5)
         ax.tick_params(axis='x', length=0)
         for spine in ['left', 'bottom']:
             ax.spines[spine].set_linewidth(_SPINE_LW)
-        sns.despine(ax=ax, offset=10)
+        sns.despine(ax=ax, offset=8)
 
-    for idx in range(n_wf, nrows * ncols):
-        axes[idx // ncols][idx % ncols].set_visible(False)
+    for li in range(n_lk, nrows * ncols):
+        axes[li // ncols][li % ncols].set_visible(False)
 
     legend_handles = [
-        Line2D([0], [0], marker='o', color='w', markerfacecolor=DOT_COL,
-               markersize=16, label='Positive (LFP ↑ with cluster level)'),
-        Line2D([0], [0], marker='o', color='w', markerfacecolor='#CC79A7',
-               markersize=16, label='Negative (LFP ↓ with cluster level)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='#888888',
+               markersize=12, label='Individual transition'),
+        Line2D([0], [0], color=DOT_COL,  lw=4, label='Mean ± SEM  (positive)'),
+        Line2D([0], [0], color=NEG_COL,  lw=4, label='Mean ± SEM  (negative)'),
     ]
-    fig.legend(handles=legend_handles, fontsize=20, frameon=False,
-               loc='lower center', ncol=2, bbox_to_anchor=(0.5, -0.03))
+    fig.legend(handles=legend_handles, fontsize=14, frameon=False,
+               loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.01))
     fig.suptitle(
-        'LFP % change aligned to low→high cluster direction\n'
-        '(High→Low transitions flipped so + = LFP increases with cluster level)\n'
-        'Stars = one-sample Wilcoxon vs 0',
-        fontsize=24, fontweight='bold')
-    fig.subplots_adjust(left=0.08, right=0.97, top=0.93, bottom=0.12,
-                        wspace=0.35, hspace=0.55)
+        'LFP % change: high vs. low cluster state\n'
+        'Stars = one-sample Wilcoxon vs 0   (+  = higher in high cluster state)',
+        fontsize=18, fontweight='bold', y=0.98)
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
     plt.show()
     return fig, axes
 
 
-def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(1, 90), figsize=None):
+def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(1, 90),
+                                   sig_alpha=0.05, figsize=None):
     """
-    For each spike feature, plot the mean PSD + specparam fit for transitions where
-    the spike cluster *increased* (blue) vs *decreased* (pink), using the post-period
-    block for each transition.
+    Population LFP spectra for low vs high cluster state per spike feature.
 
-    PSDs are averaged in log space (geometric mean). Thin line = mean raw PSD;
-    thick line = mean specparam fit. ±SEM shading around the specparam fit.
+    Visualization style mirrors the single-cell specparam plot:
+      - Thin semi-transparent lines: raw PSD per transition (low=blue, high=pink)
+      - Dashed line: mean aperiodic component
+      - Solid thick line ± shading: mean full specparam model ± SEM
+
+    Normalization: within-transition per-cell baseline subtracted, then the
+    feature-wise grand mean spectrum added back, so curves show the actual 1/f
+    shape at the average amplitude level rather than flat deviations near zero.
+
+    Significance: Wilcoxon on per-transition mean(high − low) in theta (4–15 Hz)
+    and gamma (30–80 Hz) bands separately; Bonferroni-corrected across the two bands.
+    Only significant features are shown; shows all with p-values if none pass.
     """
     import seaborn as sns
+    from scipy.stats import wilcoxon as _wilcoxon
     from collections import defaultdict
+
+    LOW_COL  = '#0072B2'
+    HIGH_COL = '#CC79A7'
 
     WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
                 'inflection_time', 'inflection_amp', 'log_isi']
-    INC_COLOR = '#0072B2'   # blue  = cluster increased
-    DEC_COLOR = '#CC79A7'   # pink  = cluster decreased
     FEAT_LABELS = {
         'peak_width':      'Peak width',
         'peak_amp':        'Peak amp',
-        'exp_lambda':      'Exp lambda',
+        'exp_lambda':      'Exp λ',
         'peak_sharpness':  'Peak sharpness',
         'inflection_time': 'Inflection time',
         'inflection_amp':  'Inflection amp',
@@ -6091,107 +6122,184 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
     _ORD = {'low': 0, 'mid': 1, 'high': 2}
     _sign_lookup = {}
     for _, row in df_transitions.iterrows():
-        before = _ORD.get(str(row.get('cluster_before', '')).lower(), 1)
-        after  = _ORD.get(str(row.get('cluster_after',  '')).lower(), 1)
-        sign   = 1 if after >= before else -1
-        _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = sign
+        before = _ORD.get(str(row.get('cluster_before', '')).lower(), -1)
+        after  = _ORD.get(str(row.get('cluster_after',  '')).lower(), -1)
+        if before < 0 or after < 0 or before == after:
+            continue
+        _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = (
+            1 if after > before else -1)
 
     _f_lo, _f_hi = freq_range
     common_freqs = np.linspace(_f_lo, _f_hi, 300)
+    theta_mask   = (common_freqs >= 4)  & (common_freqs <= 15)
+    gamma_mask   = (common_freqs >= 30) & (common_freqs <= 80)
 
-    # Assign each block to its actual cluster state:
-    #   Low→High:  pre → LOW state,  post → HIGH state
-    #   High→Low:  pre → HIGH state, post → LOW state
-    #
-    # Normalize within each transition to the geometric mean of the two blocks
-    # (mean of log-PSDs), so between-cell amplitude differences cancel while
-    # spectral shape is preserved. y-axis becomes "relative to within-transition mean".
-    feat_data = defaultdict(lambda: {'low': [], 'high': [], 'low_fit': [], 'high_fit': []})
+    def _interp_fit(blk, comp):
+        ff = blk.get('freqs_fit')
+        fl = blk.get(comp)
+        if ff is None or fl is None:
+            return None
+        ff = np.asarray(ff); fl = np.asarray(fl)
+        mask = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(fl)
+        return np.interp(common_freqs, ff[mask], fl[mask]) if mask.sum() >= 5 else None
+
+    # ── first pass: collect raw arrays per transition ──────────────────────────
+    # feat_trans[feat] = list of dicts per transition
+    feat_trans = defaultdict(list)
+    feat_wf    = set()
 
     for key, blocks in lfp_block_results.items():
         cid, feat = key[0], key[1]
         t_idx = int(key[2]) if len(key) > 2 else 0
-        sign  = _sign_lookup.get((cid, feat, t_idx), 1)
-        state_map = {'pre': 'low' if sign == 1 else 'high',
-                     'post': 'high' if sign == 1 else 'low'}
-
+        sign  = _sign_lookup.get((cid, feat, t_idx))
+        if sign is None:
+            continue
         bmap = {b['label']: b for b in blocks if b.get('label') in ('pre', 'post')}
         if 'pre' not in bmap or 'post' not in bmap:
             continue
 
-        # Compute within-transition geometric mean baseline (PSD)
-        pre_psd   = bmap['pre'].get('psd',  bmap['pre'].get('mean_psd'))
-        post_psd  = bmap['post'].get('psd', bmap['post'].get('mean_psd'))
+        # specparam fits are required; raw PSD is optional (just for display)
+        pre_full  = _interp_fit(bmap['pre'],  'full_log')
+        post_full = _interp_fit(bmap['post'], 'full_log')
+        if pre_full is None or post_full is None:
+            continue
+        fit_baseline = (pre_full + post_full) / 2.0
+
+        pre_ape  = _interp_fit(bmap['pre'],  'ape_log')
+        post_ape = _interp_fit(bmap['post'], 'ape_log')
+
+        if sign == 1:          # low→high: pre = low, post = high
+            low_full,  high_full  = pre_full,  post_full
+            low_ape,   high_ape   = pre_ape,   post_ape
+        else:                  # high→low: pre = high, post = low  (flip)
+            high_full, low_full   = pre_full,  post_full
+            high_ape,  low_ape    = pre_ape,   post_ape
+
+        # raw PSD
+        pre_psd  = bmap['pre'].get('psd',  bmap['pre'].get('mean_psd'))
+        post_psd = bmap['post'].get('psd', bmap['post'].get('mean_psd'))
         pre_freq  = bmap['pre'].get('freqs')
         post_freq = bmap['post'].get('freqs')
-        if pre_psd is None or post_psd is None or pre_freq is None or post_freq is None:
-            continue
-        pre_i   = np.clip(np.interp(common_freqs, pre_freq,  pre_psd),  1e-15, None)
-        post_i  = np.clip(np.interp(common_freqs, post_freq, post_psd), 1e-15, None)
-        log_baseline = (np.log10(pre_i) + np.log10(post_i)) / 2.0
+        raw_baseline = low_raw = high_raw = None
+        if all(x is not None for x in [pre_psd, post_psd, pre_freq, post_freq]):
+            pre_i  = np.clip(np.interp(common_freqs, pre_freq,  np.asarray(pre_psd)),  1e-15, None)
+            post_i = np.clip(np.interp(common_freqs, post_freq, np.asarray(post_psd)), 1e-15, None)
+            raw_baseline = (np.log10(pre_i) + np.log10(post_i)) / 2.0
+            if sign == 1:
+                low_raw, high_raw = np.log10(pre_i), np.log10(post_i)
+            else:
+                high_raw, low_raw = np.log10(pre_i), np.log10(post_i)
 
-        # Compute within-transition geometric mean baseline (specparam fit)
-        pre_ff  = bmap['pre'].get('freqs_fit');  pre_fl  = bmap['pre'].get('full_log')
-        post_ff = bmap['post'].get('freqs_fit'); post_fl = bmap['post'].get('full_log')
-        fit_baseline = None
-        if all(x is not None for x in [pre_ff, pre_fl, post_ff, post_fl]):
-            pre_ff  = np.asarray(pre_ff);  pre_fl  = np.asarray(pre_fl)
-            post_ff = np.asarray(post_ff); post_fl = np.asarray(post_fl)
-            _mp = (pre_ff  >= _f_lo) & (pre_ff  <= _f_hi) & np.isfinite(pre_fl)
-            _mq = (post_ff >= _f_lo) & (post_ff <= _f_hi) & np.isfinite(post_fl)
-            if _mp.sum() > 5 and _mq.sum() > 5:
-                pre_fit_i  = np.interp(common_freqs, pre_ff[_mp],  pre_fl[_mp])
-                post_fit_i = np.interp(common_freqs, post_ff[_mq], post_fl[_mq])
-                fit_baseline = (pre_fit_i + post_fit_i) / 2.0
+        feat_trans[feat].append(dict(
+            low_full=low_full, high_full=high_full, fit_baseline=fit_baseline,
+            low_ape=low_ape,   high_ape=high_ape,
+            low_raw=low_raw,   high_raw=high_raw,  raw_baseline=raw_baseline,
+        ))
+        feat_wf.add(feat)
 
-        for lbl, blk in bmap.items():
-            state = state_map[lbl]
-            psd   = blk.get('psd', blk.get('mean_psd'))
-            freqs = blk.get('freqs')
-            if psd is not None and freqs is not None:
-                psd_i = np.clip(np.interp(common_freqs, freqs, psd), 1e-15, None)
-                feat_data[feat][state].append(np.log10(psd_i) - log_baseline)
+    # ── second pass: add grand mean baseline back so curves show real 1/f shape ─
+    feat_display = {}
 
-            if fit_baseline is not None:
-                ff = blk.get('freqs_fit'); fl = blk.get('full_log')
-                if ff is not None and fl is not None:
-                    ff = np.asarray(ff); fl = np.asarray(fl)
-                    _m = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(fl)
-                    if _m.sum() > 5:
-                        fl_i = np.interp(common_freqs, ff[_m], fl[_m])
-                        feat_data[feat][state + '_fit'].append(fl_i - fit_baseline)
+    for feat in feat_wf:
+        trans = feat_trans[feat]
+        grand_fit = np.mean([t['fit_baseline'] for t in trans], axis=0)
 
-    all_feats = [f for f in WF_ORDER if feat_data[f]['low'] or feat_data[f]['high']]
-    n_feats   = len(all_feats)
-    ncols     = min(4, n_feats)
-    nrows     = int(np.ceil(n_feats / ncols))
+        raw_bases = [t['raw_baseline'] for t in trans if t['raw_baseline'] is not None]
+        grand_raw = np.mean(raw_bases, axis=0) if raw_bases else grand_fit
 
-    fw = figsize[0] if figsize else 5.5 * ncols
-    fh = figsize[1] if figsize else 4.5 * nrows
+        d = {k: [] for k in ('low_fit', 'high_fit', 'low_ape', 'high_ape',
+                              'low_raw', 'high_raw', 'diff_theta', 'diff_gamma')}
+
+        for t in trans:
+            fb = t['fit_baseline']
+            # display = (value − per_cell_baseline) + grand_mean_baseline
+            lf = (t['low_full']  - fb) + grand_fit
+            hf = (t['high_full'] - fb) + grand_fit
+            d['low_fit'].append(lf)
+            d['high_fit'].append(hf)
+
+            diff = hf - lf    # = t['high_full'] − t['low_full'] (offset cancels)
+            d['diff_theta'].append(float(np.mean(diff[theta_mask])))
+            d['diff_gamma'].append(float(np.mean(diff[gamma_mask])))
+
+            if t['low_ape'] is not None and t['high_ape'] is not None:
+                # use fit baseline for both (same y-axis scale)
+                d['low_ape'].append((t['low_ape']  - fb) + grand_fit)
+                d['high_ape'].append((t['high_ape'] - fb) + grand_fit)
+
+            rb = t['raw_baseline']
+            if t['low_raw'] is not None and rb is not None:
+                d['low_raw'].append((t['low_raw']  - rb) + grand_raw)
+                d['high_raw'].append((t['high_raw'] - rb) + grand_raw)
+
+        feat_display[feat] = d
+
+    # ── significance: theta and gamma bands, Bonferroni × 2 ───────────────────
+    feat_order  = [f for f in WF_ORDER if f in feat_wf]
+    feat_stats  = {}   # feat → (n, p_theta, p_gamma, sig)
+    for feat in feat_order:
+        d = feat_display[feat]
+        n = len(d['low_fit'])
+        p_t = p_g = 1.0
+        if n >= 4:
+            try: _, p_t = _wilcoxon(d['diff_theta'])
+            except Exception: pass
+            try: _, p_g = _wilcoxon(d['diff_gamma'])
+            except Exception: pass
+        # Bonferroni: multiply by number of bands tested
+        p_t_adj = min(p_t * 2, 1.0)
+        p_g_adj = min(p_g * 2, 1.0)
+        sig = (p_t_adj < sig_alpha) or (p_g_adj < sig_alpha)
+        feat_stats[feat] = (n, p_t, p_g, sig)
+        mark = '*' if sig else 'ns'
+        print(f'  [{feat}] n={n}  θ p={p_t:.4f} (adj {p_t_adj:.4f})  '
+              f'γ p={p_g:.4f} (adj {p_g_adj:.4f})  {mark}', flush=True)
+
+    sig_feats   = [f for f in feat_order if feat_stats[f][3]]
+    show_feats  = sig_feats if sig_feats else feat_order
+    if not sig_feats:
+        print('No features passed threshold — showing all.', flush=True)
+
+    n_feats = len(show_feats)
+    ncols   = min(3, n_feats)
+    nrows   = int(np.ceil(n_feats / ncols)) if n_feats > 0 else 1
+
+    fw = figsize[0] if figsize else 6.0 * ncols
+    fh = figsize[1] if figsize else 5.0 * nrows
     fig, axes = plt.subplots(nrows, ncols, figsize=(fw, fh), squeeze=False)
 
-    for idx, feat in enumerate(all_feats):
+    for idx, feat in enumerate(show_feats):
         ax = axes[idx // ncols][idx % ncols]
-        d  = feat_data[feat]
+        d  = feat_display[feat]
+        n, p_t, p_g, sig = feat_stats[feat]
 
-        ax.axhline(0, color='#bbb', lw=1.0, ls='--', zorder=1)
-        for state, col, lbl in [('low', INC_COLOR, 'Low cluster'), ('high', DEC_COLOR, 'High cluster')]:
-            fit_list = d[state + '_fit']
-            if not fit_list:
-                continue
-            n       = len(fit_list)
-            arr_f   = np.array(fit_list)
-            mn_fit  = np.mean(arr_f, axis=0)
-            sem_fit = np.std(arr_f, axis=0, ddof=1) / np.sqrt(n)
-            ax.plot(common_freqs, mn_fit, color=col, lw=2.5, zorder=3,
-                    label=f'{lbl} (n={n})')
-            ax.fill_between(common_freqs, mn_fit - sem_fit, mn_fit + sem_fit,
-                            color=col, alpha=0.22, zorder=2)
+        def _star(p): return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+        p_line = f'θ {_star(p_t)} (p={p_t:.3f})   γ {_star(p_g)} (p={p_g:.3f})'
+        ax.set_title(f'{FEAT_LABELS.get(feat, feat)}  (n={n})\n{p_line}',
+                     fontsize=12, fontweight='bold')
 
-        ax.set_title(FEAT_LABELS.get(feat, feat), fontsize=15, fontweight='bold')
-        ax.set_xlabel('Frequency (Hz)', fontsize=13)
+        for state, col in [('low', LOW_COL), ('high', HIGH_COL)]:
+            for arr in d[f'{state}_raw']:
+                ax.plot(common_freqs, arr, color=col, lw=0.5, alpha=0.12, zorder=2)
+
+            fits = d[f'{state}_fit']
+            if fits:
+                mn  = np.mean(np.array(fits), axis=0)
+                sem = np.std(np.array(fits),  axis=0, ddof=1) / np.sqrt(n)
+                lbl = f'{"Low" if state == "low" else "High"} cluster (n={n})'
+                ax.plot(common_freqs, mn, color=col, lw=3.0, zorder=5, label=lbl)
+                ax.fill_between(common_freqs, mn - sem, mn + sem,
+                                color=col, alpha=0.25, zorder=4)
+
+            apes = d[f'{state}_ape']
+            if apes:
+                mn_ape = np.mean(np.array(apes), axis=0)
+                ax.plot(common_freqs, mn_ape, color=col, lw=1.5, ls='--',
+                        alpha=0.65, zorder=3)
+
+        ax.set_xlabel('Frequency (Hz)', fontsize=12)
         if idx % ncols == 0:
-            ax.set_ylabel('Relative power (log, re: within-transition mean)', fontsize=10)
+            ax.set_ylabel('log₁₀ power (re: population mean)', fontsize=10)
         ax.set_xlim(_f_lo, _f_hi)
         ax.legend(fontsize=10, frameon=False)
         sns.despine(ax=ax)
@@ -6199,9 +6307,11 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
     for idx in range(n_feats, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
 
-    fig.suptitle('LFP spectra: low vs high spike cluster state\n'
-                 '(specparam fit ± SEM, normalized to within-transition mean)',
-                 fontsize=13, fontweight='bold', y=1.01)
+    title_note = f'sig. features only (p<{sig_alpha})' if sig_feats else 'all features (none significant)'
+    fig.suptitle(
+        f'LFP spectra: low vs high cluster state  [{title_note}]\n'
+        'thin=raw PSD · dashed=aperiodic · solid±shade=specparam fit±SEM',
+        fontsize=12, fontweight='bold', y=1.02)
     plt.tight_layout()
     return fig
 
