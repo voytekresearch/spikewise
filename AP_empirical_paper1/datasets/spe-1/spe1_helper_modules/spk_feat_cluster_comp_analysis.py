@@ -56,7 +56,7 @@ _SPIKE_FEAT_COLORS = {
     'exp_lambda':      '#c561a8',
     'inflection_time': '#9b59b6',
     'exp_const':       '#d7aee0',
-    'log_isi':         '#7f7f7f',
+    'log_isi':         '#404040',
     'spk_times_ms':    '#b0b0b0',
     'peak_amp_cluster':        '#8c564b',
     'peak_sharpness_cluster':  '#a06d62',
@@ -64,7 +64,7 @@ _SPIKE_FEAT_COLORS = {
     'exp_lambda_cluster':      '#c561a8',
     'inflection_time_cluster': '#9b59b6',
     'exp_const_cluster':       '#d7aee0',
-    'log_isi_cluster':         '#7f7f7f',
+    'log_isi_cluster':         '#404040',
     'spk_times_ms_cluster':    '#b0b0b0',
 }
 
@@ -5934,16 +5934,16 @@ def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_ke
         _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = (
             1 if after > before else -1)
 
-    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
-                'inflection_time', 'inflection_amp', 'log_isi']
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
     _WF_SHORT = {
-        'peak_width':      'Peak W',
-        'peak_amp':        'Peak A',
-        'exp_lambda':      'Exp λ',
-        'peak_sharpness':  'Sharpness',
-        'inflection_time': 'Infl. T',
-        'inflection_amp':  'Infl. A',
-        'log_isi':         'Log ISI',
+        'peak_amp':        'peak\namp',
+        'inflection_time': 'infl.\ntime',
+        'inflection_amp':  'infl.\namp',
+        'peak_sharpness':  'peak\nsharp.',
+        'peak_width':      'peak\nwidth',
+        'exp_lambda':      'exp\nλ',
+        'log_isi':         'log\nISI',
     }
 
     from collections import defaultdict
@@ -6137,15 +6137,15 @@ def plot_lfp_metrics_low_vs_high(lfp_block_results, df_transitions,
         _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = (
             1 if after > before else -1)
 
-    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
-                'inflection_time', 'inflection_amp', 'log_isi']
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
     _WF_SHORT = {
-        'peak_width':      'peak\nwidth',
         'peak_amp':        'peak\namp',
-        'exp_lambda':      'exp\nλ',
-        'peak_sharpness':  'peak\nsharp.',
         'inflection_time': 'infl.\ntime',
         'inflection_amp':  'infl.\namp',
+        'peak_sharpness':  'peak\nsharp.',
+        'peak_width':      'peak\nwidth',
+        'exp_lambda':      'exp\nλ',
         'log_isi':         'log\nISI',
     }
 
@@ -6192,6 +6192,7 @@ def plot_lfp_metrics_low_vs_high(lfp_block_results, df_transitions,
     for li, lk in enumerate(lfp_keys):
         ax = axes[li // ncols][li % ncols]
         x_ticks, x_labels = [], []
+        star_queue = []
 
         for xi, feat in enumerate(wf_feats):
             x_lo = xi - 0.22
@@ -6238,16 +6239,7 @@ def plot_lfp_metrics_low_vs_high(lfp_block_results, df_transitions,
                 except Exception as _e:
                     print(f'  [{lk}|{feat}] FAILED: {_e}', flush=True)
             if star:
-                y_top = max(np.max(lo_vals), np.max(hi_vals))
-                y_rng = np.ptp(np.concatenate([lo_vals, hi_vals]))
-                bh = y_top + y_rng * 0.12
-                tk = y_rng * 0.03
-                ax.plot([x_lo, x_lo, x_hi, x_hi],
-                        [bh - tk, bh, bh, bh - tk],
-                        color='#333', lw=1.2, zorder=6)
-                ax.text(xi, bh + tk * 0.5, star,
-                        ha='center', va='bottom',
-                        fontsize=42, fontweight='bold', color='#1a1a1a', zorder=7)
+                star_queue.append((xi, x_lo, x_hi, star))
 
         ax.set_xlim(-0.6, n_wf - 0.4)
         ax.set_xticks(x_ticks)
@@ -6255,6 +6247,13 @@ def plot_lfp_metrics_low_vs_high(lfp_block_results, df_transitions,
         ax.tick_params(axis='x', labelsize=22, length=0)
         for lbl in ax.get_xticklabels():
             lbl.set_fontweight('bold')
+
+        # Draw star below x-tick label for significant features
+        if star_queue:
+            for xi, x_lo, x_hi, star in star_queue:
+                ax.text(xi, -0.28, star, ha='center', va='top',
+                        transform=ax.get_xaxis_transform(),
+                        fontsize=48, fontweight='bold', color='#1a1a1a')
         ax.set_ylabel(_LFP_UNITS.get(lk, ''), fontsize=20, fontweight='bold')
         ax.set_title(_DELTA_LFP_LABELS.get(lk, lk), fontsize=28, fontweight='bold', pad=14)
         ax.yaxis.set_major_locator(plt.MaxNLocator(4))
@@ -6311,15 +6310,15 @@ def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(
     LOW_COL  = '#0072B2'
     HIGH_COL = '#CC79A7'
 
-    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
-                'inflection_time', 'inflection_amp', 'log_isi']
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
     FEAT_LABELS = {
-        'peak_width':      'Peak width',
         'peak_amp':        'Peak amp',
-        'exp_lambda':      'Exp λ',
-        'peak_sharpness':  'Peak sharpness',
         'inflection_time': 'Inflection time',
         'inflection_amp':  'Inflection amp',
+        'peak_sharpness':  'Peak sharpness',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
         'log_isi':         'Log ISI',
     }
 
@@ -6612,7 +6611,7 @@ def compute_whole_recording_psds(df_transitions, lfp_npy_dir, fs=2500,
                 freqs_fit=_ff.tolist(),
                 full_log=_fl.tolist(),
                 ape_log=_al.tolist(),
-                mean_amp=float(np.mean(np.abs(lfp))),
+                mean_amp=float(np.mean(lfp)),
                 std_amp=float(np.std(lfp)),
                 exponent=float(sm.get_params('aperiodic_params', 'exponent')),
                 offset=float(sm.get_params('aperiodic_params', 'offset')),
@@ -6677,53 +6676,35 @@ def plot_lfp_metrics_by_feature_group(lfp_block_results,
     Black crosshair = mean ± SEM.  Kruskal-Wallis p across all groups in title.
     No-transition group shown in gray if present.
     """
-    from scipy.stats import kruskal as _kruskal, mannwhitneyu as _mwu
-    from itertools import combinations as _combos
+    from scipy.stats import kruskal as _kruskal
     import seaborn as sns
 
-    def _fdr_bh(pvals):
-        """Benjamini-Hochberg FDR correction. Returns adjusted p-values."""
-        pvals = np.asarray(pvals)
-        n = len(pvals)
-        if n == 0:
-            return pvals
-        order = np.argsort(pvals)
-        ranks = np.empty(n, dtype=int)
-        ranks[order] = np.arange(1, n + 1)
-        adj = np.minimum(1.0, pvals * n / ranks)
-        # enforce monotonicity
-        adj_sorted = adj[order]
-        for i in range(n - 2, -1, -1):
-            adj_sorted[i] = min(adj_sorted[i], adj_sorted[i + 1])
-        adj[order] = adj_sorted
-        return adj
-
     _DEFAULT_METRICS = [
-        ('mean_amp',        'Mean amp (µV)'),
-        ('std_amp',         'Std amp (µV)'),
-        ('exponent',        'Exponent'),
-        ('offset',          'Offset'),
-        ('theta_auc',       'θ AUC  4–15 Hz'),
-        ('total_gamma_auc', 'Total γ AUC  30–80 Hz'),
+        ('mean_amp',        'Mean amplitude',    'µV'),
+        ('std_amp',         'Stdev amplitude',   'µV'),
+        ('exponent',        'Aperiodic exponent', r'µV² Hz$^{-1}$'),
+        ('offset',          'Aperiodic offset',  'µV²'),
+        ('theta_auc',       'Theta AUC',         'a.u.'),
+        ('total_gamma_auc', 'Gamma AUC',         'a.u.'),
     ]
     if metric_keys is not None:
-        metric_specs = [(k, l) for k, l in _DEFAULT_METRICS if k in metric_keys]
+        metric_specs = [(k, t, u) for k, t, u in _DEFAULT_METRICS if k in metric_keys]
     else:
         metric_specs = _DEFAULT_METRICS
 
-    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
-                'inflection_time', 'inflection_amp', 'log_isi', 'no_transition']
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi', 'no_transition']
     FEAT_LABELS = {
-        'peak_width':      'Peak\nwidth',
-        'peak_amp':        'Peak\namp',
-        'exp_lambda':      'Exp λ',
-        'peak_sharpness':  'Peak\nsharp.',
-        'inflection_time': 'Infl.\ntime',
-        'inflection_amp':  'Infl.\namp',
-        'log_isi':         'Log\nISI',
-        'no_transition':   'No\ntrans.',
+        'peak_amp':        'peak amp',
+        'inflection_time': 'infl. time',
+        'inflection_amp':  'infl. amp',
+        'peak_sharpness':  'peak sharp.',
+        'peak_width':      'peak wid.',
+        'exp_lambda':      'exp λ',
+        'log_isi':         'log ISI',
+        'no_transition':   'no trans.',
     }
-    _NO_TRANS_COLOR = '#888888'
+    _NO_TRANS_COLOR = '#000000'
 
     # ── collect scalar metrics per event, grouped by feature ──────────────────
     from collections import defaultdict
@@ -6732,7 +6713,7 @@ def plot_lfp_metrics_by_feature_group(lfp_block_results,
     for key, blocks in lfp_block_results.items():
         feat = key[1]
         bmap = {b['label']: b for b in blocks}
-        for mk, _ in metric_specs:
+        for mk, _, __ in metric_specs:
             if 'pre' in bmap and 'post' in bmap:
                 v_pre  = bmap['pre'].get(mk)
                 v_post = bmap['post'].get(mk)
@@ -6756,13 +6737,13 @@ def plot_lfp_metrics_by_feature_group(lfp_block_results,
     n_met  = len(metric_specs)
     ncols  = min(3, n_met)
     nrows  = int(np.ceil(n_met / ncols))
-    fw = figsize[0] if figsize else 4.5 * ncols
-    fh = figsize[1] if figsize else 4.5 * nrows
+    fw = figsize[0] if figsize else 10.0 * ncols
+    fh = figsize[1] if figsize else 7.5 * nrows
     fig, axes = plt.subplots(nrows, ncols, figsize=(fw, fh), squeeze=False)
 
     rng = np.random.default_rng(42)
 
-    for m_i, (mk, ylabel) in enumerate(metric_specs):
+    for m_i, (mk, title_lbl, unit_lbl) in enumerate(metric_specs):
         ax = axes[m_i // ncols][m_i % ncols]
 
         groups = [feat_data[f][mk] for f in feat_present]
@@ -6784,8 +6765,9 @@ def plot_lfp_metrics_by_feature_group(lfp_block_results,
             if np.isnan(p): return 'n/a'
             return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
 
-        ax.set_title(f'{ylabel}\nKruskal-Wallis p={p_kw:.3f} {_star(p_kw)}',
-                     fontsize=_FS_SUB, fontweight='bold')
+        sig_star = _star(p_kw) if (not np.isnan(p_kw) and p_kw < 0.05) else ''
+        title_str = f'{title_lbl} {sig_star}' if sig_star else title_lbl
+        ax.set_title(title_str, fontsize=42, fontweight='bold')
 
         for xi, feat in enumerate(feat_present):
             vals = np.array(feat_data[feat][mk])
@@ -6793,73 +6775,30 @@ def plot_lfp_metrics_by_feature_group(lfp_block_results,
                 continue
             col = feat_colors[feat]
             jitter = rng.uniform(-0.18, 0.18, size=len(vals))
-            ax.scatter(xi + jitter, vals, color=col, s=35, alpha=0.65,
-                       edgecolors='none', zorder=3)
+            ax.scatter(xi + jitter, vals, color=col, s=160, alpha=0.75,
+                       edgecolors='white', linewidths=0.8, zorder=3)
             mu  = np.mean(vals)
             sem = np.std(vals, ddof=1) / np.sqrt(len(vals)) if len(vals) > 1 else 0
             ax.plot([xi - 0.25, xi + 0.25], [mu, mu],
-                    color='#111', lw=2.5, solid_capstyle='round', zorder=5)
+                    color='#111', lw=6.0, solid_capstyle='round', zorder=5)
             ax.plot([xi, xi], [mu - sem, mu + sem],
-                    color='#111', lw=1.5, zorder=5)
+                    color='#111', lw=1.8, zorder=5)
 
         ax.set_xticks(range(len(feat_present)))
-        ax.set_xticklabels([FEAT_LABELS.get(f, f) for f in feat_present],
-                           fontsize=_FS_SM, rotation=30, ha='right')
-        ax.set_ylabel(ylabel if m_i % ncols == 0 else '', fontsize=_FS_AX)
+        ax.set_xticklabels([FEAT_LABELS.get(f, f) for f in feat_present])
+        ax.tick_params(axis='x', labelsize=36, length=5, labelrotation=45)
+        plt.setp(ax.xaxis.get_majorticklabels(), ha='right',
+                 rotation_mode='anchor', fontweight='bold')
+        ax.set_ylabel(unit_lbl, fontsize=32, fontweight='bold')
         ax.axhline(0, color='#aaa', lw=0.8, ls='--', zorder=1)
-        ax.tick_params(axis='y', labelsize=_FS_SM)
-        sns.despine(ax=ax)
-
-        # post-hoc pairwise Mann-Whitney U when KW is significant
-        if not np.isnan(p_kw) and p_kw < 0.05 and len(non_empty_idx) >= 2:
-            pairs = list(_combos(non_empty_idx, 2))
-            raw_ps = []
-            for i, j in pairs:
-                try:
-                    _, pp = _mwu(groups[i], groups[j], alternative='two-sided')
-                except Exception:
-                    pp = np.nan
-                raw_ps.append(pp)
-            raw_ps = np.array(raw_ps)
-            adj_ps = _fdr_bh(raw_ps)
-
-            # prefer FDR-corrected; fall back to nominal if none survive
-            fdr_sig  = [(pairs[k], adj_ps[k], False)
-                        for k in range(len(pairs))
-                        if not np.isnan(adj_ps[k]) and adj_ps[k] < 0.05]
-            nom_sig  = [(pairs[k], raw_ps[k], True)
-                        for k in range(len(pairs))
-                        if not np.isnan(raw_ps[k]) and raw_ps[k] < 0.05]
-            show_pairs = fdr_sig if fdr_sig else nom_sig  # (pair, p, is_nominal)
-
-            if show_pairs:
-                y_top   = ax.get_ylim()[1]
-                y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
-                step    = y_range * 0.12
-                tk      = y_range * 0.02
-                x_heights = {xi2: y_top for xi2 in range(len(feat_present))}
-                # draw shortest-span pairs first to minimise crossing
-                for (i, j), ap, nominal in sorted(show_pairs, key=lambda x: x[0][1] - x[0][0]):
-                    bh = max(x_heights[i], x_heights[j]) + step * 0.25
-                    ax.plot([i, i, j, j], [bh - tk, bh, bh, bh - tk],
-                            color='#333', lw=1.2, zorder=6)
-                    label = _star(ap) + ('†' if nominal else '')
-                    ax.text((i + j) / 2, bh + tk * 0.3, label,
-                            ha='center', va='bottom', fontsize=7.5,
-                            fontweight='bold', color='#333', zorder=7)
-                    x_heights[i] = bh + step * 0.55
-                    x_heights[j] = bh + step * 0.55
-                new_top = max(x_heights.values()) + step * 0.4
-                ax.set_ylim(ax.get_ylim()[0], new_top)
-                if not fdr_sig:
-                    ax.text(0.99, 0.01, '† nominal p, uncorrected',
-                            transform=ax.transAxes, ha='right', va='bottom',
-                            fontsize=6, color='#555', style='italic')
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4))
+        ax.tick_params(axis='y', labelsize=28, width=2.0, length=5)
+        sns.despine(ax=ax, offset=8)
 
     for idx in range(n_met, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
 
-    fig.tight_layout(pad=2.5)
+    fig.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
     return fig
 
 
@@ -6888,19 +6827,19 @@ def plot_lfp_psd_by_feature_group(lfp_block_results, df_transitions,
     _f_lo, _f_hi = freq_range
     common_freqs = np.linspace(_f_lo, _f_hi, 300)
 
-    WF_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
-                'inflection_time', 'inflection_amp', 'log_isi', 'no_transition']
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi', 'no_transition']
     FEAT_LABELS = {
-        'peak_width':      'Peak width',
         'peak_amp':        'Peak amp',
-        'exp_lambda':      'Exp λ',
-        'peak_sharpness':  'Peak sharpness',
         'inflection_time': 'Inflection time',
         'inflection_amp':  'Inflection amp',
+        'peak_sharpness':  'Peak sharpness',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
         'log_isi':         'Log ISI',
         'no_transition':   'No transition',
     }
-    _NO_TRANS_COLOR = '#888888'
+    _NO_TRANS_COLOR = '#000000'
     feat_colors = {}
 
     def _interp_fit(blk, comp):
@@ -6972,34 +6911,28 @@ def plot_lfp_psd_by_feature_group(lfp_block_results, df_transitions,
         feat_display_ape[feat] = [ma for _, _,  ma, _ in events[feat] if ma is not None]
         feat_display_raw[feat] = [mr for _, _,  _,  mr in events[feat] if mr is not None]
 
-    # ── Figure 1: overlay ─────────────────────────────────────────────────────
+    # ── Figure 1: overlay — specparam fits (smooth, no line noise) ───────────
     fw = figsize[0] if figsize else 8.0
     fh = figsize[1] if figsize else 5.5
     fig_ov, ax_ov = plt.subplots(figsize=(fw, fh))
 
     for feat in feat_present:
-        arr = np.array(feat_display[feat])
-        n   = len(arr)
-        mn  = np.mean(arr, axis=0)
-        col = feat_colors[feat]
+        arrs = feat_display[feat]
+        n    = len(arrs)
+        col  = feat_colors[feat]
         is_ctrl = feat == 'no_transition'
-        # full specparam model — mean line only, no SEM fill
+        mn = np.mean(np.array(arrs), axis=0)
         ax_ov.plot(common_freqs, mn, color=col, lw=2.5, zorder=5,
                    ls='--' if is_ctrl else '-',
                    label=f'{FEAT_LABELS.get(feat, feat)} (n={n})')
-        # aperiodic component (dashed, same color, thinner)
-        if feat_display_ape.get(feat):
-            mn_ape = np.mean(np.array(feat_display_ape[feat]), axis=0)
-            ax_ov.plot(common_freqs, mn_ape, color=col, lw=1.2,
-                       ls=':' if is_ctrl else '--', alpha=0.6, zorder=4)
 
-    ax_ov.set_xlabel('Frequency (Hz)', fontsize=_FS_AX)
-    ax_ov.set_ylabel('$\log_{10}$ power', fontsize=_FS_AX)
+    ax_ov.set_xlabel('Frequency (Hz)', fontsize=20)
+    ax_ov.set_ylabel('log(power)', fontsize=20)
+    ax_ov.tick_params(axis='both', labelsize=18)
     ax_ov.set_xlim(_f_lo, _f_hi)
-    ax_ov.legend(fontsize=_FS_SM, frameon=False, loc='upper right',
-                 title='solid=full model · dashed=aperiodic', title_fontsize=_FS_SM - 2)
+    ax_ov.legend(fontsize=18, frameon=False, loc='upper right')
     sns.despine(ax=ax_ov)
-    fig_ov.tight_layout()
+    fig_ov.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
 
     # ── Figure 2: per-feature grid (shared y-axis) ────────────────────────────
     n_feats = len(feat_present)
@@ -7027,7 +6960,7 @@ def plot_lfp_psd_by_feature_group(lfp_block_results, df_transitions,
         # mean full specparam model ± SEM
         mn  = np.mean(arr, axis=0)
         sem = np.std(arr,  axis=0, ddof=1) / np.sqrt(n)
-        ax.plot(common_freqs, mn, color=col, lw=2.5, zorder=5)
+        ax.plot(common_freqs, mn, color=col, lw=4.0, zorder=5)
         ax.fill_between(common_freqs, mn - sem, mn + sem,
                         color=col, alpha=0.25, zorder=4)
 
@@ -7038,10 +6971,11 @@ def plot_lfp_psd_by_feature_group(lfp_block_results, df_transitions,
                     ls='--', alpha=0.65, zorder=3)
 
         ax.set_title(f'{FEAT_LABELS.get(feat, feat)}  (n={n})',
-                     fontsize=_FS_SUB, fontweight='bold', color=col)
-        ax.set_xlabel('Frequency (Hz)', fontsize=_FS_AX)
+                     fontsize=28, fontweight='bold', color=col)
+        ax.set_xlabel('Frequency (Hz)', fontsize=20)
         if idx % ncols == 0:
-            ax.set_ylabel('$\log_{10}$ power', fontsize=_FS_AX)
+            ax.set_ylabel('log(power)', fontsize=20)
+        ax.tick_params(axis='both', labelsize=18)
         ax.set_xlim(_f_lo, _f_hi)
         ax.set_ylim(*ylims)
         sns.despine(ax=ax)
@@ -7051,8 +6985,8 @@ def plot_lfp_psd_by_feature_group(lfp_block_results, df_transitions,
 
     fig_gr.suptitle('LFP PSD per spike-feature group  (shared y-axis)\n'
                     'thin=raw PSD · dashed=aperiodic · solid±shade=specparam fit±SEM',
-                    fontsize=_FS_SUB, fontweight='bold')
-    fig_gr.tight_layout()
+                    fontsize=22, fontweight='bold')
+    fig_gr.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
     return fig_ov, fig_gr
 
 
