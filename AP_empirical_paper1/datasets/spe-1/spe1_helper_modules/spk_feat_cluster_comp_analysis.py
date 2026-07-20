@@ -396,6 +396,8 @@ def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
     binary_cat  = ['patch_type', 'current_type', 'dark_neuron', 'clear_EAP_waveform']
     multi_cat   = ['cell_type']
     cont_meta   = ['cortical_depth']
+    if 'n_clustering_features' in df.columns:
+        cont_meta.append('n_clustering_features')
     metadata_cols = binary_cat + multi_cat + cont_meta
     feature_cols  = ['num_clusters', 'nRMSE', 'cos_sim', 'temporal_rho']
 
@@ -1651,81 +1653,93 @@ def plot_feature_distribution_r2(df_master, cluster_pickle_dir,
 
 
 def plot_aggregated_spike_feat(raw_df):
-    # 1. Internal Aggregation: Calculate Means and 95% CI
-    stats = raw_df.groupby('spike_feature').agg({
-        'nRMSE': ['mean', 'std', 'count'],
-        'cos_sim': ['mean', 'std', 'count'],
-        'num_clusters': 'mean',
-        'temporal_rho': 'mean'
-    })
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp':  'Inflection amp',
+        'inflection_time': 'Inflection time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharpness',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
 
-    # Flatten columns
-    stats.columns = ['nRMSE', 'nRMSE_std', 'nRMSE_n', 'cos_sim', 'cos_sim_std', 'cos_sim_n', 'num_clusters', 'temporal_rho']
-    stats = stats.reset_index()
-    
-    # Calculate the 95% Confidence Interval arms
-    stats['nRMSE_ci'] = 1.96 * (stats['nRMSE_std'] / np.sqrt(stats['nRMSE_n'])).fillna(0)
-    stats['cos_sim_ci'] = 1.96 * (stats['cos_sim_std'] / np.sqrt(stats['cos_sim_n'])).fillna(0)
+    df_num = raw_df.copy()
+    df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+    df_clust = df_num[df_num['num_clusters'] >= 2]
 
-    # Prevalence calculation
-    total_cells = raw_df['cell_id'].nunique()
-    stats['prevalence_pct'] = (stats['nRMSE_n'] / total_cells) * 100
+    total_cells = df_num['cell_id'].nunique()
 
-    # 2. Setup Plot
-    plt.figure(figsize=(11, 7))
-    sns.set_theme(style="ticks")
+    # Per-feature stats (only from clustering cells)
+    stats = df_clust.groupby('spike_feature').agg(
+        nRMSE=('nRMSE', 'mean'),
+        nRMSE_std=('nRMSE', 'std'),
+        nRMSE_n=('nRMSE', 'count'),
+        cos_sim=('cos_sim', 'mean'),
+        cos_sim_std=('cos_sim', 'std'),
+    ).reset_index()
+    stats['nRMSE_ci']   = 1.96 * (stats['nRMSE_std']   / np.sqrt(stats['nRMSE_n'])).fillna(0)
+    stats['cos_sim_ci'] = 1.96 * (stats['cos_sim_std']  / np.sqrt(stats['nRMSE_n'])).fillna(0)
+    # prevalence = fraction of ALL cells that cluster for this feature
+    n_cells_clust = df_clust.groupby('spike_feature')['cell_id'].nunique().rename('n_cells')
+    stats = stats.join(n_cells_clust, on='spike_feature')
+    stats['prevalence_pct'] = (stats['n_cells'] / total_cells) * 100
 
-    # 3. Draw the 95% CI Crosses
-    plt.errorbar(
-        x=stats.nRMSE, 
-        y=stats.cos_sim, 
-        xerr=stats.nRMSE_ci, 
-        yerr=stats.cos_sim_ci,
-        fmt='none', 
-        ecolor='#5e5e5e', 
-        elinewidth=1.2, 
-        capsize=3, 
-        alpha=0.6, 
-        zorder=1
-    )
+    feat_order = [f for f in WF_ORDER if f in stats['spike_feature'].values]
+    stats['_order'] = stats['spike_feature'].map({f: i for i, f in enumerate(feat_order)})
+    stats = stats.sort_values('_order').drop(columns='_order')
 
-    # 4. Draw Main Bubbles
-    scatter = sns.scatterplot(
-        data=stats,
-        x='nRMSE', 
-        y='cos_sim',
-        size='prevalence_pct',
-        hue='num_clusters',
-        sizes=(40, 400),
-        palette='viridis',
-        alpha=0.9,
-        edgecolor='black',
-        linewidth=1,
-        zorder=2
-    )
+    # Per-cell feature count (how many wf features show clustering per cell)
+    feat_per_cell = df_clust.groupby('cell_id')['spike_feature'].nunique()
+    count_dist = feat_per_cell.value_counts().sort_index()
 
-    # 5. Annotations
-    for i, row in stats.iterrows():
-        plt.text(
-            row['nRMSE'] + 0.003, 
-            row['cos_sim'] + 0.001, 
-            row['spike_feature'], 
-            fontsize=11, fontweight='semibold', va='bottom'
+    fig, (ax_sc, ax_cnt) = plt.subplots(1, 2, figsize=(16, 6))
+
+    # --- left: scatter (nRMSE vs cos_sim) ---
+    for _, row in stats.iterrows():
+        feat = row['spike_feature']
+        color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        ax_sc.errorbar(
+            row['nRMSE'], row['cos_sim'],
+            xerr=row['nRMSE_ci'], yerr=row['cos_sim_ci'],
+            fmt='none', ecolor=color, elinewidth=1.5, capsize=3, alpha=0.7, zorder=1,
+        )
+        ax_sc.scatter(
+            row['nRMSE'], row['cos_sim'],
+            s=row['prevalence_pct'] * 8,
+            color=color, edgecolors='white', linewidths=1.2,
+            alpha=0.9, zorder=2,
+        )
+        ax_sc.text(
+            row['nRMSE'] + 0.003, row['cos_sim'] + 0.001,
+            FEAT_LABELS.get(feat, feat),
+            fontsize=_FS_SM - 2, fontweight='bold', color=color, va='bottom',
         )
 
-    # 6. Final Polish
-    plt.title('Spike Feature Aggregated Analysis (Mean ± 95% CI)', fontsize=16, fontweight='bold', pad=20)
-    plt.xlabel('$\longrightarrow$ Higher difference in waveforms (nRMSE)', fontsize=13)
-    plt.ylabel('$\longleftarrow$ Higher difference in shape morphology (Cosine Similarity)', fontsize=13)
-    
-    plt.ylim(stats['cos_sim'].min() - 0.03, 1.01)
-    plt.xlim(-0.005, stats['nRMSE'].max() + 0.03)
-    
-    plt.legend(title='Clusters & % Prevalence', bbox_to_anchor=(1.05, 1), loc='upper left', frameon=False)
-    sns.despine()
-    plt.grid(True, linestyle=':', alpha=0.3)
-    plt.tight_layout()
-    plt.show()
+    ax_sc.set_xlabel(r'$\longrightarrow$ Higher difference in waveforms (nRMSE)', fontsize=_FS_AX, fontweight='bold')
+    ax_sc.set_ylabel(r'$\longleftarrow$ Higher difference in shape morphology (Cosine similarity)', fontsize=_FS_AX, fontweight='bold')
+    ax_sc.set_title('Cluster separation by spike feature\n(bubble size = % cells)', fontsize=_FS_SUB, fontweight='bold')
+    ax_sc.tick_params(labelsize=_FS_SM)
+    sns.despine(ax=ax_sc, offset=8)
+
+    # --- right: bar chart of features-per-cell distribution ---
+    bars = ax_cnt.bar(
+        count_dist.index.astype(str), count_dist.values,
+        color='#555555', edgecolor='white', linewidth=1.2, width=0.6,
+    )
+    for bar, val in zip(bars, count_dist.values):
+        ax_cnt.text(
+            bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.15,
+            str(val), ha='center', va='bottom', fontsize=_FS_SM, fontweight='bold',
+        )
+    ax_cnt.set_xlabel('Number of features with clustering', fontsize=_FS_AX, fontweight='bold')
+    ax_cnt.set_ylabel('Number of cells', fontsize=_FS_AX, fontweight='bold')
+    ax_cnt.set_title('Features clustering per cell', fontsize=_FS_SUB, fontweight='bold')
+    ax_cnt.tick_params(labelsize=_FS_SM)
+    sns.despine(ax=ax_cnt, offset=8)
+
+    fig.tight_layout(pad=2.0)
 
 def plot_feature_depth_distribution(df):
     WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
@@ -2084,7 +2098,7 @@ def analyze_temporal_clustering_relationship(df, alpha=0.05):
     plt.show()
 
     # --- Panel 2: temporal_rho distribution by spike_feature ---
-    SKIP_FEATS_TEMPORAL = {'spk_times_idx', 'spk_times_ms'}
+    SKIP_FEATS_TEMPORAL = {'spk_times_ms', 'spk_times_idx'}
     df_feat_plot = df_plot[~df_plot['spike_feature'].isin(SKIP_FEATS_TEMPORAL)]
     feat_order = df_feat_plot.groupby('spike_feature')['temporal_rho'].median().sort_values().index.tolist()
     feat_palette_list = [palette.get(f, 'gray') for f in feat_order]
