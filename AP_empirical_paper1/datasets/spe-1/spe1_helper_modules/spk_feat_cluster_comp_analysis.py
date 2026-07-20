@@ -575,12 +575,19 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
         print("No significant pairs to plot.")
         return
 
+    _METRIC_LABELS = {
+        'nRMSE': 'nRMSE', 'cos_sim': 'Cosine similarity',
+        'num_clusters': 'N clusters',
+        'cortical_depth': 'Cortical depth (µm)',
+        'patch_type': 'Patch type', 'cell_type': 'Cell type',
+    }
+
     n_plots = len(sig_pairs_df)
-    cols = 3
+    cols = min(3, n_plots)
     rows = math.ceil(n_plots / cols)
-    
-    fig, axes = plt.subplots(rows, cols, figsize=(18, 5 * rows))
-    axes = axes.flatten() 
+
+    fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 5.5 * rows))
+    axes = np.array(axes).flatten()
 
     for i, (_, row) in enumerate(sig_pairs_df.iterrows()):
         m, f = row['Metadata'], row['Feature']
@@ -604,56 +611,56 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
                 ax.set_visible(False)
                 continue
 
-            sns.boxplot(data=plot_data, y=cat_col, x=val_col, palette="Paired",
+            sns.boxplot(data=plot_data, y=cat_col, x=val_col, color='#aaaaaa',
                         order=order, showfliers=False, orient='h', ax=ax)
-            sns.stripplot(data=plot_data, y=cat_col, x=val_col, color=".3",
-                          alpha=.3, order=order, orient='h', ax=ax)
+            sns.stripplot(data=plot_data, y=cat_col, x=val_col, color='#333333',
+                          alpha=0.5, s=6, order=order, orient='h', ax=ax)
 
             x_min, x_max = plot_data[val_col].min(), plot_data[val_col].max()
             pad = (x_max - x_min) * 0.1 if x_max != x_min else 0.1
             ax.set_xlim(x_min - pad, x_max + pad)
             
-            # Explicit Labels
-            ax.set_xlabel(val_col.replace('_', ' ').title())
-            ax.set_ylabel(cat_col.replace('_', ' ').title())
+            ax.set_xlabel(_METRIC_LABELS.get(val_col, val_col.replace('_', ' ').title()))
+            ax.set_ylabel(_METRIC_LABELS.get(cat_col, cat_col.replace('_', ' ').title()))
 
         # 2. CONTINUOUS REGRESSION
         elif plot_data[m].nunique() > 5:
             x_num = pd.to_numeric(plot_data[m], errors='coerce')
             y_num = pd.to_numeric(plot_data[f], errors='coerce')
-            ax.scatter(x_num, y_num, alpha=0.3, color='purple')
-            
+            ax.scatter(x_num, y_num, alpha=0.5, color='#555555', s=60, edgecolors='white', linewidths=0.5)
+
             idx = np.isfinite(x_num) & np.isfinite(y_num)
             m_slope, b_int = np.polyfit(x_num[idx], y_num[idx], 1)
-            ax.plot(x_num, m_slope*x_num + b_int, color='darkblue', lw=2)
+            ax.plot(x_num, m_slope*x_num + b_int, color='#1a1a1a', lw=2)
             
             y_min, y_max = y_num.min(), y_num.max()
             ax.set_ylim(y_min - (y_max - y_min) * 0.1, y_max + (y_max - y_min) * 0.1)
             
-            # Explicit Labels
-            ax.set_xlabel(m.replace('_', ' ').title())
-            ax.set_ylabel(f.replace('_', ' ').title())
+            ax.set_xlabel(_METRIC_LABELS.get(m, m.replace('_', ' ').title()))
+            ax.set_ylabel(_METRIC_LABELS.get(f, f.replace('_', ' ').title()))
 
         # 3. OTHER CATEGORICAL
         else:
-            sns.boxplot(data=plot_data, x=m, y=f, palette="Paired", showfliers=False, ax=ax)
-            sns.stripplot(data=plot_data, x=m, y=f, color=".3", alpha=.3, ax=ax)
+            sns.boxplot(data=plot_data, x=m, y=f, color='#aaaaaa', showfliers=False, ax=ax)
+            sns.stripplot(data=plot_data, x=m, y=f, color='#333333', alpha=0.5, s=6, ax=ax)
             
             y_min, y_max = plot_data[f].min(), plot_data[f].max()
             ax.set_ylim(y_min - (y_max - y_min) * 0.1, y_max + (y_max - y_min) * 0.1)
             
-            # Explicit Labels
-            ax.set_xlabel(m.replace('_', ' ').title())
-            ax.set_ylabel(f.replace('_', ' ').title())
+            ax.set_xlabel(_METRIC_LABELS.get(m, m.replace('_', ' ').title()))
+            ax.set_ylabel(_METRIC_LABELS.get(f, f.replace('_', ' ').title()))
 
-        ax.set_title(f"{stars} (r={r:.2f})", fontweight='bold')
-        sns.despine(ax=ax)
+        ax.set_title(f"{stars}  (ρ = {r:.2f})", fontsize=16, fontweight='bold')
+        ax.set_xlabel(ax.get_xlabel(), fontsize=14, fontweight='bold')
+        ax.set_ylabel(ax.get_ylabel(), fontsize=14, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=12)
+        sns.despine(ax=ax, offset=8)
 
     # Cleanup unused axes
     for j in range(i + 1, len(axes)):
         fig.delaxes(axes[j])
 
-    plt.tight_layout()
+    fig.tight_layout(pad=1.5)
     plt.show()
 
 # ------------------------------------------------------------------------------------------- #
@@ -1721,112 +1728,111 @@ def plot_aggregated_spike_feat(raw_df):
     plt.show()
 
 def plot_feature_depth_distribution(df):
-    plt.figure(figsize=(12, 8))
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'peak_amp':        'Peak amp',
+        'inflection_time': 'Inflection time',
+        'inflection_amp':  'Inflection amp',
+        'peak_sharpness':  'Peak sharpness',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
 
-    # 1. Sort features by median depth so the Y-axis follows the anatomy
-    sorted_features = df.groupby('spike_feature')['cortical_depth'].median().sort_values().index
-    
-    # 2. Create a "Deeper is Darker" palette
-    palette = sns.color_palette("YlGnBu", n_colors=len(sorted_features))
+    feat_present = [f for f in WF_ORDER if f in df['spike_feature'].unique()]
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
 
-    # 3. Plot Boxplot (The Range)
+    fig, ax = plt.subplots(figsize=(10, max(4, len(feat_present) * 0.9)))
+
     sns.boxplot(
-        data=df, 
-        x='cortical_depth', 
-        y='spike_feature', 
-        order=sorted_features,
-        whis=[5, 95], 
+        data=df[df['spike_feature'].isin(feat_present)],
+        x='cortical_depth', y='spike_feature',
+        order=feat_present,
+        whis=[5, 95], showfliers=False,
         palette=palette,
-        showfliers=False,
-        boxprops=dict(alpha=0.2, edgecolor='none'), 
-        whiskerprops=dict(color='gray', alpha=0.5),
-        capprops=dict(color='gray', alpha=0.5),
-        medianprops=dict(color='red', alpha=0.8, linewidth=2), 
-        width=0.4
+        boxprops=dict(alpha=0.25, edgecolor='none'),
+        whiskerprops=dict(color='#555', linewidth=1.5),
+        capprops=dict(color='#555', linewidth=1.5),
+        medianprops=dict(color='#111', linewidth=2.5),
+        width=0.5, ax=ax,
     )
-
-    # 4. Plot Stripplot (The Raw Data)
     sns.stripplot(
-        data=df, 
-        x='cortical_depth', 
-        y='spike_feature', 
-        order=sorted_features,
-        hue='spike_feature',
-        palette=palette,
-        jitter=0.25, 
-        alpha=0.5, 
-        s=7, 
-        legend=False
+        data=df[df['spike_feature'].isin(feat_present)],
+        x='cortical_depth', y='spike_feature',
+        order=feat_present,
+        hue='spike_feature', palette=palette,
+        jitter=0.25, alpha=0.6, s=7, legend=False, ax=ax,
     )
 
-    # 5. Anatomical Formatting
-    plt.title('Cortical Depth Distribution of clustered spike features', fontweight='bold', pad=25)
-    plt.xlabel('Cortical Depth ($\mu m$)', fontweight='semibold')
-    plt.ylabel('Clustered Spike Features', fontweight='semibold')
-    
-    # 6. Clean up
-    plt.grid(axis='x', linestyle='--', alpha=0.4)
-    sns.despine(trim=True)
-    plt.tight_layout()
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_present],
+                       fontsize=16, fontweight='bold')
+    ax.set_xlabel('Cortical depth (µm)', fontsize=16, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=14)
+    ax.set_title('Cortical depth by spike feature', fontsize=22, fontweight='bold')
+    sns.despine(ax=ax, offset=8)
+    fig.tight_layout(pad=1.5)
     plt.show()
 
 def plot_meta_spk_feature_dependency(df):
-    # 1. Identify Categorical Metadata (excluding metrics and keys)
-    exclude = ['spike_feature', 'num_clusters', 'cos_sim', 'nRMSE', 'temporal_rho', 'temporal_p', 'cell_id', 'cortical_depth', 'nRMSE_std', 'cos_sim_std', 'cluster']
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'peak_amp':        'Peak amp',
+        'inflection_time': 'Inflection time',
+        'inflection_amp':  'Inflection amp',
+        'peak_sharpness':  'Peak sharpness',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    exclude = ['spike_feature', 'num_clusters', 'cos_sim', 'nRMSE', 'temporal_rho',
+               'temporal_p', 'cell_id', 'cortical_depth', 'nRMSE_std', 'cos_sim_std', 'cluster']
     meta_cols = [c for c in df.columns if c not in exclude]
-    
-    # 2. Calculate Prevalence (%) for Categorical Metadata
+
     cat_data = []
-    group_sizes = [] # Track sizes for the borders
+    group_sizes = []
     for col in meta_cols:
         counts = df.groupby(['spike_feature', col]).size().unstack(fill_value=0)
         prevalence = (counts / counts.sum()) * 100
         prevalence.columns = [f"{col}: {c}" for c in prevalence.columns]
         cat_data.append(prevalence)
-        group_sizes.append(len(prevalence.columns)) 
-    
-    # 3. Calculate Mean Depth for Sorting and the Depth Column
-    depth_stats = df.groupby('spike_feature')['cortical_depth'].mean().to_frame()
-    depth_stats.columns = ['Avg_Depth_um']
+        group_sizes.append(len(prevalence.columns))
 
-    # 4. Merge and Sort by Depth
-    master_matrix = pd.concat(cat_data + [depth_stats], axis=1).fillna(0)
-    master_matrix = master_matrix.sort_values(by='Avg_Depth_um')
+    master_matrix = pd.concat(cat_data, axis=1).fillna(0)
 
-    # 5. Plotting 
-    fig_height = max(8, len(master_matrix) * 0.6)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, fig_height), 
-                                   gridspec_kw={'width_ratios': [8, 1]})
-    
-    # Categorical Prevalence Heatmap (Purples color scheme)
-    sns.heatmap(master_matrix.drop(columns=['Avg_Depth_um']), 
-                annot=True, fmt=".1f", cmap="Purples", ax=ax1, 
-                cbar_kws={'label': 'Group Prevalence (%)'},
-                linewidths=0.5)
-    
-    # Depth Heatmap (Deeper = Darker using "YlGnBu")
-    sns.heatmap(master_matrix[['Avg_Depth_um']], 
-                annot=True, fmt=".0f", cmap="YlGnBu", ax=ax2, 
-                cbar_kws={'label': 'Depth (um)'},
-                linewidths=0.5)
+    # Reorder rows by WF_ORDER
+    feat_present = [f for f in WF_ORDER if f in master_matrix.index]
+    master_matrix = master_matrix.reindex(feat_present)
+    master_matrix.index = [FEAT_LABELS.get(f, f) for f in feat_present]
 
-    # --- THE BORDER ADDITION ---
+    fig_height = max(5, len(master_matrix) * 0.7)
+    fig, ax = plt.subplots(figsize=(max(14, len(master_matrix.columns) * 0.9), fig_height))
+
+    sns.heatmap(master_matrix, annot=True, fmt='.1f', cmap='Blues', ax=ax,
+                cbar_kws={'label': 'Prevalence (%)', 'shrink': 0.6},
+                linewidths=0.4, linecolor='#ddd', annot_kws={'fontsize': 11})
+
+    # Draw borders around metadata groups
     current_col = 0
     for size in group_sizes:
-        # Draw a thick rectangle around the group
         rect = patches.Rectangle(
-            (current_col, 0), size, len(master_matrix), 
-            linewidth=4, edgecolor='black', facecolor='none', zorder=10
+            (current_col, 0), size, len(master_matrix),
+            linewidth=2.5, edgecolor='#333', facecolor='none', zorder=10,
         )
-        ax1.add_patch(rect)
+        ax.add_patch(rect)
         current_col += size
 
-    ax1.set_title('Spike Feature Prevalence by Metadata (%)', fontweight='bold', fontsize=15, pad=15)
-    ax2.set_title('Mean Depth', fontweight='bold', fontsize=15, pad=15)
-    ax1.set_ylabel('Spike Features (Sorted by Depth)', fontsize=13)
-    ax1.set_xlabel('Metadata Categories', fontsize=13)
-    
-    plt.tight_layout()
+    ax.set_title('Metadata composition by spike feature (%)', fontsize=22, fontweight='bold', pad=12)
+    ax.set_ylabel('', fontsize=14)
+    ax.set_xlabel('Metadata category', fontsize=16, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=14, length=0)
+    ax.tick_params(axis='x', labelsize=12, rotation=45)
+    plt.setp(ax.xaxis.get_majorticklabels(), ha='right', rotation_mode='anchor')
+    ax.yaxis.set_tick_params(labelright=False)
+    fig.tight_layout(pad=1.5)
     plt.show()
 
 
