@@ -1072,14 +1072,20 @@ def avg_waveforms_rmse(sp, df, cluster_col, groups, group_names, color_map, peak
             ee2 = _group_mean_idx(groups_list[j], 6)
 
             # Convert to indices in the peak-aligned average waveform
-            half = len(wf1) // 2
-            if pk1 and rs1 and ee1 and pk2 and rs2 and ee2:
+            # Region: ramp_start (col 0) → exp_end (col 6), both relative to peak (col 3)
+            # Use actual peak position (not len//2) since NaN-trim can shift the midpoint
+            half = peak_idx_for_axis
+            _use_trim = False
+            if all(v is not None and v != 0 for v in [pk1, rs1, ee1, pk2, rs2, ee2]):
                 rel_rs = int(np.round(np.mean([rs1 - pk1, rs2 - pk2])))
                 rel_ee = int(np.round(np.mean([ee1 - pk1, ee2 - pk2])))
                 trim_start = max(0, half + rel_rs)
                 trim_end   = min(len(wf1), half + rel_ee + 1)
-                wf1_m, wf2_m = wf1[trim_start:trim_end], wf2[trim_start:trim_end]
-            else:
+                # Only use trim if the window is long enough to be meaningful
+                if trim_end - trim_start >= 10:
+                    wf1_m, wf2_m = wf1[trim_start:trim_end], wf2[trim_start:trim_end]
+                    _use_trim = True
+            if not _use_trim:
                 wf1_m, wf2_m = wf1, wf2
 
             rmse, nrmse, cos_sim, n_wf1, n_wf2, z_wf1, z_wf2 = get_metrics(wf1_m, wf2_m)
