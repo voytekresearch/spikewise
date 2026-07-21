@@ -26,11 +26,12 @@ Each LFP feature has a fixed color used consistently across sliding-window and p
 
 ```python
 feature_shades = {
+    'inflection_amp_cluster':  '#c44e52',
+    'inflection_time_cluster': '#d97779',
     'peak_amp_cluster':        '#8c564b',
     'peak_sharpness_cluster':  '#a06d62',
     'peak_width_cluster':      '#b38479',
     'exp_lambda_cluster':      '#c561a8',
-    'inflection_time_cluster': '#9b59b6',
     'exp_const_cluster':       '#d7aee0',
     'log_isi_cluster':         '#7f7f7f',
     'spk_times_ms_cluster':    '#b0b0b0',

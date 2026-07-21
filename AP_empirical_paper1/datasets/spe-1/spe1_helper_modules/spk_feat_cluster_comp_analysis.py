@@ -50,21 +50,21 @@ _FS_TTL   = 22   # figure suptitles
 
 # Spike feature palette (consistent across all notebooks/modules)
 _SPIKE_FEAT_COLORS = {
+    'inflection_amp':  '#c44e52',
+    'inflection_time': '#d97779',
     'peak_amp':        '#8c564b',
     'peak_sharpness':  '#a06d62',
     'peak_width':      '#b38479',
     'exp_lambda':      '#c561a8',
-    'inflection_time': '#9b59b6',
-    'exp_const':       '#d7aee0',
-    'log_isi':         '#404040',
+    'log_isi':         '#7f7f7f',
     'spk_times_ms':    '#b0b0b0',
+    'inflection_amp_cluster':  '#c44e52',
+    'inflection_time_cluster': '#d97779',
     'peak_amp_cluster':        '#8c564b',
     'peak_sharpness_cluster':  '#a06d62',
     'peak_width_cluster':      '#b38479',
     'exp_lambda_cluster':      '#c561a8',
-    'inflection_time_cluster': '#9b59b6',
-    'exp_const_cluster':       '#d7aee0',
-    'log_isi_cluster':         '#404040',
+    'log_isi_cluster':         '#7f7f7f',
     'spk_times_ms_cluster':    '#b0b0b0',
 }
 
@@ -387,38 +387,31 @@ def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
           → Spearman ρ
 
     FDR correction: Benjamini-Hochberg across all cross-pairs.
-    Bootstrap CIs: n_bootstrap resamples (rows = cells) for each effect size.
+    Bootstrap CIs: n_bootstrap resamples (cells) for each effect size.
 
-    Tests run per spike_feature — one row per (cell, spike_feature) pair so n
-    reflects cells where that specific feature clustered, preserving
-    feature-specific biological interpretation without averaging across features.
+    Tests run at the CELL level — one row per cell, with nRMSE/cos_sim/temporal_rho
+    averaged across all clustering features for that cell. This ensures independence
+    (metadata variables such as clear_EAP_waveform are cell-level properties).
     """
     binary_cat  = ['patch_type', 'current_type', 'dark_neuron', 'clear_EAP_waveform']
     multi_cat   = ['cell_type']
     cont_meta   = ['cortical_depth']
-    if 'n_clustering_features' in df.columns:
-        cont_meta.append('n_clustering_features')
     metadata_cols = binary_cat + multi_cat + cont_meta
-    feature_cols  = ['num_clusters', 'nRMSE', 'cos_sim', 'temporal_rho']
+    feature_cols  = ['nRMSE', 'cos_sim', 'temporal_rho']
 
-    # Convert feature cols to numeric (num_clusters stored as str)
+    # Convert feature cols to numeric
     df_work = df.copy()
     for c in feature_cols:
         df_work[c] = pd.to_numeric(df_work[c], errors='coerce')
 
-    # One row per (cell_id, spike_feature): metadata is constant per cell,
-    # metrics reflect that specific spike feature's clustering.
+    # Aggregate to ONE ROW PER CELL: metadata is constant per cell (take first),
+    # metrics are averaged across all clustering features for that cell.
+    # This ensures tests are run on independent observations (cells, not cell×feature pairs).
     agg = {c: 'first' for c in metadata_cols}
-    agg.update({c: 'first' for c in feature_cols})  # already one row per (cell, feature)
-    if 'spike_feature' in df_work.columns:
-        df_cell = (df_work.groupby(['cell_id', 'spike_feature'])[metadata_cols + feature_cols]
-                          .agg(agg)
-                          .reset_index(drop=True))
-    else:
-        # Fallback: aggregate to one row per cell
-        df_cell = (df_work.groupby('cell_id')[metadata_cols + feature_cols]
-                          .agg(agg)
-                          .reset_index(drop=True))
+    agg.update({c: 'mean' for c in feature_cols})
+    df_cell = (df_work.groupby('cell_id')[metadata_cols + feature_cols]
+                      .agg(agg)
+                      .reset_index(drop=True))
 
     rng     = np.random.default_rng(42)
     results = []
@@ -519,8 +512,27 @@ def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
     )
 
     # Forest plot: effect sizes with 95% bootstrap CIs
+    _FS  = 24
+    _FAX = 26
+
+    META_LABELS = {
+        'patch_type':         'Patch type',
+        'current_type':       'Current type',
+        'dark_neuron':        'Dark neuron',
+        'clear_EAP_waveform': 'Clear EAP waveform',
+        'cell_type':          'Cell type',
+        'cortical_depth':     'Cortical depth',
+    }
+    FEAT_LABELS_SHORT = {
+        'nRMSE':       'nRMSE',
+        'cos_sim':     'Cos sim',
+        'temporal_rho':'Temporal ρ',
+    }
+
     df_plot = df_res.sort_values('Effect_Size', key=abs, ascending=True).reset_index(drop=True)
-    df_plot['label'] = df_plot['Metadata'] + ' × ' + df_plot['Feature']
+    df_plot['label'] = (df_plot['Metadata'].map(lambda m: META_LABELS.get(m, m))
+                        + ' × '
+                        + df_plot['Feature'].map(lambda f: FEAT_LABELS_SHORT.get(f, f)))
     n = len(df_plot)
 
     TEST_COLORS = {
@@ -530,31 +542,28 @@ def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
     }
     x_max = max(abs(df_plot['ci_lo'].min()), abs(df_plot['ci_hi'].max())) * 1.1
 
-    fig, ax = plt.subplots(figsize=(9, max(4, n * 0.55)))
+    fig, ax = plt.subplots(figsize=(11, max(5, n * 0.55)))
     for i, row in enumerate(df_plot.itertuples()):
         color = TEST_COLORS.get(row.test, 'gray')
         alpha_pt = 1.0 if row.significant else 0.35
         ax.plot([row.ci_lo, row.ci_hi], [i, i], color=color, lw=2.5, alpha=alpha_pt)
-        ax.scatter(row.Effect_Size, i, color=color, s=90, zorder=5, alpha=alpha_pt,
+        ax.scatter(row.Effect_Size, i, color=color, s=120, zorder=5, alpha=alpha_pt,
                    edgecolors='black' if row.significant else color, linewidths=1.5)
         stars = row.Significance if row.Significance != 'ns' else ''
         ax.text(x_max + 0.02, i,
-                f"{row.Effect_Size:+.3f}  {stars}", va='center')
+                f"{row.Effect_Size:+.3f}  {stars}", va='center', fontsize=_FS - 6)
 
     ax.axvline(0, color='black', lw=1, ls='--', alpha=0.5)
     ax.set_yticks(range(n))
-    ax.set_yticklabels(df_plot['label'].tolist())
+    ax.set_yticklabels(df_plot['label'].tolist(), fontsize=_FS - 4)
     ax.set_xlim(-x_max * 1.05, x_max * 1.4)
-    ax.set_xlabel('Effect Size  (95% bootstrap CI)')
-    ax.set_title(
-        'Metadata × Cluster Difference\n(BH-FDR corrected; filled marker = significant)',
-        fontweight='bold'
-    )
+    ax.set_xlabel('Effect size  (95% bootstrap CI)', fontsize=_FAX, fontweight='bold')
+    ax.tick_params(axis='x', labelsize=_FS)
     from matplotlib.lines import Line2D
     legend_els = [Line2D([0], [0], color=c, lw=3, label=t) for t, c in TEST_COLORS.items()]
-    ax.legend(handles=legend_els, frameon=False, loc='lower right')
+    ax.legend(handles=legend_els, frameon=False, loc='lower right', fontsize=_FS - 6)
     sns.despine(ax=ax)
-    plt.tight_layout()
+    fig.tight_layout()
     plt.show()
 
     # Print summary
@@ -652,10 +661,11 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
             ax.set_xlabel(_METRIC_LABELS.get(m, m.replace('_', ' ').title()))
             ax.set_ylabel(_METRIC_LABELS.get(f, f.replace('_', ' ').title()))
 
-        ax.set_title(f"{stars}  (ρ = {r:.2f})", fontsize=16, fontweight='bold')
-        ax.set_xlabel(ax.get_xlabel(), fontsize=14, fontweight='bold')
-        ax.set_ylabel(ax.get_ylabel(), fontsize=14, fontweight='bold')
-        ax.tick_params(axis='both', labelsize=12)
+        ax.text(0.97, 0.97, f"{stars}  (ρ = {r:.2f})", transform=ax.transAxes,
+                fontsize=18, fontweight='bold', ha='right', va='top')
+        ax.set_xlabel(ax.get_xlabel(), fontsize=20, fontweight='bold')
+        ax.set_ylabel(ax.get_ylabel(), fontsize=20, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=18)
         sns.despine(ax=ax, offset=8)
 
     # Cleanup unused axes
@@ -1394,8 +1404,6 @@ def plot_metadata_effect_heatmap(df_res):
         spine.set_visible(False)
     ax.tick_params(length=0)
 
-    ax.set_title('Recording metadata × cluster waveform metrics\n(BH-FDR corrected; *p<.05  **p<.01  ***p<.001)',
-                 fontsize=13, fontweight='bold', pad=40)
     plt.tight_layout()
     plt.show()
 
@@ -1681,7 +1689,6 @@ def plot_aggregated_spike_feat(raw_df):
     ).reset_index()
     stats['nRMSE_ci']   = 1.96 * (stats['nRMSE_std']   / np.sqrt(stats['nRMSE_n'])).fillna(0)
     stats['cos_sim_ci'] = 1.96 * (stats['cos_sim_std']  / np.sqrt(stats['nRMSE_n'])).fillna(0)
-    # prevalence = fraction of ALL cells that cluster for this feature
     n_cells_clust = df_clust.groupby('spike_feature')['cell_id'].nunique().rename('n_cells')
     stats = stats.join(n_cells_clust, on='spike_feature')
     stats['prevalence_pct'] = (stats['n_cells'] / total_cells) * 100
@@ -1690,74 +1697,450 @@ def plot_aggregated_spike_feat(raw_df):
     stats['_order'] = stats['spike_feature'].map({f: i for i, f in enumerate(feat_order)})
     stats = stats.sort_values('_order').drop(columns='_order')
 
-    # Per-cell feature count (how many wf features show clustering per cell)
-    feat_per_cell = df_clust.groupby('cell_id')['spike_feature'].nunique()
-    count_dist = feat_per_cell.value_counts().sort_index()
+    # Per-cell averages for individual dot overlay on scatter
+    cell_feat_means = (df_clust.groupby(['cell_id', 'spike_feature'])
+                       [['nRMSE', 'cos_sim']].mean().reset_index())
 
-    fig, (ax_sc, ax_cnt) = plt.subplots(1, 2, figsize=(16, 6))
+    # Per-cell feature presence (deduplicated) for stacked bar
+    cell_feat_pres = (df_clust.groupby(['cell_id', 'spike_feature'])
+                     .size().reset_index(name='_')[['cell_id', 'spike_feature']])
+    feat_per_cell = cell_feat_pres.groupby('cell_id')['spike_feature'].nunique()
+    count_vals = sorted(feat_per_cell.unique())
 
-    # --- left: scatter (nRMSE vs cos_sim) ---
+    _FS  = 24   # tick labels / bar annotations
+    _FAX = 26   # axis labels
+
+    # ── Figure 1: scatter ────────────────────────────────────────────
+    legend_handles = []
+    fig_sc, ax_sc = plt.subplots(figsize=(8, 7))
     for _, row in stats.iterrows():
-        feat = row['spike_feature']
+        feat  = row['spike_feature']
         color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
         ax_sc.errorbar(
             row['nRMSE'], row['cos_sim'],
             xerr=row['nRMSE_ci'], yerr=row['cos_sim_ci'],
-            fmt='none', ecolor=color, elinewidth=1.5, capsize=3, alpha=0.7, zorder=1,
+            fmt='none', ecolor=color, elinewidth=1.5, capsize=4, alpha=0.8, zorder=2,
         )
         ax_sc.scatter(
             row['nRMSE'], row['cos_sim'],
-            s=row['prevalence_pct'] * 8,
-            color=color, edgecolors='white', linewidths=1.2,
-            alpha=0.9, zorder=2,
+            s=row['prevalence_pct'] * 25,
+            color=color, edgecolors='white', linewidths=1.5,
+            alpha=1.0, zorder=3,
         )
-        ax_sc.text(
-            row['nRMSE'] + 0.003, row['cos_sim'] + 0.001,
-            FEAT_LABELS.get(feat, feat),
-            fontsize=_FS_SM - 2, fontweight='bold', color=color, va='bottom',
+        pct = int(round(row['prevalence_pct']))
+        n_c = int(row['n_cells'])
+        legend_handles.append(
+            plt.scatter([], [], s=150, color=color,
+                        label=f"{FEAT_LABELS.get(feat, feat)}  ({pct}%, n={n_c})")
         )
+    ax_sc.set_xlabel('$\longrightarrow$ Higher waveform difference\n(nRMSE)',
+                     fontsize=_FAX, fontweight='bold')
+    ax_sc.set_ylabel('$\longleftarrow$ Higher shape difference\n(Cos sim)',
+                     fontsize=_FAX, fontweight='bold')
+    ax_sc.xaxis.set_major_locator(plt.MaxNLocator(4))
+    ax_sc.yaxis.set_major_locator(plt.MaxNLocator(4))
+    ax_sc.tick_params(labelsize=_FS)
+    sns.despine(ax=ax_sc)
+    fig_sc.tight_layout()
 
-    ax_sc.set_xlabel(r'$\longrightarrow$ Higher difference in waveforms (nRMSE)', fontsize=_FS_AX, fontweight='bold')
-    ax_sc.set_ylabel(r'$\longleftarrow$ Higher difference in shape morphology (Cosine similarity)', fontsize=_FS_AX, fontweight='bold')
-    ax_sc.set_title('Cluster separation by spike feature\n(bubble size = % cells)', fontsize=_FS_SUB, fontweight='bold')
-    ax_sc.tick_params(labelsize=_FS_SM)
-    sns.despine(ax=ax_sc, offset=8)
+    # ── Figure 2: stacked bar ────────────────────────────────────────
+    BUCKET_MAX = 3
+    feat_per_cell_bucketed = feat_per_cell.copy()
+    feat_per_cell_bucketed[feat_per_cell_bucketed > BUCKET_MAX] = BUCKET_MAX + 1
+    bucket_vals = sorted(feat_per_cell_bucketed.unique())
 
-    # --- right: bar chart of features-per-cell distribution ---
-    bars = ax_cnt.bar(
-        count_dist.index.astype(str), count_dist.values,
-        color='#555555', edgecolor='white', linewidth=1.2, width=0.6,
-    )
-    for bar, val in zip(bars, count_dist.values):
-        ax_cnt.text(
-            bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.15,
-            str(val), ha='center', va='bottom', fontsize=_FS_SM, fontweight='bold',
-        )
-    ax_cnt.set_xlabel('Number of features with clustering', fontsize=_FS_AX, fontweight='bold')
-    ax_cnt.set_ylabel('Number of cells', fontsize=_FS_AX, fontweight='bold')
-    ax_cnt.set_title('Features clustering per cell', fontsize=_FS_SUB, fontweight='bold')
-    ax_cnt.tick_params(labelsize=_FS_SM)
+    stacked  = {feat: [] for feat in feat_order}
+    x_labels = []
+    for bkt in bucket_vals:
+        cells_in_group = feat_per_cell_bucketed[feat_per_cell_bucketed == bkt].index.tolist()
+        x_labels.append(f'{BUCKET_MAX}+' if bkt > BUCKET_MAX else str(bkt))
+        cp_sub = cell_feat_pres[cell_feat_pres['cell_id'].isin(cells_in_group)]
+        for feat in feat_order:
+            cells_with_feat = cp_sub[cp_sub['spike_feature'] == feat]['cell_id'].unique()
+            w = sum(1.0 / feat_per_cell[c] for c in cells_with_feat)
+            stacked[feat].append(w)
+
+    fig_bar, ax_cnt = plt.subplots(figsize=(7, 7))
+    x_pos   = np.arange(len(bucket_vals))
+    bottoms = np.zeros(len(bucket_vals))
+    for feat in feat_order:
+        vals  = np.array(stacked[feat])
+        color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        ax_cnt.bar(x_pos, vals, bottom=bottoms,
+                   color=color, edgecolor='white', linewidth=0.8, width=0.6)
+        bottoms += vals
+
+    for i, bkt in enumerate(bucket_vals):
+        n_cells_grp = int((feat_per_cell_bucketed == bkt).sum())
+        ax_cnt.text(i, bottoms[i] + 0.15, str(n_cells_grp),
+                    ha='center', va='bottom', fontsize=_FS, fontweight='bold')
+
+    ax_cnt.set_xticks(x_pos)
+    ax_cnt.set_xticklabels(x_labels, fontsize=_FS)
+    ax_cnt.set_xlabel('Number of features with clustering', fontsize=_FAX, fontweight='bold')
+    ax_cnt.set_ylabel('Number of cells', fontsize=_FAX, fontweight='bold')
+    ax_cnt.tick_params(labelsize=_FS)
+    ax_cnt.set_yticks([])
     sns.despine(ax=ax_cnt, offset=8)
+    fig_bar.tight_layout()
 
-    fig.tight_layout(pad=2.0)
+    # ── Figure 3: legend ─────────────────────────────────────────────
+    fig_leg, ax_leg = plt.subplots(figsize=(12, 3))
+    ax_leg.set_axis_off()
+    # Explicit column layout:
+    #   col1: inflection_amp, inflection_time
+    #   col2: peak_amp, peak_sharpness, peak_width
+    #   col3: exp_lambda, log_isi
+    # Row-by-row with ncol=3 and 1 pad:
+    #   row1: infl_amp   | peak_amp    | exp_lambda
+    #   row2: infl_time  | peak_sharp  | log_isi
+    #   row3: pad        | peak_width  | pad
+    from matplotlib.lines import Line2D as _L2D
+    _empty = _L2D([], [], alpha=0, label='')
+    _lh = {f: legend_handles[i] for i, f in enumerate(feat_order)}
+    # Column-major fill order (matplotlib fills down each column first):
+    # col1: infl_amp, infl_time, pad
+    # col2: peak_amp, peak_sharp, peak_width
+    # col3: exp_lambda, log_isi, pad
+    _padded = [
+        _lh['inflection_amp'],  _lh['inflection_time'], _empty,
+        _lh['peak_amp'],        _lh['peak_sharpness'],  _lh['peak_width'],
+        _lh['exp_lambda'],      _lh['log_isi'],         _empty,
+    ]
+    ax_leg.legend(handles=_padded, fontsize=_FS, frameon=False,
+                  loc='center', ncol=3, handletextpad=0.5, columnspacing=1.0, labelspacing=0.7)
 
-def plot_feature_depth_distribution(df):
+def _feat_labels_and_order(df, wf_order):
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',  'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',   'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width', 'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+    feat_present = [f for f in wf_order if f in df['spike_feature'].unique()]
+    return feat_present, FEAT_LABELS
+
+
+def plot_nrmse_only(df):
+    """Option 1 — nRMSE distribution per feature (boxplot + strip)."""
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    _FS, _FAX = 24, 26
+    feat_present, FEAT_LABELS = _feat_labels_and_order(df, WF_ORDER)
+    df_cell = (df.groupby(['cell_id', 'spike_feature'], as_index=False)
+                 .agg({'nRMSE': 'first'}))
+    df_cell['nRMSE'] = pd.to_numeric(df_cell['nRMSE'], errors='coerce')
+    df_cell = df_cell.dropna(subset=['nRMSE'])
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
+    feat_order = sorted(feat_present,
+                        key=lambda f: df_cell[df_cell['spike_feature'] == f]['nRMSE'].median())
+    fig, ax = plt.subplots(figsize=(8, 7))
+    sns.boxplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                palette=palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax)
+    sns.stripplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                  palette=palette, alpha=0.5, size=6, ax=ax)
+    ax.set_xlabel('nRMSE', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS, fontweight='bold')
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_cluster_count_bars(df):
+    """Panel D — fraction of cells with 2 vs 3 clusters per feature, stacked bar + separate legend."""
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    _FS, _FAX = 24, 26
+    feat_present, FEAT_LABELS = _feat_labels_and_order(df, WF_ORDER)
+
+    df_cell = (df.groupby(['cell_id', 'spike_feature'], as_index=False)
+                 .agg({'num_clusters': 'first'}))
+    df_cell['num_clusters'] = pd.to_numeric(df_cell['num_clusters'], errors='coerce')
+    counts = (df_cell.groupby(['spike_feature', 'num_clusters'])
+                     .size().reset_index(name='n'))
+    totals = counts.groupby('spike_feature')['n'].transform('sum')
+    counts['frac'] = counts['n'] / totals
+
+    feat_order = sorted(feat_present,
+                        key=lambda f: counts[(counts['spike_feature'] == f) &
+                                             (counts['num_clusters'] == 3)]['frac'].sum())
+
+    # Main bar figure
+    fig, ax = plt.subplots(figsize=(8, 7))
+    for i, feat in enumerate(feat_order):
+        color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        sub = counts[counts['spike_feature'] == feat].set_index('num_clusters')['frac']
+        f2 = sub.get(2, 0)
+        f3 = sub.get(3, 0)
+        ax.barh(i, f2, color=color, alpha=0.25, height=0.6)
+        ax.barh(i, f3, left=f2, color=color, alpha=1.0, height=0.6)
+
+    ax.set_yticks(range(len(feat_order)))
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS)
+    ax.set_xlabel('% of cells', fontsize=_FAX, fontweight='bold')
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_xlim(0, 1)
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x*100)}'))
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+    # Separate legend — one row
+    from matplotlib.patches import Patch
+    fig_leg, ax_leg = plt.subplots(figsize=(5, 1.0))
+    ax_leg.set_axis_off()
+    handles = [
+        Patch(facecolor='#888888', alpha=0.25, label='2 clusters'),
+        Patch(facecolor='#888888', alpha=1.0,  label='3 clusters'),
+    ]
+    ax_leg.legend(handles=handles, fontsize=_FS, frameon=False,
+                  loc='center', ncol=2, handlelength=1.5, handletextpad=0.5, columnspacing=2.0)
+    fig_leg.tight_layout()
+    plt.show()
+
+
+def plot_nrmse_by_nclust(df):
+    """Option 3 — nRMSE per feature, strip dots colored by 2 vs 3 clusters."""
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    _FS, _FAX = 24, 26
+    feat_present, FEAT_LABELS = _feat_labels_and_order(df, WF_ORDER)
+    df_cell = (df.groupby(['cell_id', 'spike_feature'], as_index=False)
+                 .agg({'nRMSE': 'first', 'num_clusters': 'first'}))
+    df_cell['nRMSE']       = pd.to_numeric(df_cell['nRMSE'],       errors='coerce')
+    df_cell['num_clusters'] = pd.to_numeric(df_cell['num_clusters'], errors='coerce')
+    df_cell = df_cell.dropna(subset=['nRMSE'])
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
+    feat_order = sorted(feat_present,
+                        key=lambda f: df_cell[df_cell['spike_feature'] == f]['nRMSE'].median())
+    fig, ax = plt.subplots(figsize=(8, 7))
+    sns.boxplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                palette=palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax)
+    rng = np.random.default_rng(42)
+    for i, feat in enumerate(feat_order):
+        sub = df_cell[df_cell['spike_feature'] == feat].dropna(subset=['nRMSE'])
+        color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        for _, row in sub.iterrows():
+            alpha = 0.9 if row['num_clusters'] == 3 else 0.4
+            marker = 'D' if row['num_clusters'] == 3 else 'o'
+            jit = rng.uniform(-0.2, 0.2)
+            ax.scatter(row['nRMSE'], i + jit, color=color, alpha=alpha,
+                       s=50, marker=marker, zorder=3)
+    ax.set_xlabel('nRMSE', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS, fontweight='bold')
+    from matplotlib.lines import Line2D
+    leg = [Line2D([0], [0], marker='o', color='w', markerfacecolor='#555', markersize=10,
+                  alpha=0.4, label='2 clusters'),
+           Line2D([0], [0], marker='D', color='w', markerfacecolor='#555', markersize=10,
+                  alpha=0.9, label='3 clusters')]
+    ax.legend(handles=leg, fontsize=_FS - 4, frameon=False, loc='lower right')
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_nrmse_distribution(df):
     WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
                 'peak_width', 'exp_lambda', 'log_isi']
     FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
         'peak_amp':        'Peak amp',
-        'inflection_time': 'Inflection time',
-        'inflection_amp':  'Inflection amp',
-        'peak_sharpness':  'Peak sharpness',
+        'peak_sharpness':  'Peak sharp.',
         'peak_width':      'Peak width',
         'exp_lambda':      'Exp λ',
         'log_isi':         'Log ISI',
     }
 
+    _FS  = 24
+    _FAX = 26
+
+    df_cell = (df.groupby(['cell_id', 'spike_feature'], as_index=False)
+                 .agg({'nRMSE': 'first', 'cos_sim': 'first'}))
+    df_cell['nRMSE']   = pd.to_numeric(df_cell['nRMSE'],   errors='coerce')
+    df_cell['cos_sim'] = pd.to_numeric(df_cell['cos_sim'], errors='coerce')
+    df_cell = df_cell.dropna(subset=['nRMSE'])
+
+    feat_present = [f for f in WF_ORDER if f in df_cell['spike_feature'].unique()]
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
+    feat_order = sorted(feat_present,
+                        key=lambda f: df_cell[df_cell['spike_feature'] == f]['nRMSE'].median())
+    n = len(feat_order)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    # nRMSE — solid filled boxes, bottom x-axis
+    sns.boxplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                palette=palette, showfliers=False, width=0.4, linewidth=2.5, ax=ax)
+    sns.stripplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                  palette=palette, alpha=0.5, size=6, ax=ax)
+
+    # cos_sim — dashed hollow boxes only, top x-axis
+    ax2 = ax.twiny()
+    for i, feat in enumerate(feat_order):
+        grp = df_cell[df_cell['spike_feature'] == feat]['cos_sim'].dropna().values
+        if len(grp) < 2:
+            continue
+        color = palette.get(feat, '#888888')
+        ax2.boxplot(
+            [grp], positions=[i], vert=False, widths=0.35,
+            patch_artist=True,
+            boxprops=dict(facecolor='none', edgecolor=color, linestyle='--', linewidth=2),
+            medianprops=dict(color=color, linewidth=2, linestyle='--'),
+            whiskerprops=dict(color=color, linewidth=1.5, linestyle='--'),
+            capprops=dict(color=color, linewidth=1.5),
+            showfliers=False, manage_ticks=False,
+        )
+
+    # Sync y-limits and labels
+    ax.set_ylim(n - 0.5, -0.5)
+    ax2.set_ylim(n - 0.5, -0.5)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS, fontweight='bold')
+
+    ax.set_xlabel('nRMSE  (solid)', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=_FS)
+
+    ax2.set_xlabel('Cosine similarity  (dashed)', fontsize=_FAX, fontweight='bold')
+    ax2.tick_params(axis='x', labelsize=_FS)
+
+    sns.despine(ax=ax)
+    ax2.spines['right'].set_visible(False)
+    ax2.spines['left'].set_visible(False)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_cluster_balance(df):
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    _FS  = 24
+    _FAX = 26
+
+    def _min_frac(grp):
+        counts = grp['cluster'].dropna().value_counts()
+        if len(counts) < 2:
+            return np.nan
+        return counts.min() / counts.sum()
+
+    balance = (df.groupby(['cell_id', 'spike_feature'])
+                 .apply(_min_frac)
+                 .reset_index(name='minority_frac'))
+    balance = balance.dropna(subset=['minority_frac'])
+
+    feat_present = [f for f in WF_ORDER if f in balance['spike_feature'].unique()]
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
+
+    feat_order = sorted(feat_present,
+                        key=lambda f: balance[balance['spike_feature'] == f]['minority_frac'].median())
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    sns.boxplot(data=balance, x='minority_frac', y='spike_feature', order=feat_order,
+                palette=palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax)
+    sns.stripplot(data=balance, x='minority_frac', y='spike_feature', order=feat_order,
+                  palette=palette, alpha=0.5, size=6, ax=ax)
+
+    ax.axvline(0.5, color='black', lw=1, linestyle='--', alpha=0.5)
+    ax.set_xlim(0, 0.55)
+    ax.set_xlabel('Minority cluster fraction', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS, fontweight='bold')
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_feature_coclustering(df):
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    _FS  = 24
+    _FAX = 26
+
+    feat_present = [f for f in WF_ORDER if f in df['spike_feature'].unique()]
+    n = len(feat_present)
+
+    # Jaccard similarity: |cells clustering on both i and j| / |cells clustering on either|
+    jaccard = np.zeros((n, n))
+    for i, fi in enumerate(feat_present):
+        ci = set(df[df['spike_feature'] == fi]['cell_id'].unique())
+        for j, fj in enumerate(feat_present):
+            cj = set(df[df['spike_feature'] == fj]['cell_id'].unique())
+            union = len(ci | cj)
+            jaccard[i, j] = len(ci & cj) / union if union > 0 else 0
+
+    # Mask diagonal (trivially 1)
+    mask = np.eye(n, dtype=bool)
+    labels = [FEAT_LABELS.get(f, f) for f in feat_present]
+    df_jac = pd.DataFrame(jaccard, index=labels, columns=labels)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    sns.heatmap(df_jac, ax=ax, mask=mask, cmap='Purples', vmin=0, vmax=1,
+                annot=True, fmt='.2f', annot_kws={'fontsize': _FS - 10, 'fontweight': 'bold'},
+                linewidths=0.5, linecolor='white',
+                cbar_kws={'shrink': 0.75})
+
+    cbar = ax.collections[0].colorbar
+    cbar.set_label('Jaccard similarity', fontsize=_FS - 6, fontweight='bold')
+    cbar.ax.tick_params(labelsize=_FS - 8)
+
+    ax.set_xticklabels(ax.get_xticklabels(), fontsize=_FS - 6, fontweight='bold',
+                       rotation=45, ha='right')
+    ax.set_yticklabels(ax.get_yticklabels(), fontsize=_FS - 6, fontweight='bold', rotation=0)
+    ax.set_xlabel('')
+    ax.set_ylabel('')
+
+    sns.despine(ax=ax, left=True, bottom=True)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_feature_depth_distribution(df):
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    _FS  = 24
+    _FAX = 26
+
     feat_present = [f for f in WF_ORDER if f in df['spike_feature'].unique()]
     palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
 
-    fig, ax = plt.subplots(figsize=(10, max(4, len(feat_present) * 0.9)))
+    fig, ax = plt.subplots(figsize=(8, 7))
 
     sns.boxplot(
         data=df[df['spike_feature'].isin(feat_present)],
@@ -1779,12 +2162,10 @@ def plot_feature_depth_distribution(df):
         jitter=0.25, alpha=0.6, s=7, legend=False, ax=ax,
     )
 
-    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_present],
-                       fontsize=16, fontweight='bold')
-    ax.set_xlabel('Cortical depth (µm)', fontsize=16, fontweight='bold')
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_present], fontsize=_FS, fontweight='bold')
+    ax.set_xlabel('Cortical depth (µm)', fontsize=_FAX, fontweight='bold')
     ax.set_ylabel('')
-    ax.tick_params(axis='x', labelsize=14)
-    ax.set_title('Cortical depth by spike feature', fontsize=22, fontweight='bold')
+    ax.tick_params(axis='x', labelsize=_FS)
     sns.despine(ax=ax, offset=8)
     fig.tight_layout(pad=1.5)
     plt.show()
@@ -1893,51 +2274,54 @@ def plot_temporal_structure(df, alpha=0.05):
              with significant groups highlighted.
     Panel B: box/strip of temporal_rho distribution per spike feature.
     """
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi', 'spk_times_ms']
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+        'spk_times_ms':    'Spk. times',
+    }
+
     df_plot = df[['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p']].dropna().copy()
     df_plot['temporal_rho'] = pd.to_numeric(df_plot['temporal_rho'], errors='coerce')
     df_plot['temporal_p']   = pd.to_numeric(df_plot['temporal_p'],   errors='coerce')
-    # Deduplicate to one row per cell-feature group
     df_plot = df_plot.groupby(['cell_id', 'spike_feature'], as_index=False).first()
     df_plot = df_plot.dropna(subset=['temporal_rho'])
     df_plot['significant'] = df_plot['temporal_p'] < alpha
 
-    # Consistent color per spike feature
-    features = sorted(df_plot['spike_feature'].unique())
-    palette = dict(zip(features, sns.color_palette('tab10', n_colors=len(features))))
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-
-    # --- Panel A: Histogram ---
-    ax1.hist(df_plot['temporal_rho'], bins=20, color='#0072B2', alpha=0.6, edgecolor='white', label='all')
-    sig_vals = df_plot.loc[df_plot['significant'], 'temporal_rho']
-    ax1.hist(sig_vals, bins=20, color='#D55E00', alpha=0.8, edgecolor='white', label=f'p < {alpha}')
-    ax1.axvline(0, color='black', lw=1.5, linestyle='--', alpha=0.6)
-    ax1.set_xlabel('Temporal Rho (Spearman)')
-    ax1.set_ylabel('Count')
-    n_sig = df_plot['significant'].sum()
+    n_sig   = df_plot['significant'].sum()
     n_total = len(df_plot)
-    ax1.set_title(f'Time Dependence Distribution\n{n_sig}/{n_total} significant (p < {alpha})',
-                  fontweight='bold')
-    ax1.legend(frameon=False)
-    ax1.set_xlim(-1.1, 1.1)
-    sns.despine(ax=ax1)
 
-    # --- Panel B: Distribution per spike feature ---
-    feat_order = df_plot.groupby('spike_feature')['temporal_rho'].median().sort_values().index.tolist()
-    feat_palette = [palette[f] for f in feat_order]
+    feat_order = [f for f in WF_ORDER if f in df_plot['spike_feature'].unique()]
+    feat_order = sorted(feat_order,
+                        key=lambda f: df_plot[df_plot['spike_feature'] == f]['temporal_rho'].median())
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_order}
+
+    _FS  = 24
+    _FAX = 26
+
+    fig, ax = plt.subplots(figsize=(8, 7))
 
     sns.boxplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
-                palette=feat_palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax2)
+                palette=palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax)
     sns.stripplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
-                  palette=feat_palette, alpha=0.5, size=5, ax=ax2)
-    ax2.axvline(0, color='black', lw=1, linestyle='--', alpha=0.5)
-    ax2.set_xlabel('Temporal Rho')
-    ax2.set_ylabel('')
-    ax2.set_title('Distribution by Spike Feature', fontweight='bold')
-    ax2.set_xlim(-1.1, 1.1)
-    sns.despine(ax=ax2)
+                  palette=palette, alpha=0.5, size=6, ax=ax)
+    ax.axvline(0, color='black', lw=1, linestyle='--', alpha=0.5)
+    ax.text(0.5, 1.02, f'{n_sig}/{n_total} significant (p < {alpha})',
+            transform=ax.transAxes, fontsize=_FAX, va='bottom', ha='center')
+    ax.set_xlabel('Temporal Rho (Spearman)', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('', fontsize=_FAX)
+    ax.set_xlim(-1.1, 1.1)
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS)
+    sns.despine(ax=ax)
 
-    plt.tight_layout()
+    fig.tight_layout()
     plt.show()
 
     # Print summary
