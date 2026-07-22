@@ -50,20 +50,24 @@ _FS_TTL   = 22   # figure suptitles
 
 # Spike feature palette (consistent across all notebooks/modules)
 _SPIKE_FEAT_COLORS = {
+    'ramp_amp':        '#9467bd',
     'inflection_amp':  '#c44e52',
     'inflection_time': '#d97779',
     'peak_amp':        '#8c564b',
     'peak_sharpness':  '#a06d62',
     'peak_width':      '#b38479',
     'exp_lambda':      '#c561a8',
+    'exp_const':       '#e377c2',
     'log_isi':         '#7f7f7f',
     'spk_times_ms':    '#b0b0b0',
+    'ramp_amp_cluster':        '#9467bd',
     'inflection_amp_cluster':  '#c44e52',
     'inflection_time_cluster': '#d97779',
     'peak_amp_cluster':        '#8c564b',
     'peak_sharpness_cluster':  '#a06d62',
     'peak_width_cluster':      '#b38479',
     'exp_lambda_cluster':      '#c561a8',
+    'exp_const_cluster':       '#e377c2',
     'log_isi_cluster':         '#7f7f7f',
     'spk_times_ms_cluster':    '#b0b0b0',
 }
@@ -3365,12 +3369,12 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75,
         ax.axvline(1.5, color="#888888", lw=2.0, ls="--", alpha=0.7)
         ax.set_xlabel("")
         ax.set_ylabel(metric_label, fontsize=_FAX, fontweight="bold")
-        ax.tick_params(axis="both", labelsize=_FS)
-        ax.set_xticklabels([g.replace("\n", " ") for g in GROUP_ORDER], fontsize=_FS)
+        ax.tick_params(axis="y", labelsize=_FS)
+        ax.set_xticklabels(GROUP_ORDER, fontsize=_FS, ha='center', multialignment='center')
         sns.despine(ax=ax)
         _add_group_category_labels(ax, GROUP_ORDER)
         plt.tight_layout()
-        fig.subplots_adjust(bottom=0.22)
+        fig.subplots_adjust(bottom=0.35)
         plt.show()
 
         print(f"\n── {metric_label} (spike-to-avg) ──")
@@ -4011,6 +4015,155 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
                 _plot_one(ax, strips, clip, feat, mlabel, feat=feat)
             plt.tight_layout()
             plt.show()
+
+
+def plot_spike_feat_value_within_vs_between(spike_fit_dir, cache_dir=None, force_recompute=False):
+    """
+    Per-feature within vs between cell comparison using actual feature values.
+    Within:  |spike_value − own_cell_mean|   per spike, pooled across cells.
+    Between: |spike_value − other_cell_mean| per spike vs every other cell, pooled.
+    Y-axis in feature units. Separate subplot per feature.
+    This is NOT a waveform-level analysis — it operates on the fitted feature values
+    directly (peak_amp, inflection_time, ramp_amp, etc.).
+    """
+    import pickle
+    from pathlib import Path
+
+    _FS, _FAX  = 24, 26
+    _N_STRIP   = 2000
+    rng        = np.random.default_rng(42)
+
+    WF_ORDER = ['ramp_amp', 'inflection_amp', 'inflection_time',
+                'peak_amp', 'peak_sharpness', 'peak_width',
+                'exp_lambda', 'exp_const', 'log_isi']
+    FEAT_LABELS = {
+        'ramp_amp':       'Ramp amp',   'inflection_amp': 'Infl. amp',
+        'inflection_time':'Infl. time', 'peak_amp':       'Peak amp',
+        'peak_sharpness': 'Peak sharp.','peak_width':     'Peak width',
+        'exp_lambda':     'Exp λ',      'exp_const':      'Exp const',
+        'log_isi':        'Log ISI',
+    }
+    FEAT_UNITS = {
+        'ramp_amp':       'µV',   'inflection_amp': 'µV',
+        'inflection_time':'ms',   'peak_amp':       'µV',
+        'peak_sharpness': 'µV/ms²','peak_width':    'ms',
+        'exp_lambda':     'ms⁻¹', 'exp_const':      'µV',
+        'log_isi':        'log(s)',
+    }
+
+    spike_fit_path = Path(spike_fit_dir)
+    _cache_dir     = Path(cache_dir) if cache_dir else spike_fit_path
+
+    # ── Load per-cell feature arrays ─────────────────────────────────────────
+    pkls = sorted(spike_fit_path.glob("c*_spike_fit.pkl"),
+                  key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    cell_data  = {}  # cid → {feat: np.ndarray}
+    cell_means = {}  # cid → {feat: float}
+    for pkl in pkls:
+        cid = pkl.stem.split("_")[0]
+        try:
+            sp = pickle.load(open(pkl, "rb"))
+        except Exception:
+            continue
+        vals = {}
+        for feat in WF_ORDER:
+            if feat == 'log_isi':
+                raw = getattr(sp, 'isi', None)
+                v = np.log(np.asarray(raw, float)) if raw is not None else None
+            else:
+                v = getattr(sp, feat, None)
+            if v is not None:
+                arr = np.asarray(v, float)
+                finite = arr[np.isfinite(arr)]
+                if len(finite) >= 10:
+                    vals[feat] = finite
+        if vals:
+            cell_data[cid]  = vals
+            cell_means[cid] = {f: float(np.mean(v)) for f, v in vals.items()}
+
+    cell_ids = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
+    print(f"Loaded {len(cell_ids)} cells")
+
+    feat_present = [f for f in WF_ORDER if any(f in cell_data[c] for c in cell_ids)]
+
+    # ── Plot ─────────────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(1, len(feat_present),
+                             figsize=(3.0 * len(feat_present), 7), sharey=False)
+    if len(feat_present) == 1:
+        axes = [axes]
+
+    for ax, feat in zip(axes, feat_present):
+        feat_color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        cache_file = _cache_dir / f"_feat_val_wb_{feat}.npz"
+
+        if not force_recompute and cache_file.exists():
+            npz      = np.load(cache_file)
+            w_strip  = npz['w_strip']
+            b_strip  = npz['b_strip']
+            clip_top = float(npz['clip_top'])
+            print(f"  {feat}: cache hit")
+        else:
+            w_all, b_all = [], []
+            for ci in cell_ids:
+                if feat not in cell_data[ci]:
+                    continue
+                spikes_i = cell_data[ci][feat]
+                mean_i   = cell_means[ci][feat]
+                w_all.append(np.abs(spikes_i - mean_i))
+                for cj in cell_ids:
+                    if cj == ci or feat not in cell_means[cj]:
+                        continue
+                    b_all.append(np.abs(spikes_i - cell_means[cj][feat]))
+
+            if not w_all or not b_all:
+                ax.set_visible(False)
+                continue
+
+            w_cat    = np.concatenate(w_all)
+            b_cat    = np.concatenate(b_all)
+            clip_top = float(np.percentile(np.concatenate([w_cat, b_cat]), 99))
+            w_strip  = rng.choice(w_cat, size=min(len(w_cat), _N_STRIP), replace=False)
+            b_strip  = rng.choice(b_cat, size=min(len(b_cat), _N_STRIP), replace=False)
+            np.savez(cache_file, w_strip=w_strip, b_strip=b_strip,
+                     clip_top=np.array([clip_top]))
+            print(f"  {feat}: computed & cached")
+
+        import matplotlib.colors as mcolors
+        feat_rgba = mcolors.to_rgba(feat_color)
+        sheer_color = (*feat_rgba[:3], 0.25)
+
+        rng2 = np.random.default_rng(0)
+        for pos, vals, fc, dot_alpha in [
+            (0, w_strip,  feat_color,   0.5),
+            (1, b_strip,  sheer_color,  0.25),
+        ]:
+            vals = vals[np.isfinite(vals)]
+            ax.boxplot([vals], positions=[pos], widths=0.5, patch_artist=True,
+                       showfliers=False,
+                       boxprops=dict(facecolor=fc, edgecolor='black', linewidth=2.0),
+                       medianprops=dict(color='black', linewidth=2.0),
+                       whiskerprops=dict(color='black', linewidth=1.8),
+                       capprops=dict(color='black', linewidth=1.8))
+            n = min(len(vals), _N_STRIP)
+            jx = rng2.uniform(-0.12, 0.12, size=n) + pos
+            jy = rng2.choice(vals, size=n, replace=False)
+            ax.scatter(jx, jy, color=feat_color, s=9,
+                       alpha=dot_alpha, linewidths=0, zorder=3)
+        ax.set_xticks([0, 1])
+
+        unit = FEAT_UNITS.get(feat, '')
+        ax.set_ylim(bottom=0, top=clip_top * 1.05)
+        ax.set_xlabel('')
+        ax.set_ylabel(f'|Δ| ({unit})', fontsize=_FAX, fontweight='bold')
+        ax.set_title(FEAT_LABELS.get(feat, feat), fontsize=_FS, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=_FS)
+        ax.set_xticklabels(['Within', 'Between'], fontsize=_FS - 4,
+                           rotation=45, ha='right', rotation_mode='anchor')
+        sns.despine(ax=ax)
+
+    plt.tight_layout()
+    plt.show()
 
 
 # ── Temporal transition detection ─────────────────────────────────────────────
