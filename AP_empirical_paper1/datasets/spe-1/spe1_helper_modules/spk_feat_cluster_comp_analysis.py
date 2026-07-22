@@ -3356,8 +3356,8 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75,
             ignore_index=True,
         )
 
-        _FS, _FAX = 24, 26
-        fig, ax = plt.subplots(figsize=(max(fw, 10), 7))
+        _FS, _FAX = 13, 14
+        fig, ax = plt.subplots(figsize=(6, 4.5))
 
         sns.boxplot(data=box_df, x="group", y="value", hue="group", order=GROUP_ORDER,
                     palette=PALETTE, showfliers=False, width=0.55,
@@ -3485,22 +3485,34 @@ def plot_waveform_dist_kde(df_master, wf_dir, spike_fit_dir=None, half_win=75,
     within_vals  = npz[wk]
     between_vals = npz[bk]
 
-    _FS, _FAX = 24, 26
+    _FS, _FAX = 14, 15
     clip_x = float(np.percentile(np.concatenate([within_vals, between_vals]), 99))
 
-    fig, ax = plt.subplots(figsize=(8, 7))
-    sns.kdeplot(within_vals,  ax=ax, color="#555555", lw=2.5, bw_adjust=1.5,
-                label="Within cell", fill=True, alpha=0.35)
-    sns.kdeplot(between_vals, ax=ax, color="#AAAAAA", lw=2.5, bw_adjust=1.5,
+    fig, ax = plt.subplots(figsize=(4, 4))
+    sns.kdeplot(within_vals,  ax=ax, color="#555555", lw=2.5, bw_adjust=3.0,
+                label="Within cell",   fill=True, alpha=0.35)
+    sns.kdeplot(between_vals, ax=ax, color="#AAAAAA", lw=2.5, bw_adjust=3.0,
                 label="Between cells", fill=True, alpha=0.35)
-    ax.axvline(float(np.median(within_vals)),  color="#555555", lw=1.5, ls="--", alpha=0.8)
-    ax.axvline(float(np.median(between_vals)), color="#888888", lw=1.5, ls="--", alpha=0.8)
+    ax.axvline(float(np.median(within_vals)),  color="#555555", lw=3.0, ls="--", alpha=0.9)
+    ax.axvline(float(np.median(between_vals)), color="#888888", lw=3.0, ls="--", alpha=0.9)
     ax.set_xlim(0, clip_x)
     ax.set_xlabel(metric, fontsize=_FAX, fontweight="bold")
-    ax.set_ylabel("Density", fontsize=_FAX, fontweight="bold")
-    ax.legend(fontsize=_FS, frameon=False)
-    ax.tick_params(axis="both", labelsize=_FS)
-    sns.despine(ax=ax)
+    ax.tick_params(axis="x", labelsize=_FS)
+    ax.tick_params(axis="y", left=False, labelleft=False)
+    sns.despine(ax=ax, left=True)
+    plt.tight_layout()
+    plt.show()
+
+    # Separate legend figure
+    from matplotlib.patches import Patch
+    fig_leg, ax_leg = plt.subplots(figsize=(2.5, 1.5))
+    ax_leg.axis('off')
+    handles = [
+        Patch(facecolor="#555555", alpha=0.35, label="Within cell"),
+        Patch(facecolor="#AAAAAA", alpha=0.35, label="Between cells"),
+    ]
+    ax_leg.legend(handles=handles, loc='center', ncol=1, fontsize=_FS,
+                  frameon=False, handlelength=1.5, handleheight=1.2)
     plt.tight_layout()
     plt.show()
 
@@ -4029,7 +4041,7 @@ def plot_spike_feat_value_within_vs_between(spike_fit_dir, cache_dir=None, force
     import pickle
     from pathlib import Path
 
-    _FS, _FAX  = 24, 26
+    _FS, _FAX  = 20, 22
     _N_STRIP   = 2000
     rng        = np.random.default_rng(42)
 
@@ -4088,12 +4100,22 @@ def plot_spike_feat_value_within_vs_between(spike_fit_dir, cache_dir=None, force
     feat_present = [f for f in WF_ORDER if any(f in cell_data[c] for c in cell_ids)]
 
     # ── Plot ─────────────────────────────────────────────────────────────────
-    fig, axes = plt.subplots(1, len(feat_present),
-                             figsize=(3.0 * len(feat_present), 7), sharey=False)
-    if len(feat_present) == 1:
-        axes = [axes]
+    import math
+    n_feats = len(feat_present)
+    n_cols  = math.ceil(n_feats / 2)
+    n_rows  = 2
+    n_row2  = n_feats - n_cols   # features in second row
+    gs_cols = 2 * n_cols         # double-resolution grid for centering
 
-    for ax, feat in zip(axes, feat_present):
+    fig = plt.figure(figsize=(2.8 * n_cols, 4.5 * n_rows))
+    gs  = fig.add_gridspec(n_rows, gs_cols)
+
+    axes_row1 = [fig.add_subplot(gs[0, 2*i : 2*(i+1)]) for i in range(n_cols)]
+    offset    = (gs_cols - 2 * n_row2) // 2
+    axes_row2 = [fig.add_subplot(gs[1, offset + 2*i : offset + 2*(i+1)]) for i in range(n_row2)]
+    axes_flat = axes_row1 + axes_row2
+
+    for ax, feat in zip(axes_flat, feat_present):
         feat_color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
         cache_file = _cache_dir / f"_feat_val_wb_{feat}.npz"
 
@@ -4139,12 +4161,14 @@ def plot_spike_feat_value_within_vs_between(spike_fit_dir, cache_dir=None, force
             (1, b_strip,  sheer_color,  0.25),
         ]:
             vals = vals[np.isfinite(vals)]
-            ax.boxplot([vals], positions=[pos], widths=0.5, patch_artist=True,
-                       showfliers=False,
-                       boxprops=dict(facecolor=fc, edgecolor='black', linewidth=2.0),
-                       medianprops=dict(color='black', linewidth=2.0),
-                       whiskerprops=dict(color='black', linewidth=1.8),
-                       capprops=dict(color='black', linewidth=1.8))
+            bp = ax.boxplot([vals], positions=[pos], widths=0.5, patch_artist=True,
+                            showfliers=False,
+                            boxprops=dict(facecolor=fc, edgecolor='black', linewidth=2.0),
+                            medianprops=dict(color='black', linewidth=2.0, zorder=5),
+                            whiskerprops=dict(color='black', linewidth=1.8),
+                            capprops=dict(color='black', linewidth=1.8))
+            for line in bp['medians']:
+                line.set_zorder(5)
             n = min(len(vals), _N_STRIP)
             jx = rng2.uniform(-0.12, 0.12, size=n) + pos
             jy = rng2.choice(vals, size=n, replace=False)
@@ -4156,12 +4180,175 @@ def plot_spike_feat_value_within_vs_between(spike_fit_dir, cache_dir=None, force
         ax.set_ylim(bottom=0, top=clip_top * 1.05)
         ax.set_xlabel('')
         ax.set_ylabel(f'|Δ| ({unit})', fontsize=_FAX, fontweight='bold')
-        ax.set_title(FEAT_LABELS.get(feat, feat), fontsize=_FS, fontweight='bold')
+        ax.set_title(FEAT_LABELS.get(feat, feat), fontsize=_FAX, fontweight='bold')
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4))
         ax.tick_params(axis='y', labelsize=_FS)
-        ax.set_xticklabels(['Within', 'Between'], fontsize=_FS - 4,
+        ax.set_xticklabels(['Within', 'Between'], fontsize=_FS,
                            rotation=45, ha='right', rotation_mode='anchor')
         sns.despine(ax=ax)
 
+    plt.tight_layout(pad=0.8, w_pad=2.0, h_pad=2.5)
+    plt.show()
+
+
+def plot_pct_within_exceeds_between(df_master, wf_dir, spike_fit_dir,
+                                     half_win=75, cache_dir=None):
+    """
+    For each cell and metric, compute % of within-cell spikes that exceed
+    the mean between-cell value.
+
+    nRMSE / Cos Sim: spike vs own-cell-mean waveform, threshold = mean of
+                     global between-cell distribution (from v2 cache).
+    Per feature:     |spike_val − cell_mean|, threshold = mean of global
+                     between |delta| (from per-feature caches).
+
+    For Cos Sim: 'exceeds' means within_cos < mean_between_cos
+                 (spike is LESS similar to own mean than avg between-cell).
+    """
+    import pickle
+    import math
+    import matplotlib.colors as mcolors
+    from pathlib import Path
+
+    _FS, _FAX = 11, 12
+    _cache_dir = Path(cache_dir) if cache_dir else Path(wf_dir)
+    _wf_cache  = _cache_dir / "_spike_to_avg_distances_v2.npz"
+
+    WF_ORDER = ['ramp_amp', 'inflection_amp', 'inflection_time',
+                'peak_amp', 'peak_sharpness', 'peak_width',
+                'exp_lambda', 'exp_const', 'log_isi']
+    FEAT_LABELS = {
+        'ramp_amp': 'Ramp amp', 'inflection_amp': 'Infl. amp',
+        'inflection_time': 'Infl. time', 'peak_amp': 'Peak amp',
+        'peak_sharpness': 'Peak sharp.', 'peak_width': 'Peak width',
+        'exp_lambda': 'Exp λ', 'exp_const': 'Exp const', 'log_isi': 'Log ISI',
+    }
+
+    # ── Waveform between thresholds from v2 cache ─────────────────────────
+    if not _wf_cache.exists():
+        raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
+    npz = np.load(_wf_cache, allow_pickle=False)
+    btw_mean_nrmse = float(np.median(npz["Between_(all)_nrmse"]))
+    btw_mean_cos   = float(np.median(npz["Between_(all)_cos"]))
+
+    # ── Feature between thresholds from per-feature caches ────────────────
+    spike_fit_path = Path(spike_fit_dir)
+    feat_thresholds = {}
+    for feat in WF_ORDER:
+        cf = spike_fit_path / f"_feat_val_wb_{feat}.npz"
+        if cf.exists():
+            b = np.load(cf)['b_strip']
+            feat_thresholds[feat] = float(np.median(b[np.isfinite(b)]))
+
+    # ── Per-cell computation ──────────────────────────────────────────────
+    pkls = sorted(spike_fit_path.glob("c*_spike_fit.pkl"),
+                  key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    cell_ids_all = []
+    pct_nrmse, pct_cos = [], []
+    feat_pcts     = {f: [] for f in WF_ORDER if f in feat_thresholds}
+    feat_pct_cids = {f: [] for f in WF_ORDER if f in feat_thresholds}
+
+    for pkl in pkls:
+        cid = pkl.stem.split("_")[0]
+        try:
+            sp = pickle.load(open(pkl, "rb"))
+        except Exception:
+            continue
+
+        W = np.asarray(sp.spikes, float)
+        avg = W.mean(axis=0)
+        peak_idx = int(np.argmax(np.abs(avg)))
+        lo, hi = peak_idx - half_win, peak_idx + half_win
+        if lo < 0 or hi > W.shape[1]:
+            continue
+
+        avg_w    = avg[lo:hi]
+        spikes_w = W[:, lo:hi]
+        denom    = np.max(np.abs(avg_w)) + 1e-12
+        diff     = spikes_w - avg_w
+        nrmse_w  = np.sqrt(np.mean(diff**2, axis=1)) / denom
+        norm_s   = np.linalg.norm(spikes_w, axis=1)
+        norm_m   = np.linalg.norm(avg_w) + 1e-12
+        cos_w    = (spikes_w @ avg_w) / (norm_s * norm_m + 1e-12)
+
+        cell_ids_all.append(cid)
+        pct_nrmse.append(float(np.mean(nrmse_w > btw_mean_nrmse) * 100))
+        pct_cos.append(float(np.mean(cos_w < btw_mean_cos) * 100))
+
+        for feat in feat_pcts:
+            if feat == 'log_isi':
+                raw = getattr(sp, 'isi', None)
+                v = np.log(np.asarray(raw, float)) if raw is not None else None
+            else:
+                v = getattr(sp, feat, None)
+            if v is None:
+                continue
+            v = np.asarray(v, float)
+            v = v[np.isfinite(v)]
+            if len(v) < 5:
+                continue
+            cell_mean  = float(np.mean(v))
+            within_abs = np.abs(v - cell_mean)
+            thr        = feat_thresholds[feat]
+            feat_pcts[feat].append(float(np.mean(within_abs > thr) * 100))
+            feat_pct_cids[feat].append(cid)
+
+    # ── Build plot data ───────────────────────────────────────────────────
+    conditions  = ['nRMSE', 'Cos Sim'] + [f for f in WF_ORDER if feat_pcts.get(f)]
+    cond_labels = ['nRMSE', 'Cos Sim'] + [FEAT_LABELS.get(f, f) for f in WF_ORDER if feat_pcts.get(f)]
+    cond_colors = ['#555555', '#888888'] + [
+        _SPIKE_FEAT_COLORS.get(f, '#aaaaaa') for f in WF_ORDER if feat_pcts.get(f)
+    ]
+    cond_vals  = {'nRMSE': np.array(pct_nrmse), 'Cos Sim': np.array(pct_cos)}
+    cond_cids  = {'nRMSE': cell_ids_all,         'Cos Sim': cell_ids_all}
+    for f in WF_ORDER:
+        if feat_pcts.get(f):
+            cond_vals[f] = np.array(feat_pcts[f])
+            cond_cids[f] = feat_pct_cids[f]
+
+    # ── Report high-% cells ───────────────────────────────────────────────
+    print("\n── Cells with > 80% within spikes exceeding median between ──")
+    for cond, label in zip(conditions, cond_labels):
+        vals = cond_vals[cond]
+        cids = cond_cids[cond]
+        high = [(cids[i], vals[i]) for i in range(len(vals)) if vals[i] > 80]
+        if high:
+            entries = ", ".join(f"{c} ({v:.0f}%)" for c, v in sorted(high, key=lambda x: -x[1]))
+            print(f"  {label:15s}: {entries}")
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    rng = np.random.default_rng(42)
+
+    for xi, (cond, col) in enumerate(zip(conditions, cond_colors)):
+        vals   = cond_vals[cond]
+        fc_rgba = (*mcolors.to_rgb(col), 0.45)
+        bp = ax.boxplot([vals], positions=[xi], widths=0.5, patch_artist=True,
+                        showfliers=False,
+                        boxprops=dict(facecolor=fc_rgba, edgecolor='black', linewidth=1.8),
+                        medianprops=dict(color='black', linewidth=2.0),
+                        whiskerprops=dict(color='black', linewidth=1.5),
+                        capprops=dict(color='black', linewidth=1.5))
+        jx = rng.uniform(-0.15, 0.15, size=len(vals)) + xi
+        ax.scatter(jx, vals, color=col, s=40, alpha=0.65, linewidths=0.5,
+                   edgecolors='black', zorder=3)
+
+    ax.set_xticks(range(len(conditions)))
+    ax.set_xticklabels(cond_labels, fontsize=14,
+                       rotation=40, ha='right', rotation_mode='anchor')
+    ax.set_ylabel('% within spikes > median between', fontsize=_FAX, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=_FS)
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    plt.show()
+
+    from matplotlib.lines import Line2D
+    fig_leg, ax_leg = plt.subplots(figsize=(2.5, 0.8))
+    ax_leg.axis('off')
+    handle = Line2D([0], [0], marker='o', color='w', markerfacecolor='#555555',
+                    markeredgecolor='black', markersize=10, linewidth=0)
+    ax_leg.legend(handles=[handle], labels=['one cell'], loc='center',
+                  fontsize=_FS, frameon=False, handletextpad=0.4)
     plt.tight_layout()
     plt.show()
 
