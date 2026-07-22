@@ -3352,10 +3352,8 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75,
             ignore_index=True,
         )
 
-        fig, ax = plt.subplots(figsize=(fw, 6))
-        fig.suptitle(
-            f"Spike-to-average vs Between-cell waveform distances — {metric_label}",
-            fontsize=22, fontweight="bold")
+        _FS, _FAX = 24, 26
+        fig, ax = plt.subplots(figsize=(max(fw, 10), 7))
 
         sns.boxplot(data=box_df, x="group", y="value", hue="group", order=GROUP_ORDER,
                     palette=PALETTE, showfliers=False, width=0.55,
@@ -3364,17 +3362,15 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75,
                       palette=PALETTE, size=2, alpha=0.25, jitter=True, legend=False, ax=ax)
 
         ax.set_ylim(bottom=0, top=clip_top)
-
         ax.axvline(1.5, color="#888888", lw=2.0, ls="--", alpha=0.7)
         ax.set_xlabel("")
-        ax.set_ylabel(metric_label, fontsize=18)
-        ax.tick_params(axis="both", labelsize=15, width=2.0, length=6)
-        for spine in ax.spines.values():
-            spine.set_linewidth(2.0)
+        ax.set_ylabel(metric_label, fontsize=_FAX, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=_FS)
+        ax.set_xticklabels([g.replace("\n", " ") for g in GROUP_ORDER], fontsize=_FS)
         sns.despine(ax=ax)
         _add_group_category_labels(ax, GROUP_ORDER)
         plt.tight_layout()
-        fig.subplots_adjust(bottom=0.28)
+        fig.subplots_adjust(bottom=0.22)
         plt.show()
 
         print(f"\n── {metric_label} (spike-to-avg) ──")
@@ -3485,24 +3481,21 @@ def plot_waveform_dist_kde(df_master, wf_dir, spike_fit_dir=None, half_win=75,
     within_vals  = npz[wk]
     between_vals = npz[bk]
 
+    _FS, _FAX = 24, 26
     clip_x = float(np.percentile(np.concatenate([within_vals, between_vals]), 99))
 
-    fig, ax = plt.subplots(figsize=(7, 5))
-    sns.kdeplot(within_vals,  ax=ax, color="#555555", lw=2.5,
-                label="Within cell", fill=True, alpha=0.25)
-    sns.kdeplot(between_vals, ax=ax, color="#AAAAAA", lw=2.5,
-                label="Between cells (all)", fill=True, alpha=0.25)
+    fig, ax = plt.subplots(figsize=(8, 7))
+    sns.kdeplot(within_vals,  ax=ax, color="#555555", lw=2.5, bw_adjust=1.5,
+                label="Within cell", fill=True, alpha=0.35)
+    sns.kdeplot(between_vals, ax=ax, color="#AAAAAA", lw=2.5, bw_adjust=1.5,
+                label="Between cells", fill=True, alpha=0.35)
     ax.axvline(float(np.median(within_vals)),  color="#555555", lw=1.5, ls="--", alpha=0.8)
     ax.axvline(float(np.median(between_vals)), color="#888888", lw=1.5, ls="--", alpha=0.8)
     ax.set_xlim(0, clip_x)
-    ax.set_xlabel(metric, fontsize=16, fontweight="bold")
-    ax.set_ylabel("Density", fontsize=16)
-    ax.set_title(f"Within vs Between — {metric} distribution (all spikes)",
-                 fontsize=16, fontweight="bold")
-    ax.legend(fontsize=13)
-    ax.tick_params(axis="both", labelsize=13)
-    for spine in ax.spines.values():
-        spine.set_linewidth(2.0)
+    ax.set_xlabel(metric, fontsize=_FAX, fontweight="bold")
+    ax.set_ylabel("Density", fontsize=_FAX, fontweight="bold")
+    ax.legend(fontsize=_FS, frameon=False)
+    ax.tick_params(axis="both", labelsize=_FS)
     sns.despine(ax=ax)
     plt.tight_layout()
     plt.show()
@@ -3780,8 +3773,13 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
     import pickle
     from pathlib import Path
 
-    WAVEFORM_FEATS = ['peak_amp', 'peak_sharpness', 'peak_width',
-                      'exp_lambda', 'inflection_amp', 'inflection_time']
+    WAVEFORM_FEATS = ['inflection_amp', 'inflection_time', 'peak_amp',
+                      'peak_sharpness', 'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp': 'Infl. amp', 'inflection_time': 'Infl. time',
+        'peak_amp': 'Peak amp', 'peak_sharpness': 'Peak sharp.',
+        'peak_width': 'Peak width', 'exp_lambda': 'Exp λ', 'log_isi': 'Log ISI',
+    }
     if features is None:
         features = WAVEFORM_FEATS
 
@@ -3947,26 +3945,35 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
         print(f"  {feat}: cached → {cp.name}")
         return nrmse_strips, clip_nrmse, rmse_strips, clip_rmse
 
-    def _plot_one(ax, strips, clip_top, title, metric_label):
+    _FS, _FAX = 24, 26
+
+    def _plot_one(ax, strips, clip_top, title, metric_label, feat=None):
         plot_df = pd.concat(
             [pd.DataFrame({"group": name, "value": strips[name]})
              for name, _, _ in GROUP_DEFS if len(strips[name])],
             ignore_index=True,
         )
         present = [g for g in GROUP_ORDER if g in plot_df["group"].values]
+        if not detailed and feat is not None:
+            feat_color = _SPIKE_FEAT_COLORS.get(feat, "#888888")
+            pal = {g: feat_color if "Between" in g or "between" in g else "#555555" for g in present}
+        else:
+            pal = PALETTE
         sns.boxplot(data=plot_df, x="group", y="value", hue="group", order=present,
-                    palette=PALETTE, showfliers=False, width=0.55,
+                    palette=pal, showfliers=False, width=0.55,
                     linewidth=2.5, legend=False, ax=ax)
         sns.stripplot(data=plot_df, x="group", y="value", hue="group", order=present,
-                      palette=PALETTE, size=3, alpha=0.45, jitter=True, legend=False, ax=ax)
+                      palette=pal, size=3, alpha=0.45, jitter=True, legend=False, ax=ax)
         ax.set_ylim(bottom=0, top=clip_top * 1.05)
         if detailed:
             ax.axvline(1.5, color="#888888", lw=1.5, ls="--", alpha=0.7)
             _add_group_category_labels(ax, present)
         ax.set_xlabel("")
-        ax.set_ylabel(metric_label, fontsize=11)
-        ax.set_title(title, fontsize=12, fontweight="bold")
-        ax.tick_params(axis="both", labelsize=9)
+        ax.set_ylabel(metric_label, fontsize=_FAX if not detailed else 11, fontweight="bold")
+        ax.set_title(FEAT_LABELS.get(title, title), fontsize=_FS if not detailed else 12, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=_FS if not detailed else 9)
+        if not detailed:
+            ax.set_xticklabels(["Within", "Between"], fontsize=_FS)
         sns.despine(ax=ax)
 
     # ── Render ───────────────────────────────────────────────────────────────
@@ -3989,8 +3996,8 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
                 fig.subplots_adjust(bottom=0.28)
                 plt.show()
     else:
-        for mlabel, metric_idx in [("nRMSE", 0), ("RMSE", 1)]:
-            fig, axes = plt.subplots(1, len(features), figsize=(3.5 * len(features), 5), sharey=False)
+        for mlabel, metric_idx in [("nRMSE", 0)]:
+            fig, axes = plt.subplots(1, len(features), figsize=(3.0 * len(features), 7), sharey=False)
             if len(features) == 1:
                 axes = [axes]
             for ax, feat in zip(axes, features):
@@ -4001,9 +4008,7 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
                 nrmse_strips, clip_nrmse, rmse_strips, clip_rmse = result
                 strips = nrmse_strips if metric_idx == 0 else rmse_strips
                 clip   = clip_nrmse   if metric_idx == 0 else clip_rmse
-                _plot_one(ax, strips, clip, feat, mlabel)
-            fig.suptitle(f"Spike waveform: within-cell vs between-cell ({mlabel})",
-                         fontsize=15, fontweight="bold")
+                _plot_one(ax, strips, clip, feat, mlabel, feat=feat)
             plt.tight_layout()
             plt.show()
 
