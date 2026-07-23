@@ -8152,6 +8152,13 @@ _STABILITY_FEATS = [
     'exp_lambda', 'exp_const', 'log_isi',
 ]
 
+# (cell, feature) pairs excluded from stability analysis due to known fit artifacts
+_STABILITY_EXCLUDE = {
+    'c25': ['exp_lambda'],
+    'c22': ['exp_lambda'],
+    'c1':  ['exp_lambda'],
+}
+
 _STABILITY_FEAT_LABELS = {
     'ramp_amp':        'Ramp amp',
     'inflection_time': 'Infl. time',
@@ -8165,6 +8172,28 @@ _STABILITY_FEAT_LABELS = {
 }
 
 _N_STRIP_STAB = 300  # max dots per feature per cell (scatter panel)
+
+# Per-feature valid value ranges; values outside are failed fits / clipping artefacts
+# and are replaced with NaN before any analysis.
+# Format: {feature: (min_exclusive, max_exclusive)}  — None means no bound on that side.
+_FEAT_VALID_BOUNDS = {
+    'peak_width': (0, None),    # 0 ms = failed fit (5k spikes affected in spe-1)
+    'exp_lambda': (0, 9.99),    # 0 = failed fit; ≥10 = upper clipping boundary
+}
+
+
+def _apply_validity_bounds(df):
+    """Replace out-of-bounds feature values with NaN (failed fits / clipping)."""
+    for feat, (lo, hi) in _FEAT_VALID_BOUNDS.items():
+        if feat not in df.columns:
+            continue
+        col = df[feat].astype(float)
+        if lo is not None:
+            col = col.where(col > lo, other=np.nan)
+        if hi is not None:
+            col = col.where(col < hi, other=np.nan)
+        df[feat] = col
+    return df
 
 
 def _load_cluster_dfs(cluster_pickle_dir, feats):
@@ -8182,6 +8211,7 @@ def _load_cluster_dfs(cluster_pickle_dir, feats):
         if not present:
             continue
         sub = df[['spk_times_ms'] + present].copy()
+        _apply_validity_bounds(sub)
         t = sub['spk_times_ms'].values.astype(float)
         sub['time_norm'] = (t - t.min()) / (t.max() - t.min() + 1e-12)
         sub['cell_id'] = cell_id
@@ -8249,15 +8279,17 @@ def plot_temporal_stability_scatter(cluster_pickle_dir,
 
 def plot_temporal_rolling_iqr(cluster_pickle_dir,
                                feats=None, n_bins=10,
-                               min_spks_per_bin=5, n_cols=3):
+                               min_spks_per_bin=5, ax=None):
     """
-    Panel B — Mean ± SEM rolling IQR across cells.
+    Panel B — Normalized rolling IQR, all features on one panel.
 
-    For each cell × feature, compute IQR within n_bins equal-width normalized-time bins.
-    Then summarise as mean ± SEM across cells. A flat profile means variability is constant
-    over the recording (no patch degradation).
+    For each cell × feature, compute IQR within n_bins equal-width normalized-time bins,
+    then normalise by that cell's mean IQR so 1.0 = average variability. A flat profile
+    at 1.0 means variability is constant over the recording (no patch degradation).
+    Pass ax to embed in a combined figure; omit to show standalone.
     """
-    _FS, _FAX = 13, 14
+    standalone = ax is None
+    _FS, _FAX = (24, 26) if standalone else (12, 13)
     if feats is None:
         feats = _STABILITY_FEATS
 
@@ -8268,18 +8300,15 @@ def plot_temporal_rolling_iqr(cluster_pickle_dir,
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     cell_ids    = spikes_df['cell_id'].unique()
 
-    n_feats = len(feats)
-    n_rows  = math.ceil(n_feats / n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols,
-                              figsize=(4.5 * n_cols, 3.5 * n_rows),
-                              squeeze=False)
+    if standalone:
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
 
-    for idx, feat in enumerate(feats):
-        ax  = axes[idx // n_cols][idx % n_cols]
+    for feat in feats:
         col = _SPIKE_FEAT_COLORS.get(feat, '#555555')
-
         cell_traces = []
         for cid in cell_ids:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
             sub  = spikes_df[spikes_df['cell_id'] == cid]
             vals = sub[feat].values.astype(float)
             t    = sub['time_norm'].values
@@ -8287,18 +8316,18 @@ def plot_temporal_rolling_iqr(cluster_pickle_dir,
             vals, t = vals[mask], t[mask]
             if len(vals) < min_spks_per_bin * n_bins:
                 continue
-            trace = []
-            for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
-                in_bin = vals[(t >= lo) & (t < hi)]
-                if len(in_bin) >= min_spks_per_bin:
-                    trace.append(np.percentile(in_bin, 75) - np.percentile(in_bin, 25))
-                else:
-                    trace.append(np.nan)
-            cell_traces.append(trace)
+            trace = np.array([
+                np.percentile(vals[(t >= lo) & (t < hi)], 75) -
+                np.percentile(vals[(t >= lo) & (t < hi)], 25)
+                if np.sum((t >= lo) & (t < hi)) >= min_spks_per_bin else np.nan
+                for lo, hi in zip(bin_edges[:-1], bin_edges[1:])
+            ])
+            mean_iqr = np.nanmean(trace)
+            if mean_iqr == 0 or not np.isfinite(mean_iqr):
+                continue
+            cell_traces.append(trace / mean_iqr)
 
         if not cell_traces:
-            ax.text(0.5, 0.5, 'no data', ha='center', va='center', transform=ax.transAxes)
-            ax.set_title(_STABILITY_FEAT_LABELS.get(feat, feat), fontsize=_FAX, fontweight='bold')
             continue
 
         mat = np.array(cell_traces)
@@ -8306,26 +8335,60 @@ def plot_temporal_rolling_iqr(cluster_pickle_dir,
         n_c = np.sum(np.isfinite(mat), axis=0).clip(1)
         sem = np.nanstd(mat, axis=0) / np.sqrt(n_c)
 
-        ax.fill_between(bin_centers, mn - sem, mn + sem, alpha=0.25, color=col)
-        ax.plot(bin_centers, mn, color=col, lw=2.0, marker='o', ms=5)
-        ax.axhline(np.nanmean(mn), color='black', lw=1.2, ls='--', alpha=0.6)
+        ax.fill_between(bin_centers, mn - sem, mn + sem, alpha=0.15, color=col)
+        ax.plot(bin_centers, mn, color=col, lw=2.5,
+                label=_STABILITY_FEAT_LABELS.get(feat, feat))
 
-        ax.set_title(_STABILITY_FEAT_LABELS.get(feat, feat), fontsize=_FAX, fontweight='bold')
-        ax.set_xlabel('Normalized time', fontsize=_FS)
-        ax.set_ylabel('IQR (mean ± SEM)', fontsize=_FS)
-        ax.set_xlim(0, 1)
-        ax.tick_params(labelsize=_FS - 1)
-        sns.despine(ax=ax)
+    ax.axhline(1.0, color='black', lw=1.5, ls='--', alpha=0.7)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 2)
+    ax.set_yticks([0.5, 1.0, 1.5, 2.0])
+    ax.set_xlabel('Normalized recording time', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('Rolling IQR\n(norm. to cell mean)', fontsize=_FAX, fontweight='bold')
+    ax.tick_params(labelsize=_FS)
+    sns.despine(ax=ax)
 
-    for ax in axes.flat[n_feats:]:
-        ax.set_visible(False)
+    if standalone:
+        plt.tight_layout()
+        plt.show()
+        plt.close(fig)
 
-    plt.tight_layout(pad=0.8, w_pad=1.5, h_pad=2.0)
+
+def plot_rolling_iqr_legend(feats=None):
+    """Standalone legend matching supp_cluster_characterization style.
+    3 rows × 3 cols, column-major, scatter dot handles.
+    Col 1: ramp_amp / inflection_time / inflection_amp
+    Col 2: peak_amp / peak_width / peak_sharpness
+    Col 3: exp_lambda / exp_const / log_isi
+    """
+    _FS = 24
+    if feats is None:
+        feats = _STABILITY_FEATS
+
+    fig, ax = plt.subplots(figsize=(12, 3))
+    ax.set_axis_off()
+
+    lh = {f: ax.scatter([], [], s=150,
+                        color=_SPIKE_FEAT_COLORS.get(f, '#555555'),
+                        label=_STABILITY_FEAT_LABELS.get(f, f))
+          for f in feats}
+
+    # matplotlib fills column-by-column, so pass col1 items, then col2, then col3
+    _padded = [
+        lh['ramp_amp'],        lh['inflection_time'], lh['inflection_amp'],
+        lh['peak_amp'],        lh['peak_width'],      lh['peak_sharpness'],
+        lh['exp_lambda'],      lh['exp_const'],       lh['log_isi'],
+    ]
+
+    ax.legend(handles=_padded, fontsize=_FS, frameon=False,
+              loc='center', ncol=3,
+              handletextpad=0.5, columnspacing=1.0, labelspacing=0.7)
+    plt.tight_layout()
     plt.show()
     plt.close(fig)
 
 
-def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30):
+def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30, ax=None):
     """
     Panel C — Distribution of temporal slopes (|spike_val − cell_mean| vs normalized time).
 
@@ -8337,9 +8400,11 @@ def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30):
     A distribution centred near 0 with no systematic positive shift indicates that
     waveform parameter variability does not increase over the recording.
     Also prints a Wilcoxon signed-rank test (H1: slope > 0) for each feature and pooled.
+    Pass ax to embed only the boxplot in a combined figure; omit to show both standalone.
     """
     from scipy.stats import linregress, wilcoxon
-    _FS, _FAX = 13, 14
+    standalone = ax is None
+    _FS, _FAX = (24, 26) if standalone else (10, 11)
     if feats is None:
         feats = _STABILITY_FEATS
 
@@ -8347,66 +8412,98 @@ def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30):
     feats = [f for f in feats if f in spikes_df.columns]
     cell_ids = spikes_df['cell_id'].unique()
 
+    # population IQR per feature (pooled across all cells) — stable denominator
+    # avoids per-cell IQR blowing up for cells with concentrated feature values
+    pop_iqr = {}
+    for feat in feats:
+        all_vals = spikes_df[feat].dropna().values.astype(float)
+        q75, q25 = np.percentile(all_vals, [75, 25])
+        pop_iqr[feat] = q75 - q25
+
     records = []
     for cid in cell_ids:
         sub = spikes_df[spikes_df['cell_id'] == cid]
         t   = sub['time_norm'].values
         for feat in feats:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
             vals = sub[feat].values.astype(float)
             mask = np.isfinite(vals)
             if mask.sum() < min_spks:
                 continue
             v, tv = vals[mask], t[mask]
-            feat_iqr = np.percentile(v, 75) - np.percentile(v, 25)
-            if feat_iqr == 0:
+            norm = pop_iqr[feat]
+            if norm == 0:
+                records.append({'cell_id': cid, 'feature': feat,
+                                'slope': 0.0, 'r': 0.0, 'p': 1.0})
                 continue
-            abs_dev = np.abs(v - v.mean()) / feat_iqr   # normalise → dimensionless
+            abs_dev = np.abs(v - v.mean()) / norm   # normalise by population IQR
             slope, _, r, p, _ = linregress(tv, abs_dev)
             records.append({'cell_id': cid, 'feature': feat,
                             'slope': slope, 'r': r, 'p': p})
 
     df_s = pd.DataFrame(records)
 
-    # — KDE (all features pooled, normalised slopes) —
-    fig1, ax1 = plt.subplots(figsize=(5, 4))
-    med = df_s['slope'].median()
-    sns.kdeplot(df_s['slope'], ax=ax1, color='#555555', lw=2.5,
-                bw_adjust=2.0, fill=True, alpha=0.35)
-    ax1.axvline(0,   color='black',   lw=1.5, ls='--', alpha=0.7,  label='0 (no drift)')
-    ax1.axvline(med, color='#555555', lw=2.0, ls='--', alpha=0.9,
-                label=f'Median = {med:.3f}')
-    ax1.set_xlabel('Temporal slope of |Δ| / IQR  (per normalized time)',
-                   fontsize=_FAX, fontweight='bold')
-    ax1.tick_params(axis='x', labelsize=_FS)
-    ax1.tick_params(axis='y', left=False, labelleft=False)
-    sns.despine(ax=ax1, left=True)
-    ax1.legend(fontsize=_FS - 1, frameon=False)
-    plt.tight_layout()
-    plt.show()
-    plt.close(fig1)
+    # — KDE (standalone only) —
+    if standalone:
+        fig1, ax1 = plt.subplots(figsize=(5.0, 4.5))
+        med = df_s['slope'].median()
+        sns.kdeplot(df_s['slope'], ax=ax1, color='#555555', lw=3.0,
+                    bw_adjust=2.0, fill=True, alpha=0.35)
+        ax1.axvline(0, color='black', lw=2.0, ls='--', alpha=0.8)
+        ax1.set_xlabel('Temporal slope\nof |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+        ax1.set_ylabel('Density', fontsize=_FAX, fontweight='bold')
+        p01, p99 = df_s['slope'].quantile([0.01, 0.99])
+        pad = max(abs(p01), abs(p99)) * 0.15
+        ax1.set_xlim(p01 - pad, p99 + pad)
+        ax1.xaxis.set_major_formatter(plt.ScalarFormatter(useOffset=False))
+        ax1.tick_params(axis='x', labelsize=_FS)
+        ax1.tick_params(axis='y', labelsize=_FS)
+        ax1.text(0.97, 0.97, f'Median\n= {med:.3f}', transform=ax1.transAxes,
+                 fontsize=_FS, va='top', ha='right')
+        sns.despine(ax=ax1)
+        plt.tight_layout()
+        plt.show()
+        plt.close(fig1)
 
-    # — per-feature boxplot (normalised slopes) —
-    fig2, ax2 = plt.subplots(figsize=(max(6, 1.1 * len(feats)), 4))
+    # — per-feature boxplot —
+    if standalone:
+        fig2, ax2 = plt.subplots(figsize=(7.0, 6))
+    else:
+        ax2 = ax
     for xi, feat in enumerate(feats):
         sub_s = df_s[df_s['feature'] == feat]['slope'].values
         col   = _SPIKE_FEAT_COLORS.get(feat, '#555555')
         ax2.boxplot(
             [sub_s], positions=[xi], widths=0.5, patch_artist=True, showfliers=False,
-            boxprops=dict(facecolor=col, edgecolor='black', linewidth=1.5, alpha=0.6),
-            medianprops=dict(color='black', linewidth=2.0),
-            whiskerprops=dict(color='black', linewidth=1.3),
-            capprops=dict(color='black', linewidth=1.3),
+            boxprops=dict(facecolor=col, edgecolor='black', linewidth=3.5, alpha=0.6),
+            medianprops=dict(color='black', linewidth=4.5),
+            whiskerprops=dict(color='black', linewidth=2.5),
+            capprops=dict(color='black', linewidth=2.5),
         )
-    ax2.axhline(0, color='black', lw=1.5, ls='--', alpha=0.7)
+    rng = np.random.default_rng(42)
+    for xi, feat in enumerate(feats):
+        sub_s = df_s[df_s['feature'] == feat]['slope'].values
+        col   = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        jitter = rng.uniform(-0.18, 0.18, len(sub_s))
+        ax2.scatter(xi + jitter, sub_s, s=40, color=col, alpha=0.5,
+                    edgecolors='none', zorder=3)
+    ax2.axhline(0, color='black', lw=2.0, ls='--', alpha=0.7)
+    _SHORT = {**_STABILITY_FEAT_LABELS,
+              'peak_sharpness': 'Pk sharp.', 'exp_const': 'Exp cst',
+              'inflection_time': 'Infl. time', 'inflection_amp': 'Infl. amp'}
     ax2.set_xticks(range(len(feats)))
-    ax2.set_xticklabels([_STABILITY_FEAT_LABELS.get(f, f) for f in feats],
-                         fontsize=_FS, rotation=40, ha='right', rotation_mode='anchor')
-    ax2.set_ylabel('Temporal slope of |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+    ax2.set_xticklabels(
+        [_SHORT.get(f, f) for f in feats],
+        fontsize=_FS, rotation=40, ha='right', rotation_mode='anchor')
+    ax2.set_ylabel('Temporal slope\nof |Δ| / IQR', fontsize=_FAX, fontweight='bold')
     ax2.tick_params(axis='y', labelsize=_FS)
+    ax2.yaxis.set_major_locator(plt.MaxNLocator(5))
     sns.despine(ax=ax2)
-    plt.tight_layout(pad=0.8)
-    plt.show()
-    plt.close(fig2)
+    if standalone:
+        plt.tight_layout(pad=1.0)
+        plt.show()
+        plt.close(fig2)
 
     # — Wilcoxon tests —
     print(f"\n{'Feature':<20} {'n':>5} {'median':>10} {'p (slope>0)':>13}")
@@ -8425,3 +8522,385 @@ def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30):
     _, p_all = wilcoxon(all_s, alternative='greater')
     print('-' * 52)
     print(f"{'POOLED':<20} {len(all_s):>5} {np.median(all_s):>10.4f} {p_all:>13.4f}")
+
+
+def plot_firing_rate_stability(cluster_pickle_dir, n_bins=10, min_spks=20, ax=None):
+    """
+    Supplementary patch-quality check: spike count per time bin, normalised to
+    each cell's own mean count, then averaged across cells (mean ± SEM).
+
+    If the patch is degrading the cell loses isolatability toward the end of the
+    recording, so spike count should fall. A flat profile at 1.0 means the cell
+    fired uniformly throughout — no evidence of patch loss.
+    Pass ax to embed in a combined figure; omit to show standalone.
+    """
+    standalone = ax is None
+    _FS, _FAX = (24, 26) if standalone else (12, 13)
+
+    bin_edges   = np.linspace(0, 1, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    cell_traces = []
+    pkls = sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl')))
+    for pkl in pkls:
+        try:
+            df = pd.read_pickle(pkl)
+        except Exception:
+            continue
+        if 'spk_times_ms' not in df.columns:
+            continue
+        t = df['spk_times_ms'].values.astype(float)
+        if len(t) < min_spks:
+            continue
+        t_norm = (t - t.min()) / (t.max() - t.min() + 1e-12)
+
+        counts = np.array([
+            np.sum((t_norm >= lo) & (t_norm < hi))
+            for lo, hi in zip(bin_edges[:-1], bin_edges[1:])
+        ], dtype=float)
+
+        mean_count = counts.mean()
+        if mean_count == 0:
+            continue
+        cell_traces.append(counts / mean_count)   # normalise → expected value = 1.0
+
+    mat = np.array(cell_traces)                   # (n_cells, n_bins)
+    mn  = mat.mean(axis=0)
+    sem = mat.std(axis=0) / np.sqrt(len(mat))
+
+    if standalone:
+        fig, ax = plt.subplots(figsize=(5.5, 6))
+    ax.fill_between(bin_centers, mn - sem, mn + sem, alpha=0.25, color='#555555')
+    ax.plot(bin_centers, mn, color='#555555', lw=2.5, marker='o', ms=7)
+    ax.axhline(1.0, color='black', lw=1.5, ls='--', alpha=0.7, label='Expected (uniform)')
+
+    ax.set_xlabel('Normalized recording time', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('Spike count\n(norm. to cell mean)', fontsize=_FAX, fontweight='bold')
+    ax.set_xlim(0, 1)
+    ax.set_ylim(bottom=0)
+    ax.set_yticks([0.25, 0.50, 0.75, 1.00, 1.25])
+    ax.tick_params(labelsize=_FS)
+    ax.legend(fontsize=_FS, frameon=False)
+    sns.despine(ax=ax)
+
+    if standalone:
+        plt.tight_layout()
+        plt.show()
+        plt.close(fig)
+
+
+def plot_patch_quality_figure(cluster_pickle_dir, feats=None, n_bins=10,
+                               min_spks_per_bin=5, min_spks=30):
+    """
+    Combined supplementary figure: recording stability over time.
+    Layout (2 rows × 2 cols):
+      [B: rolling IQR  |  C2: slope boxplot]
+      [C1: slope KDE   |  D:  firing rate  ]
+    A4 width (8.27 in), big consistent text.
+    """
+    from scipy.stats import linregress
+    _FS, _FAX = 24, 26
+
+    if feats is None:
+        feats = _STABILITY_FEATS
+
+    spikes_df = _load_cluster_dfs(cluster_pickle_dir, feats)
+    feats = [f for f in feats if f in spikes_df.columns]
+    cell_ids  = spikes_df['cell_id'].unique()
+    bin_edges   = np.linspace(0, 1, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    # ── Panel B data: normalised rolling IQR ──────────────────────────────
+    iqr_traces = {feat: [] for feat in feats}
+    for feat in feats:
+        for cid in cell_ids:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
+            sub  = spikes_df[spikes_df['cell_id'] == cid]
+            vals = sub[feat].values.astype(float)
+            t    = sub['time_norm'].values
+            mask = np.isfinite(vals)
+            vals, t = vals[mask], t[mask]
+            if len(vals) < min_spks_per_bin * n_bins:
+                continue
+            trace = np.array([
+                np.percentile(vals[(t >= lo) & (t < hi)], 75) -
+                np.percentile(vals[(t >= lo) & (t < hi)], 25)
+                if np.sum((t >= lo) & (t < hi)) >= min_spks_per_bin else np.nan
+                for lo, hi in zip(bin_edges[:-1], bin_edges[1:])
+            ])
+            mean_iqr = np.nanmean(trace)
+            if mean_iqr == 0 or not np.isfinite(mean_iqr):
+                continue
+            iqr_traces[feat].append(trace / mean_iqr)
+
+    # ── Panel C data: temporal slopes ─────────────────────────────────────
+    pop_iqr = {}
+    for feat in feats:
+        all_vals = spikes_df[feat].dropna().values.astype(float)
+        q75, q25 = np.percentile(all_vals, [75, 25])
+        pop_iqr[feat] = q75 - q25
+
+    records = []
+    for cid in cell_ids:
+        sub = spikes_df[spikes_df['cell_id'] == cid]
+        t   = sub['time_norm'].values
+        for feat in feats:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
+            vals = sub[feat].values.astype(float)
+            mask = np.isfinite(vals)
+            if mask.sum() < min_spks:
+                continue
+            v, tv = vals[mask], t[mask]
+            norm = pop_iqr[feat]
+            if norm == 0:
+                records.append({'cell_id': cid, 'feature': feat, 'slope': 0.0})
+                continue
+            abs_dev = np.abs(v - v.mean()) / norm
+            slope, *_ = linregress(tv, abs_dev)
+            records.append({'cell_id': cid, 'feature': feat, 'slope': slope})
+    df_s = pd.DataFrame(records)
+
+    # ── Panel D data: normalised firing rate ──────────────────────────────
+    fr_traces = []
+    pkls = sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl')))
+    for pkl in pkls:
+        try:
+            df = pd.read_pickle(pkl)
+        except Exception:
+            continue
+        if 'spk_times_ms' not in df.columns:
+            continue
+        t = df['spk_times_ms'].values.astype(float)
+        if len(t) < min_spks:
+            continue
+        t_norm = (t - t.min()) / (t.max() - t.min() + 1e-12)
+        counts = np.array([np.sum((t_norm >= lo) & (t_norm < hi))
+                           for lo, hi in zip(bin_edges[:-1], bin_edges[1:])], dtype=float)
+        mc = counts.mean()
+        if mc == 0:
+            continue
+        fr_traces.append(counts / mc)
+    fr_mat = np.array(fr_traces)
+    fr_mn  = fr_mat.mean(axis=0)
+    fr_sem = fr_mat.std(axis=0) / np.sqrt(len(fr_mat))
+
+    # ── Figure layout ─────────────────────────────────────────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(8.27, 11),
+                              constrained_layout=True)
+    ax_b, ax_c2 = axes[0]
+    ax_c1, ax_d  = axes[1]
+
+    # — Panel B —
+    for feat in feats:
+        traces = iqr_traces[feat]
+        if not traces:
+            continue
+        mat = np.array(traces)
+        mn  = np.nanmean(mat, axis=0)
+        n_c = np.sum(np.isfinite(mat), axis=0).clip(1)
+        sem = np.nanstd(mat, axis=0) / np.sqrt(n_c)
+        col = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        ax_b.fill_between(bin_centers, mn - sem, mn + sem, alpha=0.15, color=col)
+        ax_b.plot(bin_centers, mn, color=col, lw=2.0,
+                  label=_STABILITY_FEAT_LABELS.get(feat, feat))
+    ax_b.axhline(1.0, color='black', lw=1.5, ls='--', alpha=0.7)
+    ax_b.set_xlim(0, 1)
+    ax_b.set_ylim(0, 2)
+    ax_b.set_yticks([0.5, 1.0, 1.5, 2.0])
+    ax_b.set_xlabel('Normalized recording time', fontsize=_FAX, fontweight='bold')
+    ax_b.set_ylabel('Rolling IQR\n(norm. to cell mean)', fontsize=_FAX, fontweight='bold')
+    ax_b.tick_params(labelsize=_FS)
+    ax_b.legend(fontsize=_FS - 6, frameon=False, loc='lower right', ncol=2)
+    sns.despine(ax=ax_b)
+
+    # — Panel C2 (boxplot) —
+    rng = np.random.default_rng(42)
+    for xi, feat in enumerate(feats):
+        sub_s = df_s[df_s['feature'] == feat]['slope'].values
+        col   = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        ax_c2.boxplot(
+            [sub_s], positions=[xi], widths=0.5, patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=col, edgecolor='black', linewidth=3.5, alpha=0.6),
+            medianprops=dict(color='black', linewidth=4.5),
+            whiskerprops=dict(color='black', linewidth=2.5),
+            capprops=dict(color='black', linewidth=2.5),
+        )
+        jitter = rng.uniform(-0.18, 0.18, len(sub_s))
+        ax_c2.scatter(xi + jitter, sub_s, s=30, color=col, alpha=0.5,
+                      edgecolors='none', zorder=3)
+    ax_c2.axhline(0, color='black', lw=2.0, ls='--', alpha=0.7)
+    ax_c2.set_xticks(range(len(feats)))
+    ax_c2.set_xticklabels(
+        [_STABILITY_FEAT_LABELS.get(f, f).replace(' ', '\n') for f in feats],
+        fontsize=_FS - 4, rotation=0, ha='center')
+    ax_c2.set_ylabel('Temporal slope of |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+    ax_c2.tick_params(axis='y', labelsize=_FS)
+    ax_c2.yaxis.set_major_locator(plt.MaxNLocator(5))
+    sns.despine(ax=ax_c2)
+
+    # — Panel C1 (KDE) —
+    med = df_s['slope'].median()
+    sns.kdeplot(df_s['slope'], ax=ax_c1, color='#555555', lw=3.0,
+                bw_adjust=2.0, fill=True, alpha=0.35)
+    ax_c1.axvline(0,   color='black',   lw=2.0, ls='--', alpha=0.7, label='0 (no drift)')
+    ax_c1.axvline(med, color='#555555', lw=2.5, ls='--', alpha=0.9,
+                  label=f'Median = {med:.3f}')
+    p01, p99 = df_s['slope'].quantile([0.01, 0.99])
+    pad = max(abs(p01), abs(p99)) * 0.15
+    ax_c1.set_xlim(p01 - pad, p99 + pad)
+    ax_c1.xaxis.set_major_formatter(plt.ScalarFormatter(useOffset=False))
+    ax_c1.set_xlabel('Temporal slope of |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+    ax_c1.tick_params(axis='x', labelsize=_FS)
+    ax_c1.tick_params(axis='y', left=False, labelleft=False)
+    ax_c1.legend(fontsize=_FS - 2, frameon=False)
+    sns.despine(ax=ax_c1, left=True)
+
+    # — Panel D —
+    ax_d.fill_between(bin_centers, fr_mn - fr_sem, fr_mn + fr_sem, alpha=0.25, color='#555555')
+    ax_d.plot(bin_centers, fr_mn, color='#555555', lw=2.5, marker='o', ms=7)
+    ax_d.axhline(1.0, color='black', lw=1.5, ls='--', alpha=0.7, label='Expected (uniform)')
+    ax_d.set_xlabel('Normalized recording time', fontsize=_FAX, fontweight='bold')
+    ax_d.set_ylabel('Spike count\n(norm. to cell mean)', fontsize=_FAX, fontweight='bold')
+    ax_d.set_xlim(0, 1)
+    ax_d.set_ylim(bottom=0)
+    ax_d.set_yticks([0.25, 0.50, 0.75, 1.00, 1.25])
+    ax_d.tick_params(labelsize=_FS)
+    ax_d.legend(fontsize=_FS - 2, frameon=False)
+    sns.despine(ax=ax_d)
+
+    plt.show()
+    plt.close(fig)
+
+
+def plot_slope_vs_rho(cluster_pickle_dir, feats=None, min_spks=30):
+    """
+    Panel E — Scatter of |temporal slope| vs |temporal rho| per (cell × feature).
+
+    Temporal rho: Spearman ρ between normalized spike time and cluster label.
+    Only (cell × feature) pairs where a cluster label column exists are included.
+    A positive correlation means high-slope cells are the same cells with
+    temporally-structured bimodal waveforms — i.e., discrete state switching,
+    not gradual patch degradation.
+    """
+    from scipy.stats import spearmanr, linregress
+    _FS, _FAX = 24, 26
+    if feats is None:
+        feats = _STABILITY_FEATS
+
+    # load pickles directly so cluster label columns (*_cluster) are included
+    pkls = sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl')))
+    all_dfs = []
+    for pkl in pkls:
+        try:
+            df = pd.read_pickle(pkl)
+        except Exception:
+            continue
+        if 'spk_times_ms' not in df.columns:
+            continue
+        cid = os.path.basename(pkl).replace('_cluster_df.pkl', '')
+        t = df['spk_times_ms'].values.astype(float)
+        df = df.copy()
+        _apply_validity_bounds(df)
+        df['time_norm'] = (t - t.min()) / (t.max() - t.min() + 1e-12)
+        df['cell_id'] = cid
+        all_dfs.append(df)
+    if not all_dfs:
+        print('No cluster pickles found.')
+        return
+    spikes_df = pd.concat(all_dfs, ignore_index=True)
+
+    feats = [f for f in feats if f in spikes_df.columns]
+    cell_ids = spikes_df['cell_id'].unique()
+
+    # population IQR per feature (same as plot_temporal_slopes)
+    pop_iqr = {}
+    for feat in feats:
+        all_vals = spikes_df[feat].dropna().values.astype(float)
+        q75, q25 = np.percentile(all_vals, [75, 25])
+        pop_iqr[feat] = q75 - q25
+
+    records = []
+    for cid in cell_ids:
+        sub = spikes_df[spikes_df['cell_id'] == cid]
+        tv  = sub['time_norm'].values
+        for feat in feats:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
+            clabel_col = feat + '_cluster'
+            if clabel_col not in sub.columns:
+                continue
+            labels = sub[clabel_col].values
+            vals   = sub[feat].values.astype(float)
+            # encode string labels (e.g. 'high'/'low') to integer codes
+            lab_encoded = pd.Categorical(labels).codes.astype(float)
+            lab_encoded[lab_encoded < 0] = np.nan  # -1 = NaN in Categorical codes
+            mask = np.isfinite(vals) & np.isfinite(lab_encoded)
+            if mask.sum() < min_spks:
+                continue
+            v, t_m, lab = vals[mask], tv[mask], lab_encoded[mask]
+
+            # temporal rho: Spearman ρ(time_norm, cluster_label)
+            rho, _ = spearmanr(t_m, lab)
+
+            # temporal slope (same computation as plot_temporal_slopes)
+            norm = pop_iqr[feat]
+            if norm == 0:
+                slope = 0.0
+            else:
+                abs_dev = np.abs(v - v.mean()) / norm
+                slope, *_ = linregress(t_m, abs_dev)
+
+            records.append({'cell_id': cid, 'feature': feat,
+                            'slope': slope, 'abs_slope': abs(slope),
+                            'rho': rho,    'abs_rho': abs(rho)})
+
+    df_r = pd.DataFrame(records)
+    if df_r.empty:
+        print('No (cell × feature) pairs with cluster labels found.')
+        return
+
+    # scatter: |rho| on x, |slope| on y, coloured by feature
+    fig, ax = plt.subplots(figsize=(11, 6), constrained_layout=True)
+    for feat in feats:
+        sub_r = df_r[df_r['feature'] == feat]
+        if sub_r.empty:
+            continue
+        col = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        ax.scatter(sub_r['abs_rho'], sub_r['abs_slope'],
+                   color=col, s=70, alpha=0.7, edgecolors='white',
+                   linewidths=0.5, label=_STABILITY_FEAT_LABELS.get(feat, feat),
+                   zorder=3)
+
+    # label top-N outliers by |slope|
+    top_n = 5
+    outliers = df_r.nlargest(top_n, 'abs_slope')
+    for _, row in outliers.iterrows():
+        label = f"{row['cell_id']}\n{_STABILITY_FEAT_LABELS.get(row['feature'], row['feature'])}"
+        ax.annotate(label, xy=(row['abs_rho'], row['abs_slope']),
+                    xytext=(8, 4), textcoords='offset points',
+                    fontsize=_FS - 8, va='bottom', ha='left',
+                    arrowprops=dict(arrowstyle='-', color='#444444', lw=0.8))
+
+    # overall Spearman correlation (drop NaN rows)
+    valid = df_r[['abs_rho', 'abs_slope']].dropna()
+    rho_all, p_all = spearmanr(valid['abs_rho'], valid['abs_slope'])
+    # trend line
+    m, b, *_ = linregress(valid['abs_rho'], valid['abs_slope'])
+    x_line = np.linspace(0, valid['abs_rho'].max(), 100)
+    ax.plot(x_line, m * x_line + b, color='black', lw=2.0, ls='--', alpha=0.7)
+    p_str = f'{p_all:.3f}' if p_all >= 0.001 else f'{p_all:.2e}'
+    ax.text(0.97, 0.05,
+            f'Spearman ρ = {rho_all:.2f}\np = {p_str}',
+            transform=ax.transAxes, fontsize=_FS, va='bottom', ha='right')
+
+    ax.set_xlabel('|Temporal rho| (bimodal state structure)', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('|Temporal slope| of |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+    ax.legend(fontsize=_FS - 4, frameon=False, ncol=1,
+              loc='upper left', bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
+    ax.yaxis.set_major_locator(plt.MaxNLocator(5))
+    ax.tick_params(labelsize=_FS)
+    sns.despine(ax=ax)
+    plt.show()
+    plt.close(fig)
