@@ -8243,7 +8243,8 @@ def plot_temporal_stability_scatter(cluster_pickle_dir,
         ax.set_visible(False)
 
     plt.tight_layout(pad=0.8, w_pad=1.5, h_pad=2.0)
-    return fig
+    plt.show()
+    plt.close(fig)
 
 
 def plot_temporal_rolling_iqr(cluster_pickle_dir,
@@ -8320,7 +8321,8 @@ def plot_temporal_rolling_iqr(cluster_pickle_dir,
         ax.set_visible(False)
 
     plt.tight_layout(pad=0.8, w_pad=1.5, h_pad=2.0)
-    return fig
+    plt.show()
+    plt.close(fig)
 
 
 def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30):
@@ -8373,7 +8375,7 @@ def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30):
     ax1.axvline(0,   color='black',   lw=1.5, ls='--', alpha=0.7,  label='0 (no drift)')
     ax1.axvline(med, color='#555555', lw=2.0, ls='--', alpha=0.9,
                 label=f'Median = {med:.3f}')
-    ax1.set_xlabel('Temporal slope of |Δ| / IQR  (norm. time⁻¹)',
+    ax1.set_xlabel('Temporal slope of |Δ| / IQR  (per normalized time)',
                    fontsize=_FAX, fontweight='bold')
     ax1.tick_params(axis='x', labelsize=_FS)
     ax1.tick_params(axis='y', left=False, labelleft=False)
@@ -8381,6 +8383,7 @@ def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30):
     ax1.legend(fontsize=_FS - 1, frameon=False)
     plt.tight_layout()
     plt.show()
+    plt.close(fig1)
 
     # — per-feature boxplot (normalised slopes) —
     fig2, ax2 = plt.subplots(figsize=(max(6, 1.1 * len(feats)), 4))
@@ -8403,6 +8406,7 @@ def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30):
     sns.despine(ax=ax2)
     plt.tight_layout(pad=0.8)
     plt.show()
+    plt.close(fig2)
 
     # — Wilcoxon tests —
     print(f"\n{'Feature':<20} {'n':>5} {'median':>10} {'p (slope>0)':>13}")
