@@ -1149,6 +1149,186 @@ def plot_beta_heterogeneity(beta_pop, target_names, target_labels, features=None
     return fig, ax
 
 
+def plot_beta_heterogeneity_top_combos(beta_pop, target_names, target_labels,
+                                        n_top=6, min_minority_frac=0.2):
+    """
+    Strip plot of per-cell beta weights for the top-N target × feature combos
+    ranked by mean|β| × minority_fraction — i.e., combos with a large population
+    effect but meaningful cell-to-cell direction variability.
+
+    No pooling across targets: each panel position is one specific (target, feature) pair.
+    One dot per cell, coloured by sign.
+
+    Parameters
+    ----------
+    n_top             : how many combos to show
+    min_minority_frac : minimum fraction of cells going in the minority direction
+                        (filters out combos where nearly all cells agree)
+    """
+    sns.set_theme(style='ticks', font_scale=1.8, rc={
+        'axes.linewidth':    4.0,
+        'xtick.major.width': 4.0,
+        'ytick.major.width': 4.0,
+        'xtick.major.size':  9,
+        'ytick.major.size':  9,
+        'lines.linewidth':   4.0,
+    })
+    _FS_SM, _FS_AX, _FS_SUB = 20, 24, 26
+    pos_color, neg_color = '#0072B2', '#D55E00'
+
+    core_tn = [tn for tn, tl in zip(target_names, target_labels) if '(HPF)' not in tl]
+
+    # score every (target, feature) combo
+    records = []
+    for tn, tl in zip(target_names, target_labels):
+        if tn not in core_tn:
+            continue
+        for feat in WAVEFORM_LABELS:
+            vals = np.asarray(beta_pop[tn][feat], dtype=float)
+            vals = vals[np.isfinite(vals)]
+            if len(vals) < 5:
+                continue
+            frac_pos = float(np.mean(vals > 0))
+            frac_neg = float(np.mean(vals < 0))
+            minority  = min(frac_pos, frac_neg)
+            if minority < min_minority_frac:
+                continue
+            records.append({
+                'target':      tn,
+                'target_label': tl,
+                'feature':     feat,
+                'mean_abs':    float(np.mean(np.abs(vals))),
+                'minority':    minority,
+                'score':       float(np.mean(np.abs(vals))) * minority,
+                'vals':        vals,
+            })
+
+    if not records:
+        print('No combos pass min_minority_frac filter.')
+        return
+
+    ranked = sorted(records, key=lambda r: r['score'], reverse=True)[:n_top]
+
+    # build long-form df
+    rows = []
+    for xi, r in enumerate(ranked):
+        label = f"{r['target_label']}\n{r['feature']}"
+        for v in r['vals']:
+            rows.append({'x': xi, 'label': label, 'beta': v,
+                         'sign': 'Positive β' if v >= 0 else 'Negative β'})
+    df = pd.DataFrame(rows)
+
+    rng  = np.random.default_rng(42)
+    fig, ax = plt.subplots(figsize=(max(10, n_top * 2.2), 6.5))
+
+    for xi, r in enumerate(ranked):
+        vals    = r['vals']
+        pos_v   = vals[vals >= 0]
+        neg_v   = vals[vals <  0]
+        jitter  = rng.uniform(-0.18, 0.18, size=len(vals))
+        ax.scatter(xi + jitter[vals >= 0], pos_v,
+                   color=pos_color, s=55, alpha=0.7, linewidths=0.4,
+                   edgecolors='white', zorder=3)
+        ax.scatter(xi + jitter[vals < 0],  neg_v,
+                   color=neg_color, s=55, alpha=0.7, linewidths=0.4,
+                   edgecolors='white', zorder=3)
+        # mean marker
+        ax.scatter([xi], [np.mean(vals)], marker='D', s=120,
+                   color='black', zorder=4)
+
+    ax.axhline(0, color='black', lw=2.5, ls='--', alpha=0.6)
+    labels = [f"{r['target_label']}\n{r['feature']}" for r in ranked]
+    ax.set_xticks(range(n_top))
+    ax.set_xticklabels(labels, fontsize=_FS_SM)
+    ax.set_ylabel('Per-cell β  (standardized units)', fontsize=_FS_AX, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=_FS_SM)
+
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=pos_color,
+               markersize=10, label='Positive β'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=neg_color,
+               markersize=10, label='Negative β'),
+        Line2D([0], [0], marker='D', color='w', markerfacecolor='black',
+               markersize=10, label='Mean β'),
+    ]
+    ax.legend(handles=legend_handles, fontsize=_FS_SM, frameon=False, loc='upper right')
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+    return fig, ax
+
+
+def plot_beta_pre_post_scatter(beta_pop, target_names, target_labels,
+                                pre_label='Pre LFP Amp', post_label='Post LFP Amp'):
+    """
+    2×4 grid of scatter plots — one per waveform feature.
+    x = per-cell β for pre_label target, y = per-cell β for post_label target.
+    Shows that pre- and post-spike betas are highly correlated across cells,
+    i.e., the waveform → LFP relationship is not time-directional.
+    Spearman ρ and identity line annotated on each panel.
+    """
+    from scipy.stats import spearmanr
+
+    sns.set_theme(style='ticks', font_scale=1.8, rc={
+        'axes.linewidth':    3.5,
+        'xtick.major.width': 3.5,
+        'ytick.major.width': 3.5,
+        'xtick.major.size':  8,
+        'ytick.major.size':  8,
+    })
+    _FS_SM, _FS_AX = 18, 20
+
+    # resolve target keys
+    label_to_tn = {tl: tn for tn, tl in zip(target_names, target_labels)}
+    pre_tn  = label_to_tn.get(pre_label)
+    post_tn = label_to_tn.get(post_label)
+    if pre_tn is None or post_tn is None:
+        raise ValueError(f'Could not find targets: {pre_label!r}, {post_label!r}\n'
+                         f'Available: {list(label_to_tn.keys())}')
+
+    feats = WAVEFORM_LABELS
+    ncols, nrows = 4, 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.2, nrows * 4.0))
+    axes = axes.flatten()
+
+    for i, feat in enumerate(feats):
+        ax = axes[i]
+        pre_vals  = np.asarray(beta_pop[pre_tn][feat],  dtype=float)
+        post_vals = np.asarray(beta_pop[post_tn][feat], dtype=float)
+        mask = np.isfinite(pre_vals) & np.isfinite(post_vals)
+        x, y = pre_vals[mask], post_vals[mask]
+
+        col = _WAVEFORM_COLOR_MAP.get(feat, '#555555')
+        ax.scatter(x, y, color=col, s=60, alpha=0.75,
+                   linewidths=0.5, edgecolors='white', zorder=3)
+
+        # identity line
+        lim = max(np.abs(x).max(), np.abs(y).max()) * 1.15
+        ax.plot([-lim, lim], [-lim, lim], 'k--', lw=1.5, alpha=0.5, zorder=1)
+        ax.axhline(0, color='gray', lw=1.0, alpha=0.4, zorder=1)
+        ax.axvline(0, color='gray', lw=1.0, alpha=0.4, zorder=1)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+
+        rho, p = spearmanr(x, y)
+        sig = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else ''))
+        ax.text(0.05, 0.95, f'ρ = {rho:.2f}{sig}', transform=ax.transAxes,
+                fontsize=_FS_SM, va='top', ha='left', fontweight='bold')
+
+        ax.set_title(feat, fontsize=_FS_AX, fontweight='bold', pad=6)
+        ax.tick_params(labelsize=_FS_SM - 2)
+        if i % ncols == 0:
+            ax.set_ylabel(f'{post_label} β', fontsize=_FS_AX)
+        if i >= ncols:
+            ax.set_xlabel(f'{pre_label} β', fontsize=_FS_AX)
+        sns.despine(ax=ax)
+
+    fig.tight_layout()
+    plt.show()
+    return fig, axes
+
+
 # ── R² distribution strip plot ───────────────────────────────────────────────
 
 def plot_r2_distributions(r2_pop, sig_pop, target_names, target_labels,
