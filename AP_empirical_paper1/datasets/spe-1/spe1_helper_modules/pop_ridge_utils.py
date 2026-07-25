@@ -79,9 +79,13 @@ _WAVEFORM_COLOR_MAP = {
     'Infl. Amp':   'C3',
     'Peak Amp':    'C5',
     'Peak Width':  'C5',
-    'Sharpness':   'C5',
+    'Sharpness':      'C5',
     'Decay λ':     'C6',
     'Decay Const': 'C6',
+}
+
+_FEAT_DISPLAY = {
+    'Sharpness': 'Peak Sharpness',
 }
 
 
@@ -277,6 +281,44 @@ def aggregate_population(all_results, cell_ids, target_names, predictor_sets):
             beta_pop[tn][wl] = np.array(beta_pop[tn][wl], dtype=float)
 
     return r2_pop, sig_pop, beta_pop
+
+
+def average_pre_post_betas(beta_pop, target_names, target_labels):
+    """
+    Collapse Pre/Post target pairs by averaging per-cell betas.
+    Returns (beta_avg, avg_target_names, avg_target_labels).
+    Unpaired targets pass through unchanged.
+    """
+    label_to_tn = {tl: tn for tn, tl in zip(target_names, target_labels)}
+    seen, avg_tns, avg_tls, beta_avg = set(), [], [], {}
+
+    for tl, tn in label_to_tn.items():
+        stripped = tl.replace('Pre ', '').replace('Post ', '')
+        if stripped in seen:
+            continue
+        seen.add(stripped)
+
+        pre_tn  = label_to_tn.get(f'Pre {stripped}')
+        post_tn = label_to_tn.get(f'Post {stripped}')
+
+        if pre_tn is not None and post_tn is not None:
+            avg_tn = 'avg_' + stripped.lower().replace(' ', '_').replace('(', '').replace(')', '')
+            beta_avg[avg_tn] = {}
+            for feat in beta_pop[pre_tn]:
+                pre_v  = np.asarray(beta_pop[pre_tn][feat],  dtype=float)
+                post_v = np.asarray(beta_pop[post_tn][feat], dtype=float)
+                both = np.isfinite(pre_v) & np.isfinite(post_v)
+                beta_avg[avg_tn][feat] = np.where(
+                    both, (pre_v + post_v) / 2,
+                    np.where(np.isfinite(pre_v), pre_v, post_v))
+            avg_tns.append(avg_tn)
+            avg_tls.append(stripped)
+        else:
+            beta_avg[tn] = beta_pop[tn]
+            avg_tns.append(tn)
+            avg_tls.append(tl)
+
+    return beta_avg, avg_tns, avg_tls
 
 
 # ── Population tests: betas ───────────────────────────────────────────────────
@@ -1021,7 +1063,7 @@ def plot_beta_full_summary(df_tests, target_names, target_labels,
     if df.empty:
         print('No matching targets found in df_tests.')
         return
-    df['row_label'] = df['target_label'] + '  —  ' + df['feature']
+    df['row_label'] = df['target_label'] + '  —  ' + df['feature'].map(lambda f: _FEAT_DISPLAY.get(f, f))
 
     # group by target (in the requested order), features sorted by |β| within each
     tgt_rank = {tl: i for i, tl in enumerate(targets)}
@@ -1062,7 +1104,7 @@ def plot_beta_full_summary(df_tests, target_names, target_labels,
     ax.set_yticks(y)
     ax.set_yticklabels(df['row_label'], fontsize=_FS_SM, color='black')
     ax.set_xlabel('Mean β  ±  95% CI  (standardized units)', fontsize=_FS_AX, color='black')
-    ax.set_title('Full waveform-feature β profile — Pre/Post LFP Amp & Std\n'
+    ax.set_title('Full waveform-feature β profile\n'
                  '* = one-sample t-test, mean β ≠ 0 (p < 0.05)  —  bars cross 0 ⟺ ns',
                  fontsize=_FS_SUB, fontweight='bold', color='black', pad=22)
     ax.tick_params(axis='both', labelsize=_FS_SM, colors='black')
@@ -1150,7 +1192,7 @@ def plot_beta_heterogeneity(beta_pop, target_names, target_labels, features=None
 
 
 def plot_beta_heterogeneity_top_combos(beta_pop, target_names, target_labels,
-                                        n_top=6, min_minority_frac=0.2):
+                                        n_top=6, min_minority_frac=0.2, pre_only=False):
     """
     Strip plot of per-cell beta weights for the top-N target × feature combos
     ranked by mean|β| × minority_fraction — i.e., combos with a large population
@@ -1176,7 +1218,8 @@ def plot_beta_heterogeneity_top_combos(beta_pop, target_names, target_labels,
     _FS_SM, _FS_AX, _FS_SUB = 20, 24, 26
     pos_color, neg_color = '#0072B2', '#D55E00'
 
-    core_tn = [tn for tn, tl in zip(target_names, target_labels) if '(HPF)' not in tl]
+    core_tn = [tn for tn, tl in zip(target_names, target_labels)
+               if '(HPF)' not in tl and (not pre_only or tl.startswith('Pre'))]
 
     # score every (target, feature) combo
     records = []
@@ -1219,7 +1262,7 @@ def plot_beta_heterogeneity_top_combos(beta_pop, target_names, target_labels,
     df = pd.DataFrame(rows)
 
     rng  = np.random.default_rng(42)
-    fig, ax = plt.subplots(figsize=(max(10, n_top * 2.2), 6.5))
+    fig, ax = plt.subplots(figsize=(max(9, n_top * 2.0), 6.5))
 
     for xi, r in enumerate(ranked):
         vals    = r['vals']
@@ -1227,20 +1270,24 @@ def plot_beta_heterogeneity_top_combos(beta_pop, target_names, target_labels,
         neg_v   = vals[vals <  0]
         jitter  = rng.uniform(-0.18, 0.18, size=len(vals))
         ax.scatter(xi + jitter[vals >= 0], pos_v,
-                   color=pos_color, s=55, alpha=0.7, linewidths=0.4,
+                   color=pos_color, s=100, alpha=0.7, linewidths=0.4,
                    edgecolors='white', zorder=3)
         ax.scatter(xi + jitter[vals < 0],  neg_v,
-                   color=neg_color, s=55, alpha=0.7, linewidths=0.4,
+                   color=neg_color, s=100, alpha=0.7, linewidths=0.4,
                    edgecolors='white', zorder=3)
         # mean marker
         ax.scatter([xi], [np.mean(vals)], marker='D', s=120,
                    color='black', zorder=4)
 
     ax.axhline(0, color='black', lw=2.5, ls='--', alpha=0.6)
-    labels = [f"{r['target_label']}\n{r['feature']}" for r in ranked]
+    def _xtick(r):
+        tgt = r['target_label'].replace('Pre ', '').replace('Post ', '').replace('LFP ', '')
+        feat = _FEAT_DISPLAY.get(r['feature'], r['feature'])
+        return f"{feat}\n({tgt})"
+    labels = [_xtick(r) for r in ranked]
     ax.set_xticks(range(n_top))
-    ax.set_xticklabels(labels, fontsize=_FS_SM)
-    ax.set_ylabel('Per-cell β  (standardized units)', fontsize=_FS_AX, fontweight='bold')
+    ax.set_xticklabels(labels, fontsize=_FS_SM, rotation=35, ha='right')
+    ax.set_ylabel('Per-cell β\n(standardized units)', fontsize=_FS_AX, fontweight='bold')
     ax.tick_params(axis='y', labelsize=_FS_SM)
 
     from matplotlib.lines import Line2D
@@ -1255,6 +1302,7 @@ def plot_beta_heterogeneity_top_combos(beta_pop, target_names, target_labels,
     ax.legend(handles=legend_handles, fontsize=_FS_SM, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     fig.tight_layout()
+    fig.subplots_adjust(left=0.22)
     plt.show()
     return fig, ax
 
@@ -1262,24 +1310,23 @@ def plot_beta_heterogeneity_top_combos(beta_pop, target_names, target_labels,
 def plot_beta_pre_post_scatter(beta_pop, target_names, target_labels,
                                 pre_label='Pre LFP Amp', post_label='Post LFP Amp'):
     """
-    2×4 grid of scatter plots — one per waveform feature.
-    x = per-cell β for pre_label target, y = per-cell β for post_label target.
-    Shows that pre- and post-spike betas are highly correlated across cells,
-    i.e., the waveform → LFP relationship is not time-directional.
-    Spearman ρ and identity line annotated on each panel.
+    Single scatter: all waveform features pooled, x = pre-spike β, y = post-spike β.
+    Each dot = one cell × one feature, coloured by feature.
+    Shows that pre- and post-spike β weights are correlated across cells.
     """
     from scipy.stats import spearmanr
+    from matplotlib.lines import Line2D
 
     sns.set_theme(style='ticks', font_scale=1.8, rc={
-        'axes.linewidth':    3.5,
-        'xtick.major.width': 3.5,
-        'ytick.major.width': 3.5,
-        'xtick.major.size':  8,
-        'ytick.major.size':  8,
+        'axes.linewidth':    4.0,
+        'xtick.major.width': 4.0,
+        'ytick.major.width': 4.0,
+        'xtick.major.size':  9,
+        'ytick.major.size':  9,
+        'lines.linewidth':   4.0,
     })
-    _FS_SM, _FS_AX = 18, 20
+    _FS_TICK, _FS_ANNOT, _FS_TITLE, _FS_AX = 22, 24, 26, 30
 
-    # resolve target keys
     label_to_tn = {tl: tn for tn, tl in zip(target_names, target_labels)}
     pre_tn  = label_to_tn.get(pre_label)
     post_tn = label_to_tn.get(post_label)
@@ -1287,43 +1334,45 @@ def plot_beta_pre_post_scatter(beta_pop, target_names, target_labels,
         raise ValueError(f'Could not find targets: {pre_label!r}, {post_label!r}\n'
                          f'Available: {list(label_to_tn.keys())}')
 
-    feats = WAVEFORM_LABELS
     ncols, nrows = 4, 2
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.2, nrows * 4.0))
-    axes = axes.flatten()
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.6, nrows * 3.8))
+    axes_flat = axes.flatten()
 
-    for i, feat in enumerate(feats):
-        ax = axes[i]
+    _strip = lambda s: s.replace('Pre ', '').replace('Post ', '')
+    base_label = _strip(pre_label)
+
+    for i, feat in enumerate(WAVEFORM_LABELS):
+        ax = axes_flat[i]
         pre_vals  = np.asarray(beta_pop[pre_tn][feat],  dtype=float)
         post_vals = np.asarray(beta_pop[post_tn][feat], dtype=float)
         mask = np.isfinite(pre_vals) & np.isfinite(post_vals)
         x, y = pre_vals[mask], post_vals[mask]
-
+        if len(x) == 0:
+            ax.set_visible(False)
+            continue
         col = _WAVEFORM_COLOR_MAP.get(feat, '#555555')
-        ax.scatter(x, y, color=col, s=60, alpha=0.75,
+
+        ax.scatter(x, y, color=col, s=120, alpha=0.80,
                    linewidths=0.5, edgecolors='white', zorder=3)
 
-        # identity line
-        lim = max(np.abs(x).max(), np.abs(y).max()) * 1.15
-        ax.plot([-lim, lim], [-lim, lim], 'k--', lw=1.5, alpha=0.5, zorder=1)
-        ax.axhline(0, color='gray', lw=1.0, alpha=0.4, zorder=1)
-        ax.axvline(0, color='gray', lw=1.0, alpha=0.4, zorder=1)
+        lim = max(np.abs(x).max(), np.abs(y).max()) * 1.18
+        ax.plot([-lim, lim], [-lim, lim], '--', color='gray', lw=1.5, alpha=0.5, zorder=1)
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
+        ax.xaxis.set_major_locator(plt.MaxNLocator(3, symmetric=True))
+        ax.yaxis.set_major_locator(plt.MaxNLocator(3, symmetric=True))
 
         rho, p = spearmanr(x, y)
-        sig = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else ''))
+        sig = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'n.s.'))
         ax.text(0.05, 0.95, f'ρ = {rho:.2f}{sig}', transform=ax.transAxes,
-                fontsize=_FS_SM, va='top', ha='left', fontweight='bold')
+                fontsize=_FS_ANNOT, va='top', ha='left', fontweight='bold')
 
-        ax.set_title(feat, fontsize=_FS_AX, fontweight='bold', pad=6)
-        ax.tick_params(labelsize=_FS_SM - 2)
-        if i % ncols == 0:
-            ax.set_ylabel(f'{post_label} β', fontsize=_FS_AX)
-        if i >= ncols:
-            ax.set_xlabel(f'{pre_label} β', fontsize=_FS_AX)
+        ax.set_title(_FEAT_DISPLAY.get(feat, feat), fontsize=_FS_TITLE, fontweight='bold', color=col)
+        ax.tick_params(labelsize=_FS_TICK)
         sns.despine(ax=ax)
 
+    fig.supxlabel(f'Pre-spike {base_label} β', fontsize=_FS_AX, fontweight='bold')
+    fig.supylabel(f'Post-spike {base_label} β', fontsize=_FS_AX, fontweight='bold')
     fig.tight_layout()
     plt.show()
     return fig, axes
