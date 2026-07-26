@@ -85,7 +85,8 @@ _WAVEFORM_COLOR_MAP = {
 }
 
 _FEAT_DISPLAY = {
-    'Sharpness': 'Peak Sharpness',
+    'Sharpness':  'Pk. Sharp.',
+    'Peak Width': 'Pk. Width',
 }
 
 
@@ -173,14 +174,15 @@ def merge_hpf_targets(pickle_dir, feat_labels):
     first          = next(iter(res_raw.values()))
     predictor_sets = list(first[list(first.keys())[0]].keys())
 
+    # Per-cell pickles use 5 LFP features with these exact keys (original structure)
+    _FEAT_KEYS   = ['lfp_amp', 'lfp_std', 'gamma_auc', 'exponent', 'theta_auc']
+    _FEAT_LABELS = ['LFP Amp', 'LFP Std', 'Gamma AUC', 'Exponent', 'Theta AUC']
+
     # Build target name/label list: Pre window first, then Post
     target_names  = []
     target_labels = []
     for window, win_label in [('pre', 'Pre'), ('post', 'Post')]:
-        for feat_key, feat_lbl in zip(
-            ['lfp_amp', 'lfp_std', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc', 'exponent', 'theta_auc'],
-            feat_labels,
-        ):
+        for feat_key, feat_lbl in zip(_FEAT_KEYS, _FEAT_LABELS):
             tn = f'{window}_{feat_key}'
             target_names.append(tn)
             target_labels.append(f'{win_label} {feat_lbl}')
@@ -632,7 +634,8 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
 
 
 def build_population_scatter(all_results, cell_ids, target_names, target_labels,
-                              pre_win=None, post_win=None, baseline_win=None):
+                              pre_win=None, post_win=None, baseline_win=None,
+                              feat_order=None, win_order=None):
     """
     Pool scatter data (actual vs predicted, z-scored) across cells — cartoony
     style, core (non-HPF) targets only.
@@ -655,8 +658,10 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
     })
     _FS_SM, _FS_AX, _FS_SUB = 22, 26, 30
 
-    feat_order = ['LFP Amp', 'LFP Std', 'Gamma AUC', 'Exponent', 'Theta AUC']
-    win_order  = ['Pre', 'Post']
+    if feat_order is None:
+        feat_order = ['LFP Amp', 'LFP Std', 'Gamma AUC', 'Exponent', 'Theta AUC']
+    if win_order is None:
+        win_order = ['Pre', 'Post']
 
     # core (non-HPF) target name <-> label lookup
     tl_idx = {tl: i for i, tl in enumerate(target_labels) if '(HPF)' not in tl}
@@ -690,24 +695,25 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
     # each side gets its own little grid (e.g. 5 feats -> 2 rows x 3 cols)
     ncols_blk = min(len(feats), 3)
     nrows_blk = math.ceil(len(feats) / ncols_blk)
-    ncols_tot = 2 * ncols_blk
+    n_wins    = len(win_order)
+    ncols_tot = n_wins * ncols_blk
+    multi_win = n_wins > 1
 
-    # insert a narrow spacer column between the two blocks so the divider has
-    # room to sit in open space rather than overlapping axis labels/ticks
-    spacer_idx = ncols_blk
-    width_ratios = [1.0] * ncols_blk + [0.18] + [1.0] * ncols_blk
-    fig = plt.figure(figsize=(ncols_tot * 5.0 + 1.0, nrows_blk * 4.8))
-    gs = fig.add_gridspec(nrows_blk, ncols_tot + 1, width_ratios=width_ratios,
+    if multi_win:
+        width_ratios = [1.0] * ncols_blk + [0.18] + [1.0] * ncols_blk
+        gs_ncols = ncols_tot + 1
+    else:
+        width_ratios = [1.0] * ncols_blk
+        gs_ncols = ncols_blk
+
+    fig = plt.figure(figsize=(ncols_tot * 5.0 + (1.0 if multi_win else 0), nrows_blk * 4.8))
+    gs = fig.add_gridspec(nrows_blk, gs_ncols, width_ratios=width_ratios,
                           wspace=0.45, hspace=0.55)
     axes = np.empty((nrows_blk, ncols_tot), dtype=object)
     for r in range(nrows_blk):
         for c in range(ncols_tot):
-            gs_col = c if c < ncols_blk else c + 1
+            gs_col = c if (not multi_win or c < ncols_blk) else c + 1
             axes[r, c] = fig.add_subplot(gs[r, gs_col])
-
-    fig.text(0.5, 1.0,
-             'Each colour = one cell   |   z-scored within cell   |   p < 0.05 cells only',
-             ha='center', va='top', fontsize=_FS_SM, style='italic', color='black')
 
     for wi, win in enumerate(win_order):
         col_off = wi * ncols_blk
@@ -726,7 +732,8 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
             ax.scatter(y, yp, c=colors, alpha=0.07, s=3, rasterized=True)
             lo, hi = min(y.min(), yp.min()), max(y.max(), yp.max())
             ax.plot([lo, hi], [lo, hi], 'k--', lw=4.5, alpha=0.8)
-            ax.set_title(f'{win} — {feat}', fontsize=_FS_SUB, fontweight='bold',
+            title_str = f'{win} — {feat}' if multi_win else feat
+            ax.set_title(title_str, fontsize=_FS_SUB, fontweight='bold',
                          color='black', pad=16)
             box = dict(facecolor='white', edgecolor='none', alpha=0.75, pad=2.0)
             ax.text(0.05, 0.88, f'r² = {r2:.3f}', transform=ax.transAxes,
@@ -738,22 +745,22 @@ def build_population_scatter(all_results, cell_ids, target_names, target_labels,
             ax.tick_params(axis='both', labelsize=_FS_SM, colors='black')
             sns.despine(ax=ax)
 
-        # hide unused slots in this block (e.g. 5 feats in a 2x3 grid -> 1 empty)
+        # hide unused slots in this block
         for fi in range(len(feats), nrows_blk * ncols_blk):
             r, c = divmod(fi, ncols_blk)
             axes[r, col_off + c].set_visible(False)
 
-    fig.subplots_adjust(top=0.88)
+    fig.subplots_adjust(top=0.92)
 
-    # ── thick dashed divider, centred in the spacer column between blocks ──
-    fig.canvas.draw()
-    pos_l = next(ax for ax in axes[:, ncols_blk - 1] if ax.get_visible()).get_position()
-    pos_r = next(ax for ax in axes[:, ncols_blk] if ax.get_visible()).get_position()
-    x_div = (pos_l.x1 + pos_r.x0) / 2
-    all_pos = [ax.get_position() for ax in axes.flatten() if ax.get_visible()]
-    y0, y1 = min(p.y0 for p in all_pos), max(p.y1 for p in all_pos)
-    fig.add_artist(plt.Line2D([x_div, x_div], [y0, y1], transform=fig.transFigure,
-                              color='black', linestyle='--', linewidth=5.0, alpha=0.7))
+    if multi_win:
+        fig.canvas.draw()
+        pos_l = next(ax for ax in axes[:, ncols_blk - 1] if ax.get_visible()).get_position()
+        pos_r = next(ax for ax in axes[:, ncols_blk] if ax.get_visible()).get_position()
+        x_div = (pos_l.x1 + pos_r.x0) / 2
+        all_pos = [ax.get_position() for ax in axes.flatten() if ax.get_visible()]
+        y0, y1 = min(p.y0 for p in all_pos), max(p.y1 for p in all_pos)
+        fig.add_artist(plt.Line2D([x_div, x_div], [y0, y1], transform=fig.transFigure,
+                                  color='black', linestyle='--', linewidth=5.0, alpha=0.7))
 
     plt.show()
 
@@ -1281,7 +1288,7 @@ def plot_beta_heterogeneity_top_combos(beta_pop, target_names, target_labels,
 
     ax.axhline(0, color='black', lw=2.5, ls='--', alpha=0.6)
     def _xtick(r):
-        tgt = r['target_label'].replace('Pre ', '').replace('Post ', '').replace('LFP ', '')
+        tgt = r['target_label'].replace('Pre ', '').replace('Post ', '')
         feat = _FEAT_DISPLAY.get(r['feature'], r['feature'])
         return f"{feat}\n({tgt})"
     labels = [_xtick(r) for r in ranked]
@@ -1308,72 +1315,87 @@ def plot_beta_heterogeneity_top_combos(beta_pop, target_names, target_labels,
 
 
 def plot_beta_pre_post_scatter(beta_pop, target_names, target_labels,
+                                target_pairs=None,
                                 pre_label='Pre LFP Amp', post_label='Post LFP Amp'):
     """
-    Single scatter: all waveform features pooled, x = pre-spike β, y = post-spike β.
-    Each dot = one cell × one feature, coloured by feature.
-    Shows that pre- and post-spike β weights are correlated across cells.
+    Combined figure: rows = LFP targets, cols = waveform features.
+    x = pre-spike β, y = post-spike β across cells. Fits on A4.
     """
     from scipy.stats import spearmanr
-    from matplotlib.lines import Line2D
 
-    sns.set_theme(style='ticks', font_scale=1.8, rc={
-        'axes.linewidth':    4.0,
-        'xtick.major.width': 4.0,
-        'ytick.major.width': 4.0,
-        'xtick.major.size':  9,
-        'ytick.major.size':  9,
-        'lines.linewidth':   4.0,
+    if target_pairs is None:
+        target_pairs = [(pre_label, post_label)]
+
+    sns.set_theme(style='ticks', font_scale=1.0, rc={
+        'axes.linewidth':    1.5,
+        'xtick.major.width': 1.5,
+        'ytick.major.width': 1.5,
     })
-    _FS_TICK, _FS_ANNOT, _FS_TITLE, _FS_AX = 22, 24, 26, 30
 
     label_to_tn = {tl: tn for tn, tl in zip(target_names, target_labels)}
-    pre_tn  = label_to_tn.get(pre_label)
-    post_tn = label_to_tn.get(post_label)
-    if pre_tn is None or post_tn is None:
-        raise ValueError(f'Could not find targets: {pre_label!r}, {post_label!r}\n'
-                         f'Available: {list(label_to_tn.keys())}')
-
-    ncols, nrows = 4, 2
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.6, nrows * 3.8))
-    axes_flat = axes.flatten()
-
     _strip = lambda s: s.replace('Pre ', '').replace('Post ', '')
-    base_label = _strip(pre_label)
 
-    for i, feat in enumerate(WAVEFORM_LABELS):
-        ax = axes_flat[i]
-        pre_vals  = np.asarray(beta_pop[pre_tn][feat],  dtype=float)
-        post_vals = np.asarray(beta_pop[post_tn][feat], dtype=float)
-        mask = np.isfinite(pre_vals) & np.isfinite(post_vals)
-        x, y = pre_vals[mask], post_vals[mask]
-        if len(x) == 0:
-            ax.set_visible(False)
-            continue
-        col = _WAVEFORM_COLOR_MAP.get(feat, '#555555')
+    valid_pairs = [(pl, pol, _strip(pl),
+                    label_to_tn.get(pl), label_to_tn.get(pol))
+                   for pl, pol in target_pairs
+                   if label_to_tn.get(pl) and label_to_tn.get(pol)]
+    if not valid_pairs:
+        print('No valid target pairs found.')
+        return []
 
-        ax.scatter(x, y, color=col, s=120, alpha=0.80,
-                   linewidths=0.5, edgecolors='white', zorder=3)
+    n_tgts  = len(valid_pairs)       # 5  → columns
+    n_feats = len(WAVEFORM_LABELS)   # 8  → rows
 
-        lim = max(np.abs(x).max(), np.abs(y).max()) * 1.18
-        ax.plot([-lim, lim], [-lim, lim], '--', color='gray', lw=1.5, alpha=0.5, zorder=1)
-        ax.set_xlim(-lim, lim)
-        ax.set_ylim(-lim, lim)
-        ax.xaxis.set_major_locator(plt.MaxNLocator(3, symmetric=True))
-        ax.yaxis.set_major_locator(plt.MaxNLocator(3, symmetric=True))
+    # Portrait A4-friendly: 5 cols × 1.0" + margins, 8 rows × 0.82" + margins
+    fig, axes = plt.subplots(n_feats, n_tgts,
+                              figsize=(n_tgts * 1.0 + 1.1, n_feats * 0.82 + 0.85),
+                              squeeze=False)
 
-        rho, p = spearmanr(x, y)
-        sig = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'n.s.'))
-        ax.text(0.05, 0.95, f'ρ = {rho:.2f}{sig}', transform=ax.transAxes,
-                fontsize=_FS_ANNOT, va='top', ha='left', fontweight='bold')
+    for ci, (pl, pol, base_label, pre_tn, post_tn) in enumerate(valid_pairs):
+        for ri, feat in enumerate(WAVEFORM_LABELS):
+            ax = axes[ri, ci]
+            pre_vals  = np.asarray(beta_pop[pre_tn][feat],  dtype=float)
+            post_vals = np.asarray(beta_pop[post_tn][feat], dtype=float)
+            mask = np.isfinite(pre_vals) & np.isfinite(post_vals)
+            x, y = pre_vals[mask], post_vals[mask]
 
-        ax.set_title(_FEAT_DISPLAY.get(feat, feat), fontsize=_FS_TITLE, fontweight='bold', color=col)
-        ax.tick_params(labelsize=_FS_TICK)
-        sns.despine(ax=ax)
+            col = _WAVEFORM_COLOR_MAP.get(feat, '#555555')
 
-    fig.supxlabel(f'Pre-spike {base_label} β', fontsize=_FS_AX, fontweight='bold')
-    fig.supylabel(f'Post-spike {base_label} β', fontsize=_FS_AX, fontweight='bold')
-    fig.tight_layout()
+            if len(x) == 0:
+                ax.set_visible(False)
+            else:
+                ax.scatter(x, y, color=col, s=20, alpha=0.80,
+                           linewidths=0.3, edgecolors='white', zorder=3)
+                lim = max(np.abs(x).max(), np.abs(y).max()) * 1.18
+                ax.plot([-lim, lim], [-lim, lim], '--', color='gray',
+                        lw=0.8, alpha=0.5, zorder=1)
+                ax.set_xlim(-lim, lim)
+                ax.set_ylim(-lim, lim)
+
+                rho, p = spearmanr(x, y)
+                sig = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'n.s.'))
+                ax.text(0.06, 0.97, f'ρ={rho:.2f}{sig}', transform=ax.transAxes,
+                        fontsize=8.5, va='top', ha='left', fontweight='bold')
+                sns.despine(ax=ax)
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            # column header (LFP target name) — top row only
+            if ri == 0:
+                ax.set_title(base_label, fontsize=10, fontweight='bold',
+                             color='black', pad=3)
+
+            # row label (waveform feature, colored) — leftmost column only
+            if ci == 0:
+                feat_disp = _FEAT_DISPLAY.get(feat, feat)
+                ax.set_ylabel(feat_disp, fontsize=10, fontweight='bold',
+                              color=col, rotation=90, labelpad=3)
+
+    fig.supxlabel('Pre-spike β', fontsize=12, fontweight='bold')
+    fig.supylabel('Post-spike β', fontsize=12, fontweight='bold')
+    fig.subplots_adjust(left=0.14, bottom=0.07, right=0.99, top=0.92,
+                        hspace=0.18, wspace=0.18)
     plt.show()
     return fig, axes
 
@@ -1621,7 +1643,10 @@ def plot_r2_summary(r2_pop, df_r2, target_names, target_labels,
 
 def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
                              predictor_set='Waveform only',
-                             control_predictor_set='Log ISI only'):
+                             control_predictor_set='Log ISI only',
+                             feat_order=None,
+                             feat_display_names=None,
+                             combine_windows=False):
     """
     Cartoony boxplot of per-cell CV R² for the core LFP-feature targets only
     (Pre/Post × LFP Amp, LFP Std, Gamma AUC, Exponent, Theta AUC — no HPF,
@@ -1649,9 +1674,10 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
     """
 
     sns.set_theme(style='ticks', rc={'axes.linewidth': 2.5})
-    _FS_TICK, _FS_AX, _FS_ANNOT = 26, 30, 22
+    _FS_TICK, _FS_AX, _FS_ANNOT = 28, 32, 24
 
-    feat_order   = ['LFP Amp', 'LFP Std']   # only significant targets
+    if feat_order is None:
+        feat_order = ['LFP Amp', 'LFP Std']
     win_order    = ['Pre', 'Post']
     model_order  = [predictor_set, control_predictor_set]
     model_colors = {predictor_set: '#00838F', control_predictor_set: '#9E9E9E'}
@@ -1667,6 +1693,114 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
                 win_feat_tn[win][feat] = target_names[tl_idx[tl]]
     feats = [f for f in feat_order if all(f in win_feat_tn[w] for w in win_order)]
 
+    # Only auto-sort when no explicit feat_order was provided
+    if feat_order is None:
+        def _mean_r2(feat):
+            vals = []
+            for win in win_order:
+                tn = win_feat_tn[win].get(feat)
+                if tn:
+                    v = np.asarray(r2_pop[tn][predictor_set], dtype=float)
+                    vals.extend(v[np.isfinite(v)].tolist())
+            return np.mean(vals) if vals else 0.0
+        feats = sorted(feats, key=_mean_r2, reverse=True)
+
+    # display name per feat (after sorting)
+    if feat_display_names is not None:
+        _disp_map = dict(zip(feat_order, feat_display_names))
+        feat_display_list = [_disp_map.get(f, f.replace('\n', ' ')) for f in feats]
+    else:
+        feat_display_list = [f.replace('\n', ' ') for f in feats]
+
+    n_feats = len(feats)
+    box_w   = 0.65
+
+    def _box_kwargs():
+        return dict(width=box_w, dodge=True, fliersize=0,
+                    showmeans=True,
+                    meanprops=dict(marker='D', markerfacecolor='white',
+                                   markeredgecolor='black', markeredgewidth=2.5,
+                                   markersize=11, zorder=5),
+                    boxprops=dict(linewidth=2.5, alpha=0.85),
+                    medianprops=dict(linewidth=2.5, color='black'),
+                    whiskerprops=dict(linewidth=2.5),
+                    capprops=dict(linewidth=2.5))
+
+    def _legend_fig():
+        box_handles = [plt.Rectangle((0, 0), 1, 1, color=model_colors[m], alpha=0.85,
+                                     label=model_labels[m]) for m in model_order]
+        note_handle = plt.Line2D([0], [0], linestyle='none', marker='',
+                                 label='% = cells sig. (perm.)\n* pop. Wilcoxon')
+        fl, al = plt.subplots(figsize=(2.8, 2.2))
+        al.axis('off')
+        al.legend(handles=box_handles + [note_handle], fontsize=_FS_ANNOT,
+                  frameon=False, loc='center', ncol=1)
+        plt.tight_layout()
+        return fl
+
+    # ── Combined mode: average Pre+Post per cell, one panel ──────────────────
+    if combine_windows:
+        rows, whisk_hi, whisk_lo = [], [], []
+        for feat in feats:
+            pre_tn  = win_feat_tn['Pre'][feat]
+            post_tn = win_feat_tn['Post'][feat]
+            for pn in model_order:
+                pre_v  = np.asarray(r2_pop.get(pre_tn,  {}).get(pn, []), dtype=float)
+                post_v = np.asarray(r2_pop.get(post_tn, {}).get(pn, []), dtype=float)
+                combined = (pre_v + post_v) / 2
+                valid = combined[np.isfinite(combined)]
+                rows.extend({'feat': feat, 'model': pn, 'r2': v} for v in valid)
+                if len(valid):
+                    q1, q3 = np.percentile(valid, [25, 75])
+                    iqr = q3 - q1
+                    whisk_hi.append(valid[valid <= q3 + 1.5 * iqr].max())
+                    whisk_lo.append(valid[valid >= q1 - 1.5 * iqr].min())
+
+        df_plot = pd.DataFrame(rows)
+        y_top = max(whisk_hi)
+        y_bot = min(0.0, min(whisk_lo))
+        pad   = (y_top - y_bot) * 0.10
+        ylim  = (y_bot - pad, y_top + pad * 2.5)
+
+        fig, ax = plt.subplots(1, 1, figsize=(max(6, n_feats * 2.0), 7))
+        sns.boxplot(data=df_plot, x='feat', y='r2', hue='model', order=feats,
+                    hue_order=model_order,
+                    palette=[model_colors[m] for m in model_order],
+                    ax=ax, **_box_kwargs())
+        ax.get_legend().remove()
+        ax.axhline(0, color='gray', linestyle='--', linewidth=2.0, alpha=0.6)
+        ax.set_ylim(*ylim)
+
+        y_ann = ylim[1] * 0.97
+        for fi, feat in enumerate(feats):
+            pre_tn  = win_feat_tn['Pre'][feat]
+            post_tn = win_feat_tn['Post'][feat]
+            sig_pre  = np.asarray(sig_pop.get(pre_tn,  {}).get(predictor_set, []), dtype=float)
+            sig_post = np.asarray(sig_pop.get(post_tn, {}).get(predictor_set, []), dtype=float)
+            frac_sig = float(np.nanmean(np.concatenate([sig_pre, sig_post])))
+            row_wf   = df_r2[(df_r2['target'] == pre_tn) & (df_r2['predictor_set'] == predictor_set)]
+            star_wf  = row_wf.iloc[0]['stars'] if len(row_wf) and row_wf.iloc[0]['sig_r2'] else ''
+            ax.text(fi, y_ann, f'{frac_sig:.0%}{star_wf}',
+                    ha='center', va='top', fontsize=_FS_ANNOT,
+                    fontweight='bold', color=model_colors[predictor_set], clip_on=False)
+
+        ax.set_xlabel('')
+        ax.set_ylabel('CV R²', fontsize=_FS_AX, fontweight='bold', color='black')
+        rot = 30 if n_feats > 3 else 0
+        ax.set_xticklabels(feat_display_list, fontsize=_FS_TICK, rotation=rot,
+                           ha='right' if rot else 'center', color='black')
+        ax.tick_params(axis='x', colors='black', pad=8)
+        ax.tick_params(axis='y', labelsize=_FS_TICK, colors='black')
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4))
+        for spine in ax.spines.values():
+            spine.set_linewidth(2.5)
+        sns.despine(ax=ax)
+        fig.subplots_adjust(bottom=0.28 if n_feats > 3 else 0.18,
+                            left=0.14, right=0.97, top=0.92)
+        plt.show()
+        return fig, np.array([[ax]]), _legend_fig()
+
+    # ── Split Pre/Post mode (default) ─────────────────────────────────────────
     side_dfs = []
     whisk_hi, whisk_lo = [], []
     for win in win_order:
@@ -1674,6 +1808,8 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
         for feat in feats:
             tn = win_feat_tn[win][feat]
             for pn in model_order:
+                if pn not in r2_pop[tn]:
+                    continue
                 vals  = np.asarray(r2_pop[tn][pn], dtype=float)
                 valid = vals[np.isfinite(vals)]
                 rows.extend(dict(feat=feat, model=pn, r2=v) for v in valid)
@@ -1687,27 +1823,16 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
     y_top = max(whisk_hi)
     y_bot = min(0.0, min(whisk_lo))
     pad   = (y_top - y_bot) * 0.10
-    ylim  = (y_bot - pad, y_top + pad * 2.5)   # extra headroom for annotations
+    ylim  = (y_bot - pad, y_top + pad * 2.5)
 
-    box_w  = 0.65
-    offset = box_w / 4
-
-    fig, axes = plt.subplots(1, 2, figsize=(10, 7),
+    fig, axes = plt.subplots(1, 2, figsize=(max(12, n_feats * 3.2), 7),
                              sharey=True, gridspec_kw={'wspace': 0.08})
 
     for ax, win, df_plot in zip(axes, win_order, side_dfs):
         sns.boxplot(data=df_plot, x='feat', y='r2', hue='model', order=feats,
                     hue_order=model_order,
                     palette=[model_colors[m] for m in model_order],
-                    width=box_w, dodge=True, fliersize=0, ax=ax,
-                    showmeans=True,
-                    meanprops=dict(marker='D', markerfacecolor='white',
-                                   markeredgecolor='black', markeredgewidth=2.5,
-                                   markersize=11, zorder=5),
-                    boxprops=dict(linewidth=2.5, alpha=0.85),
-                    medianprops=dict(linewidth=2.5, color='black'),
-                    whiskerprops=dict(linewidth=2.5),
-                    capprops=dict(linewidth=2.5))
+                    ax=ax, **_box_kwargs())
         ax.get_legend().remove()
         ax.axhline(0, color='gray', linestyle='--', linewidth=2.0, alpha=0.6)
         ax.set_ylim(*ylim)
@@ -1729,7 +1854,10 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
         ax.set_xlabel('')
         ax.set_ylabel('CV R²' if ax is axes[0] else '', fontsize=_FS_AX,
                       fontweight='bold', color='black')
-        ax.tick_params(axis='x', labelsize=_FS_TICK, colors='black', pad=8)
+        rot = 30 if n_feats > 3 else 0
+        ax.set_xticklabels(feat_display_list, fontsize=_FS_TICK, rotation=rot,
+                           ha='right' if rot else 'center', color='black')
+        ax.tick_params(axis='x', colors='black', pad=8)
         ax.tick_params(axis='y', labelsize=_FS_TICK, colors='black',
                        left=(ax is axes[0]))
         ax.yaxis.set_major_locator(plt.MaxNLocator(4))
@@ -1737,15 +1865,8 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
             spine.set_linewidth(2.5)
         sns.despine(ax=ax, left=(ax is axes[1]), right=(ax is axes[0]))
 
-    box_handles = [plt.Rectangle((0, 0), 1, 1, color=model_colors[m], alpha=0.85,
-                                 label=model_labels[m]) for m in model_order]
-    note_handle = plt.Line2D([0], [0], linestyle='none', marker='',
-                             label='% = cells with permutation p<0.05; * population Wilcoxon (FDR)')
-    fig.legend(handles=box_handles + [note_handle], fontsize=_FS_ANNOT, frameon=False,
-               labelcolor='black', loc='lower center',
-               bbox_to_anchor=(0.5, -0.10), ncol=1)
-
-    fig.subplots_adjust(bottom=0.24, left=0.15, right=0.97, top=0.88)
+    fig.subplots_adjust(bottom=0.28 if n_feats > 3 else 0.18,
+                        left=0.12, right=0.97, top=0.88)
 
     fig.canvas.draw()
     pos_l, pos_r = axes[0].get_position(), axes[1].get_position()
@@ -1755,7 +1876,7 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
                               color='black', linestyle='--', linewidth=3.0, alpha=0.5))
 
     plt.show()
-    return fig, axes
+    return fig, axes, _legend_fig()
 
 
 # ── Target correlation check ─────────────────────────────────────────────────
