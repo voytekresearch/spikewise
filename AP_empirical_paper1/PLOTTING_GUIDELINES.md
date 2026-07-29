@@ -108,7 +108,7 @@ def sig_stars(p):
 ## Effect size and statistics
 
 - **Effect size**: Cohen's d (pooled SD). Use `_cohens_d()` from `spk_lfp_cluster_comp_analysis.py`.
-- **Multiple comparisons**: FDR correction (Benjamini-Hochberg) via `scipy.stats.false_discovery_control` or `statsmodels.stats.multitest.fdrcorrection`.
+- **Multiple comparisons**: FDR correction (Benjamini-Hochberg) via `statsmodels.stats.multitest.fdrcorrection`.
 - **Non-parametric tests**: Kruskal-Wallis for group comparisons; Spearman for correlations.
 - **Resampling**: Bootstrap at the cell level (resample cells with replacement, n=1000). See `bootstrap_population_stats()`.
 
@@ -128,7 +128,7 @@ def sig_stars(p):
 For peri-spike LFP traces (Low / Mid / High):
 - Solid line = grand mean across cells
 - Shaded band = ±1 SEM across cells
-- Grey `axvspan` = significant time windows (post-FDR)
+- Grey `axvspan` = significant time windows
 - x-axis: time relative to spike (ms), labeled as `Time from spike (ms)`
 - Vertical dashed line at x=0: `ax.axvline(0, color='k', lw=0.8, ls='--', alpha=0.5)`
 

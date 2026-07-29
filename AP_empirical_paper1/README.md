@@ -1,15 +1,16 @@
 # AP_empirical_paper1
 
-Empirical analyses for the spike waveform variability paper. Two datasets, one question: do spike waveform features vary systematically with neural input and network state?
+Empirical analyses for the spike waveform variability paper. Two datasets, one question: do spike waveform features vary with neural input and network state?
 
 ---
 
 ## Scientific question
 
-Do action potential waveform features vary with the state of the local network, and can that variability be predicted from or used to decode the input drive?
+Do action potential waveform features vary with the state of the local network, and can that variability be predicted from or used to decode the input/network state?
 
-- **Controlled stimulation (pvc-6):** Waveform features vary with the type and statistics of the injected current — establishing that input drive directly shapes waveform morphology.
-- **Spontaneous variability (spe-1):** In naturalistic recordings, spikes can be clustered by waveform feature. Do spikes from different waveform clusters occur during different LFP network states?
+- **Controlled stimulation (pvc-6):** Waveform features vary with the type and statistics of the injected current — establishing that stimulation input directly shapes waveform morphology.
+- **Spontaneous variability, simultaneous patch and npx (spe-1):** In spontaneous recordings, spikes can be clustered by waveform feature. Do spikes from different waveform clusters occur during different LFP network states? Do AP waveform and LFP covary?
+
 
 ---
 
@@ -21,25 +22,26 @@ AP_empirical_paper1/
 ├── PLOTTING_GUIDELINES.md             ← colors, figure style, stats conventions
 │
 ├── paper_aux_figs/
-│   ├── AP_empirical_paper1_fig1.ipynb
-│   └── AP_empirical_paper1_fig2_pvc6.ipynb
+│   ├── algorithm/                     ← algorithm schematic, pink noise schematic, patch quality supp
+│   ├── pvc6/                          ← pvc-6 dataset summary, Allen CT summary
+│   └── spe1/                          ← spe-1 dataset summary, schematics, all supp figures
 │
 └── datasets/
     ├── spe-1/                         ← primary dataset (see below)
     ├── pvc-6/                         ← controlled stimulation dataset (see below)
-    ├── shared_helper_modules/         ← cross-dataset utilities
-    └── old_work/                      ← archived, not actively maintained
+    ├── allen-cell-types/              ← ground-truth cell type validation (spiny/aspiny labels)
+    └── shared_helper_modules/         ← cross-dataset utilities
 ```
 
 ---
 
 ## spe-1 — Spontaneous variability, rat somatosensory cortex
 
-Juxtacellular + Neuropixels LFP recordings (n = 43 cells). Spikes are parameterized and clustered into Low / Mid / High groups by waveform feature. Main question: do spikes from different waveform clusters occur during different LFP network states?
+Simultaneous juxtacellular patch-clamp and Neuropixels LFP recordings (n = 43 cells total). Three cells (c17, c18, c43) had insufficient spike counts for waveform clustering and are excluded from all analyses (n = 40 for clustering and LFP analyses; n = 39 for ridge regression, with c39 additionally excluded due to missing raw LFP data). Spikes are parameterized and clustered into Low / Mid / High groups by waveform feature. Main question: do spikes from different waveform clusters occur during different LFP network states?
 
 ### Notebooks
 
-**Per-cell cluster + LFP analyses** (`spe1_patch_LFP_analysis/cluster_analyses/cell_analyses/cluster_feature_analyses/`):
+**Per-cell cluster + LFP analyses** (`spe1_spike_lfp_analysis/cluster_analyses/cell_analyses/cluster_feature_analyses/`):
 
 | Notebook pattern | What it does |
 |---|---|
@@ -52,20 +54,21 @@ Juxtacellular + Neuropixels LFP recordings (n = 43 cells). Spikes are parameteri
 **Per-cell ridge regression** (`cell_analyses/ridge_regression_analyses/spe-1_c{N}_spk_to_lfp_ridge.ipynb`):
 - Loads cluster pickle → extracts LFP features in pre/post windows → 5-fold CV ridge regression → saves per-cell pickle
 
-**Population-level** (`spe1_patch_LFP_analysis/cluster_analyses/population_analyses/`):
+**Population-level** (`spe1_spike_lfp_analysis/cluster_analyses/population_analyses/`):
 
 | Notebook | What it does |
 |---|---|
 | `pop_spk_waveform_clusters.ipynb` | Clustering prevalence across all cells; metadata confounds (recording type, depth, cell type); temporal drift; select priority cells |
-| `pop_lfp_spk_sliding_window.ipynb` | LFP × spike cluster sliding-window analysis — effect sizes (Cohen's d), bootstrap CIs, within-cell permutation, direction and timing |
-| `pop_lfp_spk_prepost.ipynb` | Pre/post-spike LFP differences per cluster group; interaction test; priority vs. non-priority cell comparison |
-| `pop_lfp_spk_metadata.ipynb` | Does clustering quality or cell identity predict LFP effect strength? Three-way metadata × LFP × spike-feature analysis |
+| `pop_temporal_transitions.ipynb` | Detect within-cell temporal transitions in cluster membership; logistic sigmoid fitting; AIC model selection |
+| `pop_around_transition.ipynb` | Peri-transition LFP analysis: compare LFP state before vs. after cluster transitions |
+| `pop_within_vs_between_waveform.ipynb` | Within-cell vs. between-cell waveform variability; nRMSE distributions by cell type and recording method |
+| `pop_transition_metadata.ipynb` | Which cells show transitions and in which features; metadata associations |
 | `pop_ridge_regression.ipynb` | Pool per-cell ridge regression results; population R² tests; beta consistency; fraction-significant binomial tests |
 | `pop_ridge_metadata.ipynb` | Which cells drive waveform→LFP predictability? Cell identity × R² and beta-direction analyses |
 
 **Cell groups** (defined in `config.py`, derived in `pop_spk_waveform_clusters.ipynb` § G):
-- `PRIORITY_CELLS = [3, 4, 21, 24, 26, 27, 42]` — top 7 cells by mean nRMSE (largest waveform differences across cluster groups)
-- `HIGH_DIFF_LOW_DRIFT_CELLS = [8, 14, 26]` — top 3 by nRMSE among cells with low temporal drift (|mean ρ| < 0.2), providing a contrast group where cluster differences exist but are not confounded by time-in-recording
+- `PRIORITY_CELLS = [3, 21, 22, 24, 26, 28, 45]` — top 7 cells by mean nRMSE (largest waveform differences across cluster groups)
+- `HIGH_DIFF_LOW_DRIFT_CELLS = [15, 26, 46]` — top 3 by nRMSE among cells with low temporal drift (|mean ρ| < 0.2), providing a contrast group where cluster differences exist but are not confounded by time-in-recording
 
 ### Helper modules (`spe1_helper_modules/`)
 
@@ -128,8 +131,8 @@ Whole-cell current clamp slice recordings from mouse visual cortex ([CRCNS PVC-6
 | Within-cell LFP specificity | Permutation test (n=500 label shuffles) | % cells significant | — |
 | Metadata × cluster difference | Mann-Whitney U / Kruskal-Wallis / Spearman | rank-biserial r / η² / ρ | BH-FDR |
 | Classifier accuracy (pvc-6) | Bootstrap (n=1000 train/test splits) | accuracy | — |
-| Waveform → LFP ridge regression (spe-1) | 5-fold CV ridge; Wilcoxon median R²>0 (population) | CV R² | BH-FDR |
-| Beta consistency across cells (spe-1) | One-sample Wilcoxon signed-rank on betas | — | BH-FDR |
+| Waveform → LFP ridge regression (spe-1) | Per-cell: permutation test (n=1,000); population R²: one-sided Wilcoxon (H₁: CV R²>0) | CV R² | None (raw α=0.05 per target) |
+| Beta consistency across cells (spe-1) | One-sample t-test (H₁: mean β≠0); restricted to R²-significant targets | — | None (raw α=0.05) |
 | Cell metadata × R² / beta direction | Kruskal-Wallis (categorical) / Spearman (continuous) | η² / ρ | BH-FDR |
 
 ---

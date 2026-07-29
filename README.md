@@ -6,7 +6,6 @@ Spike waveform parameterization and analysis for intracellular and extracellular
 
 ## What this is
 
-Two parts:
 
 1. **`spikeparam/` — Python package** for fitting and extracting features from action potential waveforms. Extracts: peak amplitude, peak sharpness, peak width, repolarization rate (`exp_lambda`), repolarization constant (`exp_const`), inflection time, and log inter-spike interval.
 
@@ -30,7 +29,10 @@ spikeparam/
 ├── AP_empirical_paper1/           # All paper analyses → see AP_empirical_paper1/README.md
 │
 ├── scripts/                       # Batch runners and utilities
-│   ├── run_spe1_batch.py          # Headless batch executor (papermill-based)
+│   ├── run_spe1_batch.py          # Headless batch executor for spe-1 pipeline
+│   ├── run_ridge_psd_cell.py      # Per-cell spike-to-LFP ridge regression
+│   ├── run_allen_ct_batch.py      # Batch runner for Allen Cell Types dataset
+│   ├── save_nocluster_feats.py    # Build cluster_df.pkl for cells without clusters
 │   └── benchmark_spe1_notebooks.py
 │
 ├── docs/tutorials/                # Usage tutorials for the spikeparam package
@@ -73,7 +75,3 @@ python scripts/run_spe1_batch.py --priority --lfp --force-all
 See [`scripts/README.md`](scripts/README.md) for full flag reference and path override instructions.
 
 ---
-
-## Funding
-
-Supported by 

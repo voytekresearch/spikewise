@@ -35,7 +35,7 @@ python scripts/run_spe1_batch.py --force-all --no-plot
 | Flag | Effect |
 |---|---|
 | `--cells 21 24 42` | Run specific cell numbers only |
-| `--priority` | Run only `config.PRIORITY_CELLS` = [21, 24, 42, 19, 45, 8, 10] |
+| `--priority` | Run only `config.PRIORITY_CELLS` = [3, 21, 22, 24, 26, 28, 45] |
 | `--workers N` | Parallel processes (default 1 = sequential) |
 | `--force-fit` | Recompute spike fitting even if pickle exists |
 | `--force-cluster` | Recompute clustering even if pickle exists |
@@ -77,10 +77,31 @@ Each step only reruns if its pickle is missing or the matching `--force-*` flag 
 
 ---
 
-## run_c21_spike_fit.py
+## run_ridge_psd_cell.py
 
-Minimal single-cell example: loads cell 21 data and runs spike fitting. Useful as
-a sanity check that the package is installed correctly.
+Runs the per-cell spike-to-LFP ridge regression pipeline for a single cell. Called by the batch runner or directly for a specific cell. Loads the cluster pickle, extracts pre/post-spike LFP features, runs 5-fold CV ridge regression with permutation testing, and saves a per-cell ridge results pickle.
+
+```bash
+python scripts/run_ridge_psd_cell.py --cell 21
+```
+
+---
+
+## run_allen_ct_batch.py
+
+Batch runner for the Allen Cell Types dataset (ground-truth cell type validation). Analogous to `run_spe1_batch.py` but for the allen-cell-types dataset.
+
+---
+
+## save_nocluster_feats.py
+
+Creates `cluster_df.pkl` for cells that have spike fit pickles but no waveform clusters (c17, c18, c43). Saves waveform features + log ISI without cluster columns so these cells can be included in the ridge regression pipeline.
+
+```bash
+python scripts/save_nocluster_feats.py
+```
+
+---
 
 ## benchmark_spe1_notebooks.py
 
