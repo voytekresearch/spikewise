@@ -4,6 +4,9 @@
 # Ignore cache files
 __pycache__/
 
+# Ignore macOS metadata
+.DS_Store
+
 # Ignore temp file for linter output
 _lint.txt
 
