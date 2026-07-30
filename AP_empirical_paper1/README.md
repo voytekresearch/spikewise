@@ -27,9 +27,9 @@ AP_empirical_paper1/
 │   └── spe1/                          ← spe-1 dataset summary, schematics, all supp figures
 │
 └── datasets/
-    ├── spe-1/                         ← primary dataset (see below)
+    ├── spe-1/                         ← simultaneous npx and patch (see below)
     ├── pvc-6/                         ← controlled stimulation dataset (see below)
-    ├── allen-cell-types/              ← ground-truth cell type validation (spiny/aspiny labels)
+    ├── allen-cell-types/              ← ground-truth cell type validation (spiny/aspiny labels) TBD
     └── shared_helper_modules/         ← cross-dataset utilities
 ```
 
@@ -79,7 +79,7 @@ Simultaneous juxtacellular patch-clamp and Neuropixels LFP recordings (n = 43 ce
 | `signal_utils.py` | Butterworth LFP filtering |
 | `spk_feat_cluster_analysis.py` | Per-cell clustering, LFP windowing, specparam, sliding-window stats, `load_or_compute` |
 | `spk_feat_cluster_comp_analysis.py` | Population clustering QC — prevalence, metadata associations, temporal drift |
-| `spk_lfp_cluster_comp_analysis.py` | Population LFP-spike comparison — Cohen's d, bootstrap, within-cell permutation |
+| `spk_lfp_cluster_comp_analysis.py` | Population LFP-spike comparison utilities — peri-spike window analysis, effect sizes, population plots |
 | `lfp_spike_window_analysis.py` | Peri-spike LFP windowing, sensitivity analysis |
 | `spe1_plotting.py` | Dataset-specific plotting utilities |
 | `ridge_regression_utils.py` | Per-cell 5-fold ridge regression, feature extraction, LFP target construction |
@@ -105,18 +105,61 @@ spe1_pickles/
                                          df_tests, df_frac, df_r2, mean_beta_mat
 ```
 
----
-
 ## pvc-6 — Controlled stimulation, mouse visual cortex (in vitro)
 
 Whole-cell current clamp slice recordings from mouse visual cortex ([CRCNS PVC-6](http://crcns.org/data-sets/vc/pvc-6)). Constant current, ramp, and pink (1/f) noise stimuli. Tests whether spike waveform features vary with input drive and can decode stimulus type.
 
+**Main analyses** (`cell_analyses/`):
+
 | Notebook | What it does |
 |---|---|
 | `spk_waveform_stim_predictors_cell1_main.ipynb` | Feature extraction, ridge regression, stimulus decoding — cell 1 |
+
+**Supplementary** (`supplementary/`):
+
+| Notebook | What it does |
+|---|---|
+| `spk_waveform_stim_predictors_cell1_supp.ipynb` | Extended analyses and supplementary figures — cell 1 |
 | `spk_waveform_stim_predictors_cell2.ipynb` | Same pipeline for cell 2 (note: class imbalance limits stimulus classification) |
+| `spk_waveform_stim_predictors_cell2_supp.ipynb` | Supplementary figures — cell 2 |
+| `pvc6_supp_final_figures.ipynb` | Final supplementary figure assembly for pvc-6 |
 
 **Helper modules** (`pvc6_helper_modules/`): `pvc6_load_data.py`, `pvc6_stim_analysis.py`, `pvc6_plotting.py`
+
+---
+
+## paper_aux_figs — Final figure notebooks
+
+### algorithm/
+
+| Notebook | What it does |
+|---|---|
+| `AP_empirical_algorithm_sch.ipynb` | Algorithm schematic figure — spike fitting and feature extraction pipeline |
+| `AP_empirical_paper_pinknoise_sch.ipynb` | Pink noise stimulus schematic |
+| `supp_patch_quality.ipynb` | Supplementary figure: patch-clamp recording quality metrics |
+
+### pvc6/
+
+| Notebook | What it does |
+|---|---|
+| `pvc6_dataset_summary.ipynb` | pvc-6 dataset summary figure |
+| `allen_ct_dataset_summary.ipynb` | Allen Cell Types dataset summary figure |
+
+### spe1/
+
+| Notebook | What it does |
+|---|---|
+| `spe1_dataset_summary.ipynb` | spe-1 dataset summary figure |
+| `spe1_schematics.ipynb` | spe-1 analysis schematics |
+| `supp_cluster_characterization.ipynb` | Supp: cluster quality metrics, metadata associations, temporal drift |
+| `supp_cluster_distributions.ipynb` | Supp: per-cell cluster feature distributions |
+| `supp_temporal_trajectories.ipynb` | Supp: within-cell temporal transitions in cluster membership |
+| `supp_peri_transition_lfp.ipynb` | Supp: LFP state before vs. after cluster transitions |
+| `supp_lfp_by_feature_group_transitions.ipynb` | Supp: LFP environment grouped by transitioning waveform feature |
+| `supp_within_vs_between_waveform.ipynb` | Supp: within-cell vs. between-cell waveform variability |
+| `supp_intra_spike_correlations.ipynb` | Supp: correlations between spike waveform features |
+| `supp_ridge_regression.ipynb` | Supp: spike waveform → LFP ridge regression population results |
+| `supp_r2_distributions.ipynb` | Supp: per-cell CV R² distributions across LFP targets |
 
 ---
 
@@ -126,9 +169,6 @@ Whole-cell current clamp slice recordings from mouse visual cortex ([CRCNS PVC-6
 |---|---|---|---|
 | Cluster group differences (per cell) | Mann-Whitney U / Kruskal-Wallis | η² | — |
 | Temporal drift (per cell) | Spearman ρ (spike time × cluster label) | ρ | — |
-| Sliding-window LFP differences | Welch's t / F-test (vectorized) | Cohen's d | — |
-| Population LFP robustness | Bootstrap CIs (n=1000, resample cells) | Cohen's d CI | — |
-| Within-cell LFP specificity | Permutation test (n=500 label shuffles) | % cells significant | — |
 | Metadata × cluster difference | Mann-Whitney U / Kruskal-Wallis / Spearman | rank-biserial r / η² / ρ | BH-FDR |
 | Classifier accuracy (pvc-6) | Bootstrap (n=1000 train/test splits) | accuracy | — |
 | Waveform → LFP ridge regression (spe-1) | Per-cell: permutation test (n=1,000); population R²: one-sided Wilcoxon (H₁: CV R²>0) | CV R² | None (raw α=0.05 per target) |

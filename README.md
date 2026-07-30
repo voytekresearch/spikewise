@@ -59,7 +59,7 @@ pip install -e .
 The batch script runs per-cell Jupyter notebooks via papermill — all per-cell logic, manual clustering thresholds, and plots are preserved.
 
 ```bash
-# Cluster all 44 cells (loads from cache where pickles exist)
+# Cluster all 43 cells (loads from cache where pickles exist)
 python scripts/run_spe1_batch.py
 
 # Cluster all cells + run LFP analysis for priority cells

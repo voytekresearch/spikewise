@@ -20,9 +20,9 @@ CLUST_COLORS = {
 
 Use these any time you're plotting Low / Mid / High cluster groups against each other — waveform traces, strip plots, box plots, etc.
 
-### LFP features
+### Spike waveform features (color in population LFP plots)
 
-Each LFP feature has a fixed color used consistently across sliding-window and population-level plots:
+Each spike waveform feature has a fixed color used consistently across population-level plots:
 
 ```python
 feature_shades = {
@@ -105,32 +105,19 @@ def sig_stars(p):
 
 ---
 
-## Effect size and statistics
+## Statistics
 
-- **Effect size**: Cohen's d (pooled SD). Use `_cohens_d()` from `spk_lfp_cluster_comp_analysis.py`.
 - **Multiple comparisons**: FDR correction (Benjamini-Hochberg) via `statsmodels.stats.multitest.fdrcorrection`.
 - **Non-parametric tests**: Kruskal-Wallis for group comparisons; Spearman for correlations.
-- **Resampling**: Bootstrap at the cell level (resample cells with replacement, n=1000). See `bootstrap_population_stats()`.
 
 ---
 
 ## Heatmaps
 
-- Use `cmap='RdBu_r'` for signed effect sizes (positive = high cluster → higher LFP).
-- Use `cmap='Purples'` or `cmap='YlOrRd'` for unsigned magnitudes (yield, |Cohen's d|).
+- Use `cmap='RdBu_r'` for signed values (e.g. β weights — positive = higher LFP with higher feature value).
+- Use `cmap='Purples'` or `cmap='YlOrRd'` for unsigned magnitudes.
 - Always include a colorbar with a label.
 - Center diverging colormaps at 0: `vmin=-vmax`.
-
----
-
-## Grand average trace plots
-
-For peri-spike LFP traces (Low / Mid / High):
-- Solid line = grand mean across cells
-- Shaded band = ±1 SEM across cells
-- Grey `axvspan` = significant time windows
-- x-axis: time relative to spike (ms), labeled as `Time from spike (ms)`
-- Vertical dashed line at x=0: `ax.axvline(0, color='k', lw=0.8, ls='--', alpha=0.5)`
 
 ---
 

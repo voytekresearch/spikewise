@@ -95,7 +95,7 @@ Batch runner for the Allen Cell Types dataset (ground-truth cell type validation
 
 ## save_nocluster_feats.py
 
-Creates `cluster_df.pkl` for cells that have spike fit pickles but no waveform clusters (c17, c18, c43). Saves waveform features + log ISI without cluster columns so these cells can be included in the ridge regression pipeline.
+Creates `cluster_df.pkl` for cells that have spike fit pickles but no waveform clusters (c17, c18, c43). Saves waveform features + log ISI without cluster columns so these cells can participate in non-clustering analyses (e.g. intra-spike correlations, within-vs-between waveform variability). These cells are excluded from ridge regression and all cluster-based analyses.
 
 ```bash
 python scripts/save_nocluster_feats.py
