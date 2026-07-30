@@ -157,6 +157,7 @@ Whole-cell current clamp slice recordings from mouse visual cortex ([CRCNS PVC-6
 | `supp_peri_transition_lfp.ipynb` | Supp: LFP state before vs. after cluster transitions |
 | `supp_lfp_by_feature_group_transitions.ipynb` | Supp: LFP environment grouped by transitioning waveform feature |
 | `supp_within_vs_between_waveform.ipynb` | Supp: within-cell vs. between-cell waveform variability |
+| `supp_waveform_isi_independence.ipynb` | Supp: waveform clusters are independent of ISI — log ISI KDE per cluster (example cell) + population η² (Kruskal-Wallis) |
 | `supp_intra_spike_correlations.ipynb` | Supp: correlations between spike waveform features |
 | `supp_ridge_regression.ipynb` | Supp: spike waveform → LFP ridge regression population results |
 | `supp_r2_distributions.ipynb` | Supp: per-cell CV R² distributions across LFP targets |
