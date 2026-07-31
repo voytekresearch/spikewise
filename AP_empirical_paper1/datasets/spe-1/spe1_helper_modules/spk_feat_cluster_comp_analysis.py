@@ -9077,3 +9077,571 @@ def plot_eta2_legend(med, ex_val, example_cell, colors, fontsize=18, figsize=(3.
               prop={'weight': 'bold', 'size': fontsize})
     fig.tight_layout()
     return fig
+
+
+# ── Decay-correlation direction analysis helpers ──────────────────────────────
+
+def compute_exp_lambda_corr_per_cell(dfs, cids, feat_a='exp_lambda', feat_b='peak_amp'):
+    """Per-cell Pearson r between feat_a and feat_b.
+
+    Returns DataFrame: cell, r, p, n_spikes, significant (p<0.05).
+    """
+    rows = []
+    for df, cid in zip(dfs, cids):
+        if feat_a not in df.columns or feat_b not in df.columns:
+            continue
+        sub = df[[feat_a, feat_b]].dropna()
+        if len(sub) < 5:
+            continue
+        r, p = pearsonr(sub[feat_a], sub[feat_b])
+        rows.append({'cell': cid, 'r': r, 'p': p, 'n_spikes': len(sub)})
+    df_r = pd.DataFrame(rows)
+    if not df_r.empty:
+        df_r['significant'] = df_r['p'] < 0.05
+    return df_r
+
+
+def plot_exp_lambda_strip(df_r,
+                           feat_a='exp_lambda', feat_b='peak_amp',
+                           fs_ax=28, fs_tk=22, lw_sp=2.5,
+                           figsize=(8, 5)):
+    """Ranked strip plot of per-cell r(feat_a, feat_b).
+
+    x-axis = rank (sorted by r, no tick labels).
+    Color  = direction: r>0 → orange (#D55E00), r<0 → blue (#0072B2).
+    Fill   = significance: p<0.05 → filled circle; p≥0.05 → open circle.
+    Returns (fig, df_sorted, n_pos, n_neg, n_pos_sig, n_neg_sig).
+    """
+    _POS = '#D55E00'
+    _NEG = '#0072B2'
+
+    df_sorted = df_r.sort_values('r').reset_index(drop=True)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for idx, row in df_sorted.iterrows():
+        r_val  = row['r']
+        p_val  = row.get('p', 1.0)
+        col    = _POS if r_val > 0 else _NEG
+        sig    = p_val < 0.05
+        if sig:
+            ax.scatter(idx, r_val, color=col, s=90, zorder=3,
+                       edgecolors='none', marker='o')
+        else:
+            ax.scatter(idx, r_val, facecolors='none', edgecolors=col,
+                       linewidths=1.8, s=90, zorder=3, marker='o')
+
+    ax.axhline(0, color='#888', lw=1.5, ls='--', zorder=1)
+
+    n_pos     = int((df_sorted['r'] > 0).sum())
+    n_neg     = int((df_sorted['r'] < 0).sum())
+    n_pos_sig = int(((df_sorted['r'] > 0) & (df_sorted['p'] < 0.05)).sum())
+    n_neg_sig = int(((df_sorted['r'] < 0) & (df_sorted['p'] < 0.05)).sum())
+
+    _fa = feat_a.replace('_', ' ')
+    _fb = feat_b.replace('_', ' ')
+    ax.set_xlabel('Cells (sorted by r)', fontsize=fs_ax, fontweight='bold')
+    ax.set_ylabel(f'r({_fa},\n{_fb})', fontsize=fs_ax, fontweight='bold')
+    ax.set_xticks([])
+    ax.tick_params(axis='y', labelsize=fs_tk, width=lw_sp)
+    for lbl in ax.get_yticklabels():
+        lbl.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    for sp in ['bottom', 'left']:
+        ax.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig, df_sorted, n_pos, n_neg, n_pos_sig, n_neg_sig
+
+
+def plot_exp_lambda_strip_stats(n_pos, n_neg, n_pos_sig, n_neg_sig,
+                                 fs=20, figsize=(5.5, 1.2)):
+    """Standalone stats text for plot_exp_lambda_strip."""
+    n_total = n_pos + n_neg
+    lines = [
+        f'r > 0: {n_pos}/{n_total} cells  ({n_pos_sig} significant)',
+        f'r < 0: {n_neg}/{n_total} cells  ({n_neg_sig} significant)',
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.text(0.5, 0.5, '\n'.join(lines), transform=ax.transAxes,
+            ha='center', va='center', fontsize=fs, fontweight='bold',
+            color='#222', linespacing=1.6)
+    fig.tight_layout()
+    return fig
+
+
+def plot_exp_lambda_strip_legend(fs=20, figsize=(4.5, 1.6)):
+    """Standalone legend for plot_exp_lambda_strip (direction + significance)."""
+    _POS = '#D55E00'
+    _NEG = '#0072B2'
+    handles = [
+        Line2D([], [], color=_POS, marker='o', ls='None', markersize=10,
+               markerfacecolor=_POS, markeredgecolor=_POS, label='r > 0, p < 0.05'),
+        Line2D([], [], color=_POS, marker='o', ls='None', markersize=10,
+               markerfacecolor='none', markeredgewidth=1.8, markeredgecolor=_POS,
+               label='r > 0, p ≥ 0.05'),
+        Line2D([], [], color=_NEG, marker='o', ls='None', markersize=10,
+               markerfacecolor=_NEG, markeredgecolor=_NEG, label='r < 0, p < 0.05'),
+        Line2D([], [], color=_NEG, marker='o', ls='None', markersize=10,
+               markerfacecolor='none', markeredgewidth=1.8, markeredgecolor=_NEG,
+               label='r < 0, p ≥ 0.05'),
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=2, frameon=False,
+              handlelength=1.2, handleheight=1.0, handletextpad=0.4,
+              columnspacing=0.8, prop={'weight': 'bold', 'size': fs})
+    fig.tight_layout()
+    return fig
+
+
+def plot_two_corr_heatmaps(df_a, df_b, feat_cols, title_a='', title_b='',
+                            corr_threshold=0.1, figsize=(26, 10)):
+    """Side-by-side Pearson r heatmaps for two DataFrames.
+
+    Same aesthetic as plot_avg_corr_heatmap; computes raw per-pair r within
+    each DataFrame. Useful for comparing a reference cell (pvc-6 c1) and a
+    best-match spe-1 cell side by side.
+    """
+    _LABEL = {
+        'ramp_amp':        'ramp amp',
+        'inflection_time': 'inflec time',
+        'inflection_amp':  'inflec amp',
+        'peak_amp':        'peak amp',
+        'peak_width':      'peak width',
+        'peak_sharpness':  'peak sharp',
+        'exp_lambda':      'exp lambda',
+        'exp_const':       'exp const',
+        'log_isi':         'log ISI',
+    }
+    def _short(f): return _LABEL.get(f, f.replace('_', ' '))
+    def _y_label(f):
+        s = _short(f)
+        parts = s.split(' ')
+        return parts[0] + '\n' + parts[1] if len(parts) == 2 else s
+
+    n       = len(feat_cols)
+    mask    = np.triu(np.ones((n, n), dtype=bool))
+    xlabels = [_short(f) for f in feat_cols[:-1]] + ['']
+    ylabels = [''] + [_y_label(f) for f in feat_cols[1:]]
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    for ax, df, title in zip(axes, [df_a, df_b], [title_a, title_b]):
+        sub = df[[c for c in feat_cols if c in df.columns]].dropna()
+        sub = sub.reindex(columns=feat_cols)
+
+        r_mat = np.full((n, n), np.nan)
+        p_mat = np.ones((n, n))
+        for i in range(n):
+            r_mat[i, i] = 1.0
+        for i in range(n):
+            ci = feat_cols[i]
+            for j in range(i):
+                cj = feat_cols[j]
+                _v = sub[[ci, cj]].dropna()
+                if len(_v) > 4:
+                    _r, _p        = pearsonr(_v[ci], _v[cj])
+                    r_mat[i, j]   = _r;  r_mat[j, i] = _r
+                    p_mat[i, j]   = _p;  p_mat[j, i] = _p
+
+        rho_df = pd.DataFrame(r_mat, index=feat_cols, columns=feat_cols)
+        sns.heatmap(rho_df, mask=mask, annot=False, cmap='RdBu_r', center=0,
+                    vmin=-1, vmax=1, square=True, linewidths=0, ax=ax,
+                    xticklabels=xlabels, yticklabels=ylabels)
+
+        cbar = ax.collections[0].colorbar
+        cbar.set_ticks([-1, 0, 1])
+        cbar.set_ticklabels(['-1', '0', '1'])
+        cbar.ax.tick_params(labelsize=20, width=2.5, length=6)
+        for sp in cbar.ax.spines.values():
+            sp.set_visible(True); sp.set_linewidth(2.5)
+        for lbl in cbar.ax.get_yticklabels():
+            lbl.set_fontweight('bold')
+
+        for sp in ['top', 'right']:
+            ax.spines[sp].set_visible(False)
+        for sp in ['left', 'bottom']:
+            ax.spines[sp].set_visible(True)
+            ax.spines[sp].set_linewidth(2.5)
+
+        _cmap_obj = plt.cm.RdBu_r
+        _norm_obj = mcolors.Normalize(vmin=-1, vmax=1)
+        cell_h_in = figsize[1] / n
+        star_fs   = max(12, int(cell_h_in * 72 * 0.45))
+        r_fs      = max(9,  int(cell_h_in * 72 * 0.26))
+
+        for i in range(n):
+            for j in range(n):
+                if i > j:
+                    rv = r_mat[i, j]
+                    pv = p_mat[i, j]
+                    if np.isnan(rv):
+                        continue
+                    sig  = pv < 0.05 and abs(rv) >= corr_threshold
+                    rgba = _cmap_obj(_norm_obj(rv))
+                    lum  = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
+                    tc   = 'white' if lum < 0.5 else 'black'
+                    ax.text(j + 0.5, i + 0.68, f'{rv:.2f}',
+                            ha='center', va='center', fontsize=r_fs, color=tc,
+                            fontweight='bold' if pv < 0.05 else 'normal',
+                            fontfamily='Helvetica Neue')
+                    if sig:
+                        star = '***' if pv < 0.001 else '**' if pv < 0.01 else '*'
+                        ax.text(j + 0.5, i + 0.32, star,
+                                ha='center', va='center', fontsize=star_fs,
+                                fontweight='bold', color=tc, fontfamily='Helvetica Neue')
+
+        ax.tick_params(axis='x', labelsize=26, width=2.5)
+        ax.tick_params(axis='y', labelsize=22, width=2.5)
+        fig.canvas.draw()
+        for lbl in ax.get_xticklabels():
+            lbl.set_fontweight('bold')
+        for lbl in ax.get_yticklabels():
+            lbl.set_fontweight('bold')
+            lbl.set_multialignment('center')
+        if title:
+            ax.set_title(title, fontsize=22, fontweight='bold',
+                         fontfamily='Helvetica Neue')
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+        ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+
+    plt.tight_layout()
+    return fig
+
+
+def compute_single_cell_corr_matrix(df, feat_cols):
+    """Pairwise Pearson r matrix for a single DataFrame.
+
+    Returns (r_mat, p_mat) both (n, n) with raw (uncorrected) p-values,
+    matching the computation used inside plot_two_corr_heatmaps.
+    """
+    n = len(feat_cols)
+    sub = df[[c for c in feat_cols if c in df.columns]].dropna()
+    sub = sub.reindex(columns=feat_cols)
+
+    r_mat = np.full((n, n), np.nan)
+    p_mat = np.ones((n, n))
+    for i in range(n):
+        r_mat[i, i] = 1.0
+
+    for i in range(n):
+        for j in range(i):
+            ci, cj = feat_cols[i], feat_cols[j]
+            _v = sub[[ci, cj]].dropna()
+            if len(_v) > 4:
+                _r, _p = pearsonr(_v[ci], _v[cj])
+                r_mat[i, j] = _r;  r_mat[j, i] = _r
+                p_mat[i, j] = _p;  p_mat[j, i] = _p
+
+    return r_mat, p_mat
+
+
+def plot_clear_eap_box_strip(df_r, dict_clear_eap,
+                              feat_a='exp_lambda', feat_b='peak_amp',
+                              raw_p=0.057, fdr_p=0.286,
+                              fs_ax=28, fs_tk=22, lw_sp=2.5,
+                              figsize=(6, 6)):
+    """Box + strip of r(feat_a, feat_b) split by clear EAP status.
+
+    Annotates with raw and FDR-corrected p-values from a prior Mann-Whitney U test.
+    """
+    df_plot = df_r.copy()
+    df_plot['_eap'] = df_plot['cell'].apply(
+        lambda c: dict_clear_eap.get(int(str(c).replace('c', '')), False))
+    df_plot['Clear EAP'] = df_plot['_eap'].map(
+        {True: 'Clear EAP', False: 'No clear EAP'})
+
+    _COLORS = {'Clear EAP': '#0072B2', 'No clear EAP': '#888888'}
+    order   = ['Clear EAP', 'No clear EAP']
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sns.boxplot(data=df_plot, x='Clear EAP', y='r', order=order,
+                palette=_COLORS, width=0.5, fliersize=0, ax=ax,
+                linewidth=lw_sp)
+    sns.stripplot(data=df_plot, x='Clear EAP', y='r', order=order,
+                  color='#222', size=7, jitter=True, ax=ax, zorder=5)
+
+    ax.axhline(0, color='#888', lw=1.5, ls='--')
+
+    ax.annotate(f'raw p = {raw_p:.3f}\nFDR p = {fdr_p:.3f}',
+                xy=(0.5, 0.97), xycoords='axes fraction',
+                ha='center', va='top',
+                fontsize=fs_tk - 4, fontweight='bold', color='#444')
+
+    _fa = feat_a.replace('_', ' ')
+    _fb = feat_b.replace('_', ' ')
+    ax.set_xlabel('', fontsize=fs_ax)
+    ax.set_ylabel(f'r({_fa}, {_fb})', fontsize=fs_ax, fontweight='bold')
+    ax.tick_params(axis='both', labelsize=fs_tk, width=lw_sp)
+    for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+        lbl.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    for sp in ['bottom', 'left']:
+        ax.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig
+
+
+# ── Decay correlation vs ridge R² helpers ────────────────────────────────────
+
+def compute_r2_vs_decay_corr(df_corr, pop_ridge_pkl_path,
+                               predictor_set='Waveform only',
+                               decay_beta_label='Decay λ'):
+    """Merge per-cell r(exp_lambda, peak_amp) with ridge R² and exp_lambda beta.
+
+    Returns (merged_df, target_names).
+    merged_df columns: cell, r, p, n_spikes, significant,
+                        mean_r2, max_r2, n_targets,
+                        mean_decay_beta (average across LFP targets).
+    """
+    import pickle as _pkl
+    with open(pop_ridge_pkl_path, 'rb') as _f:
+        pop = _pkl.load(_f)
+
+    r2_pop       = pop['r2_pop']
+    beta_pop     = pop.get('beta_pop', {})
+    cell_ids_r   = pop['cell_ids']
+    target_names = pop['target_names']
+
+    rows = []
+    for idx, cid in enumerate(cell_ids_r):
+        r2_vals   = []
+        beta_vals = []
+        for tn in target_names:
+            arr = r2_pop.get(tn, {}).get(predictor_set)
+            if arr is not None and idx < len(arr) and np.isfinite(arr[idx]):
+                r2_vals.append(arr[idx])
+            barr = beta_pop.get(tn, {}).get(decay_beta_label)
+            if barr is not None and idx < len(barr) and np.isfinite(barr[idx]):
+                beta_vals.append(barr[idx])
+        rows.append({
+            'cell':            cid,
+            'mean_r2':         float(np.mean(r2_vals))   if r2_vals   else np.nan,
+            'max_r2':          float(np.max(r2_vals))    if r2_vals   else np.nan,
+            'n_targets':       len(r2_vals),
+            'mean_decay_beta': float(np.mean(beta_vals)) if beta_vals else np.nan,
+        })
+
+    df_r2  = pd.DataFrame(rows)
+    merged = df_corr.merge(df_r2, on='cell', how='inner')
+    return merged, target_names
+
+
+def plot_r2_vs_decay_corr(df_merged, fs_ax=28, fs_tk=22, lw_sp=2.5,
+                           figsize=(14, 5)):
+    """Two-panel figure:
+       (A) Scatter — r(exp_lambda, peak_amp) vs mean waveform-only R²
+       (B) Bar count — sign of r vs sign of mean exp_lambda ridge beta.
+
+    Colors: orange = positive r direction, blue = negative r direction.
+    Returns (fig, pearson_r, pearson_p).
+    """
+    from scipy.stats import pearsonr as _pr, spearmanr as _sr, fisher_exact as _fe
+
+    sub = df_merged.dropna(subset=['r', 'mean_r2'])
+
+    _POS = '#D55E00'
+    _NEG = '#0072B2'
+    pos_mask = sub['r'] > 0
+    neg_mask = sub['r'] < 0
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    # ── Panel A: scatter r vs mean R² ─────────────────────────────────────────
+    ax = axes[0]
+    ax.scatter(sub.loc[pos_mask, 'r'], sub.loc[pos_mask, 'mean_r2'],
+               color=_POS, s=80, zorder=3, edgecolors='none')
+    ax.scatter(sub.loc[neg_mask, 'r'], sub.loc[neg_mask, 'mean_r2'],
+               color=_NEG, s=80, zorder=3, edgecolors='none')
+    ax.axvline(0, color='#888', lw=1.2, ls='--', zorder=1)
+    ax.axhline(0, color='#888', lw=1.2, ls='--', zorder=1)
+
+    r_stat, p_stat = _pr(sub['r'], sub['mean_r2'])
+    rho_s, rho_p   = _sr(sub['r'], sub['mean_r2'])
+
+    ax.set_xlabel('r(exp lambda,\npeak amp)', fontsize=fs_ax, fontweight='bold')
+    ax.set_ylabel('Mean ridge R²\n(Waveform only)', fontsize=fs_ax, fontweight='bold')
+
+    # ── Panel B: direction agreement (r sign vs mean decay beta sign) ─────────
+    ax2 = axes[1]
+    sub2 = df_merged.dropna(subset=['r', 'mean_decay_beta'])
+    fe_p    = np.nan
+    n_agree = 0
+    n_total = 0
+    if not sub2.empty:
+        rp_bp = ((sub2['r'] > 0) & (sub2['mean_decay_beta'] > 0)).sum()
+        rp_bn = ((sub2['r'] > 0) & (sub2['mean_decay_beta'] < 0)).sum()
+        rn_bp = ((sub2['r'] < 0) & (sub2['mean_decay_beta'] > 0)).sum()
+        rn_bn = ((sub2['r'] < 0) & (sub2['mean_decay_beta'] < 0)).sum()
+        ct = np.array([[rp_bp, rp_bn], [rn_bp, rn_bn]])
+        _, fe_p = _fe(ct)
+        n_agree = int(rp_bp + rn_bn)
+        n_total = int(len(sub2))
+
+        categories = ['r>0, β>0', 'r>0, β<0', 'r<0, β>0', 'r<0, β<0']
+        counts     = [rp_bp, rp_bn, rn_bp, rn_bn]
+        bar_colors = [_POS, _POS, _NEG, _NEG]
+        bar_alpha  = [1.0, 0.45, 1.0, 0.45]
+        for x, c, col, al in zip(range(4), counts, bar_colors, bar_alpha):
+            ax2.bar(x, c, color=col, alpha=al, width=0.6)
+        ax2.set_xticks(range(4))
+        ax2.set_xticklabels(categories, fontsize=fs_tk - 6,
+                            fontweight='bold', rotation=30, ha='right')
+        ax2.set_ylabel('Cells', fontsize=fs_ax, fontweight='bold')
+
+    for axi in axes:
+        axi.tick_params(axis='both', labelsize=fs_tk, width=lw_sp)
+        for lbl in axi.get_xticklabels() + axi.get_yticklabels():
+            lbl.set_fontweight('bold')
+        axi.spines['top'].set_visible(False)
+        axi.spines['right'].set_visible(False)
+        for sp in ['bottom', 'left']:
+            axi.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig, r_stat, p_stat, rho_s, rho_p, fe_p, n_agree, n_total
+
+
+def plot_r2_vs_decay_corr_legend(fs=20, figsize=(3.0, 1.4)):
+    """Standalone legend for plot_r2_vs_decay_corr (scatter panel)."""
+    handles = [
+        Patch(facecolor='#D55E00', label='r > 0'),
+        Patch(facecolor='#0072B2', label='r < 0'),
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=2, frameon=False,
+              handlelength=1.2, handleheight=1.0, handletextpad=0.4,
+              columnspacing=0.8, prop={'weight': 'bold', 'size': fs})
+    fig.tight_layout()
+    return fig
+
+
+def plot_r2_vs_decay_corr_stats(r_stat, p_stat, rho_s, rho_p,
+                                  fe_p, n_agree, n_total,
+                                  fs=20, figsize=(5.0, 1.8)):
+    """Standalone stats text for plot_r2_vs_decay_corr."""
+    lines = [
+        f'Pearson r = {r_stat:.2f}   p = {p_stat:.3f}',
+        f'Spearman ρ = {rho_s:.2f}   p = {rho_p:.3f}',
+        f'Fisher p = {fe_p:.3f}   sign agree = {n_agree}/{n_total}',
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.text(0.5, 0.5, '\n'.join(lines), transform=ax.transAxes,
+            ha='center', va='center', fontsize=fs, fontweight='bold',
+            color='#222', linespacing=1.6)
+    fig.tight_layout()
+    return fig
+
+
+# ── Exp decay fit quality vs correlation direction ────────────────────────────
+
+def compute_exp_fit_r2_per_cell(cids, spike_fit_dir):
+    """Per-cell mean r_squared_exp from spike fit pickles.
+
+    Returns DataFrame: cell, mean_r2_exp, median_r2_exp, n_spikes.
+    Cells whose pickle is missing or lacks r_squared_exp are skipped.
+    """
+    import pickle as _pkl
+    rows = []
+    for cid in cids:
+        p = os.path.join(spike_fit_dir, f'{cid}_spike_fit.pkl')
+        if not os.path.exists(p):
+            continue
+        with open(p, 'rb') as _f:
+            sp = _pkl.load(_f)
+        r2 = getattr(sp, 'r_squared_exp', None)
+        if r2 is None:
+            continue
+        arr = np.asarray(r2, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if len(arr) == 0:
+            continue
+        rows.append({
+            'cell':          cid,
+            'mean_r2_exp':   float(np.mean(arr)),
+            'median_r2_exp': float(np.median(arr)),
+            'n_spikes':      len(arr),
+        })
+    return pd.DataFrame(rows)
+
+
+def plot_exp_fit_r2_vs_decay_corr(df_corr, df_fit_r2,
+                                   fs_ax=28, fs_tk=22, lw_sp=2.5,
+                                   figsize=(8, 5)):
+    """Scatter of mean exp fit R² vs r(exp_lambda, peak_amp).
+
+    No inline text or legend — use plot_exp_fit_r2_legend() and
+    plot_exp_fit_r2_stats() for those.
+    Returns (fig, merged_df, r_stat, p_stat).
+    """
+    from scipy.stats import pearsonr as _pr
+
+    merged = df_corr.merge(df_fit_r2[['cell', 'mean_r2_exp']], on='cell', how='inner')
+    sub    = merged.dropna(subset=['r', 'mean_r2_exp'])
+
+    _POS = '#D55E00'
+    _NEG = '#0072B2'
+    sig_mask = sub['p'] < 0.05 if 'p' in sub.columns else pd.Series(False, index=sub.index)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for color, dir_mask in [(_POS, sub['r'] > 0), (_NEG, sub['r'] < 0)]:
+        filled = dir_mask & sig_mask
+        open_  = dir_mask & ~sig_mask
+        ax.scatter(sub.loc[filled, 'mean_r2_exp'], sub.loc[filled, 'r'],
+                   color=color, s=90, zorder=3, edgecolors='none')
+        ax.scatter(sub.loc[open_, 'mean_r2_exp'], sub.loc[open_, 'r'],
+                   facecolors='none', edgecolors=color,
+                   linewidths=1.8, s=90, zorder=3)
+
+    ax.axhline(0, color='#888', lw=1.2, ls='--', zorder=1)
+
+    r_stat, p_stat = _pr(sub['mean_r2_exp'], sub['r'])
+
+    ax.set_xlabel('Mean exp fit R²', fontsize=fs_ax, fontweight='bold')
+    ax.set_ylabel('r(exp lambda,\npeak amp)', fontsize=fs_ax, fontweight='bold')
+
+    ax.tick_params(axis='both', labelsize=fs_tk, width=lw_sp)
+    for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+        lbl.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    for sp in ['bottom', 'left']:
+        ax.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig, merged, r_stat, p_stat
+
+
+def plot_exp_fit_r2_legend(fs=20, figsize=(3.0, 1.4)):
+    """Standalone legend for plot_exp_fit_r2_vs_decay_corr."""
+    handles = [
+        Patch(facecolor='#D55E00', label='r > 0'),
+        Patch(facecolor='#0072B2', label='r < 0'),
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=2, frameon=False,
+              handlelength=1.2, handleheight=1.0, handletextpad=0.4,
+              columnspacing=0.8, prop={'weight': 'bold', 'size': fs})
+    fig.tight_layout()
+    return fig
+
+
+def plot_exp_fit_r2_stats(r_stat, p_stat, fs=20, figsize=(4.0, 0.8)):
+    """Standalone stats text for plot_exp_fit_r2_vs_decay_corr."""
+    line = f'Pearson r = {r_stat:.2f}   p = {p_stat:.3f}'
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.text(0.5, 0.5, line, transform=ax.transAxes,
+            ha='center', va='center', fontsize=fs, fontweight='bold', color='#222')
+    fig.tight_layout()
+    return fig
