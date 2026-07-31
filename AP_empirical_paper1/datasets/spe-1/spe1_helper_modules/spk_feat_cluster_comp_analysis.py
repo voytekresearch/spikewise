@@ -8903,4 +8903,177 @@ def plot_slope_vs_rho(cluster_pickle_dir, feats=None, min_spks=30):
     ax.tick_params(labelsize=_FS)
     sns.despine(ax=ax)
     plt.show()
-    plt.close(fig)
+
+
+# ── ISI independence helpers ──────────────────────────────────────────────────
+
+def cramers_v(x, y):
+    """Cramér's V association between two categorical series (0 = independent, 1 = perfectly related)."""
+    ct = pd.crosstab(x, y)
+    chi2, _, _, _ = chi2_contingency(ct)
+    n = ct.sum().sum()
+    k = min(ct.shape)
+    if k < 2 or n == 0:
+        return np.nan
+    return np.sqrt(chi2 / (n * (k - 1)))
+
+
+def kde_panel_solid(ax, df, feature, cluster_col, colors, is_isi=False,
+                    iqr_multiplier=3.0, common_norm=True):
+    """Solid-fill KDE, no axes — matches supp_cluster_distributions aesthetic.
+
+    IQR outlier removal (iqr_multiplier=3) and common_norm=True both match
+    visualize_feature_groups_hist in the cluster notebook.
+    common_norm scales each group's KDE by n_group/n_total so heights are
+    proportional to spike counts — prevents minority groups from dominating.
+    Drawing order: largest-n group first (background), smallest-n group on top.
+    """
+    sub = df.dropna(subset=[feature, cluster_col])
+    if sub.empty:
+        return
+
+    # IQR outlier removal — matches cluster notebook (iqr_multiplier=3)
+    all_vals = pd.to_numeric(sub[feature], errors='coerce').dropna()
+    Q1, Q3  = all_vals.quantile(0.25), all_vals.quantile(0.75)
+    IQR     = Q3 - Q1
+    lo_iqr  = Q1 - iqr_multiplier * IQR
+    hi_iqr  = Q3 + iqr_multiplier * IQR
+    sub     = sub[(sub[feature] >= lo_iqr) & (sub[feature] <= hi_iqr)]
+
+    if sub.empty:
+        return
+
+    vals_all = sub[feature]
+    lo       = vals_all.min()
+    hi       = vals_all.max()
+    pad      = (hi - lo) * 0.08
+    x_grid   = np.linspace(lo - pad, hi + pad, 300)
+    n_total  = len(sub)
+
+    # draw larger group first so smaller (more concentrated) group sits on top
+    grp_ns     = {g: (sub[cluster_col] == g).sum() for g in sub[cluster_col].dropna().unique()}
+    draw_order = sorted(grp_ns, key=lambda g: grp_ns[g], reverse=True)
+
+    for grp in draw_order:
+        vals = sub.loc[sub[cluster_col] == grp, feature].values
+        if len(vals) < 5:
+            continue
+        y = gaussian_kde(vals, bw_method='scott')(x_grid)
+        if common_norm:
+            y = y * (len(vals) / n_total)
+        col = colors.get(grp, '#888')
+        ax.fill_between(x_grid, y, color=col, alpha=1.0)
+        ax.plot(x_grid, y, color=col, lw=0.6)
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    ax.set_facecolor('#dddddd' if is_isi else 'white')
+
+
+def plot_isi_independence_legend(colors, fontsize=22):
+    """Standalone 2-group legend for the waveform/ISI independence figure."""
+    handles = [
+        Patch(facecolor=colors['low'],  label='low cluster'),
+        Patch(facecolor=colors['high'], label='high cluster'),
+    ]
+    fig, ax = plt.subplots(figsize=(2.5, 1.4))
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=1,
+              frameon=False, handlelength=1.2, handleheight=1.0,
+              handletextpad=0.5, prop={'weight': 'bold', 'size': fontsize})
+    fig.tight_layout()
+    return fig
+
+
+def plot_isi_independence_example(df_ex, wclust, iclust, features, colors,
+                                   col_label_fs=28, row_label_fs=30,
+                                   common_norm=True, figsize=(16, 8),
+                                   row1_label='Colored by\npeak amplitude\ncluster',
+                                   row2_label='Colored by\nISI\ncluster'):
+    """
+    2-row × N-col grid of solid-fill KDE panels.
+    Row 1: colored by wclust (default: peak amplitude cluster).
+    Row 2: colored by iclust (ISI cluster).
+    features: list of (col_name, label, is_isi) tuples.
+    common_norm scales each group's KDE by n_group/n_total (matches cluster notebook).
+    """
+    import matplotlib.gridspec as _gs
+    n = len(features)
+    fig = plt.figure(figsize=figsize)
+    outer = _gs.GridSpec(2, n, figure=fig,
+                         hspace=0.45, wspace=0.12,
+                         left=0.14, right=0.98, top=0.88, bottom=0.05)
+
+    for col, (feat, label, is_isi) in enumerate(features):
+        ax = fig.add_subplot(outer[0, col])
+        kde_panel_solid(ax, df_ex, feat, wclust, colors, is_isi=is_isi,
+                        common_norm=common_norm)
+        ax.set_title(label, fontsize=col_label_fs, fontweight='bold', pad=8)
+
+    for col, (feat, label, is_isi) in enumerate(features):
+        ax = fig.add_subplot(outer[1, col])
+        kde_panel_solid(ax, df_ex, feat, iclust, colors, is_isi=is_isi,
+                        common_norm=common_norm)
+
+    fig.text(0.04, 0.74, row1_label, va='center', ha='center',
+             rotation=90, fontsize=row_label_fs, fontweight='bold', color='#222')
+    fig.text(0.04, 0.27, row2_label, va='center', ha='center',
+             rotation=90, fontsize=row_label_fs, fontweight='bold', color='#222')
+
+    return fig
+
+
+def plot_eta2_population(df_eta, example_cell, colors,
+                          fs_ax=26, fs_tk=20, lw_sp=2.0,
+                          figsize=(7, 5)):
+    """
+    Histogram of η² (log ISI ~ waveform cluster) across cells.
+    Supp figure style: bold labels, no top/right spines.
+    Returns (fig, median_eta2, example_eta2) for use by plot_eta2_legend.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    eta2_vals = df_eta['eta2'].values
+    ax.hist(eta2_vals, bins=12, color='#56B4E9', edgecolor='white', linewidth=0.5)
+
+    med    = float(np.median(eta2_vals))
+    ex_row = df_eta.loc[df_eta['cell'] == example_cell, 'eta2'].values
+    ex_val = float(ex_row[0]) if len(ex_row) else None
+
+    ax.axvline(med, color='k', lw=2.0, ls='--')
+    if ex_val is not None:
+        ax.axvline(ex_val, color=colors['high'], lw=2.0, ls=':')
+
+    ax.set_xlabel(r'$\eta^2$  (log ISI ~ waveform cluster)',
+                  fontsize=fs_ax, fontweight='bold')
+    ax.set_ylabel('Cells', fontsize=fs_ax, fontweight='bold')
+    ax.set_title(f'Population  (n = {len(df_eta)} cells)',
+                 fontsize=fs_ax, fontweight='bold')
+
+    ax.tick_params(axis='both', labelsize=fs_tk, width=lw_sp)
+    for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+        lbl.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    for sp in ['bottom', 'left']:
+        ax.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig, med, ex_val
+
+
+def plot_eta2_legend(med, ex_val, example_cell, colors, fontsize=18, figsize=(3.5, 1.2)):
+    """Standalone legend for the η² population histogram."""
+    handles = [
+        Line2D([], [], color='k',            lw=2.0, ls='--',
+               label=f'Median = {med:.3f}'),
+        Line2D([], [], color=colors['high'], lw=2.0, ls=':',
+               label=f'c{example_cell} = {ex_val:.3f}'),
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=1, frameon=False,
+              prop={'weight': 'bold', 'size': fontsize})
+    fig.tight_layout()
+    return fig
