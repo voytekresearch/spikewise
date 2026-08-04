@@ -683,16 +683,20 @@ def plot_sig_feat_pairs(df, sig_pairs_df):
 # ------------------------------ Analyze spk feat results ------------------------------ #
 # ------------------------------------------------------------------------------------------- #
 
-def quantify_spk_feature_prevalence(df):
+def quantify_spk_feature_prevalence(df, n_total=None):
     cols_to_fix = ['num_clusters', 'cos_sim', 'nRMSE']
     for col in cols_to_fix:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     # Calculate unique cells per feature
     feature_counts = df.groupby('spike_feature')['cell_id'].nunique().reset_index()
     feature_counts.columns = ['spike_feature', 'n_cells_with_feature']
-    
-    # Calculate prevalence based on the total unique cells in your current master df
-    total_cells = df['cell_id'].nunique()
+
+    # Denominator: pass n_total explicitly (cells that had clustering run, including
+    # those with no significant features). Falls back to non-NaN cell count.
+    if n_total is not None:
+        total_cells = n_total
+    else:
+        total_cells = df[df['spike_feature'].notna()]['cell_id'].nunique()
     feature_counts['prevalence_pct'] = (feature_counts['n_cells_with_feature'] / total_cells) * 100
     
     # Merge with cluster metrics
@@ -1664,7 +1668,7 @@ def plot_feature_distribution_r2(df_master, cluster_pickle_dir,
         plt.show()
 
 
-def plot_aggregated_spike_feat(raw_df):
+def plot_aggregated_spike_feat(raw_df, n_total=None):
     WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
                 'peak_width', 'exp_lambda', 'log_isi']
     FEAT_LABELS = {
@@ -1681,7 +1685,7 @@ def plot_aggregated_spike_feat(raw_df):
     df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
     df_clust = df_num[df_num['num_clusters'] >= 2]
 
-    total_cells = df_num['cell_id'].nunique()
+    total_cells = n_total if n_total is not None else df_num['cell_id'].nunique()
 
     # Per-feature stats (only from clustering cells)
     stats = df_clust.groupby('spike_feature').agg(
