@@ -5,7 +5,7 @@ from pathlib import Path
 from setuptools import setup, find_packages
 
 # Get the current version number from inside the module
-with open(os.path.join('spikeparam', 'version.py')) as version_file:
+with open(os.path.join('spikewise', 'version.py')) as version_file:
     exec(version_file.read())
 
 # Load the long description from the repo README.
@@ -23,7 +23,7 @@ with open("requirements.txt") as requirements_file:
     install_requires = [req for req in requirements_file.read().splitlines()]
 
 setup(
-    name = 'spikeparam',
+    name = 'spikewise',
     version = __version__,
     description = 'Spike waveform parametrization.',
     long_description = long_description,
@@ -31,7 +31,7 @@ setup(
     python_requires = '>=3.6',
     author = 'The Voytek Lab',
     author_email = 'voyteklab@gmail.com',
-    url = 'https://github.com/voytekresearch/spikeparam',
+    url = 'https://github.com/voytekresearch/spikewise',
     packages = find_packages(),
     license = 'Apache License, 2.0',
     classifiers = [
