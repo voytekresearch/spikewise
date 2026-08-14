@@ -1,4 +1,4 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: spikewise
 Version: 0.0.1
 Summary: Spike waveform parametrization.
@@ -23,6 +23,25 @@ Classifier: Programming Language :: Python :: 3.8
 Classifier: Programming Language :: Python :: 3.9
 Requires-Python: >=3.6
 Description-Content-Type: text/markdown
+Requires-Dist: bycycle @ git+https://github.com/bycycle-tools/bycycle.git@main
+Requires-Dist: neurodsp @ git+https://github.com/neurodsp-tools/neurodsp.git@main
+Requires-Dist: matplotlib>=3.5.0
+Requires-Dist: numpy>=1.21.4
+Requires-Dist: scipy>=1.7.3
+Requires-Dist: pandas>=1.4.3
+Requires-Dist: statsmodels>=0.13.2
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: license
+Dynamic: platform
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
 
 # spikeparam
 
@@ -101,5 +120,3 @@ python scripts/run_spe1_batch.py --priority --lfp --force-all
 See [`scripts/README.md`](scripts/README.md) for full flag reference and path override instructions.
 
 ---
-
-

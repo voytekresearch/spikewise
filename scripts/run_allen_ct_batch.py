@@ -2,7 +2,7 @@
 """
 run_allen_ct_batch.py
 ---------------------
-Downloads Allen Cell Types NWB files and extracts spikeparam spike waveform
+Downloads Allen Cell Types NWB files and extracts spikewise spike waveform
 features for all cells, saving per-cell pickles.
 
 Pipeline:
@@ -12,7 +12,7 @@ Pipeline:
      b. Find all sweeps (any stimulus type) where num_spikes > 0
      c. For each spiking sweep:
         - Trim to index_range (exclude test pulse)
-        - Fit spikeparam Spike class on that sweep's voltage
+        - Fit spikewise Spike class on that sweep's voltage
         - Attach sweep metadata (stimulus_name, amplitude, sweep_number) to every spike row
      d. Concatenate all per-sweep spike rows → one DataFrame per cell
      e. Save → allen_ct_pickles/features/{specimen_id}_features.pkl
@@ -23,7 +23,7 @@ Pipeline:
 Output tables (relational, linked by specimen_id / sweep_uid):
 
   allen_ct_population_spikes.pkl  — one row per spike
-      spikeparam features + specimen_id + sweep_number + sweep_uid
+      spikewise features + specimen_id + sweep_number + sweep_uid
 
   allen_ct_sweep_table.pkl        — one row per spiking sweep
       specimen_id, sweep_uid, sweep_number + all Allen sweep metadata
@@ -90,10 +90,10 @@ from config import ALLEN_CT_PICKLE_ROOT
 from data_loader import load_cell_metadata, get_all_spiking_sweeps, load_voltage_trace
 
 try:
-    from spikeparam.patch.fit import Spike
+    from spikewise.patch.fit import Spike
 except ImportError:
     sys.path.insert(0, str(REPO_ROOT))
-    from spikeparam.patch.fit import Spike
+    from spikewise.patch.fit import Spike
 
 FEAT_DIR = os.path.join(ALLEN_CT_PICKLE_ROOT, "features")
 os.makedirs(FEAT_DIR, exist_ok=True)
@@ -113,10 +113,10 @@ MIN_SPIKES      = 5      # skip cells with fewer spikes than this
 
 def process_cell(specimen_id: int, force: bool = False) -> dict:
     """
-    Extract spikeparam features for one Allen CT cell, fitting per sweep.
+    Extract spikewise features for one Allen CT cell, fitting per sweep.
 
     Saves two pickles:
-      {specimen_id}_features.pkl  — spike table (spikeparam features + specimen_id + sweep_number + sweep_uid)
+      {specimen_id}_features.pkl  — spike table (spikewise features + specimen_id + sweep_number + sweep_uid)
       {specimen_id}_sweeps.pkl    — sweep table (one row per spiking sweep + all Allen sweep metadata)
       {specimen_id}_waveforms.pkl — list of per-sweep waveform arrays
 
@@ -230,7 +230,7 @@ def build_population_df(cells_df: pd.DataFrame) -> tuple:
     Concatenate all per-cell pickles into population-level tables.
 
     Saves three files:
-      allen_ct_population_spikes.pkl  — spike table (spikeparam features + specimen_id + sweep_uid)
+      allen_ct_population_spikes.pkl  — spike table (spikewise features + specimen_id + sweep_uid)
       allen_ct_sweep_table.pkl        — sweep table (one row per spiking sweep, all Allen metadata)
       allen_ct_cells_df.pkl           — cell table (written by load_data notebook, not here)
 

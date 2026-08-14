@@ -7,9 +7,9 @@ along with the dictionary containing all the spike waveforms that will correspon
 '''
 #imports
 import sys
-sys.path.append(r'..\..\..\spikeparam')
-from spikeparam.patch.fit import Spike
-from spikeparam.patch.fit import SpikeGroup
+sys.path.append(r'..\..\..\spikewise')
+from spikewise.patch.fit import Spike
+from spikewise.patch.fit import SpikeGroup
 from neurodsp import spectral
 from scipy import signal
 import scipy

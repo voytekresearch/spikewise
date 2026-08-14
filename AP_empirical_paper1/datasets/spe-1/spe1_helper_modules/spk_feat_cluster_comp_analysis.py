@@ -16,12 +16,30 @@ from matplotlib.lines import Line2D
 from statsmodels.stats.multitest import multipletests
 from pop_ridge_utils import _stars
 
+import pickle as _pickle
+
+
+class _RenamedModuleUnpickler(_pickle.Unpickler):
+    """Loads Spike/SpikeGroup pickles saved before the spikeparam->spikewise
+    package rename, whose module path is baked into the pickle."""
+    def find_class(self, module, name):
+        if module == 'spikeparam' or module.startswith('spikeparam.'):
+            module = 'spikewise' + module[len('spikeparam'):]
+        return super().find_class(module, name)
+
+
+def load_spike_fit_pickle(path):
+    """Load a *_spike_fit.pkl (Spike/SpikeGroup object), tolerant of the old
+    pre-rename module path some cached pickles were saved under."""
+    with open(path, 'rb') as f:
+        return _RenamedModuleUnpickler(f).load()
+
 # ------------------------------------------------------------------------------------------- #
 #                                     Environment Setup                                       #
 # ------------------------------------------------------------------------------------------- #
 
 # Import metadata file
-config_dir = "/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spikeparam/AP_empirical_paper1/datasets/spe-1/spe1_helper_modules/"
+config_dir = "/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spikewise/AP_empirical_paper1/datasets/spe-1/spe1_helper_modules/"
 if config_dir not in sys.path:
     sys.path.append(config_dir)
 import config
@@ -1457,8 +1475,7 @@ def patch_r2_into_cluster_pickles(spike_fit_dir, cluster_pickle_dir, force=False
             continue
 
         try:
-            with open(pkl_f, 'rb') as fh:
-                sp = pickle.load(fh)
+            sp = load_spike_fit_pickle(pkl_f)
             r2_exp  = np.asarray(sp.r_squared_exp)
             r2_ramp = np.asarray(sp.r_squared_ramp)
         except Exception as e:
@@ -3238,7 +3255,7 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75,
             cnum    = int(pkl.stem.split("_")[0].lstrip("c"))
             cell_id = f"c{cnum}"
             try:
-                sp = pickle.load(open(pkl, "rb"))
+                sp = load_spike_fit_pickle(pkl)
                 W  = np.asarray(sp.spikes, float)
             except Exception:
                 continue
@@ -3433,7 +3450,7 @@ def _load_per_cell_wf_summary(df_master, wf_dir, spike_fit_dir, half_win=75, cac
         if cell_id not in cell_meta.index:
             continue
         try:
-            sp = pickle.load(open(pkl, "rb"))
+            sp = load_spike_fit_pickle(pkl)
             W  = np.asarray(sp.spikes, float)
         except Exception:
             continue
@@ -3676,7 +3693,7 @@ def plot_waveform_dist_sorted_dots(df_master, wf_dir, spike_fit_dir, half_win=75
             if cell_id not in cell_meta.index:
                 continue
             try:
-                sp = pickle.load(open(pkl, "rb"))
+                sp = load_spike_fit_pickle(pkl)
                 W  = np.asarray(sp.spikes, float)
             except Exception:
                 continue
@@ -3841,7 +3858,7 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
                          key=lambda p: int(p.stem.split("_")[0].lstrip("c"))):
         cid = sp_pkl.stem.split("_")[0]
         try:
-            sp = pickle.load(open(sp_pkl, "rb"))
+            sp = load_spike_fit_pickle(sp_pkl)
             W  = np.asarray(sp.spikes, float)
         except Exception:
             continue
@@ -4095,7 +4112,7 @@ def plot_spike_feat_value_within_vs_between(spike_fit_dir, cache_dir=None, force
     for pkl in pkls:
         cid = pkl.stem.split("_")[0]
         try:
-            sp = pickle.load(open(pkl, "rb"))
+            sp = load_spike_fit_pickle(pkl)
         except Exception:
             continue
         vals = {}
@@ -4244,7 +4261,7 @@ def _compute_pct_within_per_cell(wf_dir, spike_fit_dir, half_win=75):
     for pkl in pkls:
         cid = pkl.stem.split("_")[0]
         try:
-            sp = pickle.load(open(pkl, "rb"))
+            sp = load_spike_fit_pickle(pkl)
         except Exception:
             continue
         W = np.asarray(sp.spikes, float)
@@ -4451,7 +4468,7 @@ def plot_pct_within_exceeds_between(df_master, wf_dir, spike_fit_dir,
     for pkl in pkls:
         cid = pkl.stem.split("_")[0]
         try:
-            sp = pickle.load(open(pkl, "rb"))
+            sp = load_spike_fit_pickle(pkl)
         except Exception:
             continue
 
@@ -9754,8 +9771,7 @@ def compute_exp_fit_r2_per_cell(cids, spike_fit_dir):
         p = os.path.join(spike_fit_dir, f'{cid}_spike_fit.pkl')
         if not os.path.exists(p):
             continue
-        with open(p, 'rb') as _f:
-            sp = _pkl.load(_f)
+        sp = load_spike_fit_pickle(p)
         r2 = getattr(sp, 'r_squared_exp', None)
         if r2 is None:
             continue

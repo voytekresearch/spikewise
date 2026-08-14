@@ -11,7 +11,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from spikewise.patch.gen import gen_fit_ramp, gen_fit_exp
 from spikewise.patch.window import find_spike_times, peak_distance_to_samples, window_spike
-from spikewise.patch.features import compute_features, compute_isi
+from spikewise.patch.features import (compute_features, compute_isi,
+    compute_isi_prev, compute_spike_count)
 from spikewise.patch.plts import plot_model
 
 class Spike:
@@ -65,6 +66,9 @@ class Spike:
         self.r_squared_ramp = None
         self.r_squared_exp = None
         self.isi = None
+        self.isi_prev = None
+        self.n_spikes_50ms = None
+        self.n_spikes_200ms = None
         self.inds_error = []
         self.df_features = None
         self.df_indices = None
@@ -128,6 +132,12 @@ class Spike:
                 df.drop('isi', axis=1, inplace=True)
             elif 'log_isi' not in df.columns:
                 warnings.warn("Cannot log ISI - 'isi' column missing")
+
+            if 'isi_prev' in df.columns:
+                df['log_isi_prev'] = np.log10(df['isi_prev'])
+                df.drop('isi_prev', axis=1, inplace=True)
+            elif 'log_isi_prev' not in df.columns:
+                warnings.warn("Cannot log preceding ISI - 'isi_prev' column missing")
         
         # 2. Drop R² columns only if they exist
         if params['drop_r_squared']:
@@ -166,6 +176,9 @@ class Spike:
             'exp_lambda': self.exp_lambda[valid_indices],
             'exp_const': self.exp_const[valid_indices],
             'isi': self.isi[valid_indices],
+            'isi_prev': self.isi_prev[valid_indices] if self.isi_prev is not None else None,
+            'n_spikes_50ms': self.n_spikes_50ms[valid_indices] if self.n_spikes_50ms is not None else None,
+            'n_spikes_200ms': self.n_spikes_200ms[valid_indices] if self.n_spikes_200ms is not None else None,
             'fit_ramp': self.fit_ramp[valid_indices] if self.fit_ramp is not None else None,
             'fit_exp': self.fit_exp[valid_indices] if self.fit_exp is not None else None,
             'r_squared_ramp': self.r_squared_ramp[valid_indices] if self.r_squared_ramp is not None else None,
@@ -244,6 +257,9 @@ class Spike:
         self.r_squared_ramp = None
         self.r_squared_exp = None
         self.isi = None
+        self.isi_prev = None
+        self.n_spikes_50ms = None
+        self.n_spikes_200ms = None
         self.inds_error = []
         self.df_features = None
         self.df_indices = None
@@ -512,6 +528,9 @@ class Spike:
         # Compute inter spike features
 
         self.isi = compute_isi(self.spike_inds, self.fs, True)
+        self.isi_prev = compute_isi_prev(self.spike_inds, self.fs, True)
+        self.n_spikes_50ms = compute_spike_count(self.spike_inds, self.fs, 50.)
+        self.n_spikes_200ms = compute_spike_count(self.spike_inds, self.fs, 200.)
 
         # Generate fits
         if gen_fits:
@@ -791,7 +810,8 @@ class Spike:
         """Generate feature dataframe."""
 
         columns = ['ramp_amp', 'inflection_time', 'inflection_amp', 'peak_amp',
-                   'peak_width', 'peak_sharpness', 'exp_lambda', 'exp_const', 'isi']
+                   'peak_width', 'peak_sharpness', 'exp_lambda', 'exp_const', 'isi',
+                   'isi_prev', 'n_spikes_50ms', 'n_spikes_200ms']
 
         self.df_features = pd.DataFrame()
 

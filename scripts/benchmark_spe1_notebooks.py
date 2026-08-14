@@ -27,7 +27,7 @@ for helper_dir in (SPE1_HELPER_DIR, SHARED_HELPER_DIR):
         sys.path.insert(0, helper_path)
 
 from config import DICT_PATCH_FS, DICT_SPK_THRESH
-from spikeparam.patch.fit import Spike
+from spikewise.patch.fit import Spike
 from spk_feat_cluster_analysis import (
     cluster_multimodal_features,
     plot_full_cluster_report,

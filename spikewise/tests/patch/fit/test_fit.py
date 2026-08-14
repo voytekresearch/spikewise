@@ -97,11 +97,22 @@ def test_spike_filter_features(sim_patch_spikes):
 
     sp = sim_patch_spikes['sp']
 
+    assert 'isi_prev' in sp.df_features.columns
+    assert 'n_spikes_50ms' in sp.df_features.columns
+    assert 'n_spikes_200ms' in sp.df_features.columns
+
+    assert np.isnan(sp.isi_prev[0])
+    assert sp.n_spikes_50ms[0] == 0
+    assert sp.n_spikes_200ms[0] == 0
+
     filtered = sp.filter_features(inplace=False, min_inflection=-10000, max_inflection=10000)
 
     assert filtered is not None
     assert filtered.df_features is not None
     assert 'log_isi' in filtered.df_features.columns
+    assert 'log_isi_prev' in filtered.df_features.columns
+    assert 'n_spikes_50ms' in filtered.df_features.columns
+    assert 'n_spikes_200ms' in filtered.df_features.columns
     assert 'r_squared_exp' not in filtered.df_features.columns
     assert 'r_squared_ramp' not in filtered.df_features.columns
 

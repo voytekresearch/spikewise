@@ -59,8 +59,8 @@ def test_spike_group_alt(sim_patch_spikes):
     _sg.fit(sigs, fs, n_jobs=-1)
 
     for i in sg.df_features.keys():
-        if i != 'isi':
-            # Don't test isi since it contains nans
+        if i not in ('isi', 'isi_prev'):
+            # Don't test isi/isi_prev since they contain nans
             assert (sg.df_features[i] == _sg.df_features[i]).all()
 
     # Pre-windowed
@@ -69,6 +69,6 @@ def test_spike_group_alt(sim_patch_spikes):
     __sg.alt(sg.spikes.copy(), fs, alt_func, param_keys=['alt_peak_amp'], pre_windowed=True)
 
     for i in _sg.df_features.keys():
-        if i != 'isi':
-            # Don't test isi since it contains nans
+        if i not in ('isi', 'isi_prev'):
+            # Don't test isi/isi_prev since they contain nans
             assert (_sg.df_features[i] == __sg.df_features[i]).all()

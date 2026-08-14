@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(HELPER_DIR))
 
 from config import SPE1_PICKLE_ROOT, DICT_PATCH_FS
+from spk_feat_cluster_comp_analysis import load_spike_fit_pickle
 
 NO_CLUSTER_CELLS = [17, 18, 43]
 
@@ -36,7 +37,7 @@ for cnum in NO_CLUSTER_CELLS:
         print(f"  SKIP — spike_fit pickle not found: {fit_path}")
         continue
 
-    sp = pickle.load(open(fit_path, "rb"))
+    sp = load_spike_fit_pickle(fit_path)
 
     df = sp.df_features.copy()
 

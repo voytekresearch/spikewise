@@ -107,7 +107,7 @@ def run_cluster_nb(args):
         pm.execute_notebook(
             str(nb), str(nb),
             parameters={"FORCE_CLUSTER": opts["force_cluster"]},
-            kernel_name="spikeparam",
+            kernel_name="spikewise",
             progress_bar=False,
             log_output=opts["workers"] == 1,
         )
@@ -135,7 +135,7 @@ def _run_lfp_notebook(nb_path, label, opts):
                 "--execute",
                 "--inplace",
                 "--ExecutePreprocessor.timeout=-1",
-                "--ExecutePreprocessor.kernel_name=spikeparam",
+                "--ExecutePreprocessor.kernel_name=spikewise",
                 str(nb_path),
             ],
             stdout=None if opts["workers"] == 1 else subprocess.DEVNULL,

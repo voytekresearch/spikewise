@@ -1,13 +1,13 @@
 #imports
 
 import sys
-sys.path.append(r"..\spikeparam")
+sys.path.append(r"..\spikewise")
 
 print(sys.path)
 
-import spikeparam
-from spikeparam.patch.fit import Spike
-from spikeparam.patch.fit import SpikeGroup
+import spikewise
+from spikewise.patch.fit import Spike
+from spikewise.patch.fit import SpikeGroup
 
 from neurodsp import spectral
 

@@ -1,4 +1,4 @@
-# spikeparam
+# spikewise
 
 Spike waveform parameterization and analysis for intracellular and extracellular recordings.
 
@@ -7,7 +7,7 @@ Spike waveform parameterization and analysis for intracellular and extracellular
 ## What this is
 
 
-1. **`spikeparam/` — Python package** for fitting and extracting features from action potential waveforms. Extracts: peak amplitude, peak sharpness, peak width, repolarization rate (`exp_lambda`), repolarization constant (`exp_const`), inflection time, and log inter-spike interval.
+1. **`spikewise/` — Python package** for fitting and extracting features from action potential waveforms. Extracts: peak amplitude, peak sharpness, peak width, repolarization rate (`exp_lambda`), repolarization constant (`exp_const`), inflection time, and log inter-spike interval.
 
 2. **`AP_empirical_paper1/` — Empirical paper analyses** across two datasets testing whether and how spike waveform features vary with neural input and network state. See [`AP_empirical_paper1/README.md`](AP_empirical_paper1/README.md) for the full dataset and analysis breakdown.
 
@@ -16,8 +16,8 @@ Spike waveform parameterization and analysis for intracellular and extracellular
 ## Repository structure
 
 ```
-spikeparam/
-├── spikeparam/                    # Core Python package
+spikewise/
+├── spikewise/                     # Core Python package
 │   ├── patch/                     # Patch-clamp spike parameterization
 │   │   ├── features/              # intra.py (waveform features), inter.py (ISI)
 │   │   ├── fit/                   # Spike class, SpikeGroup batch fitting
@@ -35,7 +35,7 @@ spikeparam/
 │   ├── save_nocluster_feats.py    # Build cluster_df.pkl for cells without clusters
 │   └── benchmark_spe1_notebooks.py
 │
-├── docs/tutorials/                # Usage tutorials for the spikeparam package
+├── docs/tutorials/                # Usage tutorials for the spikewise package
 ├── params/                        # Pre-computed parameter files
 └── requirements.txt
 ```
@@ -45,8 +45,8 @@ spikeparam/
 ## Install
 
 ```bash
-git clone https://github.com/voytekresearch/spikeparam
-cd spikeparam
+git clone https://github.com/voytekresearch/spikewise
+cd spikewise
 pip install -e .
 ```
 

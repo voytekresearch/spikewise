@@ -2,7 +2,7 @@
 data_loader.py
 --------------
 Downloads Allen Cell Types NWB files and extracts raw voltage traces
-for processing through the spikeparam pipeline.
+for processing through the spikewise pipeline.
 
 Analogy to spe-1:
   spe-1 data_loader.py  →  loads .bin files, extracts patch voltage traces
@@ -10,7 +10,7 @@ Analogy to spe-1:
                            Long Square sweeps (the Allen analog of spe-1's
                            constant-step patch recordings)
 
-The extracted traces are then passed through the same spikeparam spike
+The extracted traces are then passed through the same spikewise spike
 detection and waveform extraction pipeline used for spe-1.
 
 Stimulus mapping:
@@ -277,7 +277,7 @@ def load_population_traces(
 
     This is the population-level analog of spe-1's load_spe1_data(), where
     all cells' patch recordings are loaded in one pass. The returned dict
-    feeds into the same spikeparam spike detection and waveform extraction
+    feeds into the same spikewise spike detection and waveform extraction
     pipeline.
 
     Parameters
@@ -356,7 +356,7 @@ def load_precomputed_features() -> pd.DataFrame:
     Download Allen Cell Types precomputed electrophysiology features.
 
     Allen computes these from all sweeps and provides them via the API.
-    They are directly analogous to spikeparam features extracted in spe-1/pvc-6:
+    They are directly analogous to spikewise features extracted in spe-1/pvc-6:
       upstroke_downstroke_ratio_long_square  ~  peak_sharpness
       threshold_v_long_square                ~  inflection_mv
       peak_v_long_square                     ~  peak_amplitude

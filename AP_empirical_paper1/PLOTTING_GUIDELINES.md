@@ -1,6 +1,6 @@
 # Plotting Guidelines
 
-Conventions used across all spikeparam analysis notebooks. Follow these to keep figures consistent and publication-ready.
+Conventions used across all spikewise analysis notebooks. Follow these to keep figures consistent and publication-ready.
 
 ---
 

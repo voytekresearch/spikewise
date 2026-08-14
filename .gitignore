@@ -24,7 +24,7 @@ doc/generated
 
 # Ignore source release files
 dist/
-spikeparam.egg-info/
+spikewise.egg-info/
 build/
 
 # Ignore Claude Code internal files

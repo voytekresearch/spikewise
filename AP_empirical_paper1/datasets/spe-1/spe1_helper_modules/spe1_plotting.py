@@ -3,7 +3,7 @@ import seaborn as sns
 import numpy as np
 import pandas as pd
 from typing import Sequence, Optional, Tuple, Literal, List
-from spikeparam_plotting import *
+from spikewise_plotting import *
 from specparam import SpectralTimeModel
 import matplotlib.patches as mpatches
 

@@ -18,9 +18,9 @@ import matplotlib.colors as mcolors
 import math
 #  taken from 'stats_from_allMonkey_filt'  --> unused imports (might be some unused imports but it definetly covers the bases)
 import sys
-sys.path.append(r'..\..\..\spikeparam')    #<-- to access the spikeparam functions from inside the repository
-from spikeparam.patch.fit import Spike
-from spikeparam.patch.fit import SpikeGroup
+sys.path.append(r'..\..\..\spikewise')    #<-- to access the spikewise functions from inside the repository
+from spikewise.patch.fit import Spike
+from spikewise.patch.fit import SpikeGroup
 from neurodsp import spectral
 from scipy import signal
 import scipy
