@@ -49,8 +49,16 @@ WAVEFORM_LABELS = [
     'Ramp Amp', 'Infl. Time', 'Infl. Amp', 'Peak Amp',
     'Peak Width', 'Sharpness', 'Decay λ', 'Decay Const',
 ]
-FEAT_KEYS   = ['lfp_amp', 'lfp_std', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc', 'exponent', 'theta_auc']
-FEAT_LABELS = ['LFP Amp', 'LFP Std', 'Slow γ AUC\n30–60 Hz', 'High γ AUC\n60–80 Hz', 'Total γ AUC\n30–80 Hz', 'Exponent', 'θ AUC\n4–15 Hz']
+FEAT_KEYS   = ['lfp_amp', 'lfp_std', 'gamma_auc', 'exponent', 'theta_auc']
+FEAT_LABELS = ['LFP Amp', 'LFP Std', 'γ AUC\n30–55 Hz', 'Exponent', 'θ AUC\n4–8 Hz']
+# NOTE: build_ridge_matrices computes ONE merged gamma AUC (band_aucs['gamma'], 30-55 Hz)
+# and theta (band_aucs['theta'], 4-8 Hz) per window - not split into slow/high/total gamma.
+# FEAT_KEYS must stay 5-wide to match; a stale 7-wide version (with slow/high/total gamma)
+# previously caused every target past index 1 to be silently mislabeled/misaligned, since
+# target_names was built assuming 7-wide blocks while values were written in 5-wide slices.
+# build_ridge_matrices_single_psd is unaffected - it independently computes real split-gamma
+# values via compute_pre_post_psd_features, but must NOT reuse FEAT_KEYS/FEAT_LABELS as-is if
+# split gamma is ever restored there; use a local key/label list for that function instead.
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -427,22 +435,28 @@ def build_ridge_matrices_single_psd(df_reg, lfp_windows_by_spike, hpf_lfp_by_spi
     X_log_isi  = df_reg[['log_isi']].values.astype(float)
     X_both     = np.hstack([X_waveform, X_log_isi])
 
+    # This function (unlike build_ridge_matrices) genuinely computes a real, separate
+    # slow/high/total gamma split via compute_pre_post_psd_features's band_dict, so it
+    # keeps its own 7-wide key/label list rather than the 5-wide global FEAT_KEYS.
+    FEAT_KEYS_PSD   = ['lfp_amp', 'lfp_std', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc', 'exponent', 'theta_auc']
+    FEAT_LABELS_PSD = ['LFP Amp', 'LFP Std', 'Slow γ AUC\n30–60 Hz', 'High γ AUC\n60–80 Hz', 'Total γ AUC\n30–80 Hz', 'Exponent', 'θ AUC\n4–15 Hz']
+
     target_names = (
-        [f'pre_{k}'    for k in FEAT_KEYS] +
-        [f'prebc_{k}'  for k in FEAT_KEYS] +
-        [f'post_{k}'   for k in FEAT_KEYS] +
-        [f'postbc_{k}' for k in FEAT_KEYS] +
-        [f'delta_{k}'  for k in FEAT_KEYS]
+        [f'pre_{k}'    for k in FEAT_KEYS_PSD] +
+        [f'prebc_{k}'  for k in FEAT_KEYS_PSD] +
+        [f'post_{k}'   for k in FEAT_KEYS_PSD] +
+        [f'postbc_{k}' for k in FEAT_KEYS_PSD] +
+        [f'delta_{k}'  for k in FEAT_KEYS_PSD]
     )
     target_labels = (
-        [f'Pre {l}'      for l in FEAT_LABELS] +
-        [f'Pre−BL {l}'   for l in FEAT_LABELS] +
-        [f'Post {l}'     for l in FEAT_LABELS] +
-        [f'Post−BL {l}'  for l in FEAT_LABELS] +
-        [f'Δ {l}'        for l in FEAT_LABELS]
+        [f'Pre {l}'      for l in FEAT_LABELS_PSD] +
+        [f'Pre−BL {l}'   for l in FEAT_LABELS_PSD] +
+        [f'Post {l}'     for l in FEAT_LABELS_PSD] +
+        [f'Post−BL {l}'  for l in FEAT_LABELS_PSD] +
+        [f'Δ {l}'        for l in FEAT_LABELS_PSD]
     )
 
-    Y = np.full((n, 5 * len(FEAT_KEYS)), np.nan)
+    Y = np.full((n, 5 * len(FEAT_KEYS_PSD)), np.nan)
 
     for i in range(n):
         sw    = lfp_windows_by_spike[i]
@@ -454,7 +468,7 @@ def build_ridge_matrices_single_psd(df_reg, lfp_windows_by_spike, hpf_lfp_by_spi
         _amp  = lambda win: win_avg(t_hpf, hpf, win)
         _std  = lambda win: win_std(t_hpf, hpf, win)
 
-        _nf = len(FEAT_KEYS)
+        _nf = len(FEAT_KEYS_PSD)
         def _pf_vals(win_key):
             pfw = pf[win_key]
             return [_amp(locals()[f'{win_key}_win']), _std(locals()[f'{win_key}_win']),
