@@ -209,7 +209,7 @@ def plot_gamma_blocks_generic(
     label_text = f"{title}" + (f" – {info_label}" if info_label else "")
     plt.title(label_text)
     plt.xlabel("Time (s)")
-    plt.ylabel("LFP (µV)")
+    plt.ylabel("LFP (a.u.)")
     plt.tight_layout()
     plt.show()
 

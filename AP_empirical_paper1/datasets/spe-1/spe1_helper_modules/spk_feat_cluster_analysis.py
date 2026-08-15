@@ -2287,7 +2287,7 @@ def extract_lfp_windows(
     Extract LFP windows around spikes, optionally filtered by a condition.
 
     Returns dict with:
-      windows: list of arrays (lfp µV)
+      windows: list of arrays (raw LFP signal, uncalibrated units)
       times_rel_ms: list of arrays (ms, spike = 0)
       spike_times_ms: list of spike times (ms)
       next_spike_times_ms: list of next spike times (ms or NaN)
@@ -3158,7 +3158,7 @@ def plot_window_feature_group_heatmap_single(
         Can have:
           - "next_rel"  : 1D array of next spike times (same units as times_rel)
     feature_label : str
-        Label for the colorbar (e.g. "aperiodic_exponent", "gamma AUC", "LFP (µV)").
+        Label for the colorbar (e.g. "aperiodic_exponent", "gamma AUC", "LFP (a.u.)").
     time_unit : {"s","ms"}
         Unit of the values in times_rel (and marker times).
         X-axis is always seconds.

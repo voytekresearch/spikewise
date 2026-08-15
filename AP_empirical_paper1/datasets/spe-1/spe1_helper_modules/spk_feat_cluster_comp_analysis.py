@@ -5356,8 +5356,8 @@ def plot_peri_trajectory_signed(
         'slow_gamma_auc':  'Slow γ (30–60)',
         'high_gamma_auc':  'High γ (60–80)',
         'total_gamma_auc': 'Total γ (30–80)',
-        'mean_amp':        'Mean amp (µV)',
-        'std_amp':         'Amp SD (µV)',
+        'mean_amp':        'Mean amp (a.u.)',
+        'std_amp':         'Amp SD (a.u.)',
     }
     _DEFAULT_WF_LABELS = {
         'exp_lambda':      'Exp λ',
@@ -5671,8 +5671,8 @@ def plot_lfp_peri_transition_summary(
         'slow_gamma_auc':  'Slow γ AUC (30–60 Hz)',
         'high_gamma_auc':  'High γ AUC (60–80 Hz)',
         'total_gamma_auc': 'Total γ AUC (30–80 Hz)',
-        'mean_amp':        'Mean amplitude (µV)',
-        'std_amp':         'Amplitude SD (µV)',
+        'mean_amp':        'Mean amplitude (a.u.)',
+        'std_amp':         'Amplitude SD (a.u.)',
     }
 
     if lfp_keys   is None: lfp_keys   = _DEFAULT_KEYS
@@ -5776,10 +5776,10 @@ def analyze_lfp_at_transitions(
     For each (cell, feature) in df_transitions, cut the continuous LFP recording
     at the transition time(s) to create temporal blocks.  For each block compute:
 
-        mean_amp  : mean LFP amplitude (µV, raw)
-        std_amp   : std  LFP amplitude (µV, raw)
+        mean_amp  : mean LFP amplitude (raw signal units, uncalibrated - see data_loader.py)
+        std_amp   : std  LFP amplitude (raw signal units, uncalibrated - see data_loader.py)
         freqs     : frequency axis (Hz)
-        psd       : Welch PSD of the block (µV²/Hz)
+        psd       : Welch PSD of the block (a.u.)
         exponent  : specparam aperiodic exponent
         offset    : specparam aperiodic offset
         theta_auc : specparam theta peak AUC (4–10 Hz)
@@ -6013,7 +6013,7 @@ def plot_lfp_transition_validation(
                     fontsize=8, ha='right', va='top', color='dimgray')
         ax_lfp.legend(fontsize=7, frameon=False, loc='upper left')
         ax_lfp.set_xlabel('Time (s)', fontsize=8)
-        ax_lfp.set_ylabel('LFP (µV)', fontsize=8)
+        ax_lfp.set_ylabel('LFP (a.u.)', fontsize=8)
         sns.despine(ax=ax_lfp)
 
     fig.suptitle('LFP transition validation — spike t₀ mapped to continuous LFP',
@@ -6054,8 +6054,8 @@ def plot_lfp_block_comparison(
                       max_n_peaks=4, min_peak_height=0.0, peak_threshold=1.5, verbose=False)
 
     _all_bar_specs = [
-        ('mean_amp',        'Mean amp\n(µV)'),
-        ('std_amp',         'Std amp\n(µV)'),
+        ('mean_amp',        'Mean amp\n(a.u.)'),
+        ('std_amp',         'Std amp\n(a.u.)'),
         ('exponent',        'Exponent'),
         ('offset',          'Offset'),
         ('theta_auc',       'θ AUC\n4–15 Hz'),
@@ -6329,7 +6329,7 @@ def plot_lfp_block_comparison(
                                                     alpha=0.40, color=_bcol, zorder=4, label=_lbl)
                                 _added_band_labels[_bkey] = True
             ax_psd.set_xlabel('Frequency (Hz)', fontsize=24)
-            ax_psd.set_ylabel('PSD (µV²/Hz)',   fontsize=24)
+            ax_psd.set_ylabel('PSD (a.u.)',   fontsize=24)
             ax_psd.legend(fontsize=18, frameon=False)
             ax_psd.set_title('PSD + specparam', fontsize=26)
             if _psd_ylim is not None:
@@ -6405,8 +6405,8 @@ def plot_pop_lfp_block_summary(lfp_block_results, bar_keys=None):
     from scipy.stats import wilcoxon as _wilcoxon
 
     _all_bar_specs = [
-        ('mean_amp',        'Mean amp\n(µV)'),
-        ('std_amp',         'Std amp\n(µV)'),
+        ('mean_amp',        'Mean amp\n(a.u.)'),
+        ('std_amp',         'Std amp\n(a.u.)'),
         ('exponent',        'Exponent'),
         ('offset',          'Offset'),
         ('theta_auc',       'θ AUC\n4–15 Hz'),
@@ -7079,10 +7079,10 @@ def plot_lfp_metrics_low_vs_high(lfp_block_results, df_transitions,
                               'theta_auc', 'total_gamma_auc']
 
     _LFP_UNITS = {
-        'mean_amp':        'µV',
-        'std_amp':         'µV',
-        'exponent':        r'µV² Hz$^{-1}$',
-        'offset':          'µV²',
+        'mean_amp':        'a.u.',
+        'std_amp':         'a.u.',
+        'exponent':        'a.u.',
+        'offset':          'a.u.',
         'theta_auc':       'a.u.',
         'total_gamma_auc': 'a.u.',
         'slow_gamma_auc':  'a.u.',
@@ -7645,10 +7645,10 @@ def plot_lfp_metrics_by_feature_group(lfp_block_results,
     import seaborn as sns
 
     _DEFAULT_METRICS = [
-        ('mean_amp',        'Mean amplitude',    'µV'),
-        ('std_amp',         'Stdev amplitude',   'µV'),
-        ('exponent',        'Aperiodic exponent', r'µV² Hz$^{-1}$'),
-        ('offset',          'Aperiodic offset',  'µV²'),
+        ('mean_amp',        'Mean amplitude',    'a.u.'),
+        ('std_amp',         'Stdev amplitude',   'a.u.'),
+        ('exponent',        'Aperiodic exponent', 'a.u.'),
+        ('offset',          'Aperiodic offset',  'a.u.'),
         ('theta_auc',       'Theta AUC',         'a.u.'),
         ('total_gamma_auc', 'Gamma AUC',         'a.u.'),
     ]
