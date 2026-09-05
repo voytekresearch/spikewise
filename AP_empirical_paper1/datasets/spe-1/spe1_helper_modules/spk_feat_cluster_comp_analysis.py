@@ -2333,7 +2333,9 @@ def plot_temporal_structure(df, alpha=0.05):
     df_plot['temporal_p']   = pd.to_numeric(df_plot['temporal_p'],   errors='coerce')
     df_plot = df_plot.groupby(['cell_id', 'spike_feature'], as_index=False).first()
     df_plot = df_plot.dropna(subset=['temporal_rho'])
-    df_plot['significant'] = df_plot['temporal_p'] < alpha
+    rejected, qvals, _, _ = multipletests(df_plot['temporal_p'].values, alpha=alpha, method='fdr_bh')
+    df_plot['temporal_q'] = qvals
+    df_plot['significant'] = rejected
 
     n_sig   = df_plot['significant'].sum()
     n_total = len(df_plot)
@@ -2353,7 +2355,7 @@ def plot_temporal_structure(df, alpha=0.05):
     sns.stripplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
                   palette=palette, alpha=0.5, size=6, ax=ax)
     ax.axvline(0, color='black', lw=1, linestyle='--', alpha=0.5)
-    ax.text(0.5, 1.02, f'{n_sig}/{n_total} significant (p < {alpha})',
+    ax.text(0.5, 1.02, f'{n_sig}/{n_total} significant (FDR corrected p < {alpha})',
             transform=ax.transAxes, fontsize=_FAX, va='bottom', ha='center')
     ax.set_xlabel('Temporal Rho (Spearman)', fontsize=_FAX, fontweight='bold')
     ax.set_ylabel('', fontsize=_FAX)
@@ -2368,15 +2370,24 @@ def plot_temporal_structure(df, alpha=0.05):
     # Print summary
     n_sig = df_plot['significant'].sum()
     n_total = len(df_plot)
-    print(f"\nTime dependence summary (p < {alpha}):")
+    print(f"\nTime dependence summary (FDR corrected p < {alpha}):")
     print(f"  Significant: {n_sig} / {n_total} cell-feature groups ({100*n_sig/n_total:.1f}%)")
     print(f"  Mean |rho|: {df_plot['temporal_rho'].abs().mean():.3f}")
-    sig_df = df_plot[df_plot['significant']][['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p']].copy()
+    sig_df = df_plot[df_plot['significant']][['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p', 'temporal_q']].copy()
     sig_df['temporal_rho'] = sig_df['temporal_rho'].round(3)
     sig_df['temporal_p']   = sig_df['temporal_p'].map(lambda x: f"{x:.4f}" if x >= 0.0001 else "<0.0001")
+    sig_df['temporal_q']   = sig_df['temporal_q'].map(lambda x: f"{x:.4f}" if x >= 0.0001 else "<0.0001")
     if not sig_df.empty:
         print("\nSignificant groups:")
         print(sig_df.sort_values('temporal_rho').to_string(index=False))
+
+    nonsig_df = df_plot[~df_plot['significant']][['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p', 'temporal_q']].copy()
+    nonsig_df['temporal_rho'] = nonsig_df['temporal_rho'].round(3)
+    nonsig_df['temporal_p']   = nonsig_df['temporal_p'].map(lambda x: f"{x:.4f}" if x >= 0.0001 else "<0.0001")
+    nonsig_df['temporal_q']   = nonsig_df['temporal_q'].map(lambda x: f"{x:.4f}" if x >= 0.0001 else "<0.0001")
+    if not nonsig_df.empty:
+        print("\nNon-significant groups:")
+        print(nonsig_df.sort_values('temporal_rho').to_string(index=False))
 
     return df_plot
 
@@ -4096,7 +4107,7 @@ def plot_spike_feat_value_within_vs_between(spike_fit_dir, cache_dir=None, force
         'ramp_amp':       'µV',   'inflection_amp': 'µV',
         'inflection_time':'ms',   'peak_amp':       'µV',
         'peak_sharpness': 'µV/ms²','peak_width':    'ms',
-        'exp_lambda':     'ms⁻¹', 'exp_const':      'µV',
+        'exp_lambda':     r'ms$^{-1}$', 'exp_const':      'µV',
         'log_isi':        'log(s)',
     }
 
@@ -7708,6 +7719,8 @@ def plot_lfp_metrics_by_feature_group(lfp_block_results,
 
     rng = np.random.default_rng(42)
 
+    # Note: intentionally uncorrected across the 6 metrics — this analysis is
+    # exploratory (small per-group samples), consistent with Supp. Fig. 12.
     for m_i, (mk, title_lbl, unit_lbl) in enumerate(metric_specs):
         ax = axes[m_i // ncols][m_i % ncols]
 

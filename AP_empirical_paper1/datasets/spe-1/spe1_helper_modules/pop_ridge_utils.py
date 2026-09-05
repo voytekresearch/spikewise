@@ -254,10 +254,15 @@ def aggregate_population(all_results, cell_ids, target_names, predictor_sets):
     -------
     r2_pop   : {target → {pset → ndarray(n_cells)}}
     sig_pop  : {target → {pset → bool ndarray(n_cells)}}
+        Per-cell permutation-test significance, BH-FDR corrected (q<0.05)
+        across cells within each (target, predictor_set) independently.
+        Targets/predictor_sets are NOT pooled together for correction — each
+        is its own scientific question.
     beta_pop : {target → {feature_label → ndarray(n_cells)}}
     """
     r2_pop   = {tn: {pn: [] for pn in predictor_sets} for tn in target_names}
     sig_pop  = {tn: {pn: [] for pn in predictor_sets} for tn in target_names}
+    p_pop    = {tn: {pn: [] for pn in predictor_sets} for tn in target_names}
     beta_pop = {tn: {wl: [] for wl in WAVEFORM_LABELS} for tn in target_names}
 
     for cid in cell_ids:
@@ -266,19 +271,27 @@ def aggregate_population(all_results, cell_ids, target_names, predictor_sets):
             for pn in predictor_sets:
                 e = res.get(tn, {}).get(pn, {})
                 r2_pop[tn][pn].append(e.get('r2_cv', np.nan))
-                # Use raw permutation p < 0.05 per target independently.
-                # sig_corrected was over-corrected across all targets/predictor sets;
-                # each target is a separate scientific question.
                 p_raw = e.get('p_val', 1.0)
-                sig_pop[tn][pn].append(float(p_raw) < 0.05 if p_raw is not None else False)
+                p_pop[tn][pn].append(float(p_raw) if p_raw is not None else 1.0)
             beta = res.get(tn, {}).get('Waveform only', {}).get('beta') or {}
             for wl in WAVEFORM_LABELS:
                 beta_pop[tn][wl].append(beta.get(wl, np.nan))
 
+    # BH-FDR across cells, within each (target, predictor_set) independently.
+    # Each target/predictor_set is its own scientific question (do not pool
+    # across targets — that was tried before and over-corrected unrelated
+    # questions together); within a target, the per-cell permutation tests
+    # ARE a real multiple-comparisons family (~37 simultaneous tests), so
+    # that's the family FDR should be computed over.
     for tn in target_names:
         for pn in predictor_sets:
-            r2_pop[tn][pn]  = np.array(r2_pop[tn][pn],  dtype=float)
-            sig_pop[tn][pn] = np.array(sig_pop[tn][pn], dtype=bool)
+            r2_pop[tn][pn] = np.array(r2_pop[tn][pn], dtype=float)
+            p_arr = np.array(p_pop[tn][pn], dtype=float)
+            if len(p_arr):
+                rejected, _ = fdrcorrection(p_arr, alpha=0.05, method='indep')
+            else:
+                rejected = np.array([], dtype=bool)
+            sig_pop[tn][pn] = rejected
         for wl in WAVEFORM_LABELS:
             beta_pop[tn][wl] = np.array(beta_pop[tn][wl], dtype=float)
 
@@ -542,7 +555,8 @@ def plot_population_results(r2_pop, sig_pop, beta_pop, df_tests,
     _heatmap_dividers(ax)
     plt.colorbar(im, ax=ax, label='Mean CV R²', shrink=0.55, pad=0.02)
     ax.set_title('Population – Mean 5-fold CV R²\n'
-                 '(bold = mean R²  |  % = fraction sig  |  * = Wilcoxon median R²>0, p<0.05)',
+                 '(bold = mean R²  |  % = fraction sig, FDR corrected p<0.05  |  '
+                 '* = Wilcoxon median R²>0, FDR corrected p<0.05)',
                  fontsize=12, pad=12)
     fig.tight_layout(); plt.show()
 
@@ -772,23 +786,25 @@ def run_r2_tests(r2_pop, target_names, target_labels, predictor_sets,
     """
     One-sided Wilcoxon signed-rank test: is median CV R² > 0 across cells?
 
-    Each LFP target represents a distinct scientific question (amplitude,
-    variability, gamma power, aperiodic slope, theta power) and is tested
-    independently — no cross-target correction is applied.  Each test is
-    assessed against alpha directly.
-
-    If multiple predictor sets are passed, they are shown for context but
-    significance is evaluated per (target, predictor_set) independently.
+    BH-FDR corrected (q<alpha) across LFP targets, within each predictor_set
+    independently (mirrors the correction pvc-6's ridge regression applies
+    across its 3 stimulus targets — a predictor_set here is a distinct model,
+    e.g. the main waveform model vs. the log-ISI control, and shouldn't be
+    pooled with each other, but the multiple LFP targets tested under the
+    same model ARE the right family to correct jointly). `stars` reflects
+    the FDR-corrected q-value tier (reported to readers simply as "p,
+    FDR corrected"); `sig_r2` is the same q<alpha verdict used to gate
+    whether a result is reported/plotted as significant at all.
 
     Parameters
     ----------
-    alpha : float  significance threshold (default 0.05, uncorrected per target)
+    alpha : float  significance threshold (default 0.05, applied to FDR q)
 
     Returns
     -------
     df_r2 : pd.DataFrame
         Columns: target, target_label, predictor_set, n_cells,
-                 median_r2, mean_r2, sem_r2, p_wilcox, sig_r2
+                 median_r2, mean_r2, sem_r2, p_wilcox, q_wilcox, sig_r2
     """
     rows = []
     for tn, tl in zip(target_names, target_labels):
@@ -816,16 +832,28 @@ def run_r2_tests(r2_pop, target_names, target_labels, predictor_sets,
             ))
 
     df = pd.DataFrame(rows)
-    df['sig_r2'] = df['p_wilcox'].fillna(1.0) < alpha
-    df['stars']  = df['p_wilcox'].apply(_stars)
     df['p_str']  = df['p_wilcox'].apply(_fmt_p)
+
+    df['q_wilcox'] = np.nan
+    df['sig_r2']   = False
+    for pn in df['predictor_set'].unique():
+        mask = (df['predictor_set'] == pn) & df['p_wilcox'].notna()
+        p = df.loc[mask, 'p_wilcox'].values
+        if len(p) == 0:
+            continue
+        rejected, q = fdrcorrection(p, alpha=alpha, method='indep')
+        df.loc[mask, 'q_wilcox'] = q
+        df.loc[mask, 'sig_r2']   = rejected
+
+    # star count reflects the FDR-corrected p-value (q), reported as "p"
+    df['stars'] = df['q_wilcox'].apply(_stars)
 
     n_sig = int(df['sig_r2'].sum())
     print(f'R² > 0 Wilcoxon: {len(df)} (target × predictor_set) pairs  |  '
-          f'p<{alpha}: {n_sig}  (each target independent, no cross-target correction)')
+          f'FDR q<{alpha} (within predictor_set): {n_sig}')
     if n_sig:
         out = df[df.sig_r2][['target_label', 'predictor_set', 'n_cells',
-                              'median_r2', 'mean_r2', 'p_str', 'stars']].copy()
+                              'median_r2', 'mean_r2', 'p_str', 'q_wilcox', 'stars']].copy()
         print(out.to_string(index=False))
 
     return df
@@ -1013,7 +1041,7 @@ def plot_beta_significant_summary(df_tests, target_names, target_labels):
     ax.set_xlabel('Mean β  (standardized units)', fontsize=_FS_AX,
                   fontweight='bold', color='black', labelpad=14)
     ax.set_title('Population-significant spike-waveform → LFP relationships\n'
-                 '* = one-sample t-test, mean β ≠ 0 (p < 0.05)',
+                 'one-sample t-test, mean β ≠ 0 (*p<0.05; **p<0.01; ***p<0.001)',
                  fontsize=_FS_AX, fontweight='bold', color='black', pad=22)
     ax.tick_params(axis='x', labelsize=_FS_ROW, colors='black', pad=10,
                    width=3.0, length=10)
@@ -1112,7 +1140,7 @@ def plot_beta_full_summary(df_tests, target_names, target_labels,
     ax.set_yticklabels(df['row_label'], fontsize=_FS_SM, color='black')
     ax.set_xlabel('Mean β  ±  95% CI  (standardized units)', fontsize=_FS_AX, color='black')
     ax.set_title('Full waveform-feature β profile\n'
-                 '* = one-sample t-test, mean β ≠ 0 (p < 0.05)  —  bars cross 0 ⟺ ns',
+                 'one-sample t-test, mean β ≠ 0 (*p<0.05; **p<0.01; ***p<0.001)  —  bars cross 0 ⟺ ns',
                  fontsize=_FS_SUB, fontweight='bold', color='black', pad=22)
     ax.tick_params(axis='both', labelsize=_FS_SM, colors='black')
 
@@ -1730,7 +1758,8 @@ def plot_r2_summary_boxplot(r2_pop, sig_pop, df_r2, target_names, target_labels,
         box_handles = [plt.Rectangle((0, 0), 1, 1, color=model_colors[m], alpha=0.85,
                                      label=model_labels[m]) for m in model_order]
         note_handle = plt.Line2D([0], [0], linestyle='none', marker='',
-                                 label='% = cells sig. (perm.)\n* pop. Wilcoxon')
+                                 label='% = cells sig., FDR corrected p<0.05\n'
+                                       '* = pop. Wilcoxon, FDR corrected p<0.05')
         fl, al = plt.subplots(figsize=(2.8, 2.2))
         al.axis('off')
         al.legend(handles=box_handles + [note_handle], fontsize=_FS_ANNOT,

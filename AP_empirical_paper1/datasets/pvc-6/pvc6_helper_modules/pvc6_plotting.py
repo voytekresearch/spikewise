@@ -8,6 +8,7 @@ import pandas as pd
 import seaborn as sns
 from sklearn.metrics import ConfusionMatrixDisplay
 from scipy.stats import pearsonr
+from statsmodels.stats.multitest import fdrcorrection
 import warnings
 
 # Suppress seaborn palette deprecation noise only
@@ -124,11 +125,12 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3, df_w_di
     """
     from scipy.stats import pearsonr as _pearsonr
 
-    # Collect all valid pairs grouped by stim feature
-    stf_groups = {}
+    # First pass: compute every spike x stim pairwise correlation actually tested,
+    # so multiple-comparisons correction covers the full family, not just the
+    # top_n later shown per stim feature.
+    all_pairs = []
     for stf in _STIM_FEATURES:
         _df = df_w_dict[stf] if (df_w_dict is not None and stf in df_w_dict) else df_w
-        group = []
         for sf in _SPIKE_FEATURES:
             if sf not in _df.columns or stf not in _df.columns:
                 continue
@@ -136,25 +138,52 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3, df_w_di
             if len(valid) < 10:
                 continue
             r, p = _pearsonr(valid[sf], valid[stf])
-            group.append((abs(r), r, p, sf, valid))
-        group.sort(key=lambda x: x[0], reverse=True)
-        # when top=True, only keep significant pairs
-        if top:
-            group = [g for g in group if g[2] < 0.05]
-        if group:
-            stf_groups[stf] = group
+            all_pairs.append({'stf': stf, 'sf': sf, 'r': r, 'p': p, 'n': len(valid),
+                              'valid': valid})
 
-    if not stf_groups:
+    if not all_pairs:
         print("No valid pairs found.")
         return
 
-    def _draw_ax_compact(ax, abs_r, r, p, sf, stf, valid):
+    raw_p = np.array([pair['p'] for pair in all_pairs])
+    rejected, q_vals = fdrcorrection(raw_p, alpha=0.05, method='indep')
+    for pair, q, rej in zip(all_pairs, q_vals, rejected):
+        pair['q'] = float(q)
+        pair['sig_fdr'] = bool(rej)
+
+    corr_table = pd.DataFrame([{
+        'stim_target': pair['stf'], 'spike_feature': pair['sf'], 'n': pair['n'],
+        'r': pair['r'], 'p': pair['p'], 'q_fdr': pair['q'], 'sig_fdr': pair['sig_fdr'],
+    } for pair in all_pairs]).sort_values(['stim_target', 'p']).reset_index(drop=True)
+    print(f"Pairwise spike x stim correlations ({window_ms} ms window), "
+          f"BH-FDR across {len(all_pairs)} tests:")
+    print(corr_table.to_string(index=False))
+
+    # Regroup by stim feature for plotting, now carrying q alongside p
+    stf_groups = {}
+    for pair in all_pairs:
+        stf_groups.setdefault(pair['stf'], []).append(
+            (abs(pair['r']), pair['r'], pair['p'], pair['sf'], pair['valid'], pair['q']))
+    for stf in stf_groups:
+        stf_groups[stf].sort(key=lambda x: x[0], reverse=True)
+    # when top=True, only keep FDR-significant pairs
+    if top:
+        stf_groups = {stf: [g for g in group if g[5] < 0.05]
+                     for stf, group in stf_groups.items()}
+        stf_groups = {stf: group for stf, group in stf_groups.items() if group}
+
+    if not stf_groups:
+        print("No FDR-significant pairs found.")
+        return
+
+    def _draw_ax_compact(ax, abs_r, r, p, sf, stf, valid, q):
         color = _FEATURE_COLOR_MAP.get(sf, '#888')
         ax.scatter(valid[sf], valid[stf], s=60, alpha=0.55, color=color, linewidths=0)
         m, b = np.polyfit(valid[sf], valid[stf], 1)
         xs = np.linspace(valid[sf].min(), valid[sf].max(), 200)
         ax.plot(xs, m * xs + b, color='#1a1a1a', lw=3, zorder=3)
-        star  = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+        # star count reflects the FDR-corrected p-value (q), reported as "p"
+        star  = '***' if q < 0.001 else '**' if q < 0.01 else '*' if q < 0.05 else 'ns'
         ann_x, ann_y = (0.04, 0.96) if r >= 0 else (0.04, 0.04)
         ann_va = 'top' if r >= 0 else 'bottom'
         ax.text(ann_x, ann_y, f'r = {r:.2f}',
@@ -177,14 +206,15 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3, df_w_di
         ax.spines['bottom'].set_linewidth(4)
         ax.locator_params(nbins=3)
 
-    def _draw_ax_cartoon(ax, abs_r, r, p, sf, stf, valid, first_col=False):
+    def _draw_ax_cartoon(ax, abs_r, r, p, sf, stf, valid, q, first_col=False):
         color = _FEATURE_COLOR_MAP.get(sf, '#888')
         ax.scatter(valid[sf], valid[stf], s=200, alpha=0.75, color=color,
                    linewidths=0, zorder=2)
         m, b = np.polyfit(valid[sf], valid[stf], 1)
         xs = np.linspace(valid[sf].min(), valid[sf].max(), 200)
         ax.plot(xs, m * xs + b, color='#1a1a1a', lw=5, zorder=3)
-        star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+        # star count reflects the FDR-corrected p-value (q), reported as "p"
+        star = '***' if q < 0.001 else '**' if q < 0.01 else '*' if q < 0.05 else 'ns'
         if sf == 'inflection_amp' and stf == 'stim_std':
             ann_x, ann_y, ann_ha, ann_va = 0.96, 0.96, 'right', 'top'
         elif r >= 0:
@@ -225,8 +255,8 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3, df_w_di
         for stf in _STIM_FEATURES:
             if stf not in stf_groups:
                 continue
-            for col_idx, (abs_r, r, p, sf, valid) in enumerate(stf_groups[stf][:top_n]):
-                _draw_ax_cartoon(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid,
+            for col_idx, (abs_r, r, p, sf, valid, q) in enumerate(stf_groups[stf][:top_n]):
+                _draw_ax_cartoon(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid, q,
                                  first_col=(col_idx == 0))
             for col_idx in range(len(stf_groups[stf][:top_n]), ncols):
                 axes[row_idx, col_idx].set_visible(False)
@@ -250,8 +280,8 @@ def plot_top_correlations_by_window(df_w, window_ms, top=False, top_n=3, df_w_di
             if stf not in stf_groups:
                 continue
             group = stf_groups[stf]
-            for col_idx, (abs_r, r, p, sf, valid) in enumerate(group):
-                _draw_ax_compact(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid)
+            for col_idx, (abs_r, r, p, sf, valid, q) in enumerate(group):
+                _draw_ax_compact(axes[row_idx, col_idx], abs_r, r, p, sf, stf, valid, q)
             for col_idx in range(len(group), ncols):
                 axes[row_idx, col_idx].set_visible(False)
             row_idx += 1
@@ -289,33 +319,36 @@ def plot_avg_waveform_by_stim_type(all_constant_spks, all_ramp_spks, all_pink_sp
 
 
 
-def plot_confusion_matrix(best_model, X_test, y_test, y_pred=None):
+def plot_confusion_matrix(best_model, X_test, y_test, y_pred=None, cm=None):
     """Confusion matrix for a trained classifier on test data.
 
     If y_pred is given (e.g. out-of-fold cross_val_predict output), it's used
     directly instead of best_model.predict(X_test) - X_test is unused in that case.
+    If cm is given directly (e.g. a confusion matrix averaged across repeated CV
+    runs), it's used as-is and y_test/y_pred are ignored.
     """
     from sklearn.metrics import confusion_matrix
-    if y_pred is None:
-        y_pred = best_model.predict(X_test)
-    cm      = confusion_matrix(y_test, y_pred, labels=best_model.classes_)
+    if cm is None:
+        if y_pred is None:
+            y_pred = best_model.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred, labels=best_model.classes_)
     display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=best_model.classes_)
 
     n_classes = len(best_model.classes_)
-    fig_size  = 5 + 2 * n_classes
+    fig_size  = 6 + 2.5 * n_classes
     fig, ax = plt.subplots(figsize=(fig_size, fig_size))
     display.plot(cmap='Blues', ax=ax, xticks_rotation=0, values_format='d')
     ax.set_aspect('equal')
 
     for text in ax.texts:
-        text.set_fontsize(28)
-        text.set_fontweight('bold')
+        text.set_fontsize(70)
+        text.set_fontweight('normal')
 
-    ax.set_xlabel('Predicted Label', fontsize=24, fontweight='bold')
-    ax.set_ylabel('True Label', fontsize=24, fontweight='bold')
-    ax.tick_params(axis='both', which='major', labelsize=22, width=2.5)
+    ax.set_xlabel('Predicted Label', fontsize=52, fontweight='normal')
+    ax.set_ylabel('True Label', fontsize=52, fontweight='normal')
+    ax.tick_params(axis='both', which='major', labelsize=44, width=2.5)
     for label in ax.get_xticklabels() + ax.get_yticklabels():
-        label.set_fontweight('bold')
+        label.set_fontweight('normal')
     # confusion matrix needs all four spines
     for spine in ax.spines.values():
         spine.set_visible(True)
@@ -1086,8 +1119,9 @@ def plot_beta_weights_combined(results_window, window_ms=200):
 
     One row per significant (stim target × waveform feature) pair, sorted by |coef|.
     Colored by waveform feature (consistent with _FEATURE_COLOR_MAP). CI whiskers from
-    bootstrap. Stars at the outer CI cap end.  Separate legend figure.
-    Also outputs a bootstrapped R² bar chart as a separate figure.
+    bootstrap. No per-dot stars (every row shown is already FDR-significant, and in
+    practice all land at ***p<0.001 — stated once in the caption instead). Separate
+    legend figure. Also outputs a bootstrapped R² bar chart as a separate figure.
     """
     _EXCLUDE     = {'sweep', 'spike_num', 'stim_type', 'pink_type'}
     _FEAT_DISPLAY = {
@@ -1114,24 +1148,41 @@ def plot_beta_weights_combined(results_window, window_ms=200):
 
     _DOT_HATCH = {'stim_mean': '',    'stim_std': '|', 'stim_exp': '/'}
 
-    # collect significant pairs; group by feature, sort within by |coef|
-    rows = []
+    # First pass: every (target x feature) coefficient actually tested, so
+    # BH-FDR correction covers the full family rather than being applied
+    # after an uncorrected p<0.05 filter.
+    all_rows = []
     for tgt in targets:
         r = res[tgt]
         for feat, coef, ci_lo, ci_hi, pval in zip(
                 r['feature_names'], r['coefficients'],
                 r['ci_lower'], r['ci_upper'], r['p_values']):
-            if feat in _EXCLUDE or pval >= 0.05:
+            if feat in _EXCLUDE:
                 continue
-            feat_lbl = _FEAT_DISPLAY.get(feat, feat)
-            star = '***' if pval < 0.001 else '**' if pval < 0.01 else '*'
-            rows.append(dict(tgt=tgt, feat=feat, feat_lbl=feat_lbl,
-                             coef=float(coef), ci_lo=float(ci_lo), ci_hi=float(ci_hi),
-                             pval=float(pval), star=star,
-                             abs_coef=abs(float(coef))))
+            all_rows.append(dict(tgt=tgt, feat=feat,
+                                 coef=float(coef), ci_lo=float(ci_lo), ci_hi=float(ci_hi),
+                                 pval=float(pval), abs_coef=abs(float(coef))))
 
+    if not all_rows:
+        print('No beta weights found.')
+        return
+
+    raw_p = np.array([row['pval'] for row in all_rows])
+    rejected, q_vals = fdrcorrection(raw_p, alpha=0.05, method='indep')
+    for row, q, rej in zip(all_rows, q_vals, rejected):
+        row['qval']    = float(q)
+        row['sig_fdr'] = bool(rej)
+        row['feat_lbl'] = _FEAT_DISPLAY.get(row['feat'], row['feat'])
+        # star count reflects the FDR-corrected p-value (q), reported as "p"
+        row['star'] = '***' if q < 0.001 else '**' if q < 0.01 else '*' if q < 0.05 else 'ns'
+
+    beta_table = pd.DataFrame(all_rows).sort_values(['tgt', 'pval']).reset_index(drop=True)
+    print(f"Beta weights (bootstrap t-test vs 0), BH-FDR across {len(all_rows)} tests:")
+    print(beta_table[['tgt', 'feat', 'coef', 'pval', 'qval', 'sig_fdr']].to_string(index=False))
+
+    rows = [row for row in all_rows if row['sig_fdr']]
     if not rows:
-        print('No significant beta weights found.')
+        print('No FDR-significant beta weights found.')
         return
 
     df = pd.DataFrame(rows)
@@ -1198,6 +1249,10 @@ def plot_beta_weights_combined(results_window, window_ms=200):
             (coef, y_pos[yi]), width=2*r_x, height=2*r_y,
             facecolor='none', edgecolor='black', linewidth=2.5,
             zorder=6))
+
+    # No per-dot stars drawn: every plotted weight is already restricted to
+    # FDR-significant results, and in practice all of them land at ***p<0.001
+    # (see caption) — repeating the same star 20+ times added no information.
 
     ax.set_xlim(xlim_left, xlim_right)
     ax.set_ylim(ylim_bot, ylim_top)

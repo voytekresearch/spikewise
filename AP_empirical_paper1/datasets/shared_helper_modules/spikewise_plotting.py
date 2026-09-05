@@ -4,6 +4,7 @@ import matplotlib.colors as mcolors
 import seaborn as sns
 import pandas as pd
 from scipy.stats import pearsonr
+from statsmodels.stats.multitest import fdrcorrection
 import os
 
 plt.rcParams['font.family'] = 'Helvetica Neue'
@@ -49,13 +50,20 @@ def plot_corr_heatmap_only_spk(
 
     rho = df_cleaned.corr() if calculate_corr else df_features[spike_features].corr()
 
-    pval = pd.DataFrame(np.zeros_like(rho), index=spike_features, columns=spike_features)
-    for row in spike_features:
-        for col in spike_features:
-            _, p = pearsonr(df_cleaned[row], df_cleaned[col])
-            pval.at[row, col] = p
-
     n = len(spike_features)
+    pval = pd.DataFrame(np.ones_like(rho), index=spike_features, columns=spike_features)
+    qval = pd.DataFrame(np.ones_like(rho), index=spike_features, columns=spike_features)
+    pairs = [(row, col) for ci, col in enumerate(spike_features)
+             for row in spike_features[ci + 1:]]
+    raw_p = []
+    for row, col in pairs:
+        _, p = pearsonr(df_cleaned[row], df_cleaned[col])
+        pval.at[row, col] = p
+        raw_p.append(p)
+    if raw_p:
+        _, q_fdr = fdrcorrection(raw_p, alpha=0.05, method='indep')
+        for (row, col), q in zip(pairs, q_fdr):
+            qval.at[row, col] = q
     mask    = np.triu(np.ones_like(rho, dtype=bool))
     # x: one line, angled  |  y: two lines where label is long
     xlabels = [_short(f) for f in spike_features[:-1]] + ['']
@@ -211,7 +219,7 @@ table.spk-df {{
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif !important;
 }}
 table.spk-df th {{
-    font-size: 18px !important;
+    font-size: 26px !important;
     font-weight: bold !important;
     border: 2.5px solid #1a1a1a !important;
     padding: 7px 16px !important;
@@ -224,7 +232,7 @@ table.spk-df th {{
     min-width: 90px !important;
 }}
 table.spk-df td {{
-    font-size: 16px !important;
+    font-size: 24px !important;
     font-weight: normal !important;
     border: 1.5px solid #1a1a1a !important;
     padding: 6px 16px !important;
@@ -251,12 +259,17 @@ table.spk-df td {{
             _df_png['isi'] = np.log10(_df_png['isi'])
         _df_png = _df_png.round(2).rename(columns=_plain_labels)
         _df_png.index = range(len(_df_png))
-        _df_png.index.name = 'spike id'
+        _df_png.index.name = 'spike\nid'
         _df_png = _df_png.reset_index()
 
         n_cols = len(_df_png.columns)
-        col_w, row_h = 1.55, 0.70
-        fig = Figure(figsize=(n_cols * col_w, (nrows + 1) * row_h + 0.3),
+        col_w, row_h = 2.1, 1.0
+        # spike id only ever holds a single digit, so give it less width than
+        # the feature columns and spend the freed-up space on bigger text
+        _col_weights = [0.6] + [1.0] * (n_cols - 1)
+        _weight_sum = sum(_col_weights)
+        _col_widths = [w / _weight_sum for w in _col_weights]
+        fig = Figure(figsize=(col_w * _weight_sum, (nrows + 1) * row_h + 0.6),
                      facecolor='white')
         FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
@@ -265,6 +278,7 @@ table.spk-df td {{
         tbl = ax.table(
             cellText=_df_png.values.tolist(),
             colLabels=list(_df_png.columns),
+            colWidths=_col_widths,
             cellLoc='center',
             loc='center',
             bbox=[0, 0, 1, 1],
@@ -275,14 +289,14 @@ table.spk-df td {{
             cell.set_edgecolor('#1a1a1a')
             if row == 0:
                 cell.set_linewidth(2.5)
-                cell.set_text_props(fontweight='bold', fontsize=13,
+                cell.set_text_props(fontweight='bold', fontsize=26,
                                     fontfamily='Helvetica Neue')
                 feat = _avail[col - 1] if (col > 0 and col - 1 < len(_avail)) else None
                 cell.set_facecolor(_faint_rgb(_feat_colors[feat]) if feat and feat in _feat_colors else np.ones(3))
             else:
                 cell.set_linewidth(1.5)
                 cell.set_facecolor(np.ones(3))
-                cell.set_text_props(fontsize=12, fontfamily='Helvetica Neue')
+                cell.set_text_props(fontsize=24, fontfamily='Helvetica Neue')
 
         fig.savefig(save_path, dpi=180, bbox_inches='tight',
                     facecolor='white', edgecolor='none')

@@ -139,10 +139,12 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                 # Compute shared peak-alignment reference across ALL groups so
                 # they share the same time axis when peak_align=True.
                 n_spikes = len(model.spikes)
-                all_wfs = [model.spikes[i] for grp in ind_groups for i in grp
+                all_inds = [i for grp in ind_groups for i in grp
                            if i not in model.inds_error and i < n_spikes]
+                all_wfs  = [model.spikes[i] for i in all_inds]
                 if peak_align and all_wfs:
-                    _, t_plot = _peak_align(all_wfs, model.times, wght)
+                    all_peak_idxs = [int(model.indices[i][3]) for i in all_inds]
+                    _, t_plot = _peak_align(all_wfs, model.times, wght, peak_idxs=all_peak_idxs)
                     # Global pre = index where t=0 lives in the shared grid
                     global_pre = int(np.argmin(np.abs(t_plot)))
                 else:
@@ -162,7 +164,7 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                         # Align each group using the GLOBAL pre so all groups
                         # share the same t=0 reference point.
                         wfs_arr   = [np.asarray(w, float) for w in wfs]
-                        peak_idxs = [int(np.argmax(np.abs(w))) for w in wfs_arr]
+                        peak_idxs = [int(model.indices[i][3]) for i in clean_group]
                         global_post = max(len(w) - pk - 1
                                          for w, pk in zip(wfs_arr, peak_idxs))
                         total = global_pre + global_post + 1
@@ -191,9 +193,11 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
                                              label=f'Std Dev Band {group_names[idx]}'))
 
         else:
-            wfs = [model.spikes[i] for i in range(len(model.spikes))]
+            valid_avg_inds = [i for i in range(len(model.spikes)) if i not in model.inds_error]
+            wfs = [model.spikes[i] for i in valid_avg_inds]
             if peak_align and wfs:
-                arr, t_plot = _peak_align(wfs, model.times, wght)
+                avg_peak_idxs = [int(model.indices[i][3]) for i in valid_avg_inds]
+                arr, t_plot = _peak_align(wfs, model.times, wght, peak_idxs=avg_peak_idxs)
             else:
                 arr    = np.array(wfs)
                 t_plot = _times
@@ -213,13 +217,15 @@ def plot_model(model, inds=None, mode='full', in_ms=True, show_points=False, ax=
     else:
 
         # Pre-compute peak-aligned waveforms and a shared time axis.
-        # Use argmax(|w|) on each raw waveform — same as the May-7 working version.
-        # (June-13 "fix" used model.indices[i][3] which is always the hardcoded
-        # threshold-crossing index 150, not the actual spike peak.)
+        # Use the fit's own peak index (model.indices[i][3]) rather than
+        # re-deriving it via argmax(|w|): argmax can lock onto a neighboring
+        # spike or an after-hyperpolarization trough that exceeds the true
+        # peak in absolute amplitude, which misaligns that spike's overlay
+        # relative to everyone else's even though its fit is correct.
         valid_inds = [i for i in inds if i not in model.inds_error and i < len(model.spikes)]
         if peak_align and valid_inds:
             raw_wfs   = [model.spikes[i] for i in valid_inds]
-            peak_idxs = [int(np.argmax(np.abs(w))) for w in raw_wfs]
+            peak_idxs = [int(model.indices[i][3]) for i in valid_inds]
             pre       = max(peak_idxs)
             aligned_arr, t_aligned = _peak_align(raw_wfs, model.times, wght,
                                                   peak_idxs=peak_idxs)
