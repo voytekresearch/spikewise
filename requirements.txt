@@ -5,3 +5,4 @@ numpy >= 1.21.4
 scipy >= 1.7.3
 pandas >= 1.4.3
 statsmodels >= 0.13.2
+ruptures >= 1.1.9
