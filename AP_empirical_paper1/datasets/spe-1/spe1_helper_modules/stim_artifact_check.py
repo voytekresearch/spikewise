@@ -41,14 +41,19 @@ Reuse notes (what was and wasn't reused from the existing pipeline, and why):
 """
 
 import os
+import pickle
 import numpy as np
+import pandas as pd
+import ruptures as rpt
 from scipy.signal import welch, find_peaks, peak_widths
 
 try:
-    from .config import DICT_PATCH_FS, DICT_SPK_THRESH, DICT_PATCH_TYPE, SPE1_DATA_ROOT
+    from .config import (DICT_PATCH_FS, DICT_SPK_THRESH, DICT_PATCH_TYPE,
+                          SPE1_DATA_ROOT, SPE1_PICKLE_ROOT)
     from .spk_feat_cluster_analysis import load_or_compute
 except ImportError:
-    from config import DICT_PATCH_FS, DICT_SPK_THRESH, DICT_PATCH_TYPE, SPE1_DATA_ROOT
+    from config import (DICT_PATCH_FS, DICT_SPK_THRESH, DICT_PATCH_TYPE,
+                         SPE1_DATA_ROOT, SPE1_PICKLE_ROOT)
     from spk_feat_cluster_analysis import load_or_compute
 
 from spikewise.patch.window import find_spike_times, peak_distance_to_samples
@@ -343,6 +348,83 @@ def run_all_cells(cell_nums, patch_dir: str = PATCH_DIR_DEFAULT, verbose: bool =
 
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     return load_or_compute(cache_path, _compute, force=force, verbose=verbose)
+
+
+# ------------------------------------------------------------------------------------------- #
+# --------------------------- Raw baseline / changepoint checks ------------------------------ #
+# ------------------------------------------------------------------------------------------- #
+# A second, independent way of asking the same question as the checks above: instead of
+# looking for artifact-shaped *events*, look for a real shift in the resting membrane
+# potential itself, and compare its timing to when a cell's spike-waveform features shift
+# cluster. Used by supp_stimulation_artifact_check.ipynb.
+
+RAW_PATCH_DIR_DEFAULT = os.path.join(SPE1_DATA_ROOT, "raw_patch_recordings")
+CLUSTER_PKL_DIR_DEFAULT = os.path.join(SPE1_PICKLE_ROOT, "cluster_pickles")
+ORDINAL_MAP = {"low": 0, "mid": 1, "high": 2}
+
+# waveform-SHAPE features only, not spike-timing/ISI features (log_isi, n_spikes_*) or the
+# spike time/index itself, which get clustered too but aren't "waveform"
+WAVEFORM_FEATURES = ["ramp_amp", "inflection_time", "inflection_amp",
+                      "peak_amp", "peak_width", "peak_sharpness",
+                      "exp_lambda", "exp_const"]
+
+
+def load_raw_patch(cell_num: int, raw_dir: str = RAW_PATCH_DIR_DEFAULT):
+    """Load a cell's raw, unfiltered patch recording (float64, in the units it was recorded in).
+
+    Unlike `load_patch_trace` above (bandpass filtered), this is the true pre-processing
+    recording, needed because filtering can hide a slow baseline shift.
+    """
+    fs = DICT_PATCH_FS[cell_num]
+    trace = np.fromfile(os.path.join(raw_dir, f"c{cell_num}_patch_ch1.bin"), dtype="float64")
+    return trace, fs
+
+
+def compute_baseline(cell_num: int, bin_s: float = 1.0, raw_dir: str = RAW_PATCH_DIR_DEFAULT):
+    """Median voltage per bin_s-second bin: the resting level with spikes averaged out."""
+    trace, fs = load_raw_patch(cell_num, raw_dir)
+    bin_samples = int(bin_s * fs)
+    n_bins = len(trace) // bin_samples
+    chunks = trace[:n_bins * bin_samples].reshape(n_bins, bin_samples)
+    baseline = np.median(chunks, axis=1)
+    t_min = np.arange(n_bins) / 60.0
+    return t_min, baseline
+
+
+def get_pelt_changepoints(signal: np.ndarray, t_min: np.ndarray):
+    """PELT (L2 cost, BIC-style penalty) changepoints on a 1D signal already binned to match t_min."""
+    valid = ~np.isnan(signal)
+    if valid.sum() < 20 or np.nanstd(signal) < 1e-9:
+        return []
+    algo = rpt.Pelt(model="l2", min_size=5, jump=1).fit(signal.reshape(-1, 1))
+    pen = 3 * np.log(len(signal)) * np.nanvar(signal)
+    return [round(t_min[b], 2) for b in algo.predict(pen=pen) if b < len(signal)]
+
+
+def bin_ordinal(spk_min: np.ndarray, ordinal: np.ndarray, n_bins: int, duration_min: float):
+    """Per-spike ordinal cluster label (0/1/2) averaged into per-second bins, matching baseline bins."""
+    bin_edges = np.arange(0, duration_min + 1 / 60, 1 / 60)[:n_bins + 1]
+    bin_idx = np.clip(np.digitize(spk_min, bin_edges) - 1, 0, n_bins - 1)
+    sums = np.bincount(bin_idx, weights=ordinal, minlength=n_bins)
+    counts = np.bincount(bin_idx, minlength=n_bins)
+    with np.errstate(invalid="ignore"):
+        binned = sums / counts
+    binned[counts == 0] = np.nan
+    return pd.Series(binned).interpolate(limit_direction="both").to_numpy()
+
+
+def load_cluster_df(cell_num: int, cluster_dir: str = CLUSTER_PKL_DIR_DEFAULT):
+    """A cell's per-spike waveform-feature dataframe, or None if it was never clustered."""
+    path = os.path.join(cluster_dir, f"c{cell_num}_cluster_df.pkl")
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def waveform_cluster_columns(df, features=WAVEFORM_FEATURES):
+    """Which of `features` actually got clustered for this cell (some are unimodal, no _cluster column)."""
+    return [f"{feat}_cluster" for feat in features if f"{feat}_cluster" in df.columns]
 
 
 # ------------------------------------------------------------------------------------------- #
