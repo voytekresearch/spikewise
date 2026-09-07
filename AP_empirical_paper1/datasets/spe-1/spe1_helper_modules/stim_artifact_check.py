@@ -639,7 +639,7 @@ def plot_baseline_vs_cluster_example(cell_num: int, feature: str, split_time: fl
 
     feat_label = feature.replace("_cluster", "").replace("_", " ")
     ax_base.plot(t_min, baseline, color="black", lw=0.6)
-    ax_base.set_ylabel("raw baseline\n(raw units, median/s)", fontsize=13)
+    ax_base.set_ylabel("raw baseline\n(mV, 1 s bins)", fontsize=13)
     ax_base.set_title(f"c{cell_num}: raw baseline vs. {feat_label} over time", fontsize=15)
     ax_base.axvline(split_time, color="crimson", ls="--", lw=1, label=split_label)
     ax_base.legend(fontsize=12, frameon=False, loc="upper right")
@@ -661,7 +661,7 @@ def plot_baseline_vs_cluster_example(cell_num: int, feature: str, split_time: fl
             ax_wave.fill_between(t_wave_ms, m - s, m + s, color=CLUST_COLORS[lab], alpha=0.15, lw=0)
     ax_wave.set_xlim(-5, 5)  # matches the Spike class's own +/-5ms fit window elsewhere in the pipeline
     ax_wave.set_xlabel("Time from peak (ms)", fontsize=13)
-    ax_wave.set_ylabel("avg waveform\n(a.u.)", fontsize=13)
+    ax_wave.set_ylabel("avg waveform\n(mV)", fontsize=13)
     ax_wave.legend(fontsize=12, frameon=False)
     ax_wave.tick_params(labelsize=12)
 
