@@ -427,6 +427,54 @@ def waveform_cluster_columns(df, features=WAVEFORM_FEATURES):
     return [f"{feat}_cluster" for feat in features if f"{feat}_cluster" in df.columns]
 
 
+def strip_cluster(name):
+    """Display name for a *_cluster column: drop the suffix, underscores to spaces."""
+    return name.replace("_cluster", "").replace("_", " ")
+
+
+def compute_all_baseline_changepoints(cell_nums, baselines):
+    """PELT changepoints on every cell's baseline; skips cells with a degenerate (all-zero-step) baseline."""
+    out = {}
+    for cell_num in cell_nums:
+        t_min, baseline = baselines[cell_num]
+        typical_step = np.median(np.abs(np.diff(baseline)))
+        if typical_step < 1e-9 or len(baseline) < 20:
+            continue
+        out[f"c{cell_num}"] = get_pelt_changepoints(baseline, t_min)
+    return out
+
+
+def compute_all_cluster_changepoints(cell_nums, baselines):
+    """PELT changepoints on every clustered waveform-shape feature, for every cell."""
+    out = {}   # cell_id -> {feature: [changepoint minutes]}
+    for cell_num in cell_nums:
+        df = load_cluster_df(cell_num)
+        if df is None:
+            continue
+        feats = waveform_cluster_columns(df)
+        spk_min = df["spk_times_ms"].to_numpy() / 60000.0
+        t_min, baseline = baselines[cell_num]
+        feat_cps = {}
+        for feat in feats:
+            ordinal = df[feat].map(ORDINAL_MAP).to_numpy().astype(float)
+            signal = bin_ordinal(spk_min, ordinal, len(baseline), t_min[-1])
+            cps = get_pelt_changepoints(signal, t_min)
+            if cps:
+                feat_cps[feat] = cps
+        if feat_cps:
+            out[f"c{cell_num}"] = feat_cps
+    return out
+
+
+def cluster_mix_after(df, feat, cp):
+    """Cluster proportions among spikes after time cp (minutes); None if too few spikes to judge."""
+    spk_min = df["spk_times_ms"].to_numpy() / 60000.0
+    after = df[feat].to_numpy()[spk_min >= cp]
+    if len(after) < 10:
+        return None
+    return pd.Series(after).value_counts(normalize=True)
+
+
 # ------------------------------------------------------------------------------------------- #
 # --------------------------------------- Plotting ------------------------------------------- #
 # ------------------------------------------------------------------------------------------- #
@@ -550,3 +598,189 @@ def plot_summary_panels(df):
 
     plt.tight_layout()
     return fig, axes
+
+
+CLUST_COLORS = {"low": "#0072B2", "mid": "#009E73", "high": "#D55E00"}  # Wong 2011 colorblind-safe
+
+
+def plot_baseline_vs_cluster_example(cell_num: int, feature: str, split_time: float,
+                                      split_label: str = "changepoint",
+                                      cluster_dir: str = CLUSTER_PKL_DIR_DEFAULT):
+    """Raw baseline, per-spike cluster raster, each cluster's average spike waveform, and a
+    before/after cluster-mix panel, split at `split_time` (minutes). Used to visually compare
+    a baseline event's timing against a waveform-cluster shift, whether or not the two coincide.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    t_min, baseline = compute_baseline(cell_num)
+    df = load_cluster_df(cell_num)
+    spk_min = df["spk_times_ms"].to_numpy() / 60000.0
+    clusters = df[feature].to_numpy()
+
+    before = pd.Series(clusters[spk_min < split_time]).value_counts(normalize=True)
+    after = pd.Series(clusters[spk_min >= split_time]).value_counts(normalize=True)
+
+    with open(os.path.join(cluster_dir, f"c{cell_num}_cluster_waveforms.pkl"), "rb") as f:
+        wf = pickle.load(f)
+    wf_feat = wf.get(feature, {})
+    fs = DICT_PATCH_FS[cell_num]
+    t_wave_ms = np.asarray(wf_feat["t_axis"]) / fs * 1000 if "t_axis" in wf_feat else None
+
+    # constrained_layout (not tight_layout) is required here: tight_layout doesn't correctly
+    # size a gridspec-spanning axis like ax_mix and silently corrupts/clips its text.
+    fig = plt.figure(figsize=(9, 6), constrained_layout=True)
+    gs = fig.add_gridspec(3, 2, height_ratios=[1, 0.8, 1.3], width_ratios=[5, 1.6],
+                           wspace=0.05, hspace=0.15)
+    ax_base = fig.add_subplot(gs[0, 0])
+    ax_raster = fig.add_subplot(gs[1, 0], sharex=ax_base)
+    ax_wave = fig.add_subplot(gs[2, 0])
+    ax_mix = fig.add_subplot(gs[:, 1])
+
+    feat_label = feature.replace("_cluster", "").replace("_", " ")
+    ax_base.plot(t_min, baseline, color="black", lw=0.6)
+    ax_base.set_ylabel("raw baseline\n(raw units, median/s)", fontsize=13)
+    ax_base.set_title(f"c{cell_num}: raw baseline vs. {feat_label} over time", fontsize=15)
+    ax_base.axvline(split_time, color="crimson", ls="--", lw=1, label=split_label)
+    ax_base.legend(fontsize=12, frameon=False, loc="upper right")
+    ax_base.tick_params(labelsize=12)
+
+    for lab in ["low", "mid", "high"]:
+        mask = clusters == lab
+        ax_raster.scatter(spk_min[mask], [lab.capitalize()] * mask.sum(), s=2, color=CLUST_COLORS[lab])
+    ax_raster.set_ylabel("cluster\n(raster)", fontsize=13)
+    ax_raster.axvline(split_time, color="crimson", ls="--", lw=1)
+    ax_raster.tick_params(labelsize=12)
+
+    if t_wave_ms is not None:
+        for lab in ["low", "mid", "high"]:
+            if lab not in wf_feat:
+                continue
+            m, s, n = np.asarray(wf_feat[lab]["mean"]), np.asarray(wf_feat[lab]["std"]), wf_feat[lab]["n"]
+            ax_wave.plot(t_wave_ms, m, color=CLUST_COLORS[lab], lw=1.3, label=f"{lab.capitalize()} (n={n})")
+            ax_wave.fill_between(t_wave_ms, m - s, m + s, color=CLUST_COLORS[lab], alpha=0.15, lw=0)
+    ax_wave.set_xlim(-5, 5)  # matches the Spike class's own +/-5ms fit window elsewhere in the pipeline
+    ax_wave.set_xlabel("Time from peak (ms)", fontsize=13)
+    ax_wave.set_ylabel("avg waveform\n(a.u.)", fontsize=13)
+    ax_wave.legend(fontsize=12, frameon=False)
+    ax_wave.tick_params(labelsize=12)
+
+    for x, props in zip([0, 1], [before, after]):
+        bottom = 0
+        for lab in ["low", "mid", "high"]:
+            frac = props.get(lab, 0)
+            ax_mix.bar(x, frac, bottom=bottom, color=CLUST_COLORS[lab], width=0.35)
+            if frac > 0.06:
+                ax_mix.text(x, bottom + frac / 2, f"{frac:.0%}", ha="center", va="center",
+                            fontsize=11, color="white")
+            bottom += frac
+    ax_mix.set_xlim(-0.5, 1.5)
+    ax_mix.set_xticks([0, 1], ["before", "after"])
+    ax_mix.set_ylim(0, 1)
+    ax_mix.set_title("cluster mix", fontsize=14)
+    ax_mix.set_yticks([])
+    ax_mix.tick_params(labelsize=12)
+
+    for a in [ax_base, ax_raster, ax_wave]:
+        sns.despine(ax=a)
+    sns.despine(ax=ax_mix, left=True)
+
+    return fig
+
+
+def plot_shift_summary_funnel(cell_nums, baseline_changepoints, feature_overlap_df):
+    """Funnel of baseline shift -> waveform shift -> still variable, plus which features carry it.
+
+    Three narrow shared-y-axis bars (all cells -> baseline-shift cells -> cells with a waveform
+    shift) followed by a wider per-feature breakdown of how often each one overlaps a baseline
+    shift. Returns (fig, fig_legend, stats): the data figure, a completely separate standalone
+    figure holding only the funnel legend (its own Figure object, not a subplot of `fig`), and
+    stats with the counts printed alongside the figures.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    n_total = len(cell_nums)
+    n_baseline_shift = sum(1 for cn in cell_nums if len(baseline_changepoints.get(f"c{cn}", [])) > 0)
+    pct_baseline_shift = n_baseline_shift / n_total * 100
+
+    cells_with_baseline_cp = {cid for cid, cps in baseline_changepoints.items() if len(cps) > 0}
+    cells_checkable = cells_with_baseline_cp & set(feature_overlap_df["cell_id"].unique())
+    cells_with_wf_shift = cells_checkable & set(
+        feature_overlap_df.loc[feature_overlap_df["overlaps_baseline"], "cell_id"])
+
+    n_checkable, n_shift = len(cells_checkable), len(cells_with_wf_shift)
+    pct_shift = n_shift / n_checkable * 100
+
+    still_mixed_by_cell = (feature_overlap_df[feature_overlap_df["cell_id"].isin(cells_with_wf_shift) &
+                                               feature_overlap_df["overlaps_baseline"]]
+                            .groupby("cell_id")["still_mixed"].any())
+    n_mixed = int(still_mixed_by_cell.sum())
+    n_with_shift = len(still_mixed_by_cell)
+    pct_mixed = n_mixed / n_with_shift * 100
+
+    feat_summary = feature_overlap_df.groupby("feature").agg(
+        n_cells=("cell_id", "count"),
+        n_overlapping=("overlaps_baseline", "sum"),
+    ).reset_index()
+    feat_summary["pct_overlapping"] = (feat_summary["n_overlapping"] / feat_summary["n_cells"] * 100).round(1)
+    feat_summary = feat_summary.sort_values("pct_overlapping", ascending=False)
+    feat_summary["feature_label"] = feat_summary["feature"].apply(strip_cluster)
+
+    fig = plt.figure(figsize=(18, 5.5))
+    outer = fig.add_gridspec(1, 2, width_ratios=[3, 2.2], wspace=0.45)
+    left = outer[0].subgridspec(1, 3, wspace=0.2)
+    ax0 = fig.add_subplot(left[0])
+    ax1 = fig.add_subplot(left[1], sharey=ax0)
+    ax2 = fig.add_subplot(left[2], sharey=ax0)
+    ax3 = fig.add_subplot(outer[1])
+
+    panels = [
+        (ax0, pct_baseline_shift, n_baseline_shift, n_total - n_baseline_shift, "baseline shift",
+         "no baseline shift", "#444444", "all cells"),
+        (ax1, pct_shift, n_shift, n_checkable - n_shift, "waveform shift", "no waveform shift",
+         "#0072B2", "baseline-shift\ncells"),
+        (ax2, pct_mixed, n_mixed, n_with_shift - n_mixed, "still variable", "clean switch",
+         "#D55E00", "cells with a\nwaveform shift"),
+    ]
+    for i, (ax, pct, n_top, n_bot, top_label, bot_label, top_color, xlabel) in enumerate(panels):
+        ax.bar(0, pct, color=top_color, width=0.5, label=top_label)
+        ax.bar(0, 100 - pct, bottom=pct, color="lightgray", width=0.5, label=bot_label)
+        ax.text(0, pct / 2, f"{n_top}/{n_top + n_bot}", ha="center", va="center", color="white", fontsize=21)
+        ax.text(0, pct + (100 - pct) / 2, f"{n_bot}/{n_top + n_bot}", ha="center", va="center", fontsize=21)
+        ax.set_xlim(-0.5, 0.5)
+        ax.set_xticks([0], [xlabel], fontsize=18)
+        ax.set_ylim(0, 100)
+        ax.tick_params(axis="y", labelsize=16)
+        sns.despine(ax=ax)
+        if i > 0:
+            ax.tick_params(labelleft=False)
+            sns.despine(ax=ax, left=True)
+    ax0.set_ylabel("% of cells", fontsize=19)
+
+    # legend is a completely separate Figure, not a subplot of `fig`, so it can never overlap
+    # or get clipped by the bar panels above.
+    handles = [h for a in (ax0, ax1, ax2) for h in a.get_legend_handles_labels()[0]]
+    labels = [l for a in (ax0, ax1, ax2) for l in a.get_legend_handles_labels()[1]]
+    fig_legend = plt.figure(figsize=(14, 2))
+    ax_legend = fig_legend.add_axes([0, 0, 1, 1])
+    ax_legend.axis("off")
+    fig_legend.legend(handles, labels, ncol=3, loc="center", fontsize=26, frameon=False)
+
+    ax3.barh(feat_summary["feature_label"], feat_summary["pct_overlapping"], color="#0072B2")
+    for y, (n_over, n_cells) in enumerate(zip(feat_summary["n_overlapping"], feat_summary["n_cells"])):
+        ax3.text(feat_summary["pct_overlapping"].iloc[y] + 2, y, f"{n_over}/{n_cells}", va="center", fontsize=17)
+    ax3.set_xlabel("% of cells where this feature\nchanges after the baseline shift", fontsize=17)
+    ax3.set_xlim(0, 118)
+    ax3.tick_params(axis="x", labelsize=18)
+    ax3.tick_params(axis="y", labelsize=17)
+    ax3.invert_yaxis()
+    sns.despine(ax=ax3)
+
+    stats = {
+        "n_total": n_total, "n_baseline_shift": n_baseline_shift, "pct_baseline_shift": pct_baseline_shift,
+        "n_checkable": n_checkable, "n_shift": n_shift, "pct_shift": pct_shift,
+        "n_with_shift": n_with_shift, "n_mixed": n_mixed, "pct_mixed": pct_mixed,
+        "feat_summary": feat_summary.drop(columns="feature_label"),
+    }
+    return fig, fig_legend, stats
