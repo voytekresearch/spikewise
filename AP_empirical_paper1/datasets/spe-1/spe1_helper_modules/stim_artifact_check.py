@@ -600,7 +600,7 @@ def plot_summary_panels(df):
     return fig, axes
 
 
-CLUST_COLORS = {"low": "#0072B2", "mid": "#009E73", "high": "#D55E00"}  # Wong 2011 colorblind-safe
+CLUST_COLORS = {"low": "#0072B2", "mid": "#E69F00", "high": "#CC79A7"}  # matches Fig 4B/C, Supp Fig 7-11
 
 
 def plot_baseline_vs_cluster_example(cell_num: int, feature: str, split_time: float,
@@ -739,9 +739,9 @@ def plot_shift_summary_funnel(cell_nums, baseline_changepoints, feature_overlap_
         (ax0, pct_baseline_shift, n_baseline_shift, n_total - n_baseline_shift, "baseline shift",
          "no baseline shift", "#444444", "all cells"),
         (ax1, pct_shift, n_shift, n_checkable - n_shift, "waveform shift", "no waveform shift",
-         "#0072B2", "baseline-shift\ncells"),
+         "#D55E00", "baseline-shift\ncells"),
         (ax2, pct_mixed, n_mixed, n_with_shift - n_mixed, "still variable", "clean switch",
-         "#D55E00", "cells with a\nwaveform shift"),
+         "#009E73", "cells with a\nwaveform shift"),
     ]
     for i, (ax, pct, n_top, n_bot, top_label, bot_label, top_color, xlabel) in enumerate(panels):
         ax.bar(0, pct, color=top_color, width=0.5, label=top_label)
@@ -767,7 +767,7 @@ def plot_shift_summary_funnel(cell_nums, baseline_changepoints, feature_overlap_
     ax_legend.axis("off")
     fig_legend.legend(handles, labels, ncol=3, loc="center", fontsize=26, frameon=False)
 
-    ax3.barh(feat_summary["feature_label"], feat_summary["pct_overlapping"], color="#0072B2")
+    ax3.barh(feat_summary["feature_label"], feat_summary["pct_overlapping"], color="#D55E00")
     for y, (n_over, n_cells) in enumerate(zip(feat_summary["n_overlapping"], feat_summary["n_cells"])):
         ax3.text(feat_summary["pct_overlapping"].iloc[y] + 2, y, f"{n_over}/{n_cells}", va="center", fontsize=17)
     ax3.set_xlabel("% of cells where this feature\nchanges after the baseline shift", fontsize=17)
