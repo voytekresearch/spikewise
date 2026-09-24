@@ -30,7 +30,28 @@ Action potential waveforms are state-dependent paper/
 │   # one notebook per main finding: a plain-language walkthrough of the finding, its
 │   # published figure, and the exact real function + cached data that generated it
 │
+├── finding_notebooks_data/
+│   # small, post feature extraction data the finding notebooks load, so they run
+│   # without downloading any raw recordings (build_*.py scripts show how it was made)
+│
+├── finding_notebooks_functions/
+│   # helper functions used by the finding notebooks (e.g. the interactive cell picker)
+│
+├── requirements.txt
+│   # extra packages needed to run the finding notebooks
+│
 └── AP_empirical_paper_all_analyses/
     # the full, detailed per-dataset and per-cell analyses behind every figure, plus
-    # all supplementary analyses — see its own README.md for the dataset breakdown
+    # all supplementary analyses (see its own README.md for the dataset breakdown)
 ```
+
+## Running the finding notebooks
+
+From the repo root:
+
+```bash
+pip install -e .
+pip install -r "Action potential waveforms are state-dependent paper/requirements.txt"
+```
+
+Then open any of the five notebooks and run all cells. The interactive widgets need a live kernel, so they will not respond in a static preview (e.g. on GitHub).

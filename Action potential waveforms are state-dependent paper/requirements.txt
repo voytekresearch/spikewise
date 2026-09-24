@@ -1,0 +1,16 @@
+# Packages needed to run the finding notebooks, on top of the spikewise package itself.
+# From the repo root:
+#   pip install -e .
+#   pip install -r "Action potential waveforms are state-dependent paper/requirements.txt"
+numpy >= 1.26
+pandas >= 1.5
+matplotlib >= 3.5
+scipy >= 1.10
+seaborn >= 0.13
+scikit-learn >= 1.8
+statsmodels >= 0.13.2
+mne >= 1.6
+specparam >= 2.0.0rc3
+tqdm
+jupyter
+ipywidgets >= 8
