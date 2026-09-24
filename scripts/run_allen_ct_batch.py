@@ -83,7 +83,7 @@ from tqdm import tqdm
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ALLEN_CT_HELPER = REPO_ROOT / "AP_empirical_paper1/datasets/allen-cell-types/allen_ct_helper_modules"
+ALLEN_CT_HELPER = REPO_ROOT / "AP_empirical_paper_all_analyses/datasets/allen-cell-types/allen_ct_helper_modules"
 sys.path.insert(0, str(ALLEN_CT_HELPER))
 
 from config import ALLEN_CT_PICKLE_ROOT

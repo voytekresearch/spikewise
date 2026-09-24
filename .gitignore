@@ -38,9 +38,9 @@ build/
 *.nwb
 
 # Ignore generated figure outputs
-AP_empirical_paper1/datasets/**/*.png
-AP_empirical_paper1/datasets/**/*.pdf
-AP_empirical_paper1/datasets/**/*.svg
+AP_empirical_paper_all_analyses/datasets/**/*.png
+AP_empirical_paper_all_analyses/datasets/**/*.pdf
+AP_empirical_paper_all_analyses/datasets/**/*.svg
 AP_empirical_paper1_old_work/**/*.png
 AP_empirical_paper1_old_work/**/*.pdf
 AP_empirical_paper1_old_work/**/*.svg

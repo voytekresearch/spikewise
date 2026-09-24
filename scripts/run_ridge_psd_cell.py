@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT   = Path(__file__).resolve().parent.parent
-HELPER_DIR  = REPO_ROOT / "AP_empirical_paper1" / "datasets" / "spe-1" / "spe1_helper_modules"
+HELPER_DIR  = REPO_ROOT / "AP_empirical_paper_all_analyses" / "datasets" / "spe-1" / "spe1_helper_modules"
 sys.path.insert(0, str(HELPER_DIR))
 
 import numpy as np

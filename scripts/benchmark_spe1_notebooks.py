@@ -18,8 +18,8 @@ from tqdm import tqdm
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SPE1_HELPER_DIR = REPO_ROOT / "AP_empirical_paper1/datasets/spe-1/spe1_helper_modules"
-SHARED_HELPER_DIR = REPO_ROOT / "AP_empirical_paper1/datasets/shared_helper_modules"
+SPE1_HELPER_DIR = REPO_ROOT / "AP_empirical_paper_all_analyses/datasets/spe-1/spe1_helper_modules"
+SHARED_HELPER_DIR = REPO_ROOT / "AP_empirical_paper_all_analyses/datasets/shared_helper_modules"
 
 for helper_dir in (SPE1_HELPER_DIR, SHARED_HELPER_DIR):
     helper_path = str(helper_dir)

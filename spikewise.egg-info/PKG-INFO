@@ -54,7 +54,7 @@ Spike waveform parameterization and analysis for intracellular and extracellular
 
 1. **`spikeparam/` — Python package** for fitting and extracting features from action potential waveforms. Extracts: peak amplitude, peak sharpness, peak width, repolarization rate (`exp_lambda`), repolarization constant (`exp_const`), inflection time, and log inter-spike interval.
 
-2. **`AP_empirical_paper1/` — Empirical paper analyses** across two datasets testing whether and how spike waveform features vary with neural input and network state. See [`AP_empirical_paper1/README.md`](AP_empirical_paper1/README.md) for the full dataset and analysis breakdown.
+2. **`AP_empirical_paper_all_analyses/` — Empirical paper analyses** across two datasets testing whether and how spike waveform features vary with neural input and network state. See [`AP_empirical_paper_all_analyses/README.md`](AP_empirical_paper_all_analyses/README.md) for the full dataset and analysis breakdown.
 
 ---
 
@@ -71,7 +71,7 @@ spikeparam/
 │   ├── gaussian/                  # Gaussian mixture model alternative
 │   └── tests/                     # Unit tests (mirrors package structure)
 │
-├── AP_empirical_paper1/           # All paper analyses → see AP_empirical_paper1/README.md
+├── AP_empirical_paper_all_analyses/           # All paper analyses → see AP_empirical_paper_all_analyses/README.md
 │
 ├── scripts/                       # Batch runners and utilities
 │   ├── run_spe1_batch.py          # Headless batch executor for spe-1 pipeline

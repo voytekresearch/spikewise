@@ -73,12 +73,12 @@ logging.getLogger("papermill").setLevel(logging.INFO)
 
 # ── Path setup ───────────────────────────────────────────────────────────────
 REPO_ROOT  = Path(__file__).resolve().parent.parent
-HELPER_DIR = REPO_ROOT / "AP_empirical_paper1" / "datasets" / "spe-1" / "spe1_helper_modules"
+HELPER_DIR = REPO_ROOT / "AP_empirical_paper_all_analyses" / "datasets" / "spe-1" / "spe1_helper_modules"
 sys.path.insert(0, str(HELPER_DIR))
 
 from config import CELL_IDS, PRIORITY_CELLS
 
-NB_DIR           = (REPO_ROOT / "AP_empirical_paper1" / "datasets" / "spe-1"
+NB_DIR           = (REPO_ROOT / "AP_empirical_paper_all_analyses" / "datasets" / "spe-1"
                     / "spe1_spike_lfp_analysis" / "cluster_analyses" / "cell_analyses")
 CLUSTER_NB_DIR   = NB_DIR / "cluster_feature_analyses"
 RIDGE_NB_DIR     = NB_DIR / "ridge_regression_analyses"

@@ -9,7 +9,7 @@ Spike waveform parameterization and analysis for intracellular and extracellular
 
 1. **`spikewise/` — Python package** for fitting and extracting features from action potential waveforms. Extracts: peak amplitude, peak sharpness, peak width, repolarization rate (`exp_lambda`), repolarization constant (`exp_const`), inflection time, and log inter-spike interval.
 
-2. **`AP_empirical_paper1/` — Empirical paper analyses** across two datasets testing whether and how spike waveform features vary with neural input and network state. See [`AP_empirical_paper1/README.md`](AP_empirical_paper1/README.md) for the full dataset and analysis breakdown.
+2. **`Action potential waveforms are state-dependent paper/` — Empirical paper analyses** across two datasets testing whether and how spike waveform features vary with neural input and network state. The detailed analysis code lives in the `AP_empirical_paper_all_analyses/` subfolder; see [`Action potential waveforms are state-dependent paper/AP_empirical_paper_all_analyses/README.md`](Action%20potential%20waveforms%20are%20state-dependent%20paper/AP_empirical_paper_all_analyses/README.md) for the full dataset and analysis breakdown.
 
 ---
 
@@ -26,7 +26,15 @@ spikewise/
 │   ├── gaussian/                  # Gaussian mixture model alternative
 │   └── tests/                     # Unit tests (mirrors package structure)
 │
-├── AP_empirical_paper1/           # All paper analyses → see AP_empirical_paper1/README.md
+├── Action potential waveforms are state-dependent paper/
+│   ├── AP_empirical_paper_all_analyses/        # All paper analyses → see its own README.md
+│   ├── 1_parameterization_captures_intra_spike_correlations.ipynb
+│   ├── 2_electrical_stimulation_causally_influences_spike_waveform.ipynb
+│   ├── 3_neurons_show_multimodal_spontaneous_variability.ipynb
+│   ├── 4_within_neuron_variability_exceeds_between_neuron_differences.ipynb
+│   └── 5_ap_waveform_predicts_peri_spike_lfp_state.ipynb
+│       # One notebook per main finding, each calling the exact real function(s) and
+│       # cached data that generate that finding's actual published figure
 │
 ├── scripts/                       # Batch runners and utilities
 │   ├── run_spe1_batch.py          # Headless batch executor for spe-1 pipeline

@@ -1,0 +1,9875 @@
+import os
+import sys
+import glob
+import math
+import warnings
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import matplotlib.patches as patches
+from matplotlib.patches import Circle
+from scipy.stats import pearsonr, spearmanr, chi2_contingency, kruskal, mannwhitneyu, gaussian_kde
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+from statsmodels.stats.multitest import multipletests
+from pop_ridge_utils import _stars
+
+import pickle as _pickle
+
+
+class _RenamedModuleUnpickler(_pickle.Unpickler):
+    """Loads Spike/SpikeGroup pickles saved before the spikeparam->spikewise
+    package rename, whose module path is baked into the pickle."""
+    def find_class(self, module, name):
+        if module == 'spikeparam' or module.startswith('spikeparam.'):
+            module = 'spikewise' + module[len('spikeparam'):]
+        return super().find_class(module, name)
+
+
+def load_spike_fit_pickle(path):
+    """Load a *_spike_fit.pkl (Spike/SpikeGroup object), tolerant of the old
+    pre-rename module path some cached pickles were saved under."""
+    with open(path, 'rb') as f:
+        return _RenamedModuleUnpickler(f).load()
+
+# ------------------------------------------------------------------------------------------- #
+#                                     Environment Setup                                       #
+# ------------------------------------------------------------------------------------------- #
+
+# Import metadata file
+config_dir = "/Users/blancamartin/Desktop/Voytek_Lab/spike_waveform/spikewise/Action potential waveforms are state-dependent paper/AP_empirical_paper_all_analyses/datasets/spe-1/spe1_helper_modules/"
+if config_dir not in sys.path:
+    sys.path.append(config_dir)
+import config
+
+# ============================================================
+# Global plot style — cartoony / presentation-ready
+# ============================================================
+sns.set_theme(style='ticks', font_scale=1.4, rc={
+    'axes.linewidth':    2.0,
+    'xtick.major.width': 2.0,
+    'ytick.major.width': 2.0,
+    'xtick.major.size':  6,
+    'ytick.major.size':  6,
+    'patch.linewidth':   2.0,
+    'lines.linewidth':   2.0,
+    'figure.titlesize':  22,
+})
+
+# ============================================================
+# Publication style constants
+# ============================================================
+_FS_SM    = 14   # small annotations, tick labels
+_FS_AX    = 16   # axis labels
+_FS_SUB   = 18   # subplot titles
+_FS_TTL   = 22   # figure suptitles
+
+# Spike feature palette (consistent across all notebooks/modules)
+_SPIKE_FEAT_COLORS = {
+    'ramp_amp':        '#9467bd',
+    'inflection_amp':  '#c44e52',
+    'inflection_time': '#d97779',
+    'peak_amp':        '#8c564b',
+    'peak_sharpness':  '#a06d62',
+    'peak_width':      '#b38479',
+    'exp_lambda':      '#c561a8',
+    'exp_const':       '#e377c2',
+    'log_isi':         '#7f7f7f',
+    'spk_times_ms':    '#b0b0b0',
+    'ramp_amp_cluster':        '#9467bd',
+    'inflection_amp_cluster':  '#c44e52',
+    'inflection_time_cluster': '#d97779',
+    'peak_amp_cluster':        '#8c564b',
+    'peak_sharpness_cluster':  '#a06d62',
+    'peak_width_cluster':      '#b38479',
+    'exp_lambda_cluster':      '#c561a8',
+    'exp_const_cluster':       '#e377c2',
+    'log_isi_cluster':         '#7f7f7f',
+    'spk_times_ms_cluster':    '#b0b0b0',
+}
+
+_WB_FEAT_ORDER = ['ramp_amp', 'inflection_amp', 'inflection_time',
+                  'peak_amp', 'peak_sharpness', 'peak_width',
+                  'exp_lambda', 'exp_const', 'log_isi']
+
+_WB_FEAT_LABELS = {
+    'ramp_amp':        'Ramp amp',
+    'inflection_amp':  'Infl. amp',
+    'inflection_time': 'Infl. time',
+    'peak_amp':        'Peak amp',
+    'peak_sharpness':  'Peak sharp.',
+    'peak_width':      'Peak width',
+    'exp_lambda':      'Exp λ',
+    'exp_const':       'Exp const',
+    'log_isi':         'Log ISI',
+}
+
+# Colorblind-friendly palette (Wong 2011)
+_CB_PALETTE = ['#0072B2', '#D55E00', '#009E73', '#CC79A7',
+               '#56B4E9', '#E69F00', '#F0E442', '#000000']
+
+# Cluster group colors (low/mid/high)
+_CLUST_LOW  = '#0072B2'
+_CLUST_MID  = '#009E73'
+_CLUST_HIGH = '#D55E00'
+
+# Significance colors
+_SIG_COL   = '#D55E00'
+_INSIG_COL = '#56B4E9'
+# ============================================================
+
+
+
+# ------------------------------------------------------------------------------------------- #
+#                                     Aggregate Results                                       #
+# ------------------------------------------------------------------------------------------- #
+
+def _index_experiment_pickles(folder_path):
+    """Map each cell id to its cluster report pickle (c{N}_cluster_report.pkl)."""
+    indexed = {}
+    for path in sorted(glob.glob(os.path.join(folder_path, "c*_cluster_report.pkl"))):
+        cell_id = os.path.basename(path).split("_", 1)[0]
+        indexed[cell_id] = path
+    return indexed
+
+def compile_experiment_results(folder_path):
+    """
+    Iterates through config Cell IDs. Populates num_clusters (0 if missing).
+    """
+    all_cell_ids = list(config.DICT_CELL_TYPE.keys())
+    master_list = []
+    indexed_pickles = _index_experiment_pickles(folder_path)
+
+    for cell_num in all_cell_ids:
+        cell_id_str = f"c{cell_num}"
+        pickle_path = indexed_pickles.get(cell_id_str)
+        
+        if pickle_path:
+            df = pd.read_pickle(pickle_path)
+
+        if pickle_path and 'groups' in df.columns and not df.empty:
+            n_clusters = df['groups'].nunique()
+            if n_clusters == 1:
+                n_clusters = 2
+            n_clusters = str(n_clusters)
+        else:
+            # Placeholder for no-pickle cells
+            df = pd.DataFrame({
+                'feature_clustered': [np.nan],
+                'groups': [np.nan],
+                'nRMSE': [np.nan],
+                'cos_sim': [np.nan],
+                'temporal_rho': [np.nan],
+                'temporal_p': [np.nan]
+            })
+            n_clusters = '0'  # No pickle = 0 clusters; string to match real cells
+
+        # Map Metadata
+        df['cell_id'] = cell_id_str
+        df['num_clusters'] = n_clusters # Add the new count column
+        
+        patch_info = config.DICT_PATCH_TYPE.get(cell_num)
+        if patch_info and ", " in patch_info:
+            df['patch_type'], df['current_type'] = patch_info.split(', ')
+        else:
+            df['patch_type'], df['current_type'] = np.nan, np.nan
+
+        df['cell_type'] = config.DICT_CELL_TYPE.get(cell_num)
+        df['cortical_depth'] = config.DICT_CORT_DEPTH.get(cell_num)
+        df['dark_neuron'] = config.DICT_DARK_NEURONS.get(cell_num)
+        df['clear_EAP_waveform'] = config.DICT_CLEAR_EAP_WAV.get(cell_num)
+        
+        master_list.append(df)
+
+    final_table = pd.concat(master_list, ignore_index=True)
+    
+    final_table = final_table.rename(columns={
+        'feature_clustered': 'spike_feature',
+        'groups': 'cluster'
+    })
+
+    # Updated column order including num_clusters and temporal metrics
+    cols = [
+        'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth',
+        'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'num_clusters',
+        'cluster', 'nRMSE', 'cos_sim', 'temporal_rho', 'temporal_p', 'temporal_component'
+    ]
+
+    for c in cols:
+        if c not in final_table.columns:
+            final_table[c] = np.nan
+
+    # Ensure numeric columns have correct dtype (mixed-type concat can produce object columns)
+    for num_col in ['nRMSE', 'cos_sim', 'temporal_rho', 'temporal_p', 'cortical_depth']:
+        final_table[num_col] = pd.to_numeric(final_table[num_col], errors='coerce')
+
+    # Binary flag: 1 if time dependence is moderate-or-stronger (|ρ| ≥ 0.3; Cohen 1988)
+    final_table['temporal_component'] = (
+        pd.to_numeric(final_table['temporal_rho'], errors='coerce').abs() >= 0.3
+    ).astype(float)
+
+    return final_table[cols]
+
+def gen_table_fig(df, filename='clust_table_report.png', save_fig=True):
+    # 1. Internal Global Stats Calculation
+    raw_depth_all = pd.to_numeric(df['cortical_depth'], errors='coerce')
+    raw_nrmse_all = pd.to_numeric(df['nRMSE'], errors='coerce')
+    raw_cossim_all = pd.to_numeric(df['cos_sim'], errors='coerce')
+    raw_trho_all  = pd.to_numeric(df['temporal_rho'], errors='coerce')
+
+    g_min_d, g_max_d = raw_depth_all.min(), raw_depth_all.max()
+    g_min_n, g_max_n = raw_nrmse_all.min(), raw_nrmse_all.max()
+    g_min_c, g_max_c = raw_cossim_all.min(), raw_cossim_all.max()
+    g_min_t, g_max_t = raw_trho_all.min(), raw_trho_all.max()
+
+    # 2. Formatting and Numerical Sorting (c1, c2, c3... c46)
+    cols_order = [
+        'cell_id', 'patch_type', 'current_type', 'cell_type', 'cortical_depth',
+        'dark_neuron', 'clear_EAP_waveform', 'spike_feature', 'num_clusters', 'cluster', 'nRMSE', 'cos_sim', 'temporal_rho'
+    ]
+    df_copy = df.copy()
+    # Sort numerically (c1, c2, c10...)
+    df_copy['sort_idx'] = df_copy['cell_id'].str.extract('(\d+)').astype(int)
+    plot_data = df_copy.sort_values(by=['sort_idx', 'spike_feature']).drop(columns=['sort_idx'])[cols_order].copy()
+    
+    # Prep display strings for the table
+    plot_data['nRMSE'] = pd.to_numeric(plot_data['nRMSE'], errors='coerce').map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
+    plot_data['cos_sim'] = pd.to_numeric(plot_data['cos_sim'], errors='coerce').map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
+    plot_data['cortical_depth'] = pd.to_numeric(plot_data['cortical_depth'], errors='coerce').map(lambda x: f'{x:.1f}' if pd.notnull(x) else '')
+    plot_data['temporal_rho'] = pd.to_numeric(plot_data['temporal_rho'], errors='coerce').map(lambda x: f'{x:.3f}' if pd.notnull(x) else '')
+
+    # 3. Fixed Family Color Map
+    feature_shades = {
+        'peak_amp': '#8c564b', 'peak_sharpness': '#a06d62', 'peak_width': '#b38479',
+        'exp_const': '#e377c2', 'exp_lambda': '#c561a8',
+        'inflection_amp': '#D55E00', 'inflection_time': '#D55E00',
+        'ramp_amp': '#D55E00', 'log_isi': '#7f7f7f'
+    }
+
+    # 4. Setup Figure
+    headers = [c.replace('_', ' ').title() for c in plot_data.columns]
+    # FIX: Shifted header indices to 10 and 11
+    headers[6], headers[10], headers[11] = "Clear EAP\nWaveform", "nRMSE", "Cos Sim"
+    
+    fig_height = len(plot_data) * 0.6 + 2
+    fig, ax = plt.subplots(figsize=(22, fig_height))
+    ax.axis('off')
+    table = ax.table(cellText=plot_data.values, colLabels=headers, cellLoc='center', loc='center')
+
+    # 5. Merging Logic & Selective Coloring
+    start_row = 1
+    for i in range(1, len(plot_data) + 1):
+        is_cell_end = (i == len(plot_data) or plot_data.iloc[i]['cell_id'] != plot_data.iloc[start_row-1]['cell_id'])
+        
+        if is_cell_end:
+            end_row = i
+            # Seamless Metadata merge (Cols 0-6)
+            for c in range(7):
+                for r in range(start_row, end_row + 1):
+                    cell = table[r, c]
+                    if r != start_row: cell.get_text().set_text("")
+                    
+                    # Remove horizontal lines within merged blocks
+                    if start_row == end_row: cell.visible_edges = 'closed'
+                    elif r == start_row: cell.visible_edges = 'LRT'
+                    elif r == end_row: cell.visible_edges = 'LRB'
+                    else: cell.visible_edges = 'LR'
+                    
+                    cell.get_text().set_verticalalignment('center')
+                    if c == 0: cell.get_text().set_weight('bold')
+                    
+                    # SHADE DEPTH: First row only
+                    if c == 4 and r == start_row:
+                        val = raw_depth_all.iloc[start_row-1]
+                        if pd.notnull(val) and g_max_d != g_min_d:
+                            norm = (val - g_min_d) / (g_max_d - g_min_d)
+                            cell.set_facecolor(mcolors.to_hex(plt.cm.YlGn(0.1 + norm * 0.4)))
+
+            # Seamless Feature merge (Col 7)
+            feat_start = start_row
+            for j in range(start_row, end_row + 1):
+                curr_feat = plot_data.iloc[j-1]['spike_feature']
+                if j == end_row or plot_data.iloc[j]['spike_feature'] != curr_feat:
+                    shade = feature_shades.get(curr_feat, 'white')
+                    brightness = sum(mcolors.to_rgb(shade)) / 3
+                    t_color = 'white' if brightness < 0.55 else 'black'
+                    
+                    for r_f in range(feat_start, j + 1):
+                        cell_f = table[r_f, 7]
+                        if r_f != feat_start: cell_f.get_text().set_text("") 
+                        
+                        # SHADE FEATURE: Only first row of block to avoid artifacts
+                        if r_f == feat_start:
+                            cell_f.set_facecolor(shade)
+                            cell_f.get_text().set_color(t_color)
+                        
+                        cell_f.get_text().set_weight('bold')
+                        cell_f.get_text().set_verticalalignment('center')
+                        
+                        # Remove horizontal lines within feature block
+                        if feat_start == j: cell_f.visible_edges = 'closed'
+                        elif r_f == feat_start: cell_f.visible_edges = 'LRT'
+                        elif r_f == j: cell_f.visible_edges = 'LRB'
+                        else: cell_f.visible_edges = 'LR'
+                    feat_start = j + 1
+
+            # Metric Gradients (Cols 9-12)
+            for r in range(start_row, end_row + 1):
+                n_val = raw_nrmse_all.iloc[r-1]
+                c_val = raw_cossim_all.iloc[r-1]
+                t_val = raw_trho_all.iloc[r-1]
+
+                # nRMSE (Col 10): Darker = Larger
+                if pd.notnull(n_val) and g_max_n != g_min_n:
+                    n_norm = (n_val - g_min_n) / (g_max_n - g_min_n)
+                    table[r, 10].set_facecolor(mcolors.to_hex(plt.cm.Oranges(0.05 + n_norm * 0.4)))
+
+                # Cos Sim (Col 11): Darker = Smaller
+                if pd.notnull(c_val) and g_max_c != g_min_c:
+                    c_norm = (g_max_c - c_val) / (g_max_c - g_min_c)
+                    table[r, 11].set_facecolor(mcolors.to_hex(plt.cm.Blues(0.05 + c_norm * 0.4)))
+
+                # Temporal Rho (Col 12): diverging — negative=cool, positive=warm
+                if pd.notnull(t_val) and g_max_t != g_min_t:
+                    t_norm = (t_val - g_min_t) / (g_max_t - g_min_t)
+                    table[r, 12].set_facecolor(mcolors.to_hex(plt.cm.RdBu_r(t_norm)))
+
+                # Cluster background shading
+                table[r, 9].set_facecolor('#F8F9FA') 
+            
+            start_row = i + 1
+
+    # 6. Global Polish
+    table.auto_set_font_size(False)
+    table.set_fontsize(11)
+    table.scale(1, 3.5)
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor('#40466e')
+            cell.get_text().set_color('white')
+            cell.get_text().set_weight('bold')
+
+    if save_fig: plt.savefig(filename, bbox_inches='tight', dpi=300)
+    plt.show()
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ Analyze metadata results ------------------------------ #
+# ------------------------------------------------------------------------------------------- #
+
+def analyze_waveform_variance(df, N=20):
+    """
+    Ranks cells by waveform change, plots the selection logic, 
+    and returns the intersection of top-tier results.
+    """
+    # 1. Selection Logic
+    df_ranked_comb = df.sort_values(by=['nRMSE', 'cos_sim'], ascending=[False, True])
+    df_ranked_nrmse = df.sort_values(by=['nRMSE'], ascending=[False])
+    df_ranked_cosim = df.sort_values(by=['cos_sim'], ascending=[True])
+
+    top_n_comb = df_ranked_comb.head(N)
+    top_n_nrmse = df_ranked_nrmse.head(N)
+    top_n_cosim = df_ranked_cosim.head(N)
+
+    # Intersection: In Both (nRMSE & CosSim) AND in the Combined Sort
+    both_indices = df.index[df.index.isin(top_n_nrmse.index) & df.index.isin(top_n_cosim.index)]
+    final_targets = df.loc[both_indices[both_indices.isin(top_n_comb.index)]].copy()
+    final_targets = final_targets.sort_values(['nRMSE', 'cos_sim'], ascending=[False, True])
+
+    # 2. Setup Figure
+    fig, (ax_plot, ax_list) = plt.subplots(1, 2, figsize=(16, 8), gridspec_kw={'width_ratios': [2, 1]})
+
+    # --- LEFT: THE PLOT ---
+    sns.scatterplot(data=df, x='nRMSE', y='cos_sim', color='darkgrey', alpha=0.3, s=40, ax=ax_plot, label='other cell-feature groups')
+    
+    # Selection Markers
+    sns.scatterplot(data=df.loc[both_indices], x='nRMSE', y='cos_sim', 
+                    color='purple', s=120, marker='X', label=f'Top {N} in Both', ax=ax_plot)
+    sns.scatterplot(data=top_n_comb, x='nRMSE', y='cos_sim', 
+                    facecolor='none', edgecolor='gold', s=200, linewidth=1.5, label=f'Top {N} Combined', ax=ax_plot)
+
+    ax_plot.set_title(f"Waveform Variance Landscape (N={N})", fontsize=15)
+    ax_plot.set_xlabel("nRMSE (Amplitude Variance)")
+    ax_plot.set_ylabel("Cos Sim (Shape Similarity)")
+    ax_plot.grid(True, linestyle='--', alpha=0.2)
+    ax_plot.legend(loc='upper right')
+
+    # --- RIGHT: THE IDENTITY LIST ---
+    ax_list.axis('off')
+    title_text = f"INTERSECTION IDENTITIES (N={N})\n"
+    header = f"{'Cell ID':<15} | {'Spike Feature':<15}\n"
+    separator = "-" * 35 + "\n"
+
+    list_content = ""
+    for _, row in final_targets.iterrows():
+        list_content += f"{str(row['cell_id']):<15} | {str(row['spike_feature']):<15}\n"
+
+    ax_list.text(0, 1, title_text + header + separator + list_content, 
+                 family='monospace', fontsize=12, verticalalignment='top')
+
+    plt.tight_layout()
+    plt.show()
+
+    return final_targets
+
+def analyze_cross_correlations(df, alpha=0.05, n_bootstrap=1000):
+    """
+    Test associations between recording metadata and spike cluster difference metrics.
+
+    Variable types determine the test:
+      Binary categorical (patch_type, current_type, dark_neuron, clear_EAP_waveform)
+          → Mann-Whitney U,  effect = rank-biserial r
+      Multi-level categorical (cell_type)
+          → Kruskal-Wallis,  effect = η²
+      Continuous (cortical_depth)
+          → Spearman ρ
+
+    FDR correction: Benjamini-Hochberg across all cross-pairs.
+    Bootstrap CIs: n_bootstrap resamples (cells) for each effect size.
+
+    Tests run at the CELL level — one row per cell, with nRMSE/cos_sim/temporal_rho
+    averaged across all clustering features for that cell. This ensures independence
+    (metadata variables such as clear_EAP_waveform are cell-level properties).
+    """
+    binary_cat  = ['patch_type', 'current_type', 'dark_neuron', 'clear_EAP_waveform']
+    multi_cat   = ['cell_type']
+    cont_meta   = ['cortical_depth']
+    metadata_cols = binary_cat + multi_cat + cont_meta
+    feature_cols  = ['nRMSE', 'cos_sim', 'temporal_rho']
+
+    # Convert feature cols to numeric
+    df_work = df.copy()
+    for c in feature_cols:
+        df_work[c] = pd.to_numeric(df_work[c], errors='coerce')
+
+    # Aggregate to ONE ROW PER CELL: metadata is constant per cell (take first),
+    # metrics are averaged across all clustering features for that cell.
+    # This ensures tests are run on independent observations (cells, not cell×feature pairs).
+    agg = {c: 'first' for c in metadata_cols}
+    agg.update({c: 'mean' for c in feature_cols})
+    df_cell = (df_work.groupby('cell_id')[metadata_cols + feature_cols]
+                      .agg(agg)
+                      .reset_index(drop=True))
+
+    rng     = np.random.default_rng(42)
+    results = []
+
+    for meta in metadata_cols:
+        for feat in feature_cols:
+            sub = df_cell[[meta, feat]].dropna()
+            if len(sub) < 5:
+                continue
+            x = sub[meta].values
+            y = sub[feat].values
+
+            if meta in binary_cat:
+                groups = np.unique(x)
+                if len(groups) != 2:
+                    continue
+                g1, g2 = y[x == groups[0]], y[x == groups[1]]
+                if len(g1) < 2 or len(g2) < 2:
+                    continue
+                stat, p = mannwhitneyu(g1, g2, alternative='two-sided')
+                effect = 1.0 - 2.0 * stat / (len(g1) * len(g2))  # rank-biserial r
+                effect_label = 'rank-biserial r'
+                test = 'Mann-Whitney U'
+
+                boot = []
+                for _ in range(n_bootstrap):
+                    idx = rng.integers(0, len(sub), len(sub))
+                    bs  = sub.iloc[idx]
+                    bx, by = bs[meta].values, bs[feat].values
+                    bg1, bg2 = by[bx == groups[0]], by[bx == groups[1]]
+                    if len(bg1) < 2 or len(bg2) < 2:
+                        continue
+                    bs_stat, _ = mannwhitneyu(bg1, bg2, alternative='two-sided')
+                    boot.append(1.0 - 2.0 * bs_stat / (len(bg1) * len(bg2)))
+
+            elif meta in multi_cat:
+                group_vals = {g: y[x == g] for g in np.unique(x)}
+                group_vals = {g: v for g, v in group_vals.items() if len(v) >= 2}
+                if len(group_vals) < 2:
+                    continue
+                stat, p = kruskal(*group_vals.values())
+                n, k = len(sub), len(group_vals)
+                effect = max(0.0, (stat - k + 1) / (n - k))
+                effect_label = 'η²'
+                test = 'Kruskal-Wallis'
+
+                boot = []
+                for _ in range(n_bootstrap):
+                    idx = rng.integers(0, len(sub), len(sub))
+                    bs  = sub.iloc[idx]
+                    bx, by = bs[meta].values, bs[feat].values
+                    bg = {g: by[bx == g] for g in np.unique(bx)}
+                    bg = {g: v for g, v in bg.items() if len(v) >= 2}
+                    if len(bg) < 2:
+                        continue
+                    bs_stat, _ = kruskal(*bg.values())
+                    nb, kb = len(bs), len(bg)
+                    boot.append(max(0.0, (bs_stat - kb + 1) / (nb - kb)))
+
+            else:  # continuous metadata → Spearman
+                rho, p = spearmanr(x, y)
+                effect = rho
+                effect_label = 'ρ'
+                test = 'Spearman'
+
+                boot = []
+                for _ in range(n_bootstrap):
+                    idx = rng.integers(0, len(sub), len(sub))
+                    bs  = sub.iloc[idx]
+                    br, _ = spearmanr(bs[meta].values, bs[feat].values)
+                    boot.append(br)
+
+            ci_lo = float(np.nanpercentile(boot, 2.5))  if boot else np.nan
+            ci_hi = float(np.nanpercentile(boot, 97.5)) if boot else np.nan
+
+            results.append({
+                'Metadata':     meta,
+                'Feature':      feat,
+                'test':         test,
+                'effect_label': effect_label,
+                'Effect_Size':  round(float(effect), 3),
+                'ci_lo':        round(ci_lo, 3),
+                'ci_hi':        round(ci_hi, 3),
+                'p_raw':        float(p),
+            })
+
+    if not results:
+        return pd.DataFrame()
+
+    df_res = pd.DataFrame(results)
+
+    # Benjamini-Hochberg FDR across all cross-pairs
+    reject, p_fdr, _, _ = multipletests(df_res['p_raw'], method='fdr_bh', alpha=alpha)
+    df_res['p_fdr']       = p_fdr
+    df_res['significant'] = reject
+    df_res['Significance'] = df_res['p_fdr'].apply(
+        lambda p: '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+    )
+
+    # Forest plot: effect sizes with 95% bootstrap CIs
+    _FS  = 24
+    _FAX = 26
+
+    META_LABELS = {
+        'patch_type':         'Patch type',
+        'current_type':       'Current type',
+        'dark_neuron':        'Dark neuron',
+        'clear_EAP_waveform': 'Clear EAP waveform',
+        'cell_type':          'Cell type',
+        'cortical_depth':     'Cortical depth',
+    }
+    FEAT_LABELS_SHORT = {
+        'nRMSE':       'nRMSE',
+        'cos_sim':     'Cos sim',
+        'temporal_rho':'Temporal ρ',
+    }
+
+    df_plot = df_res.sort_values('Effect_Size', key=abs, ascending=True).reset_index(drop=True)
+    df_plot['label'] = (df_plot['Metadata'].map(lambda m: META_LABELS.get(m, m))
+                        + ' × '
+                        + df_plot['Feature'].map(lambda f: FEAT_LABELS_SHORT.get(f, f)))
+    n = len(df_plot)
+
+    TEST_COLORS = {
+        'Mann-Whitney U': '#0072B2',
+        'Kruskal-Wallis': '#D55E00',
+        'Spearman':       '#009E73',
+    }
+    x_max = max(abs(df_plot['ci_lo'].min()), abs(df_plot['ci_hi'].max())) * 1.1
+
+    fig, ax = plt.subplots(figsize=(11, max(5, n * 0.55)))
+    for i, row in enumerate(df_plot.itertuples()):
+        color = TEST_COLORS.get(row.test, 'gray')
+        alpha_pt = 1.0 if row.significant else 0.35
+        ax.plot([row.ci_lo, row.ci_hi], [i, i], color=color, lw=2.5, alpha=alpha_pt)
+        ax.scatter(row.Effect_Size, i, color=color, s=120, zorder=5, alpha=alpha_pt,
+                   edgecolors='black' if row.significant else color, linewidths=1.5)
+        stars = row.Significance if row.Significance != 'ns' else ''
+        ax.text(x_max + 0.02, i,
+                f"{row.Effect_Size:+.3f}  {stars}", va='center', fontsize=_FS - 6)
+
+    ax.axvline(0, color='black', lw=1, ls='--', alpha=0.5)
+    ax.set_yticks(range(n))
+    ax.set_yticklabels(df_plot['label'].tolist(), fontsize=_FS - 4)
+    ax.set_xlim(-x_max * 1.05, x_max * 1.4)
+    ax.set_xlabel('Effect size  (95% bootstrap CI)', fontsize=_FAX, fontweight='bold')
+    ax.tick_params(axis='x', labelsize=_FS)
+    from matplotlib.lines import Line2D
+    legend_els = [Line2D([0], [0], color=c, lw=3, label=t) for t, c in TEST_COLORS.items()]
+    ax.legend(handles=legend_els, frameon=False, loc='lower right', fontsize=_FS - 6)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+    # Print summary
+    sig = df_res[df_res['significant']].sort_values('p_fdr')
+    print(f"\n{len(sig)}/{len(df_res)} pairs significant after BH-FDR (α={alpha}, n_bootstrap={n_bootstrap}):")
+    for _, r in sig.iterrows():
+        print(f"  {r['Metadata']:22s} × {r['Feature']:14s} | "
+              f"{r['effect_label']} = {r['Effect_Size']:+.3f}  "
+              f"95% CI [{r['ci_lo']:+.3f}, {r['ci_hi']:+.3f}]  "
+              f"p_fdr={('< 0.0001' if r['p_fdr'] < 0.0001 else str(round(r['p_fdr'], 4)))} {r['Significance']}")
+
+    sig['p-value'] = sig['p_fdr'].apply(lambda p: '< 0.0001' if p < 0.0001 else f'{p:.4f}')
+    return sig.reset_index(drop=True)
+
+def plot_sig_feat_pairs(df, sig_pairs_df):
+    # Nuke the warnings
+    warnings.simplefilter(action='ignore', category=FutureWarning)
+
+    if sig_pairs_df is None or len(sig_pairs_df) == 0:
+        print("No significant pairs to plot.")
+        return
+
+    _METRIC_LABELS = {
+        'nRMSE': 'nRMSE', 'cos_sim': 'Cosine similarity',
+        'num_clusters': 'N clusters',
+        'cortical_depth': 'Cortical depth (µm)',
+        'patch_type': 'Patch type', 'cell_type': 'Cell type',
+    }
+
+    n_plots = len(sig_pairs_df)
+    cols = min(3, n_plots)
+    rows = math.ceil(n_plots / cols)
+
+    fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 5.5 * rows))
+    axes = np.array(axes).flatten()
+
+    for i, (_, row) in enumerate(sig_pairs_df.iterrows()):
+        m, f = row['Metadata'], row['Feature']
+        r, p = float(row['Effect_Size']), float(row['p_fdr'] if 'p_fdr' in row.index else row['p-value'])
+        stars = "***" if p < .001 else "**" if p < .01 else "*" if p < .05 else "ns"
+        ax = axes[i]
+
+        plot_data = df[[m, f]].replace([np.inf, -np.inf], np.nan).dropna()
+        if plot_data.empty: continue
+        
+        # 1. HORIZONTAL BOXPLOTS for Num Clusters
+        if 'num_clusters' in [m, f]:
+            cat_col = 'num_clusters'
+            val_col = f if m == 'num_clusters' else m
+            plot_data[cat_col] = plot_data[cat_col].astype(float).astype(str)
+            order = ['0.0', '2.0', '3.0']
+            
+            plot_data[val_col] = pd.to_numeric(plot_data[val_col], errors='coerce')
+            plot_data = plot_data.dropna(subset=[val_col])
+            if plot_data.empty:
+                ax.set_visible(False)
+                continue
+
+            sns.boxplot(data=plot_data, y=cat_col, x=val_col, color='#aaaaaa',
+                        order=order, showfliers=False, orient='h', ax=ax)
+            sns.stripplot(data=plot_data, y=cat_col, x=val_col, color='#333333',
+                          alpha=0.5, s=6, order=order, orient='h', ax=ax)
+
+            x_min, x_max = plot_data[val_col].min(), plot_data[val_col].max()
+            pad = (x_max - x_min) * 0.1 if x_max != x_min else 0.1
+            ax.set_xlim(x_min - pad, x_max + pad)
+            
+            ax.set_xlabel(_METRIC_LABELS.get(val_col, val_col.replace('_', ' ').title()))
+            ax.set_ylabel(_METRIC_LABELS.get(cat_col, cat_col.replace('_', ' ').title()))
+
+        # 2. CONTINUOUS REGRESSION
+        elif plot_data[m].nunique() > 5:
+            x_num = pd.to_numeric(plot_data[m], errors='coerce')
+            y_num = pd.to_numeric(plot_data[f], errors='coerce')
+            ax.scatter(x_num, y_num, alpha=0.5, color='#555555', s=60, edgecolors='white', linewidths=0.5)
+
+            idx = np.isfinite(x_num) & np.isfinite(y_num)
+            m_slope, b_int = np.polyfit(x_num[idx], y_num[idx], 1)
+            ax.plot(x_num, m_slope*x_num + b_int, color='#1a1a1a', lw=2)
+            
+            y_min, y_max = y_num.min(), y_num.max()
+            ax.set_ylim(y_min - (y_max - y_min) * 0.1, y_max + (y_max - y_min) * 0.1)
+            
+            ax.set_xlabel(_METRIC_LABELS.get(m, m.replace('_', ' ').title()))
+            ax.set_ylabel(_METRIC_LABELS.get(f, f.replace('_', ' ').title()))
+
+        # 3. OTHER CATEGORICAL
+        else:
+            sns.boxplot(data=plot_data, x=m, y=f, color='#aaaaaa', showfliers=False, ax=ax)
+            sns.stripplot(data=plot_data, x=m, y=f, color='#333333', alpha=0.5, s=6, ax=ax)
+            
+            y_min, y_max = plot_data[f].min(), plot_data[f].max()
+            ax.set_ylim(y_min - (y_max - y_min) * 0.1, y_max + (y_max - y_min) * 0.1)
+            
+            ax.set_xlabel(_METRIC_LABELS.get(m, m.replace('_', ' ').title()))
+            ax.set_ylabel(_METRIC_LABELS.get(f, f.replace('_', ' ').title()))
+
+        ax.text(0.97, 0.97, f"{stars}  (ρ = {r:.2f})", transform=ax.transAxes,
+                fontsize=18, fontweight='bold', ha='right', va='top')
+        ax.set_xlabel(ax.get_xlabel(), fontsize=20, fontweight='bold')
+        ax.set_ylabel(ax.get_ylabel(), fontsize=20, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=18)
+        sns.despine(ax=ax, offset=8)
+
+    # Cleanup unused axes
+    for j in range(i + 1, len(axes)):
+        fig.delaxes(axes[j])
+
+    fig.tight_layout(pad=1.5)
+    plt.show()
+
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ Analyze spk feat results ------------------------------ #
+# ------------------------------------------------------------------------------------------- #
+
+def quantify_spk_feature_prevalence(df, n_total=None):
+    cols_to_fix = ['num_clusters', 'cos_sim', 'nRMSE']
+    for col in cols_to_fix:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    # Calculate unique cells per feature
+    feature_counts = df.groupby('spike_feature')['cell_id'].nunique().reset_index()
+    feature_counts.columns = ['spike_feature', 'n_cells_with_feature']
+
+    # Denominator: pass n_total explicitly (cells that had clustering run, including
+    # those with no significant features). Falls back to non-NaN cell count.
+    if n_total is not None:
+        total_cells = n_total
+    else:
+        total_cells = df[df['spike_feature'].notna()]['cell_id'].nunique()
+    feature_counts['prevalence_pct'] = (feature_counts['n_cells_with_feature'] / total_cells) * 100
+    
+    # Merge with cluster metrics
+    metrics = df.groupby('spike_feature').agg({
+        'num_clusters': 'mean',
+        'cos_sim': 'mean',
+        'nRMSE': 'mean',
+        'temporal_rho': 'mean'
+    }).reset_index()
+    
+    return feature_counts.merge(metrics, on='spike_feature').sort_values('prevalence_pct', ascending=False)
+
+
+def plot_feature_cluster_grid(df_master):
+    """
+    Cell × feature grid showing number of clusters per (cell, feature).
+    White = no clustering, blue = 2 clusters (bimodal), orange = 3+ clusters.
+    ISI/timing features (log_isi, spk_times_ms, spk_times_idx) are separated
+    by a dashed vertical line and labelled in red-italic to distinguish them
+    from waveform shape features.
+    """
+    import matplotlib.colors as mcolors
+    from matplotlib.patches import Patch
+
+    ISI_FEATS = {'log_isi', 'spk_times_ms', 'spk_times_idx'}
+
+    # Max num_clusters per (cell, feature) — collapse cluster-pair rows
+    pivot = (df_master.groupby(['cell_id', 'spike_feature'])['num_clusters']
+             .max()
+             .unstack(fill_value=0))
+
+    # Cell order by numeric ID
+    cell_order = sorted(pivot.index, key=lambda x: int(x.lstrip('c')))
+    pivot = pivot.loc[cell_order]
+
+    # Feature order: waveform first, ISI/timing last
+    wf_feats  = [f for f in pivot.columns if f not in ISI_FEATS]
+    isi_feats = [f for f in pivot.columns if f in ISI_FEATS]
+    feat_order = wf_feats + isi_feats
+    pivot = pivot.reindex(columns=feat_order, fill_value=0)
+
+    n_cells = len(pivot)
+    n_feats = len(feat_order)
+
+    # Recode: 0 → no clustering, 1 → bimodal (2 clusters), 2 → multimodal (3+)
+    mat = pivot.values.copy().astype(float)
+    coded = np.zeros_like(mat)
+    coded[mat == 2] = 1.0
+    coded[mat >= 3] = 2.0
+
+    cmap  = mcolors.ListedColormap(['#f2f2f2', '#4393C3', '#D6604D'])
+    norm  = mcolors.BoundaryNorm([0, 0.5, 1.5, 3], cmap.N)
+
+    fig_w = max(9, n_feats * 0.75 + 2)
+    fig_h = max(5, n_cells * 0.28 + 2)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    ax.imshow(coded, aspect='auto', cmap=cmap, norm=norm, interpolation='nearest')
+
+    # Axis ticks
+    ax.set_xticks(np.arange(n_feats))
+    ax.set_yticks(np.arange(n_cells))
+    ax.set_yticklabels(cell_order, fontsize=7)
+
+    xlabels = ax.set_xticklabels(feat_order, rotation=40, ha='right', fontsize=8)
+    for lbl, feat in zip(xlabels, feat_order):
+        if feat in ISI_FEATS:
+            lbl.set_color('#B22222')
+            lbl.set_fontstyle('italic')
+
+    # Separator between waveform and ISI groups
+    if isi_feats:
+        ax.axvline(len(wf_feats) - 0.5, color='#444', lw=1.5, ls='--', zorder=5)
+        ax.text(len(wf_feats) + len(isi_feats) / 2 - 0.5, n_cells + 0.8,
+                'ISI / timing', ha='center', va='bottom',
+                fontsize=8, color='#B22222', style='italic',
+                transform=ax.transData, clip_on=False)
+
+    # Minor grid lines as cell borders
+    ax.set_xticks(np.arange(-0.5, n_feats), minor=True)
+    ax.set_yticks(np.arange(-0.5, n_cells), minor=True)
+    ax.grid(which='minor', color='white', linewidth=0.8)
+    ax.tick_params(which='minor', length=0)
+
+    # Legend
+    legend_els = [
+        Patch(facecolor='#f2f2f2', edgecolor='#aaa', label='No clustering'),
+        Patch(facecolor='#4393C3', label='2 clusters (bimodal)'),
+        Patch(facecolor='#D6604D', label='3+ clusters (multimodal)'),
+    ]
+    ax.legend(handles=legend_els, loc='upper left', bbox_to_anchor=(0, 1.08),
+              fontsize=8, frameon=False, ncol=3)
+
+    ax.set_title('Feature cluster presence — all cells', fontsize=11,
+                 fontweight='bold', loc='left', pad=28)
+    ax.set_xlabel('Spike feature', fontsize=9, labelpad=6)
+    ax.set_ylabel('Cell', fontsize=9)
+
+    sns.despine(ax=ax, left=True, bottom=True)
+    plt.tight_layout()
+    return fig, ax
+
+
+def select_best_cells_per_feature(cluster_pickle_dir, n_per_feat=3,
+                                   skip_feats=None, min_n=30,
+                                   min_cluster_ratio=0.15,
+                                   min_spread=0.15,
+                                   prefer_bimodal=True):
+    """
+    For each spike feature, return the n_per_feat cells with the best-looking
+    cluster separation, scored as 1 - KDE_overlap between the lowest and
+    highest cluster.
+
+    Filters
+    -------
+    min_n             : minimum spikes per cluster (kills micro-cluster splinters)
+    min_cluster_ratio : smallest cluster must be >= this fraction of total spikes
+                        (kills dominant-cluster + tiny-splinter cases that look sus)
+    min_spread        : each cluster's std must be >= this fraction of the pooled std
+                        (kills spike-like degenerate distributions with near-zero variance)
+    prefer_bimodal    : rank 2-cluster cells before 3+ within each feature
+    """
+    from scipy.stats import gaussian_kde as _kde
+
+    if skip_feats is None:
+        skip_feats = {'spk_times_ms', 'spk_times_idx'}
+
+    scores = {}  # {feat: [(cell_id, separation_score, n_clusters)]}
+
+    for pkl_path in sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl'))):
+        cell_id = os.path.basename(pkl_path).replace('_cluster_df.pkl', '')
+        try:
+            df_cell = pd.read_pickle(pkl_path)
+        except Exception:
+            continue
+
+        for clust_col in [c for c in df_cell.columns if c.endswith('_cluster')]:
+            feat = clust_col.replace('_cluster', '')
+            if feat in skip_feats or feat not in df_cell.columns:
+                continue
+
+            grp_vals = {}
+            for grp in df_cell[clust_col].dropna().unique():
+                vals = df_cell.loc[df_cell[clust_col] == grp, feat].dropna()
+                if len(vals) >= min_n:
+                    grp_vals[grp] = vals.values
+
+            if len(grp_vals) < 2:
+                continue
+
+            # reject if smallest cluster is a tiny splinter
+            total = sum(len(v) for v in grp_vals.values())
+            if min(len(v) for v in grp_vals.values()) / total < min_cluster_ratio:
+                continue
+
+            # reject if any cluster has near-zero variance (spike-like KDE)
+            pooled_std = np.concatenate(list(grp_vals.values())).std()
+            if pooled_std < 1e-10 or any(
+                v.std() / pooled_std < min_spread for v in grp_vals.values()
+            ):
+                continue
+
+            sorted_grps = sorted(grp_vals, key=lambda g: grp_vals[g].mean())
+            lo, hi      = grp_vals[sorted_grps[0]], grp_vals[sorted_grps[-1]]
+            n_clusters  = len(grp_vals)
+
+            all_vals = np.concatenate([lo, hi])
+            pad      = (all_vals.max() - all_vals.min()) * 0.1
+            x_grid   = np.linspace(all_vals.min() - pad, all_vals.max() + pad, 500)
+            try:
+                kde_lo = _kde(lo, bw_method=0.3)(x_grid)
+                kde_hi = _kde(hi, bw_method=0.3)(x_grid)
+            except Exception:
+                continue
+
+            dx      = x_grid[1] - x_grid[0]
+            kde_lo /= kde_lo.sum() * dx
+            kde_hi /= kde_hi.sum() * dx
+            overlap  = np.minimum(kde_lo, kde_hi).sum() * dx
+            scores.setdefault(feat, []).append((cell_id, 1.0 - overlap, n_clusters))
+
+    result = {}
+    for feat, entries in scores.items():
+        if prefer_bimodal:
+            # bimodal (2 clusters) first, then trimodal; within each group sort by separation
+            entries = sorted(entries, key=lambda x: (0 if x[2] == 2 else 1, -x[1]))
+        else:
+            entries = sorted(entries, key=lambda x: -x[1])
+        result[feat] = [c for c, _, _ in entries[:n_per_feat]]
+    return result
+
+
+CLUST_COLORS = {'low': '#0072B2', 'mid': '#E69F00', 'high': '#CC79A7'}
+
+
+def plot_cluster_legend(fontsize=22):
+    handles = [
+        Patch(facecolor=CLUST_COLORS['low'],  label='low cluster'),
+        Patch(facecolor=CLUST_COLORS['high'], label='high cluster'),
+        Patch(facecolor=CLUST_COLORS['mid'],  label='mid cluster'),
+    ]
+    fig, ax = plt.subplots(figsize=(4, 1.4))
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=1, fontsize=fontsize,
+              frameon=False, handlelength=1.2, handleheight=1.0,
+              handletextpad=0.5)
+    fig.tight_layout()
+    return fig
+
+
+def plot_feature_distribution_grid(df_master, cluster_pickle_dir,
+                                   min_cells=2, n_cols_per_row=14,
+                                   cells_to_plot=None,
+                                   cells_to_exclude=None,
+                                   merged_rows=None,
+                                   feature_order=None,
+                                   cell_w=3.8, cell_h=2.6,
+                                   title_fontsize=30, ylabel_fontsize=36,
+                                   clip_pct=2, min_bw_frac=0.05,
+                                   feature_bw_overrides=None,
+                                   feature_bw_abs=None,
+                                   cell_bw_abs=None,
+                                   feature_labels=None,
+                                   feature_min_vals=None,
+                                   hspace=0.35):
+    """
+    Small-multiples grid of smooth KDE distributions split by cluster, all cells.
+    Features with more than n_cols_per_row cells wrap onto multiple rows.
+    Waveform features first; log_isi last (red-italic, pink background).
+    spk_times_ms / spk_times_idx excluded.
+    Colors: low=blue, mid=green, high=orange. Solid filled KDE curves.
+    """
+    ISI_FEATS  = {'log_isi'}
+    SKIP_FEATS = {'spk_times_ms', 'spk_times_idx'}
+
+    df_num = df_master.copy()
+    df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+
+    all_pkl = {os.path.basename(p).replace('_cluster_df.pkl', ''): p
+               for p in glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl'))}
+
+    # All cells per feature (from df_master)
+    clustered = {}
+    for feat, grp in df_num[df_num['num_clusters'] >= 2].groupby('spike_feature'):
+        if feat in SKIP_FEATS:
+            continue
+        cells = sorted(grp['cell_id'].unique(), key=lambda c: int(c.lstrip('c')))
+        if len(cells) >= min_cells:
+            clustered[feat] = cells
+
+    wf_feats  = sorted([f for f in clustered if f not in ISI_FEATS],
+                       key=lambda f: -len(clustered[f]))
+    isi_feats = [f for f in clustered if f in ISI_FEATS]
+
+    if feature_order is not None:
+        _explicit = [f for f in feature_order if f in clustered]
+        _rest     = [f for f in (wf_feats + isi_feats) if f not in set(_explicit)]
+        feat_order = _explicit + _rest
+    else:
+        feat_order = wf_feats + isi_feats
+
+    # Features that appear in merged_rows are excluded from auto rows
+    merged_feats = set()
+    if merged_rows:
+        for mr in merged_rows:
+            for _, feat_name in mr['panels']:
+                merged_feats.add(feat_name)
+
+    # Build row list with wrapping
+    # row_groups entries: (feat_or_None, cells_or_pairs, is_first, is_isi)
+    # feat=None means a merged row; cells_or_pairs is [(cell_id, feat_name), ...]
+    row_groups = []
+    n_wf_rows  = 0
+    for feat in feat_order:
+        if feat in merged_feats:
+            continue
+        is_isi = feat in ISI_FEATS
+        cells  = clustered[feat]
+
+        # apply cells_to_plot filter (list = same for all feats; dict = per-feat)
+        if cells_to_plot is not None:
+            if isinstance(cells_to_plot, dict):
+                allowed = cells_to_plot.get(feat)  # None = no filter for this feat
+                if allowed is not None:
+                    cells = [c for c in cells if c in allowed]
+            else:
+                cells = [c for c in cells if c in cells_to_plot]
+        if cells_to_exclude is not None:
+            if isinstance(cells_to_exclude, dict):
+                excluded = cells_to_exclude.get(feat, [])
+                cells = [c for c in cells if c not in excluded]
+            else:
+                cells = [c for c in cells if c not in cells_to_exclude]
+        if not cells:
+            continue
+
+        chunks = [cells[i:i + n_cols_per_row]
+                  for i in range(0, len(cells), n_cols_per_row)]
+        for ci, chunk in enumerate(chunks):
+            row_groups.append((feat, chunk, ci == 0, is_isi))
+            if not is_isi:
+                n_wf_rows += 1
+
+    # Append merged rows (inserted just before ISI rows)
+    isi_rows   = [(f, c, fi, ii) for f, c, fi, ii in row_groups if ii]
+    row_groups = [(f, c, fi, ii) for f, c, fi, ii in row_groups if not ii]
+    if merged_rows:
+        for mr in merged_rows:
+            row_groups.append((None, mr['panels'], True, mr.get('is_isi', False)))
+            n_wf_rows += 1
+    row_groups += isi_rows
+
+    # Insert spacer rows between feature groups for visual separation
+    _SPACER = '__spacer__'
+    rows_final    = []
+    height_ratios = []
+    for i, (feat, chunk, is_first, is_isi) in enumerate(row_groups):
+        if is_first and i > 0:
+            rows_final.append((_SPACER, [], False, is_isi))
+            height_ratios.append(0.4)
+        rows_final.append((feat, chunk, is_first, is_isi))
+        height_ratios.append(1.0)
+
+    n_rows      = len(rows_final)
+    actual_cols = max((len(c) for _, c, _, _ in row_groups), default=1)
+    n_spacers   = sum(1 for r in rows_final if r[0] == _SPACER)
+    fig_w = actual_cols * cell_w + 0.4
+    fig_h = (len(row_groups) + n_spacers * 0.4) * cell_h + 1.0
+
+    GS_TOP    = 0.97
+    GS_BOTTOM = 0.02
+
+    def _fmt_lbl(s):
+        return '\n'.join(s.split())
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs  = fig.add_gridspec(
+        n_rows, actual_cols,
+        left=0.18, right=0.99, top=GS_TOP, bottom=GS_BOTTOM,
+        hspace=hspace, wspace=0.28,
+        height_ratios=height_ratios,
+    )
+
+    spacer_axes = []  # (ax, is_isi_boundary) — for drawing lines after layout
+    feat_first_ax   = {}  # feat -> ci-0 ax of its first row (for label y-top)
+    feat_last_ax    = {}  # feat -> ci-0 ax of its last row  (for label y-bot)
+    feat_is_isi_map = {}  # feat -> bool
+
+    for ri, (feat, chunk, is_first, is_isi) in enumerate(rows_final):
+        if feat == _SPACER:
+            ax_sp = fig.add_subplot(gs[ri, 0])
+            spacer_axes.append((ax_sp, is_isi))
+            for ci in range(1, actual_cols):
+                fig.add_subplot(gs[ri, ci]).set_axis_off()
+            continue
+
+        is_merged = feat is None
+        panels = chunk if is_merged else [(cid, feat) for cid in chunk]
+        for ci, (cell_id, panel_feat) in enumerate(panels):
+            clust_col = panel_feat + '_cluster'
+            ax        = fig.add_subplot(gs[ri, ci])
+            pkl_path  = all_pkl.get(cell_id)
+            if pkl_path is not None:
+                try:
+                    df_cell = pd.read_pickle(pkl_path)
+                    if clust_col in df_cell.columns and panel_feat in df_cell.columns:
+                        all_vals = df_cell[panel_feat].dropna()
+                        # Start with population-level clip for x_grid
+                        lo = np.percentile(all_vals, clip_pct)
+                        hi = np.percentile(all_vals, 100 - clip_pct)
+                        # Expand x_grid so each cluster's own bulk is visible
+                        for _grp in df_cell[clust_col].dropna().unique():
+                            _cv = df_cell.loc[df_cell[clust_col] == _grp, panel_feat].dropna()
+                            if len(_cv) >= 5:
+                                lo = min(lo, np.percentile(_cv, clip_pct))
+                                hi = max(hi, np.percentile(_cv, 100 - clip_pct))
+                        _feat_min = (feature_min_vals or {}).get(panel_feat)
+                        if _feat_min is not None:
+                            lo = max(lo, _feat_min)
+                        pad    = (hi - lo) * 0.08
+                        x_grid = np.linspace(lo - pad, hi + pad, 300)
+                        _bw_frac   = (feature_bw_overrides or {}).get(panel_feat, min_bw_frac)
+                        min_abs_bw = (hi - lo) * _bw_frac
+                        _abs_floor = (feature_bw_abs or {}).get(panel_feat, 0)
+                        if _abs_floor > min_abs_bw:
+                            min_abs_bw = _abs_floor
+                        _cell_floor = (cell_bw_abs or {}).get((cell_id, panel_feat), 0)
+                        if _cell_floor > min_abs_bw:
+                            min_abs_bw = _cell_floor
+                        for grp in sorted(df_cell[clust_col].dropna().unique()):
+                            vals = df_cell.loc[df_cell[clust_col] == grp, panel_feat].dropna()
+                            if _feat_min is not None:
+                                vals = vals[vals >= _feat_min]
+                            if len(vals) < 5:
+                                continue
+                            std_v = vals.std()
+                            bw    = max(0.3, min_abs_bw / max(std_v, 1e-10))
+                            y     = gaussian_kde(vals, bw_method=bw)(x_grid)
+                            col   = CLUST_COLORS.get(grp, '#888')
+                            ax.fill_between(x_grid, y, color=col, alpha=1.0)
+                            ax.plot(x_grid, y, color=col, lw=0.6)
+                except Exception:
+                    pass
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+            ax.set_facecolor('#dddddd' if is_isi else 'white')
+            ax.set_title(cell_id, fontsize=title_fontsize, pad=4, color='#222', fontweight='bold')
+
+            if ci == 0 and not is_merged:
+                if feat not in feat_first_ax:
+                    feat_first_ax[feat] = ax
+                feat_last_ax[feat]    = ax
+                feat_is_isi_map[feat] = is_isi
+
+            if is_first and ci == 0 and is_merged:
+                _fl = feature_labels or {}
+                _, first_feat = chunk[0]
+                lbl = _fl.get(first_feat, _fmt_lbl(first_feat.replace('_', ' ')))
+                ax.set_ylabel(lbl, fontsize=ylabel_fontsize, fontweight='bold', rotation=90,
+                              color='black', style='normal', labelpad=10,
+                              ha='center', va='center',
+                              multialignment='center')
+
+            if is_merged and ci > 0:
+                _fl = feature_labels or {}
+                _lbl = _fl.get(panel_feat, _fmt_lbl(panel_feat.replace('_', ' ')))
+                ax.text(-0.05, 0.5, _lbl,
+                        transform=ax.transAxes, rotation=90,
+                        ha='center', va='center', fontsize=ylabel_fontsize, fontweight='bold',
+                        clip_on=False, color='black', multialignment='center')
+
+        for ci in range(len(panels), actual_cols):
+            fig.add_subplot(gs[ri, ci]).set_axis_off()
+
+    # Place feature row labels centred vertically across all wrapped rows
+    for feat_name, ax_top in feat_first_ax.items():
+        ax_bot   = feat_last_ax[feat_name]
+        p_top    = ax_top.get_position()
+        p_bot    = ax_bot.get_position()
+        y_mid    = (p_top.y1 + p_bot.y0) / 2
+        is_isi_f = feat_is_isi_map[feat_name]
+        _fl      = feature_labels or {}
+        lbl      = _fl.get(feat_name, _fmt_lbl(feat_name.replace('_', ' ')))
+        lcol     = '#B22222' if is_isi_f else 'black'
+        lstyl    = 'italic'  if is_isi_f else 'normal'
+        fig.text(0.15, y_mid, lbl,
+                 fontsize=ylabel_fontsize, fontweight='bold',
+                 rotation=90, ha='center', va='center',
+                 color=lcol, style=lstyl)
+
+    # Draw separator lines at feature boundaries
+    for ax_sp, is_isi_boundary in spacer_axes:
+        pos   = ax_sp.get_position()
+        sep_y = pos.y0 + pos.height / 2
+        ax_sp.set_axis_off()
+        lw  = 3.5  if is_isi_boundary else 2.0
+        col = 'black' if is_isi_boundary else '#aaaaaa'
+        fig.add_artist(plt.Line2D(
+            [0.12, 0.99], [sep_y, sep_y],
+            color=col, lw=lw, transform=fig.transFigure,
+        ))
+
+    return fig
+
+
+def plot_cluster_waveform_grid(df_master, cluster_pickle_dir,
+                                min_cells=2, n_cols_per_row=14,
+                                cells_to_plot=None,
+                                cells_to_exclude=None,
+                                feature_order=None,
+                                feature_labels=None,
+                                cell_w=3.5, cell_h=2.8,
+                                title_fontsize=30, ylabel_fontsize=36,
+                                hspace=0.35,
+                                half_win=75,
+                                max_rows=None):
+    """
+    Same row/column layout as plot_feature_distribution_grid but shows
+    mean ± std cluster waveforms instead of KDE distributions.
+    log_isi and timing features are excluded (no waveform data).
+    """
+    import pickle as _pkl
+
+    SKIP_FEATS = {'log_isi', 'spk_times_ms', 'spk_times_idx'}
+
+    df_num = df_master.copy()
+    df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+
+    all_wf_pkl = {
+        os.path.basename(p).replace('_cluster_waveforms.pkl', ''): p
+        for p in glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_waveforms.pkl'))
+    }
+
+    clustered = {}
+    for feat, grp in df_num[df_num['num_clusters'] >= 2].groupby('spike_feature'):
+        if feat in SKIP_FEATS:
+            continue
+        cells = sorted(grp['cell_id'].unique(), key=lambda c: int(c.lstrip('c')))
+        cells = [c for c in cells if c in all_wf_pkl]
+        if len(cells) >= min_cells:
+            clustered[feat] = cells
+
+    feat_order = sorted(clustered, key=lambda f: -len(clustered[f]))
+    if feature_order is not None:
+        _explicit = [f for f in feature_order if f in clustered]
+        _rest     = [f for f in feat_order if f not in set(_explicit)]
+        feat_order = _explicit + _rest
+
+    row_groups = []
+    for feat in feat_order:
+        cells = clustered[feat]
+        if cells_to_plot is not None:
+            if isinstance(cells_to_plot, dict):
+                allowed = cells_to_plot.get(feat)
+                if allowed is not None:
+                    cells = [c for c in cells if c in allowed]
+            else:
+                cells = [c for c in cells if c in cells_to_plot]
+        if cells_to_exclude is not None:
+            if isinstance(cells_to_exclude, dict):
+                excluded = cells_to_exclude.get(feat, [])
+                cells = [c for c in cells if c not in excluded]
+            else:
+                cells = [c for c in cells if c not in cells_to_exclude]
+        if not cells:
+            continue
+        chunks = [cells[i:i + n_cols_per_row] for i in range(0, len(cells), n_cols_per_row)]
+        for ci, chunk in enumerate(chunks):
+            row_groups.append((feat, chunk, ci == 0))
+
+    if max_rows is not None and len(row_groups) > max_rows:
+        row_groups = row_groups[:max_rows]
+
+    _SPACER = '__spacer__'
+    rows_final    = []
+    height_ratios = []
+    for i, (feat, chunk, is_first) in enumerate(row_groups):
+        if is_first and i > 0:
+            rows_final.append((_SPACER, [], False))
+            height_ratios.append(0.4)
+        rows_final.append((feat, chunk, is_first))
+        height_ratios.append(1.0)
+
+    n_rows      = len(rows_final)
+    actual_cols = max((len(c) for _, c, _ in row_groups), default=1)
+    fig_w = actual_cols * cell_w + 0.4
+    fig_h = (len(row_groups) + sum(1 for r in rows_final if r[0] == _SPACER) * 0.4) * cell_h + 1.0
+
+    GS_TOP    = 0.97
+    GS_BOTTOM = 0.02
+
+    def _fmt_lbl(s):
+        return '\n'.join(s.split())
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs  = fig.add_gridspec(
+        n_rows, actual_cols,
+        left=0.18, right=0.99, top=GS_TOP, bottom=GS_BOTTOM,
+        hspace=hspace, wspace=0.28,
+        height_ratios=height_ratios,
+    )
+
+    spacer_axes   = []
+    feat_first_ax = {}
+    feat_last_ax  = {}
+
+    for ri, (feat, chunk, is_first) in enumerate(rows_final):
+        if feat == _SPACER:
+            ax_sp = fig.add_subplot(gs[ri, 0])
+            spacer_axes.append(ax_sp)
+            for ci in range(1, actual_cols):
+                fig.add_subplot(gs[ri, ci]).set_axis_off()
+            continue
+
+        clust_col = feat + '_cluster'
+        for ci, cell_id in enumerate(chunk):
+            ax = fig.add_subplot(gs[ri, ci])
+            pkl_path = all_wf_pkl.get(cell_id)
+
+            if pkl_path is not None:
+                try:
+                    wf_data = _pkl.load(open(pkl_path, 'rb'))
+                    if clust_col in wf_data:
+                        col_data = wf_data[clust_col]
+                        t_axis   = col_data['t_axis']
+                        cluster_items = [(lab, v) for lab, v in col_data.items()
+                                         if lab != 't_axis']
+                        # Amplitude outlier guard (same as plot_population_waveform_grid)
+                        peak_amps = [np.nanmax(np.abs(v['mean']))
+                                     if np.any(np.isfinite(v['mean'])) else np.nan
+                                     for _, v in cluster_items]
+                        valid_peaks = [p for p in peak_amps if np.isfinite(p)]
+                        amp_lo = np.median(valid_peaks) * 0.1 if len(valid_peaks) > 1 else 0.0
+                        for (grp, vals), peak in zip(cluster_items, peak_amps):
+                            if not np.isfinite(peak) or peak < amp_lo:
+                                continue
+                            mean_wf = vals['mean']
+                            std_wf  = vals.get('std')
+                            col     = CLUST_COLORS.get(grp, '#888')
+                            t = t_axis[:len(mean_wf)]
+                            ax.plot(t, mean_wf, color=col, lw=1.8)
+                            if std_wf is not None:
+                                ax.fill_between(t, mean_wf - std_wf, mean_wf + std_wf,
+                                                color=col, alpha=0.2)
+                        ax.set_xlim(-half_win, half_win)
+                except Exception:
+                    pass
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+            ax.set_facecolor('white')
+            ax.set_title(cell_id, fontsize=title_fontsize, pad=4,
+                         color='#222', fontweight='bold')
+
+            if ci == 0:
+                if feat not in feat_first_ax:
+                    feat_first_ax[feat] = ax
+                feat_last_ax[feat] = ax
+
+        for ci in range(len(chunk), actual_cols):
+            fig.add_subplot(gs[ri, ci]).set_axis_off()
+
+    # Vertical labels centred across wrapped rows
+    for feat_name, ax_top in feat_first_ax.items():
+        ax_bot = feat_last_ax[feat_name]
+        p_top  = ax_top.get_position()
+        p_bot  = ax_bot.get_position()
+        y_mid  = (p_top.y1 + p_bot.y0) / 2
+        _fl    = feature_labels or {}
+        lbl    = _fl.get(feat_name, _fmt_lbl(feat_name.replace('_', ' ')))
+        fig.text(0.15, y_mid, lbl,
+                 fontsize=ylabel_fontsize, fontweight='bold',
+                 rotation=90, ha='center', va='center', color='black')
+
+    # Separator lines between feature groups
+    for ax_sp in spacer_axes:
+        pos   = ax_sp.get_position()
+        sep_y = pos.y0 + pos.height / 2
+        ax_sp.set_axis_off()
+        fig.add_artist(plt.Line2D(
+            [0.12, 0.99], [sep_y, sep_y],
+            color='#aaaaaa', lw=2.0, transform=fig.transFigure,
+        ))
+
+    return fig
+
+
+def plot_metadata_effect_heatmap(df_res):
+    """
+    Heatmap of effect sizes (metadata × cluster metric).
+    Cells show effect size; asterisks mark BH-FDR significant pairs.
+    """
+    METRIC_LABELS = {'nRMSE': 'nRMSE', 'cos_sim': 'Cos Sim',
+                     'num_clusters': 'N Clusters', 'temporal_rho': 'Temporal ρ'}
+    META_LABELS = {
+        'patch_type':         'Patch type',
+        'current_type':       'Current type',
+        'cell_type':          'Cell type',
+        'dark_neuron':        'Dark neuron',
+        'clear_EAP_waveform': 'Clear EAP',
+        'cortical_depth':     'Cortical depth',
+    }
+
+    metrics  = [m for m in ['nRMSE', 'cos_sim', 'num_clusters', 'temporal_rho']
+                if m in df_res['Feature'].values]
+    metadata = [m for m in META_LABELS if m in df_res['Metadata'].values]
+
+    effect_mat = pd.DataFrame(index=metadata, columns=metrics, dtype=float)
+    sig_mat    = pd.DataFrame(index=metadata, columns=metrics, data='')
+
+    for _, row in df_res.iterrows():
+        m, f = row['Metadata'], row['Feature']
+        if m in metadata and f in metrics:
+            effect_mat.loc[m, f] = row['Effect_Size']
+            stars = row['Significance'] if row['Significance'] != 'ns' else ''
+            sig_mat.loc[m, f] = stars
+
+    effect_mat = effect_mat.astype(float)
+
+    vmax = np.nanmax(np.abs(effect_mat.values))
+    fig, ax = plt.subplots(figsize=(len(metrics) * 1.6 + 1.5, len(metadata) * 0.9 + 1.2))
+
+    im = ax.imshow(effect_mat.values, cmap='RdBu_r', vmin=-vmax, vmax=vmax, aspect='auto')
+
+    ax.set_xticks(range(len(metrics)))
+    ax.set_xticklabels([METRIC_LABELS.get(m, m) for m in metrics], fontsize=13)
+    ax.set_yticks(range(len(metadata)))
+    ax.set_yticklabels([META_LABELS.get(m, m) for m in metadata], fontsize=13)
+    ax.xaxis.set_ticks_position('top')
+    ax.xaxis.set_label_position('top')
+
+    for i, meta in enumerate(metadata):
+        for j, feat in enumerate(metrics):
+            val  = effect_mat.loc[meta, feat]
+            star = sig_mat.loc[meta, feat]
+            if pd.notna(val):
+                txt = f"{val:+.2f}"
+                if star:
+                    txt += f"\n{star}"
+                text_col = 'white' if abs(val) > vmax * 0.6 else '#222222'
+                ax.text(j, i, txt, ha='center', va='center',
+                        fontsize=10, fontweight='bold', color=text_col)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.04)
+    cbar.set_label('Effect size', fontsize=11)
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.tick_params(length=0)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def patch_r2_into_cluster_pickles(spike_fit_dir, cluster_pickle_dir, force=False):
+    """
+    One-time patch: reads c*_spike_fit.pkl files, extracts r_squared_exp and
+    r_squared_ramp (per-spike arrays aligned to df_features), and adds them as
+    columns to the corresponding c*_cluster_df.pkl files.
+
+    Safe to re-run with force=False (skips cells that already have both columns).
+    Set force=True to overwrite existing R² columns.
+    """
+    import pickle
+
+    for pkl_f in sorted(glob.glob(os.path.join(spike_fit_dir, '*_spike_fit.pkl'))):
+        raw  = os.path.basename(pkl_f).replace('_spike_fit.pkl', '')
+        cid  = raw if raw.startswith('c') else f'c{raw}'
+        cl_path = os.path.join(cluster_pickle_dir, f'{cid}_cluster_df.pkl')
+        if not os.path.exists(cl_path):
+            print(f'  {cid}: no cluster pickle found, skipping')
+            continue
+
+        cl_df = pd.read_pickle(cl_path)
+        if not force and 'r_squared_exp' in cl_df.columns and 'r_squared_ramp' in cl_df.columns:
+            print(f'  {cid}: already patched, skipping')
+            continue
+
+        try:
+            sp = load_spike_fit_pickle(pkl_f)
+            r2_exp  = np.asarray(sp.r_squared_exp)
+            r2_ramp = np.asarray(sp.r_squared_ramp)
+        except Exception as e:
+            print(f'  {cid}: could not load spike fit — {e}')
+            continue
+
+        # spk_id indexes into the spike fit df_features (same length as R² arrays)
+        if 'spk_id' in cl_df.columns:
+            valid = cl_df['spk_id'].astype(int) < len(r2_exp)
+            cl_df['r_squared_exp']  = np.nan
+            cl_df['r_squared_ramp'] = np.nan
+            cl_df.loc[valid, 'r_squared_exp']  = r2_exp[cl_df.loc[valid, 'spk_id'].astype(int).values]
+            cl_df.loc[valid, 'r_squared_ramp'] = r2_ramp[cl_df.loc[valid, 'spk_id'].astype(int).values]
+        else:
+            # no spk_id — align by position if lengths match
+            if len(cl_df) == len(r2_exp):
+                cl_df['r_squared_exp']  = r2_exp
+                cl_df['r_squared_ramp'] = r2_ramp
+            else:
+                print(f'  {cid}: length mismatch (cluster={len(cl_df)}, fit={len(r2_exp)}), skipping')
+                continue
+
+        cl_df.to_pickle(cl_path)
+        print(f'  {cid}: patched  ({valid.sum() if "spk_id" in cl_df.columns else len(cl_df)} spikes)')
+
+    print('Done.')
+
+
+def plot_r2_overview(cluster_pickle_dir, r2_type='exp', n_cols=8):
+    """
+    One KDE panel per cell showing the per-spike R² distribution.
+    Reads r_squared_exp / r_squared_ramp directly from the cluster pickle columns.
+    Run patch_r2_into_cluster_pickles() first if those columns are missing.
+    """
+    from scipy.stats import gaussian_kde as _kde
+
+    r2_col   = 'r_squared_exp'  if r2_type == 'exp'  else 'r_squared_ramp'
+    r2_label = 'Exp decay R²'   if r2_type == 'exp'  else 'Ramp fit R²'
+
+    cell_r2 = {}
+    for pkl_f in sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl'))):
+        cid = os.path.basename(pkl_f).replace('_cluster_df.pkl', '')
+        try:
+            df  = pd.read_pickle(pkl_f)
+            if r2_col not in df.columns:
+                continue
+            vals = df[r2_col].dropna().values
+            if len(vals) >= 5:
+                cell_r2[cid] = vals
+        except Exception:
+            pass
+
+    if not cell_r2:
+        print(f'No cluster pickles with {r2_col} found in {cluster_pickle_dir}.')
+        print('Run patch_r2_into_cluster_pickles() first.')
+        return
+    print(f'{len(cell_r2)} cells found with {r2_col}')
+
+    cells   = sorted(cell_r2.keys(), key=lambda c: int(c.lstrip('c')))
+    ncols_f = min(n_cols, len(cells))
+    nrows_f = int(np.ceil(len(cells) / ncols_f))
+
+    fig, axes = plt.subplots(nrows_f, ncols_f,
+                             figsize=(ncols_f * 3.0, nrows_f * 2.8),
+                             squeeze=False)
+    all_axs = list(axes.flat)
+
+    for ax, cid in zip(all_axs, cells):
+        vals = cell_r2[cid]
+        try:
+            kde_fn = _kde(vals)
+            x_grid = np.linspace(max(0, vals.min() - 0.02),
+                                  min(1, vals.max() + 0.02), 300)
+            y_grid = kde_fn(x_grid)
+            ax.fill_between(x_grid, y_grid, alpha=0.4, color='steelblue')
+            ax.plot(x_grid, y_grid, color='steelblue', lw=1.8)
+        except Exception:
+            pass
+        ax.axvline(np.median(vals), color='#333', lw=1.5, ls='--', alpha=0.8)
+        ax.set_title(cid, fontsize=13, fontweight='bold', pad=5)
+        ax.set_xlabel(r2_label, fontsize=11)
+        ax.set_ylabel('Density', fontsize=11)
+        ax.set_xlim(0, 1)
+        ax.tick_params(labelsize=10)
+        sns.despine(ax=ax)
+
+    for ax in all_axs[len(cells):]:
+        ax.set_visible(False)
+
+    fig.suptitle(f'Per-cell {r2_label} distributions  (dashed = median)',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_feature_distribution_r2(df_master, cluster_pickle_dir,
+                                  r2_type='exp', min_cells=2, n_cols=8):
+    """
+    For each (cell × spike feature) pair with ≥2 clusters, show a strip plot:
+
+    x-axis : spike feature value
+    y-axis : cluster label (low / mid / high) with jitter
+    color  : per-spike R² on viridis — read from r_squared_exp / r_squared_ramp
+             columns in the cluster pickle (run patch_r2_into_cluster_pickles first).
+
+    Each dot is one spike.
+    """
+    import matplotlib.cm as _cm
+    import matplotlib.colors as _mc
+
+    r2_col   = 'r_squared_exp'  if r2_type == 'exp'  else 'r_squared_ramp'
+    r2_label = 'Exp decay R²'   if r2_type == 'exp'  else 'Ramp fit R²'
+    ORDINAL    = {'low': 0, 'mid': 1, 'high': 2}
+    SKIP_FEATS = {'spk_times_ms', 'spk_times_idx'}
+    _Y_JITTER  = 0.18
+    _ALPHA     = 0.55
+    _S         = 6
+    _FS_TITLE  = 13
+    _FS_LABEL  = 12
+    _FS_TICK   = 10
+
+    cmap = _cm.get_cmap('viridis')
+    norm = _mc.Normalize(vmin=0, vmax=1)
+
+    # ── Cells that have R² in their cluster pickle ────────────────────────
+    cells_with_r2 = set()
+    for pkl_f in glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl')):
+        cid = os.path.basename(pkl_f).replace('_cluster_df.pkl', '')
+        try:
+            df = pd.read_pickle(pkl_f)
+            if r2_col in df.columns:
+                cells_with_r2.add(cid)
+        except Exception:
+            pass
+
+    if not cells_with_r2:
+        print(f'No cluster pickles with {r2_col} found. Run patch_r2_into_cluster_pickles() first.')
+        return
+
+    # ── Build (cell, feature) pairs with ≥2 clusters ─────────────────────
+    df_num = df_master.copy()
+    df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+    pairs = (df_num[df_num['num_clusters'] >= 2][['cell_id', 'spike_feature']]
+             .drop_duplicates())
+    pairs = pairs[~pairs['spike_feature'].isin(SKIP_FEATS)]
+    pairs = pairs[pairs['cell_id'].isin(cells_with_r2)]
+
+    # ── One figure per feature ────────────────────────────────────────────
+    for feat in sorted(pairs['spike_feature'].unique()):
+        cells = sorted(
+            pairs[pairs['spike_feature'] == feat]['cell_id'].tolist(),
+            key=lambda c: int(c.lstrip('c'))
+        )
+        if len(cells) < min_cells:
+            continue
+
+        ncols_f = min(n_cols, len(cells))
+        nrows_f = int(np.ceil(len(cells) / ncols_f))
+        panel_w = 3.2
+        panel_h = 2.8
+
+        fig = plt.figure(figsize=(ncols_f * panel_w + 1.0, nrows_f * panel_h + 0.8))
+        gs  = fig.add_gridspec(nrows_f, ncols_f + 1,
+                               width_ratios=[1] * ncols_f + [0.04],
+                               hspace=0.7, wspace=0.4)
+        axes    = np.array([[fig.add_subplot(gs[r, c])
+                             for c in range(ncols_f)]
+                            for r in range(nrows_f)])
+        cbar_ax = fig.add_subplot(gs[:, ncols_f])
+        all_axs = list(axes.flat)
+
+        for ax, cid in zip(all_axs, cells):
+            pkl_path = os.path.join(cluster_pickle_dir, f'{cid}_cluster_df.pkl')
+            try:
+                cl_df = pd.read_pickle(pkl_path)
+            except Exception:
+                ax.set_visible(False)
+                continue
+
+            col_name = f'{feat}_cluster'
+            if feat not in cl_df.columns or r2_col not in cl_df.columns or col_name not in cl_df.columns:
+                ax.set_visible(False)
+                continue
+
+            _sub = cl_df[[feat, r2_col, col_name]].dropna()
+            _sub = _sub[_sub[col_name].astype(str).str.lower().isin(ORDINAL)]
+            if _sub.empty:
+                ax.set_visible(False)
+                continue
+
+            _sub = _sub.copy()
+            _sub['r2']    = _sub[r2_col]
+            _sub['clust'] = _sub[col_name].astype(str).str.lower()
+            _sub['y_ord'] = _sub['clust'].map(ORDINAL).astype(float)
+
+            rng = np.random.default_rng(42)
+            _sub['y_jit'] = _sub['y_ord'] + rng.uniform(-_Y_JITTER, _Y_JITTER, len(_sub))
+
+            colors = cmap(norm(_sub['r2'].values))
+            ax.scatter(_sub[feat].values, _sub['y_jit'].values,
+                       c=colors, s=_S, alpha=_ALPHA, linewidths=0, rasterized=True)
+
+            ax.set_yticks([0, 1, 2])
+            ax.set_yticklabels(['low', 'mid', 'high'], fontsize=_FS_TICK)
+            ax.set_xlabel(feat.replace('_', ' '), fontsize=_FS_LABEL)
+            ax.set_title(cid, fontsize=_FS_TITLE, fontweight='bold', pad=6)
+            ax.tick_params(axis='x', labelsize=_FS_TICK)
+            sns.despine(ax=ax)
+
+        for ax in all_axs[len(cells):]:
+            ax.set_visible(False)
+
+        sm = _cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.set_label(r2_label, fontsize=_FS_LABEL, fontweight='bold')
+        cbar.ax.tick_params(labelsize=_FS_TICK)
+
+        fig.suptitle(
+            f'{feat.replace("_", " ")}  —  per-spike {r2_label} (color)',
+            fontsize=14, fontweight='bold', y=1.01
+        )
+        plt.show()
+
+
+def plot_aggregated_spike_feat(raw_df, n_total=None):
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp':  'Inflection amp',
+        'inflection_time': 'Inflection time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharpness',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    df_num = raw_df.copy()
+    df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+    df_clust = df_num[df_num['num_clusters'] >= 2]
+
+    total_cells = n_total if n_total is not None else df_num['cell_id'].nunique()
+
+    # Per-feature stats (only from clustering cells)
+    stats = df_clust.groupby('spike_feature').agg(
+        nRMSE=('nRMSE', 'mean'),
+        nRMSE_std=('nRMSE', 'std'),
+        nRMSE_n=('nRMSE', 'count'),
+        cos_sim=('cos_sim', 'mean'),
+        cos_sim_std=('cos_sim', 'std'),
+    ).reset_index()
+    stats['nRMSE_ci']   = 1.96 * (stats['nRMSE_std']   / np.sqrt(stats['nRMSE_n'])).fillna(0)
+    stats['cos_sim_ci'] = 1.96 * (stats['cos_sim_std']  / np.sqrt(stats['nRMSE_n'])).fillna(0)
+    n_cells_clust = df_clust.groupby('spike_feature')['cell_id'].nunique().rename('n_cells')
+    stats = stats.join(n_cells_clust, on='spike_feature')
+    stats['prevalence_pct'] = (stats['n_cells'] / total_cells) * 100
+
+    feat_order = [f for f in WF_ORDER if f in stats['spike_feature'].values]
+    stats['_order'] = stats['spike_feature'].map({f: i for i, f in enumerate(feat_order)})
+    stats = stats.sort_values('_order').drop(columns='_order')
+
+    # Per-cell averages for individual dot overlay on scatter
+    cell_feat_means = (df_clust.groupby(['cell_id', 'spike_feature'])
+                       [['nRMSE', 'cos_sim']].mean().reset_index())
+
+    # Per-cell feature presence (deduplicated) for stacked bar
+    cell_feat_pres = (df_clust.groupby(['cell_id', 'spike_feature'])
+                     .size().reset_index(name='_')[['cell_id', 'spike_feature']])
+    feat_per_cell = cell_feat_pres.groupby('cell_id')['spike_feature'].nunique()
+    count_vals = sorted(feat_per_cell.unique())
+
+    _FS  = 24   # tick labels / bar annotations
+    _FAX = 26   # axis labels
+
+    # ── Figure 1: scatter ────────────────────────────────────────────
+    legend_handles = []
+    fig_sc, ax_sc = plt.subplots(figsize=(8, 7))
+    for _, row in stats.iterrows():
+        feat  = row['spike_feature']
+        color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        ax_sc.errorbar(
+            row['nRMSE'], row['cos_sim'],
+            xerr=row['nRMSE_ci'], yerr=row['cos_sim_ci'],
+            fmt='none', ecolor=color, elinewidth=1.5, capsize=4, alpha=0.8, zorder=2,
+        )
+        ax_sc.scatter(
+            row['nRMSE'], row['cos_sim'],
+            s=row['prevalence_pct'] * 25,
+            color=color, edgecolors='white', linewidths=1.5,
+            alpha=1.0, zorder=3,
+        )
+        pct = int(round(row['prevalence_pct']))
+        n_c = int(row['n_cells'])
+        legend_handles.append(
+            plt.scatter([], [], s=150, color=color,
+                        label=f"{FEAT_LABELS.get(feat, feat)}  ({pct}%, n={n_c})")
+        )
+    ax_sc.set_xlabel('$\longrightarrow$ Higher waveform difference\n(nRMSE)',
+                     fontsize=_FAX, fontweight='bold')
+    ax_sc.set_ylabel('$\longleftarrow$ Higher shape difference\n(Cos sim)',
+                     fontsize=_FAX, fontweight='bold')
+    ax_sc.xaxis.set_major_locator(plt.MaxNLocator(4))
+    ax_sc.yaxis.set_major_locator(plt.MaxNLocator(4))
+    ax_sc.tick_params(labelsize=_FS)
+    sns.despine(ax=ax_sc)
+    fig_sc.tight_layout()
+
+    # ── Figure 2: stacked bar ────────────────────────────────────────
+    BUCKET_MAX = 3
+    feat_per_cell_bucketed = feat_per_cell.copy()
+    feat_per_cell_bucketed[feat_per_cell_bucketed > BUCKET_MAX] = BUCKET_MAX + 1
+    bucket_vals = sorted(feat_per_cell_bucketed.unique())
+
+    stacked  = {feat: [] for feat in feat_order}
+    x_labels = []
+    for bkt in bucket_vals:
+        cells_in_group = feat_per_cell_bucketed[feat_per_cell_bucketed == bkt].index.tolist()
+        x_labels.append(f'{BUCKET_MAX}+' if bkt > BUCKET_MAX else str(bkt))
+        cp_sub = cell_feat_pres[cell_feat_pres['cell_id'].isin(cells_in_group)]
+        for feat in feat_order:
+            cells_with_feat = cp_sub[cp_sub['spike_feature'] == feat]['cell_id'].unique()
+            w = sum(1.0 / feat_per_cell[c] for c in cells_with_feat)
+            stacked[feat].append(w)
+
+    fig_bar, ax_cnt = plt.subplots(figsize=(7, 7))
+    x_pos   = np.arange(len(bucket_vals))
+    bottoms = np.zeros(len(bucket_vals))
+    for feat in feat_order:
+        vals  = np.array(stacked[feat])
+        color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        ax_cnt.bar(x_pos, vals, bottom=bottoms,
+                   color=color, edgecolor='white', linewidth=0.8, width=0.6)
+        bottoms += vals
+
+    for i, bkt in enumerate(bucket_vals):
+        n_cells_grp = int((feat_per_cell_bucketed == bkt).sum())
+        ax_cnt.text(i, bottoms[i] + 0.15, str(n_cells_grp),
+                    ha='center', va='bottom', fontsize=_FS, fontweight='bold')
+
+    ax_cnt.set_xticks(x_pos)
+    ax_cnt.set_xticklabels(x_labels, fontsize=_FS)
+    ax_cnt.set_xlabel('Number of features with clustering', fontsize=_FAX, fontweight='bold')
+    ax_cnt.set_ylabel('Number of cells', fontsize=_FAX, fontweight='bold')
+    ax_cnt.tick_params(labelsize=_FS)
+    ax_cnt.set_yticks([])
+    sns.despine(ax=ax_cnt, offset=8)
+    fig_bar.tight_layout()
+
+    # ── Figure 3: legend ─────────────────────────────────────────────
+    fig_leg, ax_leg = plt.subplots(figsize=(12, 3))
+    ax_leg.set_axis_off()
+    # Explicit column layout:
+    #   col1: inflection_amp, inflection_time
+    #   col2: peak_amp, peak_sharpness, peak_width
+    #   col3: exp_lambda, log_isi
+    # Row-by-row with ncol=3 and 1 pad:
+    #   row1: infl_amp   | peak_amp    | exp_lambda
+    #   row2: infl_time  | peak_sharp  | log_isi
+    #   row3: pad        | peak_width  | pad
+    from matplotlib.lines import Line2D as _L2D
+    _empty = _L2D([], [], alpha=0, label='')
+    _lh = {f: legend_handles[i] for i, f in enumerate(feat_order)}
+    # Column-major fill order (matplotlib fills down each column first):
+    # col1: infl_amp, infl_time, pad
+    # col2: peak_amp, peak_sharp, peak_width
+    # col3: exp_lambda, log_isi, pad
+    _padded = [
+        _lh['inflection_amp'],  _lh['inflection_time'], _empty,
+        _lh['peak_amp'],        _lh['peak_sharpness'],  _lh['peak_width'],
+        _lh['exp_lambda'],      _lh['log_isi'],         _empty,
+    ]
+    ax_leg.legend(handles=_padded, fontsize=_FS, frameon=False,
+                  loc='center', ncol=3, handletextpad=0.5, columnspacing=1.0, labelspacing=0.7)
+
+def _feat_labels_and_order(df, wf_order):
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',  'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',   'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width', 'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+    feat_present = [f for f in wf_order if f in df['spike_feature'].unique()]
+    return feat_present, FEAT_LABELS
+
+
+def plot_nrmse_only(df):
+    """Option 1 — nRMSE distribution per feature (boxplot + strip)."""
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    _FS, _FAX = 24, 26
+    feat_present, FEAT_LABELS = _feat_labels_and_order(df, WF_ORDER)
+    df_cell = (df.groupby(['cell_id', 'spike_feature'], as_index=False)
+                 .agg({'nRMSE': 'first'}))
+    df_cell['nRMSE'] = pd.to_numeric(df_cell['nRMSE'], errors='coerce')
+    df_cell = df_cell.dropna(subset=['nRMSE'])
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
+    feat_order = sorted(feat_present,
+                        key=lambda f: df_cell[df_cell['spike_feature'] == f]['nRMSE'].median())
+    fig, ax = plt.subplots(figsize=(8, 7))
+    sns.boxplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                palette=palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax)
+    sns.stripplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                  palette=palette, alpha=0.5, size=6, ax=ax)
+    ax.set_xlabel('nRMSE', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS, fontweight='bold')
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_cluster_count_bars(df):
+    """Panel D — fraction of cells with 2 vs 3 clusters per feature, stacked bar + separate legend."""
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    _FS, _FAX = 24, 26
+    feat_present, FEAT_LABELS = _feat_labels_and_order(df, WF_ORDER)
+
+    df_cell = (df.groupby(['cell_id', 'spike_feature'], as_index=False)
+                 .agg({'num_clusters': 'first'}))
+    df_cell['num_clusters'] = pd.to_numeric(df_cell['num_clusters'], errors='coerce')
+    counts = (df_cell.groupby(['spike_feature', 'num_clusters'])
+                     .size().reset_index(name='n'))
+    totals = counts.groupby('spike_feature')['n'].transform('sum')
+    counts['frac'] = counts['n'] / totals
+
+    feat_order = sorted(feat_present,
+                        key=lambda f: counts[(counts['spike_feature'] == f) &
+                                             (counts['num_clusters'] == 3)]['frac'].sum())
+
+    # Main bar figure
+    fig, ax = plt.subplots(figsize=(8, 7))
+    for i, feat in enumerate(feat_order):
+        color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        sub = counts[counts['spike_feature'] == feat].set_index('num_clusters')['frac']
+        f2 = sub.get(2, 0)
+        f3 = sub.get(3, 0)
+        ax.barh(i, f2, color=color, alpha=0.25, height=0.6)
+        ax.barh(i, f3, left=f2, color=color, alpha=1.0, height=0.6)
+
+    ax.set_yticks(range(len(feat_order)))
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS)
+    ax.set_xlabel('% of cells', fontsize=_FAX, fontweight='bold')
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_xlim(0, 1)
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x*100)}'))
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+    # Separate legend — one row
+    from matplotlib.patches import Patch
+    fig_leg, ax_leg = plt.subplots(figsize=(5, 1.0))
+    ax_leg.set_axis_off()
+    handles = [
+        Patch(facecolor='#888888', alpha=0.25, label='2 clusters'),
+        Patch(facecolor='#888888', alpha=1.0,  label='3 clusters'),
+    ]
+    ax_leg.legend(handles=handles, fontsize=_FS, frameon=False,
+                  loc='center', ncol=2, handlelength=1.5, handletextpad=0.5, columnspacing=2.0)
+    fig_leg.tight_layout()
+    plt.show()
+
+
+def plot_nrmse_by_nclust(df):
+    """Option 3 — nRMSE per feature, strip dots colored by 2 vs 3 clusters."""
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    _FS, _FAX = 24, 26
+    feat_present, FEAT_LABELS = _feat_labels_and_order(df, WF_ORDER)
+    df_cell = (df.groupby(['cell_id', 'spike_feature'], as_index=False)
+                 .agg({'nRMSE': 'first', 'num_clusters': 'first'}))
+    df_cell['nRMSE']       = pd.to_numeric(df_cell['nRMSE'],       errors='coerce')
+    df_cell['num_clusters'] = pd.to_numeric(df_cell['num_clusters'], errors='coerce')
+    df_cell = df_cell.dropna(subset=['nRMSE'])
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
+    feat_order = sorted(feat_present,
+                        key=lambda f: df_cell[df_cell['spike_feature'] == f]['nRMSE'].median())
+    fig, ax = plt.subplots(figsize=(8, 7))
+    sns.boxplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                palette=palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax)
+    rng = np.random.default_rng(42)
+    for i, feat in enumerate(feat_order):
+        sub = df_cell[df_cell['spike_feature'] == feat].dropna(subset=['nRMSE'])
+        color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        for _, row in sub.iterrows():
+            alpha = 0.9 if row['num_clusters'] == 3 else 0.4
+            marker = 'D' if row['num_clusters'] == 3 else 'o'
+            jit = rng.uniform(-0.2, 0.2)
+            ax.scatter(row['nRMSE'], i + jit, color=color, alpha=alpha,
+                       s=50, marker=marker, zorder=3)
+    ax.set_xlabel('nRMSE', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS, fontweight='bold')
+    from matplotlib.lines import Line2D
+    leg = [Line2D([0], [0], marker='o', color='w', markerfacecolor='#555', markersize=10,
+                  alpha=0.4, label='2 clusters'),
+           Line2D([0], [0], marker='D', color='w', markerfacecolor='#555', markersize=10,
+                  alpha=0.9, label='3 clusters')]
+    ax.legend(handles=leg, fontsize=_FS - 4, frameon=False, loc='lower right')
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_nrmse_distribution(df):
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    _FS  = 24
+    _FAX = 26
+
+    df_cell = (df.groupby(['cell_id', 'spike_feature'], as_index=False)
+                 .agg({'nRMSE': 'first', 'cos_sim': 'first'}))
+    df_cell['nRMSE']   = pd.to_numeric(df_cell['nRMSE'],   errors='coerce')
+    df_cell['cos_sim'] = pd.to_numeric(df_cell['cos_sim'], errors='coerce')
+    df_cell = df_cell.dropna(subset=['nRMSE'])
+
+    feat_present = [f for f in WF_ORDER if f in df_cell['spike_feature'].unique()]
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
+    feat_order = sorted(feat_present,
+                        key=lambda f: df_cell[df_cell['spike_feature'] == f]['nRMSE'].median())
+    n = len(feat_order)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    # nRMSE — solid filled boxes, bottom x-axis
+    sns.boxplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                palette=palette, showfliers=False, width=0.4, linewidth=2.5, ax=ax)
+    sns.stripplot(data=df_cell, x='nRMSE', y='spike_feature', order=feat_order,
+                  palette=palette, alpha=0.5, size=6, ax=ax)
+
+    # cos_sim — dashed hollow boxes only, top x-axis
+    ax2 = ax.twiny()
+    for i, feat in enumerate(feat_order):
+        grp = df_cell[df_cell['spike_feature'] == feat]['cos_sim'].dropna().values
+        if len(grp) < 2:
+            continue
+        color = palette.get(feat, '#888888')
+        ax2.boxplot(
+            [grp], positions=[i], vert=False, widths=0.35,
+            patch_artist=True,
+            boxprops=dict(facecolor='none', edgecolor=color, linestyle='--', linewidth=2),
+            medianprops=dict(color=color, linewidth=2, linestyle='--'),
+            whiskerprops=dict(color=color, linewidth=1.5, linestyle='--'),
+            capprops=dict(color=color, linewidth=1.5),
+            showfliers=False, manage_ticks=False,
+        )
+
+    # Sync y-limits and labels
+    ax.set_ylim(n - 0.5, -0.5)
+    ax2.set_ylim(n - 0.5, -0.5)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS, fontweight='bold')
+
+    ax.set_xlabel('nRMSE  (solid)', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=_FS)
+
+    ax2.set_xlabel('Cosine similarity  (dashed)', fontsize=_FAX, fontweight='bold')
+    ax2.tick_params(axis='x', labelsize=_FS)
+
+    sns.despine(ax=ax)
+    ax2.spines['right'].set_visible(False)
+    ax2.spines['left'].set_visible(False)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_cluster_balance(df):
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    _FS  = 24
+    _FAX = 26
+
+    def _min_frac(grp):
+        counts = grp['cluster'].dropna().value_counts()
+        if len(counts) < 2:
+            return np.nan
+        return counts.min() / counts.sum()
+
+    balance = (df.groupby(['cell_id', 'spike_feature'])
+                 .apply(_min_frac)
+                 .reset_index(name='minority_frac'))
+    balance = balance.dropna(subset=['minority_frac'])
+
+    feat_present = [f for f in WF_ORDER if f in balance['spike_feature'].unique()]
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
+
+    feat_order = sorted(feat_present,
+                        key=lambda f: balance[balance['spike_feature'] == f]['minority_frac'].median())
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    sns.boxplot(data=balance, x='minority_frac', y='spike_feature', order=feat_order,
+                palette=palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax)
+    sns.stripplot(data=balance, x='minority_frac', y='spike_feature', order=feat_order,
+                  palette=palette, alpha=0.5, size=6, ax=ax)
+
+    ax.axvline(0.5, color='black', lw=1, linestyle='--', alpha=0.5)
+    ax.set_xlim(0, 0.55)
+    ax.set_xlabel('Minority cluster fraction', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS, fontweight='bold')
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_feature_coclustering(df):
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    _FS  = 24
+    _FAX = 26
+
+    feat_present = [f for f in WF_ORDER if f in df['spike_feature'].unique()]
+    n = len(feat_present)
+
+    # Jaccard similarity: |cells clustering on both i and j| / |cells clustering on either|
+    jaccard = np.zeros((n, n))
+    for i, fi in enumerate(feat_present):
+        ci = set(df[df['spike_feature'] == fi]['cell_id'].unique())
+        for j, fj in enumerate(feat_present):
+            cj = set(df[df['spike_feature'] == fj]['cell_id'].unique())
+            union = len(ci | cj)
+            jaccard[i, j] = len(ci & cj) / union if union > 0 else 0
+
+    # Mask diagonal (trivially 1)
+    mask = np.eye(n, dtype=bool)
+    labels = [FEAT_LABELS.get(f, f) for f in feat_present]
+    df_jac = pd.DataFrame(jaccard, index=labels, columns=labels)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    sns.heatmap(df_jac, ax=ax, mask=mask, cmap='Purples', vmin=0, vmax=1,
+                annot=True, fmt='.2f', annot_kws={'fontsize': _FS - 10, 'fontweight': 'bold'},
+                linewidths=0.5, linecolor='white',
+                cbar_kws={'shrink': 0.75})
+
+    cbar = ax.collections[0].colorbar
+    cbar.set_label('Jaccard similarity', fontsize=_FS - 6, fontweight='bold')
+    cbar.ax.tick_params(labelsize=_FS - 8)
+
+    ax.set_xticklabels(ax.get_xticklabels(), fontsize=_FS - 6, fontweight='bold',
+                       rotation=45, ha='right')
+    ax.set_yticklabels(ax.get_yticklabels(), fontsize=_FS - 6, fontweight='bold', rotation=0)
+    ax.set_xlabel('')
+    ax.set_ylabel('')
+
+    sns.despine(ax=ax, left=True, bottom=True)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_feature_depth_distribution(df):
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    _FS  = 24
+    _FAX = 26
+
+    feat_present = [f for f in WF_ORDER if f in df['spike_feature'].unique()]
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_present}
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    sns.boxplot(
+        data=df[df['spike_feature'].isin(feat_present)],
+        x='cortical_depth', y='spike_feature',
+        order=feat_present,
+        whis=[5, 95], showfliers=False,
+        palette=palette,
+        boxprops=dict(alpha=0.25, edgecolor='none'),
+        whiskerprops=dict(color='#555', linewidth=1.5),
+        capprops=dict(color='#555', linewidth=1.5),
+        medianprops=dict(color='#111', linewidth=2.5),
+        width=0.5, ax=ax,
+    )
+    sns.stripplot(
+        data=df[df['spike_feature'].isin(feat_present)],
+        x='cortical_depth', y='spike_feature',
+        order=feat_present,
+        hue='spike_feature', palette=palette,
+        jitter=0.25, alpha=0.6, s=7, legend=False, ax=ax,
+    )
+
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_present], fontsize=_FS, fontweight='bold')
+    ax.set_xlabel('Cortical depth (µm)', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', labelsize=_FS)
+    sns.despine(ax=ax, offset=8)
+    fig.tight_layout(pad=1.5)
+    plt.show()
+
+def plot_meta_spk_feature_dependency(df):
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'peak_amp':        'Peak amp',
+        'inflection_time': 'Inflection time',
+        'inflection_amp':  'Inflection amp',
+        'peak_sharpness':  'Peak sharpness',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    exclude = ['spike_feature', 'num_clusters', 'cos_sim', 'nRMSE', 'temporal_rho',
+               'temporal_p', 'cell_id', 'cortical_depth', 'nRMSE_std', 'cos_sim_std', 'cluster']
+    meta_cols = [c for c in df.columns if c not in exclude]
+
+    cat_data = []
+    group_sizes = []
+    for col in meta_cols:
+        counts = df.groupby(['spike_feature', col]).size().unstack(fill_value=0)
+        prevalence = (counts / counts.sum()) * 100
+        prevalence.columns = [f"{col}: {c}" for c in prevalence.columns]
+        cat_data.append(prevalence)
+        group_sizes.append(len(prevalence.columns))
+
+    master_matrix = pd.concat(cat_data, axis=1).fillna(0)
+
+    # Reorder rows by WF_ORDER
+    feat_present = [f for f in WF_ORDER if f in master_matrix.index]
+    master_matrix = master_matrix.reindex(feat_present)
+    master_matrix.index = [FEAT_LABELS.get(f, f) for f in feat_present]
+
+    fig_height = max(5, len(master_matrix) * 0.7)
+    fig, ax = plt.subplots(figsize=(max(14, len(master_matrix.columns) * 0.9), fig_height))
+
+    sns.heatmap(master_matrix, annot=True, fmt='.1f', cmap='Blues', ax=ax,
+                cbar_kws={'label': 'Prevalence (%)', 'shrink': 0.6},
+                linewidths=0.4, linecolor='#ddd', annot_kws={'fontsize': 11})
+
+    # Draw borders around metadata groups
+    current_col = 0
+    for size in group_sizes:
+        rect = patches.Rectangle(
+            (current_col, 0), size, len(master_matrix),
+            linewidth=2.5, edgecolor='#333', facecolor='none', zorder=10,
+        )
+        ax.add_patch(rect)
+        current_col += size
+
+    ax.set_title('Metadata composition by spike feature (%)', fontsize=22, fontweight='bold', pad=12)
+    ax.set_ylabel('', fontsize=14)
+    ax.set_xlabel('Metadata category', fontsize=16, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=14, length=0)
+    ax.tick_params(axis='x', labelsize=12, rotation=45)
+    plt.setp(ax.xaxis.get_majorticklabels(), ha='right', rotation_mode='anchor')
+    ax.yaxis.set_tick_params(labelright=False)
+    fig.tight_layout(pad=1.5)
+    plt.show()
+
+
+
+def stat_test_depth_stratification(df):
+    """
+    Tests if spike features live at different depths without external post-hoc libs.
+    """
+    # Group depths by feature, dropping NaNs
+    groups = {name: group['cortical_depth'].dropna().values 
+              for name, group in df.groupby('spike_feature')}
+    
+    # 1. Global Kruskal-Wallis Test
+    stat, p = kruskal(*groups.values())
+    
+    print("-" * 40)
+    print(f"DEPTH STRATIFICATION ANALYSIS")
+    print("-" * 40)
+    print(f"Kruskal-Wallis H-stat: {stat:.3f}")
+    print(f"p-value: {'< 0.0001' if p < 0.0001 else f'{p:.4f}'}")
+    
+    if p < 0.05:
+        print("\nSignificant differences found across cortical layers.")
+    else:
+        print("\nNo significant depth stratification found.")
+    print("-" * 40)
+    
+    return p
+
+
+
+# ------------------------------------------------------------------------------------------- #
+# ------------------------------ Temporal Structure Analysis ------------------------------ #
+# ------------------------------------------------------------------------------------------- #
+
+def plot_temporal_structure(df, alpha=0.05):
+    """
+    Visualize temporal_rho across all cell-feature groups.
+
+    Shows whether spike cluster identity shows time dependence over recording time
+    (Spearman rho between spike time and ordinal cluster label).
+
+    Panel A: histogram of temporal_rho across all cell-feature groups,
+             with significant groups highlighted.
+    Panel B: box/strip of temporal_rho distribution per spike feature.
+    """
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi', 'spk_times_ms']
+    FEAT_LABELS = {
+        'inflection_amp':  'Infl. amp',
+        'inflection_time': 'Infl. time',
+        'peak_amp':        'Peak amp',
+        'peak_sharpness':  'Peak sharp.',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+        'spk_times_ms':    'Spk. times',
+    }
+
+    df_plot = df[['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p']].dropna().copy()
+    df_plot['temporal_rho'] = pd.to_numeric(df_plot['temporal_rho'], errors='coerce')
+    df_plot['temporal_p']   = pd.to_numeric(df_plot['temporal_p'],   errors='coerce')
+    df_plot = df_plot.groupby(['cell_id', 'spike_feature'], as_index=False).first()
+    df_plot = df_plot.dropna(subset=['temporal_rho'])
+    rejected, qvals, _, _ = multipletests(df_plot['temporal_p'].values, alpha=alpha, method='fdr_bh')
+    df_plot['temporal_q'] = qvals
+    df_plot['significant'] = rejected
+
+    n_sig   = df_plot['significant'].sum()
+    n_total = len(df_plot)
+
+    feat_order = [f for f in WF_ORDER if f in df_plot['spike_feature'].unique()]
+    feat_order = sorted(feat_order,
+                        key=lambda f: df_plot[df_plot['spike_feature'] == f]['temporal_rho'].median())
+    palette = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in feat_order}
+
+    _FS  = 24
+    _FAX = 26
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    sns.boxplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
+                palette=palette, showfliers=False, width=0.5, linewidth=2.5, ax=ax)
+    sns.stripplot(data=df_plot, x='temporal_rho', y='spike_feature', order=feat_order,
+                  palette=palette, alpha=0.5, size=6, ax=ax)
+    ax.axvline(0, color='black', lw=1, linestyle='--', alpha=0.5)
+    ax.text(0.5, 1.02, f'{n_sig}/{n_total} significant (FDR corrected p < {alpha})',
+            transform=ax.transAxes, fontsize=_FAX, va='bottom', ha='center')
+    ax.set_xlabel('Temporal Rho (Spearman)', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('', fontsize=_FAX)
+    ax.set_xlim(-1.1, 1.1)
+    ax.tick_params(axis='x', labelsize=_FS)
+    ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in feat_order], fontsize=_FS)
+    sns.despine(ax=ax)
+
+    fig.tight_layout()
+    plt.show()
+
+    # Print summary
+    n_sig = df_plot['significant'].sum()
+    n_total = len(df_plot)
+    print(f"\nTime dependence summary (FDR corrected p < {alpha}):")
+    print(f"  Significant: {n_sig} / {n_total} cell-feature groups ({100*n_sig/n_total:.1f}%)")
+    print(f"  Mean |rho|: {df_plot['temporal_rho'].abs().mean():.3f}")
+    sig_df = df_plot[df_plot['significant']][['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p', 'temporal_q']].copy()
+    sig_df['temporal_rho'] = sig_df['temporal_rho'].round(3)
+    sig_df['temporal_p']   = sig_df['temporal_p'].map(lambda x: f"{x:.4f}" if x >= 0.0001 else "<0.0001")
+    sig_df['temporal_q']   = sig_df['temporal_q'].map(lambda x: f"{x:.4f}" if x >= 0.0001 else "<0.0001")
+    if not sig_df.empty:
+        print("\nSignificant groups:")
+        print(sig_df.sort_values('temporal_rho').to_string(index=False))
+
+    nonsig_df = df_plot[~df_plot['significant']][['cell_id', 'spike_feature', 'temporal_rho', 'temporal_p', 'temporal_q']].copy()
+    nonsig_df['temporal_rho'] = nonsig_df['temporal_rho'].round(3)
+    nonsig_df['temporal_p']   = nonsig_df['temporal_p'].map(lambda x: f"{x:.4f}" if x >= 0.0001 else "<0.0001")
+    nonsig_df['temporal_q']   = nonsig_df['temporal_q'].map(lambda x: f"{x:.4f}" if x >= 0.0001 else "<0.0001")
+    if not nonsig_df.empty:
+        print("\nNon-significant groups:")
+        print(nonsig_df.sort_values('temporal_rho').to_string(index=False))
+
+    return df_plot
+
+
+def analyze_temporal_metadata_dependency(df, alpha=0.05):
+    """
+    Tests whether cell-level metadata predicts temporal_rho (time dependence of cluster identity
+    over recording time).
+
+    Categorical metadata (cell_type, patch_type, etc.): Kruskal-Wallis + box/strip plot.
+    Continuous metadata (cortical_depth): Spearman correlation + scatter plot.
+
+    Returns a DataFrame of test results sorted by p-value.
+    """
+    meta_cols = ['patch_type', 'current_type', 'cell_type', 'dark_neuron', 'clear_EAP_waveform', 'cortical_depth']
+    cont_cols = {'cortical_depth'}
+
+    df_plot = df[['cell_id', 'spike_feature', 'temporal_rho'] + meta_cols].copy()
+    df_plot['temporal_rho'] = pd.to_numeric(df_plot['temporal_rho'], errors='coerce')
+    df_plot = df_plot.dropna(subset=['temporal_rho'])
+
+    n_plots = len(meta_cols)
+    ncols = 3
+    nrows = math.ceil(n_plots / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(16, 5 * nrows))
+    axes = axes.flatten()
+
+    results = []
+    for ax_idx, col in enumerate(meta_cols):
+        ax = axes[ax_idx]
+        sub = df_plot[['temporal_rho', col]].dropna()
+
+        if col in cont_cols:
+            x = pd.to_numeric(sub[col], errors='coerce')
+            y = sub['temporal_rho']
+            valid = np.isfinite(x) & np.isfinite(y)
+            rho, p = spearmanr(x[valid], y[valid])
+            sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+
+            ax.scatter(x[valid], y[valid], alpha=0.4, color='#0072B2', s=30)
+            m_s, b_s = np.polyfit(x[valid], y[valid], 1)
+            x_line = np.linspace(x[valid].min(), x[valid].max(), 100)
+            ax.plot(x_line, m_s * x_line + b_s, color='darkblue', lw=2)
+            ax.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
+            ax.set_xlabel(col.replace('_', ' ').title())
+            ax.set_ylabel('Temporal Rho')
+            p_str = f"{p:.4f}" if p >= 0.0001 else "<0.0001"
+            ax.set_title(f'{col}\nSpearman ρ={rho:.2f}, {sig} (p={p_str})', fontweight='bold')
+            results.append({'variable': col, 'test': 'Spearman', 'statistic': round(rho, 3), 'p': p, 'sig': sig})
+        else:
+            groups_list = [g['temporal_rho'].values for _, g in sub.groupby(col)]
+            if len(groups_list) >= 2:
+                stat, p = kruskal(*groups_list)
+            else:
+                stat, p = np.nan, np.nan
+            sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+
+            sns.boxplot(data=sub, x=col, y='temporal_rho', showfliers=False,
+                        palette='Paired', linewidth=2.5, ax=ax)
+            sns.stripplot(data=sub, x=col, y='temporal_rho', color='.3', alpha=0.4, ax=ax)
+            ax.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
+            ax.set_xlabel(col.replace('_', ' ').title())
+            ax.set_ylabel('Temporal Rho')
+            p_str = f"{p:.4f}" if p >= 0.0001 else "<0.0001"
+            ax.set_title(f'{col}\nKruskal-Wallis {sig} (p={p_str})', fontweight='bold')
+            results.append({'variable': col, 'test': 'Kruskal-Wallis', 'statistic': round(stat, 3) if pd.notnull(stat) else np.nan, 'p': p, 'sig': sig})
+
+        sns.despine(ax=ax)
+
+    for j in range(len(meta_cols), len(axes)):
+        fig.delaxes(axes[j])
+
+    plt.suptitle('Metadata Predictors of Time Dependence (temporal_rho)', fontweight='bold', y=1.01)
+    plt.tight_layout()
+    plt.show()
+
+    res_df = pd.DataFrame(results).sort_values('p').reset_index(drop=True)
+    print("\nMetadata → temporal_rho test results:")
+    print(res_df.to_string(index=False))
+    return res_df
+
+
+def analyze_temporal_clustering_relationship(df, alpha=0.05):
+    """
+    Tests whether time dependence (temporal_rho / temporal_component) is related to
+    clustering quality metrics: nRMSE, cos_sim, num_clusters.
+
+    Panel 1: scatter of temporal_rho vs each metric, colored by spike_feature.
+    Panel 2: box/strip of nRMSE and cos_sim split by temporal_component (0 vs 1).
+
+    Returns a DataFrame of Spearman correlation results.
+    """
+    df_plot = df[['cell_id', 'spike_feature', 'temporal_rho', 'temporal_component',
+                  'nRMSE', 'cos_sim', 'num_clusters']].copy()
+    for col in ['temporal_rho', 'nRMSE', 'cos_sim', 'num_clusters', 'temporal_component']:
+        df_plot[col] = pd.to_numeric(df_plot[col], errors='coerce')
+    df_plot = df_plot.dropna(subset=['temporal_rho', 'nRMSE', 'cos_sim'])
+
+    # Aggregate to one row per cell-feature group (temporal_rho is constant within a group;
+    # nRMSE/cos_sim vary per cluster so we average across clusters)
+    df_plot = df_plot.groupby(['cell_id', 'spike_feature'], as_index=False).agg({
+        'temporal_rho': 'first',
+        'temporal_component': 'first',
+        'nRMSE': 'mean',
+        'cos_sim': 'mean',
+        'num_clusters': 'first',
+    })
+
+    features = sorted(df_plot['spike_feature'].dropna().unique())
+    palette = dict(zip(features, sns.color_palette('tab10', n_colors=len(features))))
+
+    # --- Panel 1: temporal_rho vs clustering metrics ---
+    metrics = ['nRMSE', 'cos_sim', 'num_clusters']
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    results = []
+    for ax, metric in zip(axes, metrics):
+        sub = df_plot[['temporal_rho', metric, 'spike_feature']].dropna()
+        colors = [palette.get(f, 'gray') for f in sub['spike_feature']]
+        ax.scatter(sub['temporal_rho'], sub[metric], c=colors, alpha=0.5, s=40)
+
+        rho, p = spearmanr(sub['temporal_rho'], sub[metric])
+        sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+
+        valid = np.isfinite(sub['temporal_rho']) & np.isfinite(sub[metric])
+        m_s, b_s = np.polyfit(sub['temporal_rho'][valid], sub[metric][valid], 1)
+        x_line = np.linspace(sub['temporal_rho'].min(), sub['temporal_rho'].max(), 100)
+        ax.plot(x_line, m_s * x_line + b_s, color='black', lw=2, alpha=0.8)
+
+        ax.axvline(0, color='gray', lw=1, linestyle='--', alpha=0.4)
+        ax.set_xlabel('Temporal Rho')
+        ax.set_ylabel(metric)
+        ax.set_title(f'temporal_rho vs {metric}\nSpearman ρ={rho:.2f}, {sig}', fontweight='bold')
+        sns.despine(ax=ax)
+        results.append({'metric': metric, 'spearman_rho': round(rho, 3), 'p': p, 'sig': sig})
+
+    handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=palette[f],
+                          markersize=8, label=f) for f in features]
+    axes[-1].legend(handles=handles, title='Spike Feature', bbox_to_anchor=(1.05, 1),
+                    loc='upper left', frameon=True)
+
+    plt.suptitle('Time Dependence vs Clustering Quality', fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+    # --- Panel 2: temporal_rho distribution by spike_feature ---
+    SKIP_FEATS_TEMPORAL = {'spk_times_ms', 'spk_times_idx'}
+    df_feat_plot = df_plot[~df_plot['spike_feature'].isin(SKIP_FEATS_TEMPORAL)]
+    feat_order = df_feat_plot.groupby('spike_feature')['temporal_rho'].median().sort_values().index.tolist()
+    feat_palette_list = [palette.get(f, 'gray') for f in feat_order]
+
+    fig_feat, ax_feat = plt.subplots(figsize=(10, 5))
+    sns.boxplot(data=df_feat_plot, x='spike_feature', y='temporal_rho', order=feat_order,
+                palette=feat_palette_list, showfliers=False, width=0.5, linewidth=2.5, ax=ax_feat)
+    sns.stripplot(data=df_feat_plot, x='spike_feature', y='temporal_rho', order=feat_order,
+                  palette=feat_palette_list, alpha=0.5, size=6, ax=ax_feat)
+    ax_feat.axhline(0, color='black', lw=1, linestyle='--', alpha=0.4)
+    ax_feat.text(len(feat_order) - 0.5, 0.03, 'no time\ndependence',
+                 ha='right', va='bottom', fontsize=_FS_SM, color='#666666', style='italic',
+                 linespacing=1.2)
+
+    feat_groups = [df_feat_plot.loc[df_feat_plot['spike_feature'] == f, 'temporal_rho'].dropna().values for f in feat_order]
+    feat_groups = [g for g in feat_groups if len(g) > 0]
+    if len(feat_groups) >= 2:
+        kw_stat, kw_p = kruskal(*feat_groups)
+    else:
+        kw_stat, kw_p = np.nan, np.nan
+    kw_sig = '***' if kw_p < 0.001 else '**' if kw_p < 0.01 else '*' if kw_p < 0.05 else 'ns'
+    kw_p_str = f"{kw_p:.4f}" if pd.notnull(kw_p) and kw_p >= 0.0001 else ("<0.0001" if pd.notnull(kw_p) else "n/a")
+
+    ax_feat.set_title('Temporal Rho by Spike Feature', fontweight='bold', pad=28)
+    ax_feat.text(0.5, 1.01, f'Kruskal-Wallis {kw_sig} (p={kw_p_str})',
+                 transform=ax_feat.transAxes, ha='center', va='bottom', fontsize=_FS_SM, color='#555555')
+    ax_feat.set_xlabel('Spike Feature')
+    ax_feat.set_ylabel('Temporal Rho')
+    ax_feat.set_xticklabels(ax_feat.get_xticklabels(), rotation=30, ha='right')
+    sns.despine(ax=ax_feat)
+    plt.tight_layout()
+    plt.show()
+
+    # --- Panel 3: temporal_component (0 vs 1) split on nRMSE / cos_sim ---
+    fig2, axes2 = plt.subplots(1, 2, figsize=(10, 5))
+    for ax2, metric in zip(axes2, ['nRMSE', 'cos_sim']):
+        sub2 = df_plot[['temporal_component', metric]].dropna()
+        sub2['temporal_component'] = sub2['temporal_component'].astype(float).map({0.0: '|ρ| < 0.3', 1.0: '|ρ| ≥ 0.3'})
+        sns.boxplot(data=sub2, x='temporal_component', y=metric, showfliers=False,
+                    palette=['#56B4E9', '#D55E00'], order=['|ρ| < 0.3', '|ρ| ≥ 0.3'],
+                    linewidth=2.5, ax=ax2)
+        sns.stripplot(data=sub2, x='temporal_component', y=metric, color='.3', alpha=0.4,
+                      order=['|ρ| < 0.3', '|ρ| ≥ 0.3'], ax=ax2)
+
+        groups_list = [g[metric].values for _, g in sub2.groupby('temporal_component') if len(g) > 0]
+        if len(groups_list) >= 2:
+            stat2, p2 = kruskal(*groups_list)
+        else:
+            p2 = np.nan
+        sig2 = '***' if p2 < 0.001 else '**' if p2 < 0.01 else '*' if p2 < 0.05 else 'ns'
+        p2_str = f"{p2:.4f}" if pd.notnull(p2) and p2 >= 0.0001 else ("<0.0001" if pd.notnull(p2) else "n/a")
+        ax2.set_title(f'temporal_component vs {metric}\n{sig2} (p={p2_str})', fontweight='bold')
+        ax2.set_xlabel('Temporal Component')
+        sns.despine(ax=ax2)
+
+    plt.suptitle('Does Significant Time Dependence Affect Cluster Waveform Differences?', fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+    res_df = pd.DataFrame(results)
+    print("\ntemporal_rho vs clustering metrics (Spearman):")
+    print(res_df.to_string(index=False))
+    return res_df
+
+
+def stat_test_metadata_dependency(df):
+    """
+    Runs Chi-Square tests for all metadata categories to see if they 
+    influence which spike features appear.
+    """
+    exclude = ['spike_feature', 'num_clusters', 'cos_sim', 'nRMSE', 'cell_id', 
+               'cortical_depth', 'nRMSE_std', 'cos_sim_std', 'cluster']
+    meta_cols = [c for c in df.columns if c not in exclude]
+    
+    print("-" * 40)
+    print(f"METADATA DEPENDENCY ANALYSIS (Chi-Square)")
+    print("-" * 40)
+    
+    results = []
+    for col in meta_cols:
+        # Create the contingency table (Counts of Feature vs Metadata Category)
+        contingency = pd.crosstab(df['spike_feature'], df[col])
+        
+        # Test if the rows (features) and columns (metadata) are independent
+        chi2, p, dof, expected = chi2_contingency(contingency)
+        
+        sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+        p_str = '< 0.0001' if p < 0.0001 else f'{p:.4f}'
+        print(f"{col:<20} | p = {p_str} ({sig})")
+        
+        results.append({'metadata': col, 'p_value': p, 'sig': sig})
+        
+    print("-" * 40)
+    return pd.DataFrame(results)
+
+
+# ------------------------------------------------------------------------------------------- #
+# --------------------------------- Cell selection ------------------------------------------ #
+# ------------------------------------------------------------------------------------------- #
+
+def select_target_cells(
+    df,
+    n_priority=7,
+    rho_thresh=0.2,
+    n_nodrift=3,
+    lfp_nb_dir=None,
+    plot=True,
+):
+    """
+    Derive priority cells and high-difference / time-independent cells from df_master,
+    report which have LFP analysis notebooks, and optionally create a summary plot.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        df_master from compile_experiment_results.
+    n_priority : int
+        Number of top-nRMSE cells to designate as priority.
+    rho_thresh : float
+        Max |mean temporal rho| for the time-independent group.
+    n_nodrift : int
+        Number of top-nRMSE time-independent cells to select.
+    lfp_nb_dir : str or Path, optional
+        Directory containing spe-1_c{N}_LFP_analysis.ipynb notebooks.
+        If None, notebook status is not checked.
+    plot : bool
+        If True, produce a bar chart showing nRMSE per cell with group colours.
+
+    Returns
+    -------
+    priority_nums : list of int
+    nodrift_nums  : list of int
+    df_cell       : pd.DataFrame  (one row per cell, sorted by nRMSE)
+    """
+    from pathlib import Path
+
+    df_cell = (
+        df.groupby('cell_id')[['nRMSE', 'cos_sim', 'temporal_rho', 'temporal_p']]
+        .agg(
+            mean_nRMSE    =('nRMSE',        'mean'),
+            mean_cos_sim  =('cos_sim',       'mean'),
+            mean_abs_rho  =('temporal_rho',  lambda x: x.abs().mean()),
+            any_sig_drift =('temporal_p',    lambda x: (x < 0.05).any()),
+        )
+        .reset_index()
+        .sort_values('mean_nRMSE', ascending=False)
+    )
+
+    priority_cells = df_cell.head(n_priority)['cell_id'].tolist()
+    priority_nums  = sorted([int(c.lstrip('c')) for c in priority_cells])
+
+    no_drift      = df_cell[df_cell['mean_abs_rho'] < rho_thresh].sort_values('mean_nRMSE', ascending=False)
+    nodrift_cells = no_drift.head(n_nodrift)['cell_id'].tolist()
+    nodrift_nums  = sorted([int(c.lstrip('c')) for c in nodrift_cells])
+
+    print("=== All cells ranked by mean nRMSE ===")
+    print(df_cell.to_string(index=False))
+
+    print(f"\n=== Priority cells (top {n_priority} by nRMSE) ===")
+    print(f"  {priority_cells}")
+    print(f"  → config.PRIORITY_CELLS = {priority_nums}")
+
+    print(f"\n=== High-diff / time-independent (|rho| < {rho_thresh}, top {n_nodrift}) ===")
+    print(no_drift.head(n_nodrift).to_string(index=False))
+    print(f"  → config.HIGH_DIFF_LOW_DRIFT_CELLS = {nodrift_nums}")
+
+    if lfp_nb_dir is not None:
+        nb_dir = Path(lfp_nb_dir)
+        all_target = sorted(set(priority_nums) | set(nodrift_nums))
+        print("\n=== LFP analysis notebook status ===")
+        for n in all_target:
+            nb = nb_dir / f'spe-1_c{n}_LFP_analysis.ipynb'
+            status = 'EXISTS' if nb.exists() else 'MISSING — needs to be created'
+            print(f'  c{n}: {status}')
+
+    if plot:
+        priority_set = set(priority_cells)
+        nodrift_set  = set(nodrift_cells)
+        colors = []
+        for _, row in df_cell.iterrows():
+            if row['cell_id'] in priority_set:
+                colors.append('#D55E00')
+            elif row['cell_id'] in nodrift_set:
+                colors.append('#009E73')
+            else:
+                colors.append('#BBBBBB')
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.bar(range(len(df_cell)), df_cell['mean_nRMSE'], color=colors,
+               edgecolor='white', linewidth=0.5)
+        ax.set_xticks(range(len(df_cell)))
+        ax.set_xticklabels(df_cell['cell_id'].tolist(), rotation=45, ha='right', fontsize=8)
+        ax.set_ylabel('Mean nRMSE across clustering features', fontsize=11)
+        ax.set_title(
+            'Waveform cluster difference by cell\n'
+            '(orange = priority, green = high-diff/time-independent)',
+            fontsize=12, fontweight='bold'
+        )
+        from matplotlib.patches import Patch
+        ax.legend(handles=[
+            Patch(color='#D55E00', label=f'Priority cells (top {n_priority})'),
+            Patch(color='#009E73', label=f'High-diff / time-independent (|ρ| < {rho_thresh}, top {n_nodrift})'),
+            Patch(color='#BBBBBB', label='Other cells'),
+        ], fontsize=9, frameon=False)
+        sns.despine(ax=ax)
+        plt.tight_layout()
+        plt.show()
+
+    # Auto-update config.py so PRIORITY_CELLS and HIGH_DIFF_LOW_DRIFT_CELLS
+    # stay in sync with the notebook results — no manual editing needed.
+    import re
+    config_path = Path(__file__).parent / 'config.py'
+    config_src  = config_path.read_text()
+
+    def _replace_list(src, var, new_list):
+        pattern = rf'({re.escape(var)}\s*=\s*)\[.*?\]'
+        replacement = rf'\g<1>{new_list}'
+        return re.sub(pattern, replacement, src, flags=re.DOTALL)
+
+    config_src = _replace_list(config_src, 'PRIORITY_CELLS',            priority_nums)
+    config_src = _replace_list(config_src, 'HIGH_DIFF_LOW_DRIFT_CELLS', nodrift_nums)
+    config_path.write_text(config_src)
+    print(f"\nconfig.py updated automatically:")
+    print(f"  PRIORITY_CELLS           = {priority_nums}")
+    print(f"  HIGH_DIFF_LOW_DRIFT_CELLS = {nodrift_nums}")
+
+    return priority_nums, nodrift_nums, df_cell
+
+
+
+# ------------------------------------------------------------------------------------------- #
+# ----------------------- Population waveform cluster visualization ------------------------- #
+# ------------------------------------------------------------------------------------------- #
+
+
+# ------------------------------------------------------------------------------------------- #
+# ----------------------- Population waveform cluster visualization ------------------------- #
+# ------------------------------------------------------------------------------------------- #
+
+def plot_population_waveform_grid(
+    wf_dir,
+    priority_cells=None,
+    nodrift_cells=None,
+    cells_to_plot=None,
+    panels_to_plot=None,
+    xlim=(-200, 200),
+    cols=6,
+    figsize_per_panel=(2.6, 2.0),
+    title_fontsize=13,
+    all_black=False,
+    facecolor='#f5f5f5',
+    show_legend=True,
+):
+    """
+    Grid of peak-aligned average waveforms by cluster group for all (or selected) cells.
+
+    - Orange border  = priority cell
+    - Green border   = high-diff / time-independent cell
+    - Gray border    = other cell
+    - X-axis label only on bottom row panels
+    - No figure title (avoids overlap with waveforms)
+
+    Parameters
+    ----------
+    wf_dir : str or Path
+        Directory containing c{N}_cluster_waveforms.pkl files.
+    priority_cells : list of int, optional
+        Cell numbers to highlight in orange. Defaults to config.PRIORITY_CELLS.
+    nodrift_cells : list of int, optional
+        Cell numbers to highlight in green. Defaults to config.HIGH_DIFF_LOW_DRIFT_CELLS.
+    cells_to_plot : list of int, optional
+        Subset of cell numbers to show. None = all available.
+    xlim : tuple
+        x-axis limits in samples from peak.
+    cols : int
+        Grid columns.
+    figsize_per_panel : tuple
+        (width, height) per panel in inches.
+    """
+    import pickle
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    import importlib
+    import config as _cfg
+    # Force reload from disk every call so changes to config.py are always picked up
+    importlib.reload(_cfg)
+
+    CLUSTER_COLORS = {"low": "#0072B2", "mid": "#E69F00", "high": "#CC79A7"}
+    if priority_cells is None:
+        priority_cells = set(_cfg.PRIORITY_CELLS)
+    else:
+        priority_cells = set(priority_cells)
+    if nodrift_cells is None:
+        nodrift_cells = set(_cfg.HIGH_DIFF_LOW_DRIFT_CELLS)
+    else:
+        nodrift_cells = set(nodrift_cells)
+
+    wf_dir = Path(wf_dir)
+    pkl_files = sorted(wf_dir.glob("c*_cluster_waveforms.pkl"),
+                       key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    SKIP_WF_FEATS = {"log_isi", "spk_times_ms", "spk_times_idx"}
+
+    # Index all available waveform data keyed by (cnum, feat_name)
+    wf_index = {}
+    for pkl in pkl_files:
+        cnum = int(pkl.stem.split("_")[0].lstrip("c"))
+        wf_data = pickle.load(open(pkl, "rb"))
+        for col, col_data in wf_data.items():
+            feat_name = col.replace("_cluster", "")
+            if feat_name not in SKIP_WF_FEATS:
+                wf_index[(cnum, feat_name)] = (col, col_data)
+
+    # Build ordered panel list
+    if panels_to_plot is not None:
+        # Explicit (cnum, feat) pairs in the requested order
+        panels = []
+        for cnum, feat in panels_to_plot:
+            key = (cnum, feat)
+            if key in wf_index:
+                col, col_data = wf_index[key]
+                panels.append((cnum, col, col_data))
+            else:
+                print(f"Warning: no waveform data for c{cnum} {feat}")
+    else:
+        panels = []
+        for (cnum, feat_name), (col, col_data) in wf_index.items():
+            if cells_to_plot is not None and cnum not in cells_to_plot:
+                continue
+            if len([k for k in col_data if k != "t_axis"]) >= 2:
+                panels.append((cnum, col, col_data))
+        panels.sort(key=lambda x: x[0])
+
+    if not panels:
+        print("No waveform panels found — run cluster notebooks first.")
+        return
+
+    rows     = math.ceil(len(panels) / cols)
+    fig, axes = plt.subplots(
+        rows, cols,
+        figsize=(figsize_per_panel[0] * cols, figsize_per_panel[1] * rows),
+    )
+    axes = np.array(axes).flatten()
+    bottom_row_start = (rows - 1) * cols
+
+    for ax_idx, (cnum, col, col_data) in enumerate(panels):
+        ax      = axes[ax_idx]
+        t_axis  = col_data["t_axis"]
+        is_prio = cnum in priority_cells
+        is_nd   = cnum in nodrift_cells and not is_prio
+
+        cluster_items = [(lab, v) for lab, v in col_data.items() if lab != "t_axis"]
+
+        # Compute valid peak amplitudes (NaN-safe) for outlier detection
+        peak_amps = []
+        for _, v in cluster_items:
+            p = np.nanmax(np.abs(v["mean"])) if np.any(np.isfinite(v["mean"])) else np.nan
+            peak_amps.append(p)
+        valid_peaks = [p for p in peak_amps if np.isfinite(p)]
+        amp_lo = np.median(valid_peaks) * 0.1 if len(valid_peaks) > 1 else 0.0
+
+        feat_name  = col.replace("_cluster", "")
+        show_ribbon = feat_name not in {"log_isi", "spk_times_ms", "spk_times_idx"}
+
+        for (lab, vals), peak in zip(cluster_items, peak_amps):
+            mean = vals["mean"]
+            if not np.isfinite(peak) or peak < amp_lo:
+                continue
+            color = CLUSTER_COLORS.get(str(lab), "gray")
+            t     = t_axis[:len(mean)]
+            ax.plot(t, mean, color=color, lw=2.5)
+            if show_ribbon and "std" in vals:
+                std = vals["std"]
+                ax.fill_between(t, mean - std, mean + std, color=color, alpha=0.15)
+
+        ax.set_xlim(xlim)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        feat = col.replace("_cluster", "").replace("_", " ")
+        tc = "black" if all_black else (
+            "#D55E00" if is_prio else ("#009E73" if is_nd else "#444444"))
+
+        # Feature label (bigger), flush above axes
+        ax.text(0.5, 1.02, feat, transform=ax.transAxes,
+                fontsize=title_fontsize, fontweight='bold', color=tc,
+                ha='center', va='bottom', clip_on=False)
+        # Cell ID (smaller), above feature label
+        ax.text(0.5, 1.02 + title_fontsize / 72 / figsize_per_panel[1] * 1.35,
+                f"c{cnum}", transform=ax.transAxes,
+                fontsize=int(title_fontsize * 0.65), fontweight='bold', color=tc,
+                ha='center', va='bottom', clip_on=False)
+
+        ax.set_facecolor(facecolor)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+    for ax in axes[len(panels):]:
+        ax.set_visible(False)
+
+    if show_legend:
+        legend_els = [Line2D([0], [0], color=c, lw=2.5, label=lab)
+                      for lab, c in CLUSTER_COLORS.items()]
+        fig.legend(handles=legend_els, loc="lower right", fontsize=title_fontsize,
+                   frameon=False, ncol=3)
+
+    plt.tight_layout(h_pad=0.4, w_pad=0.3)
+
+
+# ------------------------------------------------------------------------------------------- #
+#                          Within-cell vs Between-cell Waveform Distances                     #
+# ------------------------------------------------------------------------------------------- #
+
+_GROUP_CATEGORY = {
+    "Within\n(all)":        ("",             ""),
+    "Between\n(all)":       ("",             ""),
+    "Between\nPC–PC":       ("cell type",    "#6633AA"),
+    "Between\nIN–IN":       ("cell type",    "#6633AA"),
+    "Between\nJuxta–Juxta": ("patch type",   "#1155AA"),
+    "Between\nWC–WC":       ("patch type",   "#1155AA"),
+    "Between\nIC–IC":       ("current type", "#AA3322"),
+    "Between\nVC–VC":       ("current type", "#AA3322"),
+}
+
+def _add_group_category_labels(ax, group_order):
+    """Draw category-row labels and underline brackets below x-tick labels."""
+    trans = ax.get_xaxis_transform()  # x: data, y: axes fraction
+
+    # Collect runs of the same non-empty category
+    runs = []
+    for xi, gname in enumerate(group_order):
+        cat, col = _GROUP_CATEGORY.get(gname, ("", ""))
+        if not cat:
+            continue
+        if runs and runs[-1][0] == cat:
+            runs[-1] = (cat, col, runs[-1][2], xi)
+        else:
+            runs.append((cat, col, xi, xi))
+
+    y_text  = -0.25   # axes-fraction below bottom of plot
+    y_line  = -0.20
+
+    for cat, col, x_lo, x_hi in runs:
+        x_mid = (x_lo + x_hi) / 2
+        # bracket line
+        ax.annotate("", xy=(x_hi + 0.3, y_line), xytext=(x_lo - 0.3, y_line),
+                    xycoords=trans, textcoords=trans,
+                    arrowprops=dict(arrowstyle="-", color=col, lw=1.8))
+        # label
+        ax.text(x_mid, y_text, cat, ha='center', va='top',
+                fontsize=12, color=col, style='italic',
+                transform=trans, clip_on=False)
+
+
+def _peak_align_and_trim(mean_wf, t_axis, half_win=75):
+    """
+    Find the sample with the largest absolute value (the peak), return the
+    waveform trimmed to [peak-half_win : peak+half_win].
+
+    Returns (trimmed_wf, peak_idx_in_t_axis).  If the peak is too close to
+    the edge to fit the full window, None is returned.
+    """
+    peak_idx = int(np.argmax(np.abs(mean_wf)))
+    lo = peak_idx - half_win
+    hi = peak_idx + half_win
+    if lo < 0 or hi > len(mean_wf):
+        return None, None
+    trimmed = mean_wf[lo:hi].copy()
+    return trimmed, peak_idx
+
+
+def _nrmse_cossim(a, b):
+    """Normalised RMSE and cosine similarity between two equal-length 1-D arrays."""
+    denom = max(np.max(np.abs(a)), np.max(np.abs(b)))
+    nrmse = np.sqrt(np.mean((a - b) ** 2)) / denom if denom > 0 else np.nan
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    cos_sim = float(np.dot(a, b) / (norm_a * norm_b)) if (norm_a > 0 and norm_b > 0) else np.nan
+    return nrmse, cos_sim
+
+
+def compute_between_cell_waveform_distances(wf_dir, half_win=75):
+    """
+    For each cell compute an overall mean waveform (weighted average of cluster
+    means), peak-align it, then compute all pairwise nRMSE / cos_sim between
+    cells.
+
+    Parameters
+    ----------
+    wf_dir : str or Path
+        Directory containing c{N}_cluster_waveforms.pkl files.
+    half_win : int
+        Half-window (in samples) around the peak for alignment / trimming.
+
+    Returns
+    -------
+    df_between : pd.DataFrame
+        One row per (cell_i, cell_j) pair.  Columns: cell_i, cell_j, nRMSE, cos_sim.
+    cell_mean_wfs : dict {cell_id -> trimmed mean wf array}
+    """
+    import pickle
+    from pathlib import Path
+
+    wf_dir = Path(wf_dir)
+    pkl_files = sorted(wf_dir.glob("c*_cluster_waveforms.pkl"),
+                       key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    cell_mean_wfs = {}
+    for pkl in pkl_files:
+        cnum = int(pkl.stem.split("_")[0].lstrip("c"))
+        cell_id = f"c{cnum}"
+        wf_data = pickle.load(open(pkl, "rb"))
+
+        # Pool cluster means across all features to get one overall mean per cell.
+        # Strategy: take the first available feature and compute n-weighted mean.
+        pooled_sum = None
+        pooled_n   = 0
+        for feat, col_data in wf_data.items():
+            t_axis = col_data.get("t_axis", None)
+            for grp, vals in col_data.items():
+                if grp == "t_axis" or not isinstance(vals, dict):
+                    continue
+                mean_wf = vals.get("mean")
+                n       = vals.get("n", 1)
+                if mean_wf is None or not np.all(np.isfinite(mean_wf)):
+                    continue
+                if pooled_sum is None:
+                    pooled_sum = np.zeros_like(mean_wf, dtype=float)
+                if len(mean_wf) == len(pooled_sum):
+                    pooled_sum += mean_wf * n
+                    pooled_n   += n
+
+        if pooled_sum is None or pooled_n == 0:
+            continue
+        overall_mean = pooled_sum / pooled_n
+
+        trimmed, _ = _peak_align_and_trim(overall_mean, None, half_win=half_win)
+        if trimmed is None:
+            continue
+        cell_mean_wfs[cell_id] = trimmed
+
+    # All pairwise distances
+    cell_ids = sorted(cell_mean_wfs.keys(), key=lambda c: int(c.lstrip("c")))
+    rows = []
+    for i, ci in enumerate(cell_ids):
+        for j, cj in enumerate(cell_ids):
+            if j <= i:
+                continue
+            nrmse, cos_sim = _nrmse_cossim(cell_mean_wfs[ci], cell_mean_wfs[cj])
+            rows.append({"cell_i": ci, "cell_j": cj, "nRMSE": nrmse, "cos_sim": cos_sim})
+
+    return pd.DataFrame(rows), cell_mean_wfs
+
+
+def plot_within_vs_between_neuron_distances(df_master, wf_dir, half_win=75,
+                                            n_bootstrap=2000, alpha=0.05):
+    """
+    Compare within-neuron waveform cluster differences to between-neuron distances.
+
+    Groups:
+      Within-cell (all) | Between-cell (all) | Between PC–PC | Between IN–IN |
+      Between Juxta–Juxta | Between WC–WC (if n >= 3 pairs)
+
+    Lets you see whether the between-cell distribution is inflated by mixing
+    cell types or recording methods.
+    """
+    from scipy.stats import mannwhitneyu as _mwu
+
+    df_between, _ = compute_between_cell_waveform_distances(wf_dir, half_win=half_win)
+    if df_between.empty:
+        print("No between-cell distances computed — check wf_dir.")
+        return
+
+    # Per-cell metadata lookup
+    meta_cols = ["cell_id", "cell_type", "patch_type", "current_type"]
+    cell_meta = (df_master[meta_cols].drop_duplicates("cell_id")
+                 .set_index("cell_id"))
+    ct_map  = cell_meta["cell_type"].to_dict()
+    pt_map  = cell_meta["patch_type"].to_dict()
+    cur_map = cell_meta["current_type"].to_dict()
+
+    def _method(pt):
+        return "WC" if isinstance(pt, str) and "WC" in pt else "Juxta"
+
+    # Within-cell (all)
+    within_nrmse = pd.to_numeric(df_master["nRMSE"],   errors="coerce").dropna().values
+    within_cos   = pd.to_numeric(df_master["cos_sim"], errors="coerce").dropna().values
+
+    # Between-cell — annotate pairs
+    df_b = df_between.copy()
+    df_b["ct_i"]  = df_b["cell_i"].map(ct_map)
+    df_b["ct_j"]  = df_b["cell_j"].map(ct_map)
+    df_b["pt_i"]  = df_b["cell_i"].map(pt_map).apply(_method)
+    df_b["pt_j"]  = df_b["cell_j"].map(pt_map).apply(_method)
+    df_b["cur_i"] = df_b["cell_i"].map(cur_map)
+    df_b["cur_j"] = df_b["cell_j"].map(cur_map)
+
+    def _vals(mask, col):
+        return df_b.loc[mask, col].dropna().values
+
+    all_mask  = pd.Series([True] * len(df_b), index=df_b.index)
+    pc_mask   = (df_b["ct_i"]  == "PC")    & (df_b["ct_j"]  == "PC")
+    in_mask   = (df_b["ct_i"]  == "IN")    & (df_b["ct_j"]  == "IN")
+    jux_mask  = (df_b["pt_i"]  == "Juxta") & (df_b["pt_j"]  == "Juxta")
+    wc_mask   = (df_b["pt_i"]  == "WC")    & (df_b["pt_j"]  == "WC")
+    ic_mask   = (df_b["cur_i"] == "IC")    & (df_b["cur_j"]  == "IC")
+    vc_mask   = (df_b["cur_i"] == "VC")    & (df_b["cur_j"]  == "VC")
+
+    wc_nrmse = _vals(wc_mask, "nRMSE")
+    wc_entry = [("Between\nWC–WC", wc_nrmse, _vals(wc_mask, "cos_sim"), "#0072B2")] \
+               if len(wc_nrmse) >= 3 else []
+
+    groups = [
+        ("Within\n(all)",        within_nrmse,             within_cos,                        "#555555"),
+        ("Between\n(all)",       _vals(all_mask, "nRMSE"), _vals(all_mask,  "cos_sim"),        "#AAAAAA"),
+        ("Between\nPC–PC",       _vals(pc_mask,  "nRMSE"), _vals(pc_mask,   "cos_sim"),        "#CC44CC"),
+        ("Between\nIN–IN",       _vals(in_mask,  "nRMSE"), _vals(in_mask,   "cos_sim"),        "#00CCCC"),
+        ("Between\nJuxta–Juxta", _vals(jux_mask, "nRMSE"), _vals(jux_mask,  "cos_sim"),        "#E69F00"),
+        *wc_entry,
+        ("Between\nIC–IC",       _vals(ic_mask,  "nRMSE"), _vals(ic_mask,   "cos_sim"),        "#009E73"),
+        ("Between\nVC–VC",       _vals(vc_mask,  "nRMSE"), _vals(vc_mask,   "cos_sim"),        "#D55E00"),
+    ]
+
+    GROUP_ORDER = [g[0] for g in groups]
+    PALETTE     = {g[0]: g[3] for g in groups}
+
+    fw = max(10, len(groups) * 1.8)
+
+    for metric_idx, metric_label in [(1, "nRMSE"), (2, "Cos Sim")]:
+        fig, ax = plt.subplots(figsize=(fw, 6))
+        fig.suptitle(f"Within-cell cluster vs Between-cell waveform distances — {metric_label}",
+                     fontsize=22, fontweight="bold")
+
+        rows = []
+        for g in groups:
+            for v in g[metric_idx]:
+                rows.append({"group": g[0], "value": v})
+        plot_df = pd.DataFrame(rows)
+
+        sns.boxplot(data=plot_df, x="group", y="value", hue="group", order=GROUP_ORDER,
+                    palette=PALETTE, showfliers=False, width=0.55,
+                    linewidth=2.5, legend=False, ax=ax)
+        sns.stripplot(data=plot_df, x="group", y="value", hue="group", order=GROUP_ORDER,
+                      palette=PALETTE, size=4, alpha=0.45, jitter=True, legend=False, ax=ax)
+
+        ax.axvline(1.5, color="#888888", lw=2.0, ls="--", alpha=0.7)
+        ax.set_xlabel("")
+        ax.set_ylabel(metric_label, fontsize=18)
+        ax.tick_params(axis="both", labelsize=15, width=2.0, length=6)
+        for spine in ax.spines.values():
+            spine.set_linewidth(2.0)
+        sns.despine(ax=ax)
+        _add_group_category_labels(ax, GROUP_ORDER)
+        plt.tight_layout()
+        fig.subplots_adjust(bottom=0.28)
+        plt.show()
+
+        print(f"\n── {metric_label} ──")
+        for g in groups:
+            vals = g[metric_idx]
+            if len(vals):
+                print(f"  {g[0].replace(chr(10),' '):22s}: "
+                      f"median={np.median(vals):.3f}  "
+                      f"IQR=[{np.percentile(vals,25):.3f}, {np.percentile(vals,75):.3f}]  "
+                      f"n={len(vals)}")
+
+
+def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75,
+                                 cache_dir=None, force_recompute=False,
+                                 metrics=None):
+    """
+    Within  : each spike vs its own cell's mean waveform.
+    Between : each spike from cell A vs the mean waveform of cell B
+              (and vice versa), across all pairs.
+
+    Both sides compare spikes to an average, making within and between
+    directly comparable. Results cached to .npz after first run.
+    """
+    import pickle
+    from pathlib import Path
+
+    _cache_dir  = Path(cache_dir) if cache_dir else Path(wf_dir)
+    _cache_file = _cache_dir / "_spike_to_avg_distances_v2.npz"
+    _N_CACHE    = 200_000
+    _rng        = np.random.default_rng(42)
+    _npz_key    = lambda name: name.replace("\n", "_").replace("–", "-").replace(" ", "_")
+
+    # ── Metadata (always needed) ──────────────────────────────────────────────
+    meta_cols = ["cell_id", "cell_type", "patch_type", "current_type"]
+    cell_meta = df_master[meta_cols].drop_duplicates("cell_id").set_index("cell_id")
+    ct_map = cell_meta["cell_type"].to_dict()
+    pt_map = cell_meta["patch_type"].to_dict()
+
+    def _method(pt):
+        return "WC" if isinstance(pt, str) and "WC" in pt else "Juxta"
+
+    all_fn  = lambda ci, cj: True
+    pc_fn   = lambda ci, cj: ct_map.get(ci) == "PC"    and ct_map.get(cj) == "PC"
+    in_fn   = lambda ci, cj: ct_map.get(ci) == "IN"    and ct_map.get(cj) == "IN"
+    jux_fn  = lambda ci, cj: _method(pt_map.get(ci)) == "Juxta" and _method(pt_map.get(cj)) == "Juxta"
+    wc_fn   = lambda ci, cj: _method(pt_map.get(ci)) == "WC"    and _method(pt_map.get(cj)) == "WC"
+
+    _BTW_GROUPS = [
+        ("Between\n(all)",       all_fn),
+        ("Between\nPC–PC",       pc_fn),
+        ("Between\nIN–IN",       in_fn),
+        ("Between\nJuxta–Juxta", jux_fn),
+        ("Between\nWC–WC",       wc_fn),
+    ]
+
+    # ── Try cache ─────────────────────────────────────────────────────────────
+    if not force_recompute and _cache_file.exists():
+        print("[spike_to_avg] cache HIT — loading")
+        npz          = np.load(_cache_file, allow_pickle=False)
+        within_nrmse = npz["within_nrmse"]
+        within_rmse  = npz["within_rmse"]
+        within_cos   = npz["within_cos"]
+        has_wc       = bool(npz["has_wc"][0])
+        btw_nrmse    = {name: npz[_npz_key(name) + "_nrmse"] for name, _ in _BTW_GROUPS}
+        btw_rmse     = {name: npz[_npz_key(name) + "_rmse"]  for name, _ in _BTW_GROUPS}
+        btw_cos      = {name: npz[_npz_key(name) + "_cos"]   for name, _ in _BTW_GROUPS}
+    else:
+        # ── Load waveforms ────────────────────────────────────────────────────
+        spike_fit_path = Path(spike_fit_dir)
+        spike_pkls = sorted(spike_fit_path.glob("c*_spike_fit.pkl"),
+                            key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+        cell_data = {}
+        for pkl in spike_pkls:
+            cnum    = int(pkl.stem.split("_")[0].lstrip("c"))
+            cell_id = f"c{cnum}"
+            try:
+                sp = load_spike_fit_pickle(pkl)
+                W  = np.asarray(sp.spikes, float)
+            except Exception:
+                continue
+            avg      = W.mean(axis=0)
+            peak_idx = int(np.argmax(np.abs(avg)))
+            lo, hi   = peak_idx - half_win, peak_idx + half_win
+            if lo < 0 or hi > W.shape[1]:
+                continue
+            cell_data[cell_id] = (avg[lo:hi], W[:, lo:hi])
+
+        n_spikes_total = sum(v[1].shape[0] for v in cell_data.values())
+        print(f"Loaded {len(cell_data)} cells, {n_spikes_total:,} total spikes")
+
+        # ── Within ────────────────────────────────────────────────────────────
+        within_nrmse_l, within_rmse_l, within_cos_l = [], [], []
+        for mean_wf, spikes in cell_data.values():
+            denom   = np.max(np.abs(mean_wf)) + 1e-12
+            diff    = spikes - mean_wf
+            rmse    = np.sqrt(np.mean(diff ** 2, axis=1))
+            nrmse   = rmse / denom
+            norm_s  = np.linalg.norm(spikes, axis=1)
+            norm_m  = np.linalg.norm(mean_wf) + 1e-12
+            cos     = (spikes @ mean_wf) / (norm_s * norm_m + 1e-12)
+            within_nrmse_l.append(nrmse)
+            within_rmse_l.append(rmse)
+            within_cos_l.append(cos)
+        within_nrmse = np.concatenate(within_nrmse_l)
+        within_rmse  = np.concatenate(within_rmse_l)
+        within_cos   = np.concatenate(within_cos_l)
+
+        # ── Between ───────────────────────────────────────────────────────────
+        cell_ids     = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
+        pair_records = []
+        for idx_i, ci in enumerate(cell_ids):
+            for idx_j, cj in enumerate(cell_ids):
+                if idx_j <= idx_i:
+                    continue
+                mean_i, spikes_i = cell_data[ci]
+                mean_j, spikes_j = cell_data[cj]
+                denom = max(np.max(np.abs(mean_i)), np.max(np.abs(mean_j))) + 1e-12
+
+                diff_ij  = spikes_i - mean_j
+                rmse_ij  = np.sqrt(np.mean(diff_ij ** 2, axis=1))
+                nrmse_ij = rmse_ij / denom
+                norm_si  = np.linalg.norm(spikes_i, axis=1)
+                cos_ij   = (spikes_i @ mean_j) / (norm_si * (np.linalg.norm(mean_j) + 1e-12) + 1e-12)
+
+                diff_ji  = spikes_j - mean_i
+                rmse_ji  = np.sqrt(np.mean(diff_ji ** 2, axis=1))
+                nrmse_ji = rmse_ji / denom
+                norm_sj  = np.linalg.norm(spikes_j, axis=1)
+                cos_ji   = (spikes_j @ mean_i) / (norm_sj * (np.linalg.norm(mean_i) + 1e-12) + 1e-12)
+
+                pair_records.append((ci, cj,
+                                     np.concatenate([nrmse_ij, nrmse_ji]),
+                                     np.concatenate([rmse_ij,  rmse_ji]),
+                                     np.concatenate([cos_ij,   cos_ji])))
+
+        n_btw_total = sum(len(r[2]) for r in pair_records)
+        print(f"Between: {n_btw_total:,} spike-to-avg comparisons across {len(cell_ids)} cells")
+
+        # pair_records cols: (ci, cj, nrmse_arr, rmse_arr, cos_arr)
+        def _group_vals(mask_fn, arr_idx):
+            arrs = [r[2 + arr_idx] for r in pair_records if mask_fn(r[0], r[1])]
+            return np.concatenate(arrs) if arrs else np.array([])
+
+        btw_nrmse = {name: _group_vals(fn, 0) for name, fn in _BTW_GROUPS}
+        btw_rmse  = {name: _group_vals(fn, 1) for name, fn in _BTW_GROUPS}
+        btw_cos   = {name: _group_vals(fn, 2) for name, fn in _BTW_GROUPS}
+        has_wc    = len(btw_nrmse["Between\nWC–WC"]) >= 3
+
+        # ── Save cache ────────────────────────────────────────────────────────
+        def _sample(arr):
+            return _rng.choice(arr, size=_N_CACHE, replace=False) if len(arr) > _N_CACHE else arr
+
+        save_dict = {
+            "within_nrmse": within_nrmse,
+            "within_rmse":  within_rmse,
+            "within_cos":   within_cos,
+            "has_wc":       np.array([int(has_wc)]),
+        }
+        for name, _ in _BTW_GROUPS:
+            save_dict[_npz_key(name) + "_nrmse"] = _sample(btw_nrmse[name])
+            save_dict[_npz_key(name) + "_rmse"]  = _sample(btw_rmse[name])
+            save_dict[_npz_key(name) + "_cos"]   = _sample(btw_cos[name])
+        np.savez(_cache_file, **save_dict)
+        print(f"[spike_to_avg] cached → {_cache_file.name}")
+
+    # IC-IC and VC-VC omitted: current_type mixes Juxta and WC recording modalities,
+    # making cross-modality pairs (Juxta-IC vs WC-IC) incomparable and inflating distances.
+    wc_entry = [("Between\nWC–WC", wc_fn, "#0072B2")] if has_wc else []
+    group_defs = [
+        ("Within\n(all)",        None,    "#555555"),
+        ("Between\n(all)",       all_fn,  "#AAAAAA"),
+        ("Between\nPC–PC",       pc_fn,   "#CC44CC"),
+        ("Between\nIN–IN",       in_fn,   "#00CCCC"),
+        ("Between\nJuxta–Juxta", jux_fn,  "#E69F00"),
+        *wc_entry,
+    ]
+
+    GROUP_ORDER = [g[0] for g in group_defs]
+    PALETTE     = {g[0]: g[2] for g in group_defs}
+    fw = max(10, len(group_defs) * 1.8)
+
+    _within_map = {"nRMSE": within_nrmse, "RMSE": within_rmse, "Cos Sim": within_cos}
+    _btw_map    = {"nRMSE": btw_nrmse,    "RMSE": btw_rmse,    "Cos Sim": btw_cos}
+
+    _rng_plot = np.random.default_rng(7)
+    _N_STRIP_PLOT = 3000
+
+    _all_metrics = ["nRMSE", "RMSE", "Cos Sim"]
+    _metrics_to_plot = [m for m in _all_metrics if metrics is None or m in metrics]
+    for metric_label in _metrics_to_plot:
+        full = {}
+        for name, fn, _ in group_defs:
+            if fn is None:
+                full[name] = _within_map[metric_label]
+            else:
+                full[name] = _btw_map[metric_label][name]
+
+        all_vals = np.concatenate([v for v in full.values() if len(v)])
+        clip_top = float(np.percentile(all_vals, 99))
+
+        # Full data for accurate boxplot stats; subsampled for strip
+        box_df = pd.concat(
+            [pd.DataFrame({"group": name, "value": full[name]}) for name in GROUP_ORDER],
+            ignore_index=True,
+        )
+        strip_df = pd.concat(
+            [pd.DataFrame({"group": name,
+                           "value": _rng_plot.choice(full[name],
+                                                      size=min(len(full[name]), _N_STRIP_PLOT),
+                                                      replace=False)})
+             for name in GROUP_ORDER if len(full[name])],
+            ignore_index=True,
+        )
+
+        _FS, _FAX = 13, 14
+        fig, ax = plt.subplots(figsize=(6, 4.5))
+
+        sns.boxplot(data=box_df, x="group", y="value", hue="group", order=GROUP_ORDER,
+                    palette=PALETTE, showfliers=False, width=0.55,
+                    linewidth=2.5, legend=False, ax=ax)
+        sns.stripplot(data=strip_df, x="group", y="value", hue="group", order=GROUP_ORDER,
+                      palette=PALETTE, size=2, alpha=0.25, jitter=True, legend=False, ax=ax)
+
+        ax.set_ylim(bottom=0, top=clip_top)
+        ax.axvline(1.5, color="#888888", lw=2.0, ls="--", alpha=0.7)
+        ax.set_xlabel("")
+        ax.set_ylabel(metric_label, fontsize=_FAX, fontweight="bold")
+        ax.tick_params(axis="y", labelsize=_FS)
+        ax.set_xticklabels(GROUP_ORDER, fontsize=_FS, ha='center', multialignment='center')
+        sns.despine(ax=ax)
+        _add_group_category_labels(ax, GROUP_ORDER)
+        plt.tight_layout()
+        fig.subplots_adjust(bottom=0.35)
+        plt.show()
+
+        print(f"\n── {metric_label} (spike-to-avg) ──")
+        for name in GROUP_ORDER:
+            vals = full[name]
+            if len(vals):
+                print(f"  {name.replace(chr(10),' '):22s}: "
+                      f"median={np.median(vals):.3f}  "
+                      f"IQR=[{np.percentile(vals,25):.3f}, {np.percentile(vals,75):.3f}]  "
+                      f"n={len(vals)}")
+
+
+def _load_per_cell_wf_summary(df_master, wf_dir, spike_fit_dir, half_win=75, cache_dir=None):
+    """
+    Per-cell mean within-nRMSE (each spike vs its own cell mean) and mean between-nRMSE
+    (each spike vs every other cell's mean waveform, averaged over other cells).
+    Both are spike-to-mean, making within and between directly comparable.
+    Cached to _per_cell_wf_summary_v2.pkl after first run.
+    """
+    import pickle
+    from pathlib import Path
+
+    cache_path = Path(cache_dir or wf_dir) / "_per_cell_wf_summary_v2.pkl"
+    if cache_path.exists():
+        return pd.read_pickle(cache_path)
+
+    meta_cols = ["cell_id", "cell_type", "patch_type"]
+    cell_meta = df_master[meta_cols].drop_duplicates("cell_id").set_index("cell_id")
+
+    spike_pkls = sorted(Path(spike_fit_dir).glob("c*_spike_fit.pkl"),
+                        key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+    cell_data = {}
+    for pkl in spike_pkls:
+        cnum    = int(pkl.stem.split("_")[0].lstrip("c"))
+        cell_id = f"c{cnum}"
+        if cell_id not in cell_meta.index:
+            continue
+        try:
+            sp = load_spike_fit_pickle(pkl)
+            W  = np.asarray(sp.spikes, float)
+        except Exception:
+            continue
+        avg      = W.mean(axis=0)
+        peak_idx = int(np.argmax(np.abs(avg)))
+        lo, hi   = peak_idx - half_win, peak_idx + half_win
+        if lo < 0 or hi > W.shape[1]:
+            continue
+        cell_data[cell_id] = (avg[lo:hi], W[:, lo:hi])
+
+    cell_ids = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
+    records = []
+    for cid in cell_ids:
+        mean_i, spikes_i = cell_data[cid]
+        denom_i  = np.max(np.abs(mean_i)) + 1e-12
+
+        # within: each spike vs own cell mean
+        diff     = spikes_i - mean_i
+        rmse_arr = np.sqrt(np.mean(diff ** 2, axis=1))
+        within_nrmse = float(np.mean(rmse_arr / denom_i))
+        within_rmse  = float(np.mean(rmse_arr))
+
+        # between: each spike vs every other cell's mean, averaged over other cells
+        btw_nrmse_per_j, btw_rmse_per_j = [], []
+        for cjd in cell_ids:
+            if cjd == cid:
+                continue
+            mean_j = cell_data[cjd][0]
+            denom  = max(np.max(np.abs(mean_i)), np.max(np.abs(mean_j))) + 1e-12
+            diff_j = spikes_i - mean_j
+            rmse_j = np.sqrt(np.mean(diff_j ** 2, axis=1))
+            btw_nrmse_per_j.append(float(np.mean(rmse_j / denom)))
+            btw_rmse_per_j.append(float(np.mean(rmse_j)))
+
+        ct = cell_meta.loc[cid, "cell_type"]  if cid in cell_meta.index else "unknown"
+        pt = cell_meta.loc[cid, "patch_type"] if cid in cell_meta.index else "unknown"
+        records.append({
+            "cell_id":            cid,
+            "cell_type":          ct,
+            "patch_type":         pt,
+            "mean_within_nrmse":  within_nrmse,
+            "mean_within_rmse":   within_rmse,
+            "mean_between_nrmse": float(np.mean(btw_nrmse_per_j)),
+            "mean_between_rmse":  float(np.mean(btw_rmse_per_j)),
+        })
+
+    df = pd.DataFrame(records)
+    df.to_pickle(cache_path)
+    print(f"[per_cell_summary] cached → {cache_path.name}")
+    return df
+
+
+def plot_waveform_dist_kde(df_master, wf_dir, spike_fit_dir=None, half_win=75,
+                            cache_dir=None, metric="nRMSE"):
+    """Option 1: Overlapping KDEs — within vs between(all), all spikes."""
+    from pathlib import Path
+
+    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v2.npz"
+    if not _cache_file.exists():
+        raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
+
+    npz = np.load(_cache_file, allow_pickle=False)
+    _key_map = {
+        "nRMSE":   ("within_nrmse",  "Between_(all)_nrmse"),
+        "RMSE":    ("within_rmse",   "Between_(all)_rmse"),
+        "Cos Sim": ("within_cos",    "Between_(all)_cos"),
+    }
+    wk, bk = _key_map[metric]
+    within_vals  = npz[wk]
+    between_vals = npz[bk]
+
+    _FS, _FAX = 14, 15
+    clip_x = float(np.percentile(np.concatenate([within_vals, between_vals]), 99))
+
+    fig, ax = plt.subplots(figsize=(4, 4))
+    sns.kdeplot(within_vals,  ax=ax, color="#555555", lw=2.5, bw_adjust=3.0,
+                label="Within cell",   fill=True, alpha=0.35)
+    sns.kdeplot(between_vals, ax=ax, color="#AAAAAA", lw=2.5, bw_adjust=3.0,
+                label="Between cells", fill=True, alpha=0.35)
+    ax.axvline(float(np.median(within_vals)),  color="#555555", lw=3.0, ls="--", alpha=0.9)
+    ax.axvline(float(np.median(between_vals)), color="#888888", lw=3.0, ls="--", alpha=0.9)
+    ax.set_xlim(0, clip_x)
+    ax.set_xlabel(metric, fontsize=_FAX, fontweight="bold")
+    ax.tick_params(axis="x", labelsize=_FS)
+    ax.tick_params(axis="y", left=False, labelleft=False)
+    sns.despine(ax=ax, left=True)
+    plt.tight_layout()
+    plt.show()
+
+    # Separate legend figure
+    from matplotlib.patches import Patch
+    fig_leg, ax_leg = plt.subplots(figsize=(2.5, 1.5))
+    ax_leg.axis('off')
+    handles = [
+        Patch(facecolor="#555555", alpha=0.35, label="Within cell"),
+        Patch(facecolor="#AAAAAA", alpha=0.35, label="Between cells"),
+    ]
+    ax_leg.legend(handles=handles, loc='center', ncol=1, fontsize=_FS,
+                  frameon=False, handlelength=1.5, handleheight=1.2)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_waveform_dist_scatter(df_master, wf_dir, spike_fit_dir=None, half_win=75,
+                                cache_dir=None, metric="nRMSE", n_pts=5000):
+    """
+    Scatter of within vs between distributions from v2 cache (no new computation).
+    x = subsample of within_nrmse (spike vs own cell mean).
+    y = subsample of Between_(all)_nrmse (spike vs other cell mean).
+    Not paired per spike — shows where the two distributions sit relative to each other.
+    """
+    from pathlib import Path
+
+    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v2.npz"
+    if not _cache_file.exists():
+        raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
+
+    npz = np.load(_cache_file, allow_pickle=False)
+    _key_map = {
+        "nRMSE":   ("within_nrmse",  "Between_(all)_nrmse"),
+        "RMSE":    ("within_rmse",   "Between_(all)_rmse"),
+        "Cos Sim": ("within_cos",    "Between_(all)_cos"),
+    }
+    wk, bk = _key_map[metric]
+    within_vals  = npz[wk]
+    between_vals = npz[bk]
+
+    clip = float(np.percentile(np.concatenate([within_vals, between_vals]), 99))
+    within_vals  = within_vals[within_vals  <= clip]
+    between_vals = between_vals[between_vals <= clip]
+
+    rng = np.random.default_rng(42)
+    x_all = rng.choice(within_vals,  size=min(len(within_vals),  n_pts), replace=False)
+    y_all = rng.choice(between_vals, size=min(len(between_vals), n_pts), replace=False)
+    rng.shuffle(x_all)
+    rng.shuffle(y_all)
+
+    hi = clip * 1.05
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.scatter(x_all, y_all, color="#333333", s=6, alpha=0.25, linewidths=0, zorder=3)
+    ax.plot([0, hi], [0, hi], color="#888888", lw=1.5, ls="--", alpha=0.6, zorder=1)
+    ax.set_xlim(0, hi)
+    ax.set_ylim(0, hi)
+
+    ax.set_xlabel(f"Within-cell {metric} (per spike)", fontsize=14, fontweight="bold")
+    ax.set_ylabel(f"Between-cell {metric} (per spike)", fontsize=14, fontweight="bold")
+    ax.set_title(f"Within vs between distribution ({metric})", fontsize=14, fontweight="bold")
+    ax.tick_params(axis="both", labelsize=13)
+    for spine in ax.spines.values():
+        spine.set_linewidth(2.0)
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_waveform_dist_raincloud(df_master, wf_dir, spike_fit_dir=None, half_win=75,
+                                  cache_dir=None, metric="nRMSE"):
+    """Option 3: Raincloud (violin + box + strip) using all spikes from v2 cache."""
+    from pathlib import Path
+
+    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v2.npz"
+    if not _cache_file.exists():
+        raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
+
+    npz = np.load(_cache_file, allow_pickle=False)
+    _key_map = {
+        "nRMSE":   ("within_nrmse",  "Between_(all)_nrmse"),
+        "RMSE":    ("within_rmse",   "Between_(all)_rmse"),
+        "Cos Sim": ("within_cos",    "Between_(all)_cos"),
+    }
+    wk, bk = _key_map[metric]
+    within_vals  = npz[wk]
+    between_vals = npz[bk]
+
+    rng = np.random.default_rng(42)
+    _N_STRIP = 3000
+    strip_within  = rng.choice(within_vals,  size=min(len(within_vals),  _N_STRIP), replace=False)
+    strip_between = rng.choice(between_vals, size=min(len(between_vals), _N_STRIP), replace=False)
+
+    box_df = pd.concat([
+        pd.DataFrame({"group": "Within",  "value": within_vals}),
+        pd.DataFrame({"group": "Between", "value": between_vals}),
+    ], ignore_index=True)
+    strip_df = pd.concat([
+        pd.DataFrame({"group": "Within",  "value": strip_within}),
+        pd.DataFrame({"group": "Between", "value": strip_between}),
+    ], ignore_index=True)
+
+    clip_top = float(np.percentile(np.concatenate([within_vals, between_vals]), 99))
+    PAL = {"Within": "#555555", "Between": "#AAAAAA"}
+
+    fig, ax = plt.subplots(figsize=(5, 6))
+    sns.boxplot(data=box_df, x="group", y="value", hue="group",
+                palette=PAL, showfliers=False, width=0.35,
+                linewidth=2.0, legend=False, ax=ax)
+    sns.stripplot(data=strip_df, x="group", y="value", hue="group",
+                  palette=PAL, size=3, alpha=0.4, jitter=True, legend=False, ax=ax)
+
+    ax.set_ylim(bottom=0, top=clip_top)
+    ax.set_xlabel("")
+    ax.set_ylabel(metric, fontsize=15, fontweight="bold")
+    ax.set_title(f"Within vs Between — all spikes ({metric})", fontsize=15, fontweight="bold")
+    ax.tick_params(axis="both", labelsize=13)
+    for spine in ax.spines.values():
+        spine.set_linewidth(2.0)
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_waveform_dist_sorted_dots(df_master, wf_dir, spike_fit_dir, half_win=75,
+                                    cache_dir=None, metric="nRMSE", n_strip=300):
+    """
+    Per-spike strip plot: each cell is a column, each dot is one spike's within-nRMSE.
+    Cells sorted by median within-nRMSE. Shaded band = IQR of global between-nRMSE.
+    """
+    import pickle
+    from pathlib import Path
+
+    _cache_dir  = Path(cache_dir or wf_dir)
+    _cache_file = _cache_dir / "_sorted_dots_v1.npz"
+
+    if _cache_file.exists():
+        npz = np.load(_cache_file, allow_pickle=True)
+        cell_ids      = list(npz["cell_ids"])
+        cell_nrmse    = [npz[f"nrmse_{i}"] for i in range(len(cell_ids))]
+        cell_rmse     = [npz[f"rmse_{i}"]  for i in range(len(cell_ids))]
+        btw_nrmse_all = npz["btw_nrmse_all"]
+        btw_rmse_all  = npz["btw_rmse_all"]
+        print("[sorted_dots] cache HIT")
+    else:
+        spike_pkls = sorted(Path(spike_fit_dir).glob("c*_spike_fit.pkl"),
+                            key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+        meta_cols = ["cell_id", "cell_type", "patch_type"]
+        cell_meta = df_master[meta_cols].drop_duplicates("cell_id").set_index("cell_id")
+        cell_data = {}
+        for pkl in spike_pkls:
+            cnum    = int(pkl.stem.split("_")[0].lstrip("c"))
+            cell_id = f"c{cnum}"
+            if cell_id not in cell_meta.index:
+                continue
+            try:
+                sp = load_spike_fit_pickle(pkl)
+                W  = np.asarray(sp.spikes, float)
+            except Exception:
+                continue
+            avg      = W.mean(axis=0)
+            peak_idx = int(np.argmax(np.abs(avg)))
+            lo, hi   = peak_idx - half_win, peak_idx + half_win
+            if lo < 0 or hi > W.shape[1]:
+                continue
+            cell_data[cell_id] = (avg[lo:hi], W[:, lo:hi])
+
+        cell_ids   = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
+        cell_nrmse, cell_rmse = [], []
+        for cid in cell_ids:
+            mean_i, spikes_i = cell_data[cid]
+            denom = np.max(np.abs(mean_i)) + 1e-12
+            diff  = spikes_i - mean_i
+            rmse  = np.sqrt(np.mean(diff ** 2, axis=1))
+            cell_nrmse.append(rmse / denom)
+            cell_rmse.append(rmse)
+
+        # between from v2 cache
+        v2 = np.load(_cache_dir / "_spike_to_avg_distances_v2.npz", allow_pickle=False)
+        btw_nrmse_all = v2["Between_(all)_nrmse"]
+        btw_rmse_all  = v2["Between_(all)_rmse"]
+
+        save_dict = {
+            "cell_ids":      np.array(cell_ids),
+            "btw_nrmse_all": btw_nrmse_all,
+            "btw_rmse_all":  btw_rmse_all,
+        }
+        for i, (n, r) in enumerate(zip(cell_nrmse, cell_rmse)):
+            save_dict[f"nrmse_{i}"] = n
+            save_dict[f"rmse_{i}"]  = r
+        np.savez(_cache_file, **save_dict)
+        print(f"[sorted_dots] cached → {_cache_file.name}")
+
+    if metric == "nRMSE":
+        per_cell = cell_nrmse
+        btw_all  = btw_nrmse_all
+    else:
+        per_cell = cell_rmse
+        btw_all  = btw_rmse_all
+
+    # sort cells by median within-nRMSE
+    medians  = [float(np.median(v)) for v in per_cell]
+    order    = np.argsort(medians)
+    per_cell = [per_cell[i] for i in order]
+    cell_ids = [cell_ids[i] for i in order]
+
+    btw_median = float(np.median(btw_all))
+    btw_q25    = float(np.percentile(btw_all, 25))
+    btw_q75    = float(np.percentile(btw_all, 75))
+
+    rng = np.random.default_rng(42)
+    all_within = np.concatenate(per_cell)
+    clip_top   = float(np.percentile(all_within, 99))
+
+    C_LOW  = "#555555"
+    C_MID  = "#E07B39"
+    C_HIGH = "#C0392B"
+
+    from matplotlib.patches import Patch
+    import matplotlib.lines as mlines
+
+    # ── main figure ──────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(9.5, 6))
+    ax.axhspan(btw_q25, btw_q75, color="#CCCCCC", alpha=0.40, zorder=1)
+    ax.axhline(btw_median, color="#555555", lw=3.0, ls="--", alpha=0.9, zorder=2)
+
+    for xi, vals in enumerate(per_cell):
+        sub = rng.choice(vals, size=min(len(vals), n_strip), replace=False)
+        sub = sub[sub <= clip_top]
+        jitter = rng.uniform(-0.3, 0.3, size=len(sub))
+        mask_low  = sub <  btw_q25
+        mask_mid  = (sub >= btw_q25) & (sub <= btw_q75)
+        mask_high = sub >  btw_q75
+        for mask, col, alph in [(mask_low, C_LOW, 0.25),
+                                 (mask_mid, C_MID, 0.60),
+                                 (mask_high, C_HIGH, 0.70)]:
+            if mask.any():
+                ax.scatter(xi + jitter[mask], sub[mask], color=col,
+                           s=22, alpha=alph, zorder=3, linewidths=0)
+
+    for xi, vals in enumerate(per_cell):
+        ax.scatter(xi, float(np.median(vals)), color="#000000", s=70,
+                   zorder=4, marker="D", linewidths=0)
+
+    ax.set_xticks([])
+    ax.set_xlabel("Cells by within-cell variability →", fontsize=36, labelpad=14)
+    ax.set_ylabel(metric, fontsize=38, fontweight="bold", labelpad=10)
+    ax.set_ylim(bottom=0, top=clip_top * 1.05)
+    ax.set_yticks([0.0, 0.2, 0.4])
+    ax.tick_params(axis="y", labelsize=34, pad=8)
+    for spine in ax.spines.values():
+        spine.set_linewidth(2.5)
+    sns.despine(ax=ax)
+    fig.subplots_adjust(bottom=0.18, left=0.13, right=0.98)
+    plt.show()
+
+    # ── legend figure ─────────────────────────────────────────────────────────
+    fig_leg, ax_leg = plt.subplots(figsize=(5, 2.5))
+    ax_leg.axis("off")
+    h_band  = Patch(facecolor="#CCCCCC", alpha=0.6, label="Between-cell nRMSE (IQR)")
+    h_med_b = mlines.Line2D([], [], color="#555555", lw=3.0, ls="--",
+                             label="Between-cell nRMSE (median)")
+    h_spike = mlines.Line2D([], [], marker="o", color="w", markerfacecolor=C_LOW,
+                             markersize=16, label="Single spike-to-avg nRMSE")
+    ax_leg.legend(handles=[h_band, h_med_b, h_spike],
+                  fontsize=24, frameon=False, loc="center")
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
+                                          features=None, detailed=False,
+                                          df_master=None, cache_dir=None,
+                                          force_recompute=False, half_win=75):
+    """
+    For each spike waveform feature (only cells that have clustering for that feature):
+      within  = waveform nRMSE of each spike vs its own cell's mean waveform
+      between = waveform nRMSE of each spike vs every other cell's mean waveform
+
+    detailed=False : one figure with all features as subplots, two groups (Within / Between).
+    detailed=True  : one figure per feature, groups broken out by cell type and patch type.
+                     Requires df_master.
+
+    Results are cached per-feature as .npz files (group arrays only, not raw pairs),
+    so subsequent runs load in seconds instead of minutes.
+    """
+    import pickle
+    from pathlib import Path
+
+    WAVEFORM_FEATS = ['inflection_amp', 'inflection_time', 'peak_amp',
+                      'peak_sharpness', 'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'inflection_amp': 'Infl. amp', 'inflection_time': 'Infl. time',
+        'peak_amp': 'Peak amp', 'peak_sharpness': 'Peak sharp.',
+        'peak_width': 'Peak width', 'exp_lambda': 'Exp λ', 'log_isi': 'Log ISI',
+    }
+    if features is None:
+        features = WAVEFORM_FEATS
+
+    pkl_paths = sorted(Path(cluster_pickle_dir).glob("c*_cluster_df.pkl"),
+                       key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    _cache_dir = Path(cache_dir) if cache_dir else Path(cluster_pickle_dir)
+    _mode      = "detailed" if detailed else "simple"
+
+    def _cache_path(feat):
+        return _cache_dir / f"_feat_wbwf2_{_mode}_{feat}.npz"
+
+    _all_cached = all(_cache_path(f).exists() for f in (features or []))
+    print(f"[spike_feature_wb] mode={_mode}  cache={'HIT — loading' if _all_cached and not force_recompute else 'MISS — computing (will cache after)'}")
+
+    rng      = np.random.default_rng(0)
+    _N_STRIP = 2000
+
+    # ── Pre-load all waveforms from spike_fit pickles (done once) ────────────
+    spike_fit_dir = Path(spike_fit_dir)
+    all_cell_waveforms = {}  # cid -> (mean_wf[half_win*2], W[n_spikes, half_win*2])
+    for sp_pkl in sorted(spike_fit_dir.glob("c*_spike_fit.pkl"),
+                         key=lambda p: int(p.stem.split("_")[0].lstrip("c"))):
+        cid = sp_pkl.stem.split("_")[0]
+        try:
+            sp = load_spike_fit_pickle(sp_pkl)
+            W  = np.asarray(sp.spikes, float)
+        except Exception:
+            continue
+        avg      = W.mean(axis=0)
+        peak_idx = int(np.argmax(np.abs(avg)))
+        lo, hi   = peak_idx - half_win, peak_idx + half_win
+        if lo < 0 or hi > W.shape[1]:
+            continue
+        all_cell_waveforms[cid] = (avg[lo:hi], W[:, lo:hi])
+    print(f"Loaded waveforms for {len(all_cell_waveforms)} cells")
+
+    # ── Metadata for detailed mode ───────────────────────────────────────────
+    cell_ids_all = sorted(
+        [p.stem.split("_")[0] for p in pkl_paths],
+        key=lambda c: int(c.lstrip("c"))
+    )
+
+    if detailed:
+        assert df_master is not None, "detailed=True requires df_master"
+        cell_meta = df_master[["cell_id","cell_type","patch_type"]].drop_duplicates("cell_id").set_index("cell_id")
+        ct_map = cell_meta["cell_type"].to_dict()
+        pt_map = cell_meta["patch_type"].to_dict()
+
+        def _method(pt):
+            return "WC" if isinstance(pt, str) and "WC" in pt else "Juxta"
+
+        has_wc = any(_method(pt_map.get(c)) == "WC" for c in cell_ids_all)
+        GROUP_DEFS = [
+            ("Within\n(all)",        lambda ci, cj: ci == cj,                                                                                "#555555"),
+            ("Between\n(all)",       lambda ci, cj: ci != cj,                                                                                "#AAAAAA"),
+            ("Between\nPC–PC",       lambda ci, cj: ci != cj and ct_map.get(ci) == "PC"    and ct_map.get(cj) == "PC",                       "#CC44CC"),
+            ("Between\nIN–IN",       lambda ci, cj: ci != cj and ct_map.get(ci) == "IN"    and ct_map.get(cj) == "IN",                       "#00CCCC"),
+            ("Between\nJuxta–Juxta", lambda ci, cj: ci != cj and _method(pt_map.get(ci)) == "Juxta" and _method(pt_map.get(cj)) == "Juxta", "#E69F00"),
+        ]
+        if has_wc:
+            GROUP_DEFS.append(
+                ("Between\nWC–WC", lambda ci, cj: ci != cj and _method(pt_map.get(ci)) == "WC" and _method(pt_map.get(cj)) == "WC", "#0072B2")
+            )
+    else:
+        GROUP_DEFS = [
+            ("Within",  lambda ci, cj: ci == cj, "#555555"),
+            ("Between", lambda ci, cj: ci != cj, "#AAAAAA"),
+        ]
+
+    GROUP_ORDER = [g[0] for g in GROUP_DEFS]
+    PALETTE     = {g[0]: g[2] for g in GROUP_DEFS}
+    _npz_key = lambda name: name.replace("\n", "_").replace("–", "-").replace(" ", "_")
+
+    # ── Per-feature: load plot-ready stats from cache or compute ─────────────
+    def _box_stats(vals):
+        q1, med, q3 = np.percentile(vals, [25, 50, 75])
+        iqr = q3 - q1
+        whislo = float(vals[vals >= q1 - 1.5 * iqr].min()) if len(vals) else 0.0
+        whishi = float(vals[vals <= q3 + 1.5 * iqr].max()) if len(vals) else 0.0
+        return np.array([q1, med, q3, whislo, whishi])
+
+    def _get_plot_data(feat):
+        cp = _cache_path(feat)
+        required = (
+            [_npz_key(g[0]) + "_nrmse_strip" for g in GROUP_DEFS] +
+            [_npz_key(g[0]) + "_rmse_strip"  for g in GROUP_DEFS] +
+            ["clip_nrmse", "clip_rmse"]
+        )
+        if not force_recompute and cp.exists():
+            npz = np.load(cp, allow_pickle=False)
+            if all(k in npz for k in required):
+                print(f"  {feat}: loaded from cache")
+                nrmse_strips = {g[0]: npz[_npz_key(g[0]) + "_nrmse_strip"] for g in GROUP_DEFS}
+                rmse_strips  = {g[0]: npz[_npz_key(g[0]) + "_rmse_strip"]  for g in GROUP_DEFS}
+                return nrmse_strips, float(npz["clip_nrmse"]), rmse_strips, float(npz["clip_rmse"])
+
+        # For this feature: only cells that have its cluster column in the cluster_df
+        feat_cluster_col = f"{feat}_cluster"
+        cell_wf_data = {}
+        for p in pkl_paths:
+            cid = p.stem.split("_")[0]
+            if cid not in all_cell_waveforms:
+                continue
+            try:
+                df = pickle.load(open(p, "rb"))
+            except Exception:
+                continue
+            if feat_cluster_col not in df.columns:
+                continue
+            valid_rows = df.loc[df[feat_cluster_col].notna()]
+            if len(valid_rows) < 10:
+                continue
+            spk_ids = valid_rows["spk_id"].astype(int).values
+            mean_wf, W_full = all_cell_waveforms[cid]
+            valid_spk = spk_ids[spk_ids < W_full.shape[0]]
+            if len(valid_spk) < 10:
+                continue
+            cell_wf_data[cid] = (mean_wf, W_full[valid_spk])
+
+        valid_ids = sorted(cell_wf_data.keys(), key=lambda c: int(c.lstrip("c")))
+
+        nrmse_parts = {g[0]: [] for g in GROUP_DEFS}
+        rmse_parts  = {g[0]: [] for g in GROUP_DEFS}
+        for ci in valid_ids:
+            mean_i, spikes_i = cell_wf_data[ci]
+            for cj in valid_ids:
+                if cj not in cell_wf_data:
+                    continue
+                mean_j, _ = cell_wf_data[cj]
+                denom = max(np.max(np.abs(mean_i)), np.max(np.abs(mean_j))) + 1e-12
+                diff  = spikes_i - (mean_i if ci == cj else mean_j)
+                rmse  = np.sqrt(np.mean(diff ** 2, axis=1))
+                nrmse = rmse / denom
+                for name, fn, _ in GROUP_DEFS:
+                    if fn(ci, cj):
+                        nrmse_parts[name].append(nrmse)
+                        rmse_parts[name].append(rmse)
+
+        nrmse_strips, rmse_strips = {}, {}
+        nrmse_all, rmse_all = [], []
+        for name, _ in [(g[0], None) for g in GROUP_DEFS]:
+            if nrmse_parts[name]:
+                nv = np.concatenate(nrmse_parts[name])
+                rv = np.concatenate(rmse_parts[name])
+                nrmse_strips[name] = rng.choice(nv, size=min(len(nv), _N_STRIP), replace=False)
+                rmse_strips[name]  = rng.choice(rv, size=min(len(rv), _N_STRIP), replace=False)
+                nrmse_all.append(nv); rmse_all.append(rv)
+                print(f"  {feat:20s} {name.replace(chr(10),' '):22s}: "
+                      f"nRMSE median={np.median(nv):.4g}  RMSE median={np.median(rv):.4g}  n={len(nv):,}")
+            else:
+                nrmse_strips[name] = np.array([])
+                rmse_strips[name]  = np.array([])
+
+        clip_nrmse = float(np.percentile(np.concatenate(nrmse_all), 99)) if nrmse_all else 1.0
+        clip_rmse  = float(np.percentile(np.concatenate(rmse_all),  99)) if rmse_all  else 1.0
+
+        save_dict = {"clip_nrmse": np.array([clip_nrmse]), "clip_rmse": np.array([clip_rmse])}
+        for g in GROUP_DEFS:
+            save_dict[_npz_key(g[0]) + "_nrmse_strip"] = nrmse_strips[g[0]]
+            save_dict[_npz_key(g[0]) + "_rmse_strip"]  = rmse_strips[g[0]]
+        np.savez(cp, **save_dict)
+        print(f"  {feat}: cached → {cp.name}")
+        return nrmse_strips, clip_nrmse, rmse_strips, clip_rmse
+
+    _FS, _FAX = 24, 26
+
+    def _plot_one(ax, strips, clip_top, title, metric_label, feat=None):
+        plot_df = pd.concat(
+            [pd.DataFrame({"group": name, "value": strips[name]})
+             for name, _, _ in GROUP_DEFS if len(strips[name])],
+            ignore_index=True,
+        )
+        present = [g for g in GROUP_ORDER if g in plot_df["group"].values]
+        if not detailed and feat is not None:
+            feat_color = _SPIKE_FEAT_COLORS.get(feat, "#888888")
+            pal = {g: feat_color if "Between" in g or "between" in g else "#555555" for g in present}
+        else:
+            pal = PALETTE
+        sns.boxplot(data=plot_df, x="group", y="value", hue="group", order=present,
+                    palette=pal, showfliers=False, width=0.55,
+                    linewidth=2.5, legend=False, ax=ax)
+        sns.stripplot(data=plot_df, x="group", y="value", hue="group", order=present,
+                      palette=pal, size=3, alpha=0.45, jitter=True, legend=False, ax=ax)
+        ax.set_ylim(bottom=0, top=clip_top * 1.05)
+        if detailed:
+            ax.axvline(1.5, color="#888888", lw=1.5, ls="--", alpha=0.7)
+            _add_group_category_labels(ax, present)
+        ax.set_xlabel("")
+        ax.set_ylabel(metric_label, fontsize=_FAX if not detailed else 11, fontweight="bold")
+        ax.set_title(FEAT_LABELS.get(title, title), fontsize=_FS if not detailed else 12, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=_FS if not detailed else 9)
+        if not detailed:
+            ax.set_xticklabels(["Within", "Between"], fontsize=_FS)
+        sns.despine(ax=ax)
+
+    # ── Render ───────────────────────────────────────────────────────────────
+    fw = max(10, len(GROUP_DEFS) * 1.8)
+    if detailed:
+        for feat in features:
+            result = _get_plot_data(feat)
+            if not result:
+                continue
+            nrmse_strips, clip_nrmse, rmse_strips, clip_rmse = result
+            for strips, clip, mlabel in [
+                (nrmse_strips, clip_nrmse, "nRMSE"),
+                (rmse_strips,  clip_rmse,  "RMSE"),
+            ]:
+                fig, ax = plt.subplots(figsize=(fw, 5))
+                fig.suptitle(f"Spike waveform within vs between — {feat} ({mlabel})",
+                             fontsize=16, fontweight="bold")
+                _plot_one(ax, strips, clip, feat, mlabel)
+                plt.tight_layout()
+                fig.subplots_adjust(bottom=0.28)
+                plt.show()
+    else:
+        for mlabel, metric_idx in [("nRMSE", 0)]:
+            fig, axes = plt.subplots(1, len(features), figsize=(3.0 * len(features), 7), sharey=False)
+            if len(features) == 1:
+                axes = [axes]
+            for ax, feat in zip(axes, features):
+                result = _get_plot_data(feat)
+                if not result:
+                    ax.set_visible(False)
+                    continue
+                nrmse_strips, clip_nrmse, rmse_strips, clip_rmse = result
+                strips = nrmse_strips if metric_idx == 0 else rmse_strips
+                clip   = clip_nrmse   if metric_idx == 0 else clip_rmse
+                _plot_one(ax, strips, clip, feat, mlabel, feat=feat)
+            plt.tight_layout()
+            plt.show()
+
+
+def plot_spike_feat_value_within_vs_between(spike_fit_dir, cache_dir=None, force_recompute=False):
+    """
+    Per-feature within vs between cell comparison using actual feature values.
+    Within:  |spike_value − own_cell_mean|   per spike, pooled across cells.
+    Between: |spike_value − other_cell_mean| per spike vs every other cell, pooled.
+    Y-axis in feature units. Separate subplot per feature.
+    This is NOT a waveform-level analysis — it operates on the fitted feature values
+    directly (peak_amp, inflection_time, ramp_amp, etc.).
+    """
+    import pickle
+    from pathlib import Path
+
+    _FS, _FAX  = 20, 22
+    _N_STRIP   = 2000
+    rng        = np.random.default_rng(42)
+
+    WF_ORDER = ['ramp_amp', 'inflection_amp', 'inflection_time',
+                'peak_amp', 'peak_sharpness', 'peak_width',
+                'exp_lambda', 'exp_const', 'log_isi']
+    FEAT_LABELS = {
+        'ramp_amp':       'Ramp amp',   'inflection_amp': 'Infl. amp',
+        'inflection_time':'Infl. time', 'peak_amp':       'Peak amp',
+        'peak_sharpness': 'Peak sharp.','peak_width':     'Peak width',
+        'exp_lambda':     'Exp λ',      'exp_const':      'Exp const',
+        'log_isi':        'Log ISI',
+    }
+    FEAT_UNITS = {
+        'ramp_amp':       'µV',   'inflection_amp': 'µV',
+        'inflection_time':'ms',   'peak_amp':       'µV',
+        'peak_sharpness': 'µV/ms²','peak_width':    'ms',
+        'exp_lambda':     r'ms$^{-1}$', 'exp_const':      'µV',
+        'log_isi':        'log(s)',
+    }
+
+    spike_fit_path = Path(spike_fit_dir)
+    _cache_dir     = Path(cache_dir) if cache_dir else spike_fit_path
+
+    # ── Load per-cell feature arrays ─────────────────────────────────────────
+    pkls = sorted(spike_fit_path.glob("c*_spike_fit.pkl"),
+                  key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    cell_data  = {}  # cid → {feat: np.ndarray}
+    cell_means = {}  # cid → {feat: float}
+    for pkl in pkls:
+        cid = pkl.stem.split("_")[0]
+        try:
+            sp = load_spike_fit_pickle(pkl)
+        except Exception:
+            continue
+        vals = {}
+        for feat in WF_ORDER:
+            if feat == 'log_isi':
+                raw = getattr(sp, 'isi', None)
+                v = np.log(np.asarray(raw, float)) if raw is not None else None
+            else:
+                v = getattr(sp, feat, None)
+            if v is not None:
+                arr = np.asarray(v, float)
+                finite = arr[np.isfinite(arr)]
+                if len(finite) >= 10:
+                    vals[feat] = finite
+        if vals:
+            cell_data[cid]  = vals
+            cell_means[cid] = {f: float(np.mean(v)) for f, v in vals.items()}
+
+    cell_ids = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
+    print(f"Loaded {len(cell_ids)} cells")
+
+    feat_present = [f for f in WF_ORDER if any(f in cell_data[c] for c in cell_ids)]
+
+    # ── Plot ─────────────────────────────────────────────────────────────────
+    import math
+    n_feats = len(feat_present)
+    n_cols  = math.ceil(n_feats / 2)
+    n_rows  = 2
+    n_row2  = n_feats - n_cols   # features in second row
+    gs_cols = 2 * n_cols         # double-resolution grid for centering
+
+    fig = plt.figure(figsize=(2.8 * n_cols, 4.5 * n_rows))
+    gs  = fig.add_gridspec(n_rows, gs_cols)
+
+    axes_row1 = [fig.add_subplot(gs[0, 2*i : 2*(i+1)]) for i in range(n_cols)]
+    offset    = (gs_cols - 2 * n_row2) // 2
+    axes_row2 = [fig.add_subplot(gs[1, offset + 2*i : offset + 2*(i+1)]) for i in range(n_row2)]
+    axes_flat = axes_row1 + axes_row2
+
+    for ax, feat in zip(axes_flat, feat_present):
+        feat_color = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+        cache_file = _cache_dir / f"_feat_val_wb_{feat}.npz"
+
+        if not force_recompute and cache_file.exists():
+            npz      = np.load(cache_file)
+            w_strip  = npz['w_strip']
+            b_strip  = npz['b_strip']
+            clip_top = float(npz['clip_top'])
+            print(f"  {feat}: cache hit")
+        else:
+            w_all, b_all = [], []
+            for ci in cell_ids:
+                if feat not in cell_data[ci]:
+                    continue
+                spikes_i = cell_data[ci][feat]
+                mean_i   = cell_means[ci][feat]
+                w_all.append(np.abs(spikes_i - mean_i))
+                for cj in cell_ids:
+                    if cj == ci or feat not in cell_means[cj]:
+                        continue
+                    b_all.append(np.abs(spikes_i - cell_means[cj][feat]))
+
+            if not w_all or not b_all:
+                ax.set_visible(False)
+                continue
+
+            w_cat    = np.concatenate(w_all)
+            b_cat    = np.concatenate(b_all)
+            clip_top = float(np.percentile(np.concatenate([w_cat, b_cat]), 99))
+            w_strip  = rng.choice(w_cat, size=min(len(w_cat), _N_STRIP), replace=False)
+            b_strip  = rng.choice(b_cat, size=min(len(b_cat), _N_STRIP), replace=False)
+            np.savez(cache_file, w_strip=w_strip, b_strip=b_strip,
+                     clip_top=np.array([clip_top]))
+            print(f"  {feat}: computed & cached")
+
+        import matplotlib.colors as mcolors
+        feat_rgba = mcolors.to_rgba(feat_color)
+        sheer_color = (*feat_rgba[:3], 0.25)
+
+        rng2 = np.random.default_rng(0)
+        for pos, vals, fc, dot_alpha in [
+            (0, w_strip,  feat_color,   0.5),
+            (1, b_strip,  sheer_color,  0.25),
+        ]:
+            vals = vals[np.isfinite(vals)]
+            bp = ax.boxplot([vals], positions=[pos], widths=0.5, patch_artist=True,
+                            showfliers=False,
+                            boxprops=dict(facecolor=fc, edgecolor='black', linewidth=2.0),
+                            medianprops=dict(color='black', linewidth=2.0, zorder=5),
+                            whiskerprops=dict(color='black', linewidth=1.8),
+                            capprops=dict(color='black', linewidth=1.8))
+            for line in bp['medians']:
+                line.set_zorder(5)
+            n = min(len(vals), _N_STRIP)
+            jx = rng2.uniform(-0.12, 0.12, size=n) + pos
+            jy = rng2.choice(vals, size=n, replace=False)
+            ax.scatter(jx, jy, color=feat_color, s=9,
+                       alpha=dot_alpha, linewidths=0, zorder=3)
+        ax.set_xticks([0, 1])
+
+        unit = FEAT_UNITS.get(feat, '')
+        ax.set_ylim(bottom=0, top=clip_top * 1.05)
+        ax.set_xlabel('')
+        ax.set_ylabel(f'|Δ| ({unit})', fontsize=_FAX, fontweight='bold')
+        ax.set_title(FEAT_LABELS.get(feat, feat), fontsize=_FAX, fontweight='bold')
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4))
+        ax.tick_params(axis='y', labelsize=_FS)
+        ax.set_xticklabels(['Within', 'Between'], fontsize=_FS,
+                           rotation=45, ha='right', rotation_mode='anchor')
+        sns.despine(ax=ax)
+
+    plt.tight_layout(pad=0.8, w_pad=2.0, h_pad=2.5)
+    plt.show()
+
+
+def _compute_pct_within_per_cell(wf_dir, spike_fit_dir, half_win=75):
+    """
+    Returns a DataFrame with one row per cell:
+      cell_id, pct_nrmse, pct_cos, pct_{feat} for each feature in _WB_FEAT_ORDER
+    % = fraction of within-cell spikes exceeding median between-cell threshold.
+    For cos_sim 'exceeds' means within < median between (less similar).
+    """
+    import pickle
+    from pathlib import Path
+
+    _wf_cache = Path(wf_dir) / "_spike_to_avg_distances_v2.npz"
+    if not _wf_cache.exists():
+        raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
+    npz = np.load(_wf_cache, allow_pickle=False)
+    btw_median_nrmse = float(np.median(npz["Between_(all)_nrmse"]))
+    btw_median_cos   = float(np.median(npz["Between_(all)_cos"]))
+
+    spike_fit_path = Path(spike_fit_dir)
+
+    feat_thresholds = {}
+    for feat in _WB_FEAT_ORDER:
+        cf = spike_fit_path / f"_feat_val_wb_{feat}.npz"
+        if cf.exists():
+            b = np.load(cf)['b_strip']
+            feat_thresholds[feat] = float(np.median(b[np.isfinite(b)]))
+
+    pkls = sorted(spike_fit_path.glob("c*_spike_fit.pkl"),
+                  key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    rows = []
+    for pkl in pkls:
+        cid = pkl.stem.split("_")[0]
+        try:
+            sp = load_spike_fit_pickle(pkl)
+        except Exception:
+            continue
+        W = np.asarray(sp.spikes, float)
+        avg = W.mean(axis=0)
+        peak_idx = int(np.argmax(np.abs(avg)))
+        lo, hi = peak_idx - half_win, peak_idx + half_win
+        if lo < 0 or hi > W.shape[1]:
+            continue
+        avg_w    = avg[lo:hi]
+        spikes_w = W[:, lo:hi]
+        denom    = np.max(np.abs(avg_w)) + 1e-12
+        diff     = spikes_w - avg_w
+        nrmse_w  = np.sqrt(np.mean(diff**2, axis=1)) / denom
+        norm_s   = np.linalg.norm(spikes_w, axis=1)
+        norm_m   = np.linalg.norm(avg_w) + 1e-12
+        cos_w    = (spikes_w @ avg_w) / (norm_s * norm_m + 1e-12)
+
+        row = {
+            'cell_id':   cid,
+            'pct_nrmse': float(np.mean(nrmse_w > btw_median_nrmse) * 100),
+            'pct_cos':   float(np.mean(cos_w < btw_median_cos) * 100),
+        }
+
+        for feat in _WB_FEAT_ORDER:
+            if feat not in feat_thresholds:
+                row[f'pct_{feat}'] = np.nan
+                continue
+            if feat == 'log_isi':
+                raw = getattr(sp, 'isi', None)
+                v = np.log(np.asarray(raw, float)) if raw is not None else None
+            else:
+                v = getattr(sp, feat, None)
+            if v is None:
+                row[f'pct_{feat}'] = np.nan
+                continue
+            v = np.asarray(v, float)
+            v = v[np.isfinite(v)]
+            if len(v) < 5:
+                row[f'pct_{feat}'] = np.nan
+                continue
+            within_abs = np.abs(v - float(np.mean(v)))
+            row[f'pct_{feat}'] = float(np.mean(within_abs > feat_thresholds[feat]) * 100)
+
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def plot_pct_within_vs_metadata(df_master, wf_dir, spike_fit_dir, half_win=75):
+    """
+    One 2×3 figure per metric (nRMSE, cos_sim, + each feature in _WB_FEAT_ORDER).
+    Each figure shows % within-cell spikes exceeding median between-cell threshold
+    broken out by: cell type, patch type, current type, dark neuron, clear EAP, cortical depth.
+    """
+    import matplotlib.colors as mcolors
+
+    _FS, _FAX = 22, 24
+    _META_PALETTE = {
+        'PC':           '#4C72B0',
+        'IN':           '#DD8452',
+        'Juxta':        '#55A868',
+        'WC':           '#C44E52',
+        'IC':           '#8172B2',
+        'VC':           '#937860',
+        'Dark':         '#333333',
+        'Non-dark':     '#AAAAAA',
+        'Clear EAP':    '#2ca02c',
+        'No clear EAP': '#d62728',
+    }
+
+    pct_df = _compute_pct_within_per_cell(wf_dir, spike_fit_dir, half_win)
+
+    meta = (df_master[['cell_id', 'cell_type', 'patch_type', 'current_type',
+                        'cortical_depth', 'dark_neuron', 'clear_EAP_waveform']]
+            .drop_duplicates('cell_id')
+            .reset_index(drop=True))
+    df = pct_df.merge(meta, on='cell_id', how='left')
+
+    metrics = [('pct_nrmse', 'nRMSE'), ('pct_cos', 'Cos sim')] + [
+        (f'pct_{f}', _WB_FEAT_LABELS[f]) for f in _WB_FEAT_ORDER
+        if f'pct_{f}' in df.columns and df[f'pct_{f}'].notna().any()
+    ]
+
+    rng = np.random.default_rng(42)
+
+    def _strip_box(ax, col_name, groups, ylabel, title):
+        group_keys = list(groups.keys())
+        for xi, key in enumerate(group_keys):
+            mask = groups[key]
+            vals = df.loc[mask, col_name].dropna().values
+            if len(vals) == 0:
+                continue
+            col  = _META_PALETTE.get(key, '#888888')
+            fc_rgba = (*mcolors.to_rgb(col), 0.35)
+            ax.boxplot([vals], positions=[xi], widths=0.45, patch_artist=True,
+                       showfliers=False,
+                       boxprops=dict(facecolor=fc_rgba, edgecolor=col, linewidth=2.5),
+                       medianprops=dict(color=col, linewidth=3.5),
+                       whiskerprops=dict(color=col, linewidth=2.0),
+                       capprops=dict(color=col, linewidth=2.0))
+            jx = rng.uniform(-0.15, 0.15, size=len(vals)) + xi
+            ax.scatter(jx, vals, color=col, s=55, alpha=0.75,
+                       linewidths=0.6, edgecolors='black', zorder=3)
+        ax.set_xticks(range(len(group_keys)))
+        ax.set_xticklabels(group_keys, fontsize=_FS)
+        ax.set_ylabel(ylabel, fontsize=_FAX, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=_FS)
+        ax.set_title(title, fontsize=_FAX, fontweight='bold', pad=8)
+        sns.despine(ax=ax)
+
+    group_defs = [
+        ('Cell type',    {'PC': df['cell_type'] == 'PC',    'IN': df['cell_type'] == 'IN'}),
+        ('Patch type',   {'Juxta': df['patch_type'] == 'Juxta', 'WC': df['patch_type'] == 'WC'}),
+        ('Current type', {'IC': df['current_type'] == 'IC', 'VC': df['current_type'] == 'VC'}),
+        ('Dark neuron',  {'Dark': df['dark_neuron'] == True, 'Non-dark': df['dark_neuron'] == False}),
+        ('Clear EAP',    {'Clear EAP': df['clear_EAP_waveform'] == True, 'No clear EAP': df['clear_EAP_waveform'] == False}),
+    ]
+
+    for col_name, metric_label in metrics:
+        fig, axes = plt.subplots(2, 3, figsize=(18, 11))
+        fig.suptitle(metric_label, fontsize=_FAX + 2, fontweight='bold', y=1.01)
+        axes = axes.flatten()
+
+        _ylabel = f'% within > median between\n({metric_label})'
+
+        for pi, (title, groups) in enumerate(group_defs):
+            _strip_box(axes[pi], col_name, groups, _ylabel if pi in (0, 3) else '', title)
+
+        ax = axes[5]
+        for ct, col in [('PC', _META_PALETTE['PC']), ('IN', _META_PALETTE['IN'])]:
+            sub = df[df['cell_type'] == ct]
+            vals = sub[col_name].dropna()
+            ax.scatter(sub.loc[vals.index, 'cortical_depth'], vals,
+                       color=col, s=60, alpha=0.8,
+                       linewidths=0.6, edgecolors='black', zorder=3, label=ct)
+        ax.set_xlabel('Cortical depth (μm)', fontsize=_FAX, fontweight='bold')
+        ax.set_ylabel('', fontsize=_FAX)
+        ax.tick_params(labelsize=_FS)
+        ax.set_title('Cortical depth', fontsize=_FAX, fontweight='bold', pad=8)
+        ax.legend(fontsize=_FS, frameon=False)
+        sns.despine(ax=ax)
+
+        plt.tight_layout()
+        plt.show()
+
+
+def plot_pct_within_exceeds_between(df_master, wf_dir, spike_fit_dir,
+                                     half_win=75, cache_dir=None):
+    """
+    For each cell and metric, compute % of within-cell spikes that exceed
+    the median between-cell value.
+
+    nRMSE / Cos Sim: spike vs own-cell-mean waveform, threshold = median of
+                     global between-cell distribution (from v2 cache).
+    Per feature:     |spike_val − cell_mean|, threshold = median of global
+                     between |delta| (from per-feature caches).
+
+    For Cos Sim: 'exceeds' means within_cos < median_between_cos
+                 (spike is LESS similar to own mean than median between-cell).
+    """
+    import pickle
+    import math
+    import matplotlib.colors as mcolors
+    from pathlib import Path
+
+    _FS, _FAX = 11, 12
+    _cache_dir = Path(cache_dir) if cache_dir else Path(wf_dir)
+    _wf_cache  = _cache_dir / "_spike_to_avg_distances_v2.npz"
+
+    WF_ORDER = ['ramp_amp', 'inflection_amp', 'inflection_time',
+                'peak_amp', 'peak_sharpness', 'peak_width',
+                'exp_lambda', 'exp_const', 'log_isi']
+    FEAT_LABELS = {
+        'ramp_amp': 'Ramp amp', 'inflection_amp': 'Infl. amp',
+        'inflection_time': 'Infl. time', 'peak_amp': 'Peak amp',
+        'peak_sharpness': 'Peak sharp.', 'peak_width': 'Peak width',
+        'exp_lambda': 'Exp λ', 'exp_const': 'Exp const', 'log_isi': 'Log ISI',
+    }
+
+    # ── Waveform between thresholds from v2 cache ─────────────────────────
+    if not _wf_cache.exists():
+        raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
+    npz = np.load(_wf_cache, allow_pickle=False)
+    btw_median_nrmse = float(np.median(npz["Between_(all)_nrmse"]))
+    btw_median_cos   = float(np.median(npz["Between_(all)_cos"]))
+
+    # ── Feature between thresholds from per-feature caches ────────────────
+    spike_fit_path = Path(spike_fit_dir)
+    feat_thresholds = {}
+    for feat in WF_ORDER:
+        cf = spike_fit_path / f"_feat_val_wb_{feat}.npz"
+        if cf.exists():
+            b = np.load(cf)['b_strip']
+            feat_thresholds[feat] = float(np.median(b[np.isfinite(b)]))
+
+    # ── Per-cell computation ──────────────────────────────────────────────
+    pkls = sorted(spike_fit_path.glob("c*_spike_fit.pkl"),
+                  key=lambda p: int(p.stem.split("_")[0].lstrip("c")))
+
+    cell_ids_all = []
+    pct_nrmse, pct_cos = [], []
+    feat_pcts     = {f: [] for f in WF_ORDER if f in feat_thresholds}
+    feat_pct_cids = {f: [] for f in WF_ORDER if f in feat_thresholds}
+
+    for pkl in pkls:
+        cid = pkl.stem.split("_")[0]
+        try:
+            sp = load_spike_fit_pickle(pkl)
+        except Exception:
+            continue
+
+        W = np.asarray(sp.spikes, float)
+        avg = W.mean(axis=0)
+        peak_idx = int(np.argmax(np.abs(avg)))
+        lo, hi = peak_idx - half_win, peak_idx + half_win
+        if lo < 0 or hi > W.shape[1]:
+            continue
+
+        avg_w    = avg[lo:hi]
+        spikes_w = W[:, lo:hi]
+        denom    = np.max(np.abs(avg_w)) + 1e-12
+        diff     = spikes_w - avg_w
+        nrmse_w  = np.sqrt(np.mean(diff**2, axis=1)) / denom
+        norm_s   = np.linalg.norm(spikes_w, axis=1)
+        norm_m   = np.linalg.norm(avg_w) + 1e-12
+        cos_w    = (spikes_w @ avg_w) / (norm_s * norm_m + 1e-12)
+
+        cell_ids_all.append(cid)
+        pct_nrmse.append(float(np.mean(nrmse_w > btw_median_nrmse) * 100))
+        pct_cos.append(float(np.mean(cos_w < btw_median_cos) * 100))
+
+        for feat in feat_pcts:
+            if feat == 'log_isi':
+                raw = getattr(sp, 'isi', None)
+                v = np.log(np.asarray(raw, float)) if raw is not None else None
+            else:
+                v = getattr(sp, feat, None)
+            if v is None:
+                continue
+            v = np.asarray(v, float)
+            v = v[np.isfinite(v)]
+            if len(v) < 5:
+                continue
+            cell_mean  = float(np.mean(v))
+            within_abs = np.abs(v - cell_mean)
+            thr        = feat_thresholds[feat]
+            feat_pcts[feat].append(float(np.mean(within_abs > thr) * 100))
+            feat_pct_cids[feat].append(cid)
+
+    # ── Build plot data ───────────────────────────────────────────────────
+    conditions  = ['nRMSE', 'Cos Sim'] + [f for f in WF_ORDER if feat_pcts.get(f)]
+    cond_labels = ['nRMSE', 'Cos Sim'] + [FEAT_LABELS.get(f, f) for f in WF_ORDER if feat_pcts.get(f)]
+    cond_colors = ['#555555', '#888888'] + [
+        _SPIKE_FEAT_COLORS.get(f, '#aaaaaa') for f in WF_ORDER if feat_pcts.get(f)
+    ]
+    cond_vals  = {'nRMSE': np.array(pct_nrmse), 'Cos Sim': np.array(pct_cos)}
+    cond_cids  = {'nRMSE': cell_ids_all,         'Cos Sim': cell_ids_all}
+    for f in WF_ORDER:
+        if feat_pcts.get(f):
+            cond_vals[f] = np.array(feat_pcts[f])
+            cond_cids[f] = feat_pct_cids[f]
+
+    # ── Report high-% cells ───────────────────────────────────────────────
+    print("\n── Cells with > 80% within spikes exceeding median between ──")
+    for cond, label in zip(conditions, cond_labels):
+        vals = cond_vals[cond]
+        cids = cond_cids[cond]
+        high = [(cids[i], vals[i]) for i in range(len(vals)) if vals[i] > 80]
+        if high:
+            entries = ", ".join(f"{c} ({v:.0f}%)" for c, v in sorted(high, key=lambda x: -x[1]))
+            print(f"  {label:15s}: {entries}")
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    rng = np.random.default_rng(42)
+
+    for xi, (cond, col) in enumerate(zip(conditions, cond_colors)):
+        vals   = cond_vals[cond]
+        fc_rgba = (*mcolors.to_rgb(col), 0.45)
+        bp = ax.boxplot([vals], positions=[xi], widths=0.5, patch_artist=True,
+                        showfliers=False,
+                        boxprops=dict(facecolor=fc_rgba, edgecolor='black', linewidth=1.8),
+                        medianprops=dict(color='black', linewidth=2.0),
+                        whiskerprops=dict(color='black', linewidth=1.5),
+                        capprops=dict(color='black', linewidth=1.5))
+        jx = rng.uniform(-0.15, 0.15, size=len(vals)) + xi
+        ax.scatter(jx, vals, color=col, s=40, alpha=0.65, linewidths=0.5,
+                   edgecolors='black', zorder=3)
+
+    ax.set_xticks(range(len(conditions)))
+    ax.set_xticklabels(cond_labels, fontsize=14,
+                       rotation=40, ha='right', rotation_mode='anchor')
+    ax.set_ylabel('% within spikes > median between', fontsize=_FAX, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=_FS)
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    plt.show()
+
+    from matplotlib.lines import Line2D
+    fig_leg, ax_leg = plt.subplots(figsize=(2.5, 0.8))
+    ax_leg.axis('off')
+    handle = Line2D([0], [0], marker='o', color='w', markerfacecolor='#555555',
+                    markeredgecolor='black', markersize=10, linewidth=0)
+    ax_leg.legend(handles=[handle], labels=['one cell'], loc='center',
+                  fontsize=_FS, frameon=False, handletextpad=0.4)
+    plt.tight_layout()
+    plt.show()
+
+
+# ── Temporal transition detection ─────────────────────────────────────────────
+
+def _fit_multi_sigmoid(times_sec, labels_ord, rolling_n=50, min_frac=0.1,
+                       max_sigs=3, r2_early_stop=0.95):
+    """
+    Fit 1–max_sigs logistic sigmoids to the rolling mean of ordinal cluster
+    labels.  Model selection by AIC.
+
+    Model: y = b + Σ_i  L_i / (1 + exp(-k_i·(t − t0_i)))
+
+    Tries alternating-sign k initializations to catch on-off-on patterns.
+
+    Parameters
+    ----------
+    times_sec  : 1-D array of recording times (seconds, sorted ascending)
+    labels_ord : 1-D array of ordinal-coded cluster labels (same order)
+    rolling_n  : int   rolling-mean window size in spikes (default 50)
+    min_frac   : float minimum segment fraction used for t0 bounding
+    max_sigs   : int   maximum sigmoids to try (default 3)
+
+    Returns
+    -------
+    transitions : list of (t0_sec, k) tuples, sorted by time
+    r2          : float  R² of winning model  (NaN on total failure)
+    popt        : list   [b, L1, k1, t01, ...]  for winning model
+    n_sigs      : int    number of sigmoids selected
+    """
+    from scipy.optimize import curve_fit
+
+    t  = np.asarray(times_sec, float)
+    y  = np.asarray(labels_ord, float)
+    n  = len(t)
+    rm = pd.Series(y).rolling(rolling_n, center=True, min_periods=1).mean().values
+
+    # Early exit: if rolling mean has almost no variance, nothing to fit
+    rm_range = float(rm.max() - rm.min())
+    if rm_range < 0.15:
+        lo = int(np.ceil(n * min_frac))
+        fb = float(t[max(lo, n // 2)])
+        return [(fb, float('nan'))], float('nan'), [float(rm.min()), rm_range, float('nan'), fb], 1
+
+    # Downsample to at most 300 points so curve_fit stays fast on long recordings
+    _MAX_PTS = 300
+    if n > _MAX_PTS:
+        idx = np.round(np.linspace(0, n - 1, _MAX_PTS)).astype(int)
+        t_fit_arr = t[idx]
+        rm_fit    = rm[idx]
+    else:
+        t_fit_arr = t
+        rm_fit    = rm
+
+    ss_tot = float(np.sum((rm_fit - rm_fit.mean()) ** 2))
+
+    # Allow multi-sigma only when the rolling mean has a genuine interior
+    # peak or dip — i.e. the extremum is in the middle of the recording,
+    # not just at an endpoint (which would be a plain monotone transition).
+    # Threshold: interior must exceed endpoints by ≥15% of total range.
+    if max_sigs > 1:
+        q   = max(1, len(rm_fit) // 5)          # outer-20% endpoint bands
+        end_hi = max(float(rm_fit[:q].mean()), float(rm_fit[-q:].mean()))
+        end_lo = min(float(rm_fit[:q].mean()), float(rm_fit[-q:].mean()))
+        mid    = rm_fit[q:-q] if len(rm_fit) > 2 * q else rm_fit
+        has_bump = float(mid.max()) > end_hi + 0.15 * rm_range
+        has_dip  = float(mid.min()) < end_lo - 0.15 * rm_range
+        if not (has_bump or has_dip):
+            max_sigs = 1
+
+    lo_t = float(t[int(np.ceil(n * min_frac))])
+    hi_t = float(t[max(int(n * (1.0 - min_frac)) - 1, int(np.ceil(n * min_frac)))])
+
+    def _make_model(ns_):
+        def _m(t_, b, *lkt):
+            val = np.full_like(t_, float(b))
+            for i in range(ns_):
+                L_, k_, t0_ = lkt[3 * i], lkt[3 * i + 1], lkt[3 * i + 2]
+                val = val + L_ / (1.0 + np.exp(np.clip(-k_ * (t_ - t0_), -500, 500)))
+            return val
+        return _m
+
+    best_aic         = np.inf
+    best_transitions = None
+    best_r2          = float('nan')
+    best_popt        = None
+    best_n           = 1
+
+    k_scale = 2.0 / max(hi_t - lo_t, 1e-9)
+    L_range = max(rm.max() - rm.min(), 1e-3)
+    b0      = float(rm.min())
+
+    # Only two sign patterns per ns — enough to catch monotone and alternating cases
+    _SIGN_PATS = {
+        1: [(1,), (-1,)],
+        2: [(1, -1), (-1, 1)],
+        3: [(1, -1, 1), (-1, 1, -1)],
+    }
+    AIC_MIN_IMPROVEMENT = 30.0  # extra sigmoid needs substantial improvement to justify complexity
+
+    for ns in range(1, max_sigs + 1):
+        n_params  = 1 + 3 * ns
+        model     = _make_model(ns)
+        t_cands   = np.linspace(lo_t, hi_t, ns + 2)[1:-1]
+        sign_pats = _SIGN_PATS.get(ns, [(1,) * ns])
+
+        lower = [-np.inf] + [0.0,    -np.inf, float(t[0])   ] * ns
+        upper = [ np.inf] + [np.inf,  np.inf, float(t[-1])  ] * ns
+
+        ns_best_aic = np.inf
+        for signs in sign_pats:
+            p0 = [b0]
+            for i in range(ns):
+                p0.extend([L_range / ns, signs[i] * k_scale, float(t_cands[i])])
+            try:
+                popt, _ = curve_fit(model, t_fit_arr, rm_fit, p0=p0,
+                                    bounds=(lower, upper), maxfev=5000)
+                resid = rm_fit - model(t_fit_arr, *popt)
+                rss   = float(np.sum(resid ** 2))
+                nf    = len(rm_fit)
+                aic   = nf * np.log(max(rss / nf, 1e-300)) + 2 * n_params
+                r2    = 1.0 - rss / ss_tot if ss_tot > 0 else 0.0
+
+                if aic < ns_best_aic:
+                    ns_best_aic = aic
+
+                if aic < best_aic:
+                    best_aic  = aic
+                    best_r2   = float(r2)
+                    best_popt = list(popt)
+                    best_n    = ns
+                    transitions = []
+                    for i in range(ns):
+                        k_i  = float(popt[2 + 3 * i])
+                        t0_i = float(np.clip(popt[3 + 3 * i], lo_t, hi_t))
+                        transitions.append((t0_i, k_i))
+                    transitions.sort(key=lambda x: x[0])
+                    best_transitions = transitions
+            except Exception:
+                continue
+
+        # If single sigmoid already good enough, don't try more (avoids overfitting noise)
+        if ns == 1 and best_r2 >= r2_early_stop:
+            break
+        # Stop early if going from ns-1 → ns didn't help enough
+        if ns > 1 and (np.isinf(ns_best_aic) or best_n < ns or
+                       ns_best_aic > best_aic + AIC_MIN_IMPROVEMENT):
+            break
+
+    if best_transitions is None:
+        lo = int(np.ceil(n * min_frac))
+        fb = float(t[max(lo, n // 2)])
+        return [(fb, float('nan'))], float('nan'), [b0, L_range, float('nan'), fb], 1
+
+    return best_transitions, best_r2, best_popt, best_n
+
+
+def find_temporal_transitions(cluster_pickle_dir, r2_thresh=0.80, min_k=0.02,
+                               min_spikes=20, min_frac=0.1, rolling_n=50,
+                               max_sigs=3, save_path=None, force=False):
+    """
+    For each (cell × spike_feature) pair with enough spikes, fit 1–max_sigs
+    logistic sigmoids (AIC selection) to the rolling mean of ordinal cluster
+    labels.  Keep the result only if the overall R² ≥ r2_thresh and the
+    sharpest sigmoid has |k| ≥ min_k.  Returns one row per inflection point,
+    so a 2-sigmoid fit produces 2 rows for the same (cell, feature).
+
+    If save_path already exists and force=False, the cached DataFrame is loaded
+    and returned immediately without recomputing.
+
+    Parameters
+    ----------
+    cluster_pickle_dir : str    path to cluster_pickles/
+    r2_thresh          : float  minimum overall R² to keep (default 0.80)
+    min_k              : float  minimum |k| (1/s) of the sharpest sigmoid (default 0.02)
+    min_spikes         : int    minimum valid spikes required (default 20)
+    min_frac           : float  segment fraction for t0 bounding (default 0.1)
+    rolling_n          : int    rolling-mean window in spikes (default 50)
+    max_sigs           : int    maximum sigmoids per cell/feature (default 3)
+    save_path          : str or None  if given, pickle the result DataFrame
+    force              : bool   if True, recompute even when save_path exists (default False)
+
+    Returns
+    -------
+    df_transitions : pd.DataFrame  one row per inflection point, columns:
+        cell_id, spike_feature,
+        n_spikes, n_transitions, transition_index,
+        transition_time_ms, transition_sharpness_k,
+        sigmoid_r2, sigmoid_popt,
+        cluster_before, cluster_after,
+        frac_dominant_before, frac_dominant_after,
+        mean_time_before_ms, mean_time_after_ms
+    """
+    import glob
+    import os
+
+    if save_path and not force and os.path.exists(save_path):
+        df_cached = pd.read_pickle(save_path)
+        print(f'Loaded cached transitions from {save_path}  '
+              f'({len(df_cached)} rows — pass force=True to recompute)')
+        return df_cached
+
+    ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
+               'Low': 0, 'Mid': 1, 'High': 2,
+               'low-mid': 0.5, 'low-high': 1.0, 'mid-high': 1.5}
+
+    def _to_ord(label):
+        if isinstance(label, (int, float)):
+            return float(label)
+        l = str(label).strip().lower()
+        for k, v in ORDINAL.items():
+            if k.lower() == l:
+                return float(v)
+        return float('nan')
+
+    def _dominant(arr):
+        vals, cnts = np.unique(arr, return_counts=True)
+        return vals[np.argmax(cnts)], float(np.max(cnts) / len(arr))
+
+    pkl_files = sorted(glob.glob(f'{cluster_pickle_dir}/c*_cluster_df.pkl'))
+    rows = []
+
+    for pkl_path in pkl_files:
+        cid = pkl_path.split('/')[-1].replace('_cluster_df.pkl', '')
+        df  = pd.read_pickle(pkl_path)
+
+        cluster_cols = [c for c in df.columns if c.endswith('_cluster')
+                        and not c.startswith('spk_times')]
+
+        for col in cluster_cols:
+            feat = col.replace('_cluster', '')
+
+            labels     = df[col].dropna()
+            times      = df.loc[labels.index, 'spk_times_ms']
+            labels_ord = labels.map(_to_ord).values
+            valid      = np.isfinite(labels_ord)
+            if valid.sum() < min_spikes:
+                continue
+
+            sort_idx     = np.argsort(times.values[valid])
+            times_ms_s   = times.values[valid][sort_idx]
+            labels_s     = labels_ord[valid][sort_idx]
+            raw_labels_s = labels.values[valid][sort_idx]
+
+            transitions, r2, popt, n_sigs = _fit_multi_sigmoid(
+                times_ms_s / 1000.0, labels_s,
+                rolling_n=rolling_n, min_frac=min_frac, max_sigs=max_sigs,
+                r2_early_stop=0.95,
+            )
+
+            # Filter: good overall fit AND at least one sigmoid must be sharp enough
+            if not np.isfinite(r2) or r2 < r2_thresh:
+                continue
+            finite_ks = [abs(k) for _, k in transitions if np.isfinite(k)]
+            if not finite_ks or max(finite_ks) < min_k:
+                continue
+
+            n_v = len(times_ms_s)
+            lo  = int(np.ceil(n_v * min_frac))
+            hi  = n_v - lo
+
+            # Segment boundaries for before/after per transition
+            t0_ms_list = [t0 * 1000.0 for t0, _ in transitions]
+            boundaries_ms = [times_ms_s[0]] + t0_ms_list + [times_ms_s[-1]]
+
+            for ti, (t0_sec, k_val) in enumerate(transitions):
+                t0_ms_i  = t0_sec * 1000.0
+                cp       = int(np.clip(np.argmin(np.abs(times_ms_s - t0_ms_i)), lo, hi))
+                prev_ms  = boundaries_ms[ti]
+                next_ms  = boundaries_ms[ti + 2]
+
+                mask_b = (times_ms_s >= prev_ms) & (times_ms_s <  t0_ms_i)
+                mask_a = (times_ms_s >= t0_ms_i) & (times_ms_s <= next_ms)
+
+                if mask_b.sum() == 0 or mask_a.sum() == 0:
+                    continue
+
+                cl_before, frac_before = _dominant(raw_labels_s[mask_b])
+                cl_after,  frac_after  = _dominant(raw_labels_s[mask_a])
+
+                if cl_before == cl_after:
+                    continue
+
+                rows.append(dict(
+                    cell_id               = cid,
+                    spike_feature         = feat,
+                    n_spikes              = int(valid.sum()),
+                    n_transitions         = n_sigs,
+                    transition_index      = ti,
+                    transition_time_ms    = float(t0_ms_i),
+                    transition_sharpness_k= float(k_val),
+                    sigmoid_r2            = float(r2),
+                    sigmoid_popt          = popt,
+                    cluster_before        = cl_before,
+                    cluster_after         = cl_after,
+                    frac_dominant_before  = float(frac_before),
+                    frac_dominant_after   = float(frac_after),
+                    mean_time_before_ms   = float(np.mean(times_ms_s[mask_b])),
+                    mean_time_after_ms    = float(np.mean(times_ms_s[mask_a])),
+                ))
+
+    df_transitions = pd.DataFrame(rows)
+    n_pairs = df_transitions[['cell_id','spike_feature']].drop_duplicates().shape[0] if len(df_transitions) else 0
+
+    print(f'Found {len(df_transitions)} transition events across '
+          f'{n_pairs} (cell, feature) pairs '
+          f'(R² ≥ {r2_thresh}, |k| ≥ {min_k} /s, max {max_sigs} sigmoids)')
+
+    if save_path and len(df_transitions):
+        df_transitions.to_pickle(save_path)
+        print(f'Saved: {save_path}')
+
+    return df_transitions
+
+
+def plot_temporal_transitions(df_transitions, cluster_pickle_dir,
+                               df_master=None,
+                               n_cols=10, rolling_n=50, used_pairs=None,
+                               skip_feats=None,
+                               cells_to_exclude=None,
+                               pairs_to_exclude_transitions=None,
+                               manual_transitions=None,
+                               feature_labels=None,
+                               cell_w=3.5, cell_h=2.8,
+                               title_fontsize=52, ylabel_fontsize=62,
+                               hspace=0.5,
+                               min_cells=2):
+    """
+    Temporal trajectory grid matching the layout of plot_feature_distribution_grid.
+
+    Shows ALL cells with ≥2 clusters per feature (same as distribution plot).
+    Cells with a detected sigmoid transition (from df_transitions) get the
+    sigmoid curve + inflection line overlaid. If used_pairs is provided, only
+    those cells also get a highlighted background.
+
+    Parameters
+    ----------
+    df_transitions   : output of find_temporal_transitions
+    cluster_pickle_dir : str
+    df_master        : DataFrame from compile_experiment_results — used to determine
+                       which cells to show per feature (same as distribution grid).
+                       If None, falls back to cells in df_transitions only.
+    n_cols           : panels per row (default 10, matching distribution grid)
+    rolling_n        : rolling-mean window in spikes
+    used_pairs       : set of (cell_id, spike_feature) — get highlighted background.
+                       If None, all transitioning cells get the highlight.
+    skip_feats       : set of feature names to exclude (default: timing features only)
+    cells_to_exclude : dict {feature: [cell_ids]} or set — same as distribution grid
+    feature_labels   : dict mapping feature name → display label
+    cell_w / cell_h  : inches per panel (default matches distribution grid)
+    title_fontsize   : cell title font size
+    ylabel_fontsize  : feature label font size
+    hspace           : vertical space between rows
+    min_cells        : minimum cells to show a feature row
+    """
+    if skip_feats is None:
+        skip_feats = {'spk_times_ms', 'spk_times_idx'}
+
+    _DEFAULT_FEAT_LABELS = {
+        'peak_width':      'peak\nwidth',
+        'peak_amp':        'peak\namp',
+        'exp_lambda':      'exp\nλ',
+        'peak_sharpness':  'peak\nsharp.',
+        'inflection_time': 'infl.\ntime',
+        'inflection_amp':  'infl.\namp',
+        'log_isi':         'log\nISI',
+    }
+    _fl = {**_DEFAULT_FEAT_LABELS, **(feature_labels or {})}
+
+    FEAT_ORDER = ['peak_width', 'peak_amp', 'exp_lambda', 'peak_sharpness',
+                  'inflection_time', 'inflection_amp', 'log_isi']
+
+    def _cell_key(c):
+        try:    return int(str(c).lstrip('c'))
+        except: return 0
+
+    sns.set_theme(style='ticks', font_scale=1.0, rc={
+        'axes.linewidth': 1.5, 'xtick.major.width': 1.5,
+        'ytick.major.width': 1.5,
+    })
+    trans_color  = '#E63946'   # red — distinct from all cluster colors, reads as event
+    highlight_bg = '#FFF3E0'
+
+    ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
+               'Low': 0, 'Mid': 1, 'High': 2}
+    CLR = {'low':  CLUST_COLORS['low'],
+           'high': CLUST_COLORS['high'],
+           'mid':  CLUST_COLORS['mid'],
+           'Low':  CLUST_COLORS['low'],
+           'High': CLUST_COLORS['high'],
+           'Mid':  CLUST_COLORS['mid']}
+
+    def _to_ord(l):
+        return ORDINAL.get(str(l).strip(), 1)
+
+    def _multi_sigmoid(t_, popt_):
+        b   = popt_[0]
+        val = np.full_like(t_, float(b))
+        ns  = (len(popt_) - 1) // 3
+        for i in range(ns):
+            L_, k_, t0_ = popt_[1+3*i], popt_[2+3*i], popt_[3+3*i]
+            val = val + L_ / (1.0 + np.exp(np.clip(-k_*(t_-t0_), -500, 500)))
+        return val
+
+    # Build transition lookup: (cell_id, feat) -> group DataFrame
+    trans_lookup = {
+        (cid, feat): grp
+        for (cid, feat), grp in df_transitions.groupby(['cell_id', 'spike_feature'])
+    }
+    # Merge in manual overrides: {(cell_id, feat): [time_ms, ...]}
+    _manual = manual_transitions or {}
+    for (cid_m, feat_m), times_ms in _manual.items():
+        rows = [{'cell_id': cid_m, 'spike_feature': feat_m,
+                 'transition_index': i, 'transition_time_ms': float(t)}
+                for i, t in enumerate(times_ms)]
+        trans_lookup[(cid_m, feat_m)] = pd.DataFrame(rows)
+
+    # Build per-feature cell lists — same logic as distribution grid
+    if df_master is not None:
+        df_num = df_master.copy()
+        df_num['num_clusters'] = pd.to_numeric(df_num['num_clusters'], errors='coerce')
+        feat_cells_all = {}
+        for feat in FEAT_ORDER:
+            if feat in skip_feats:
+                continue
+            sub = df_num[
+                (df_num['spike_feature'] == feat) &
+                (df_num['num_clusters'] >= 2)
+            ]
+            cells = sorted(sub['cell_id'].unique(), key=_cell_key)
+            if cells_to_exclude:
+                excl = cells_to_exclude.get(feat, []) if isinstance(cells_to_exclude, dict) else cells_to_exclude
+                cells = [c for c in cells if c not in excl]
+            if len(cells) >= min_cells:
+                feat_cells_all[feat] = cells
+    else:
+        # Fallback: only cells with detected transitions
+        feat_cells_all = {}
+        for feat in FEAT_ORDER:
+            if feat in skip_feats:
+                continue
+            sub = df_transitions[df_transitions['spike_feature'] == feat]
+            if sub.empty:
+                continue
+            cells = sorted(sub['cell_id'].unique(), key=_cell_key)
+            if cells_to_exclude:
+                excl = cells_to_exclude.get(feat, []) if isinstance(cells_to_exclude, dict) else cells_to_exclude
+                cells = [c for c in cells if c not in excl]
+            if len(cells) >= min_cells:
+                feat_cells_all[feat] = cells
+
+    # Order waveform features by cell count, log_isi always last (same as distribution grid)
+    WAVEFORM_FEATS = [f for f in FEAT_ORDER if f != 'log_isi']
+    feat_order = sorted(
+        [f for f in feat_cells_all if f != 'log_isi'],
+        key=lambda f: (-len(feat_cells_all[f]), WAVEFORM_FEATS.index(f) if f in WAVEFORM_FEATS else 99)
+    )
+    if 'log_isi' in feat_cells_all:
+        feat_order.append('log_isi')
+
+    # Build row_groups with spacers between features (like distribution grid)
+    _SPACER = '__spacer__'
+    row_groups    = []   # (feat, [cell_ids], is_first_chunk)
+    rows_final    = []
+    height_ratios = []
+
+    for feat in feat_order:
+        cells = feat_cells_all[feat]
+        chunks = [cells[i:i+n_cols] for i in range(0, len(cells), n_cols)]
+        for ci, chunk in enumerate(chunks):
+            row_groups.append((feat, chunk, ci == 0))
+
+    for i, (feat, chunk, is_first) in enumerate(row_groups):
+        if is_first and i > 0:
+            rows_final.append((_SPACER, [], False))
+            height_ratios.append(0.35)
+        rows_final.append((feat, chunk, is_first))
+        height_ratios.append(1.0)
+
+    n_rows      = len(rows_final)
+    actual_cols = n_cols
+    fig_w = actual_cols * cell_w + 1.2   # extra left margin for labels
+    fig_h = (len(row_groups) + sum(1 for r in rows_final if r[0] == _SPACER) * 0.35) * cell_h + 0.5
+
+    GS_LEFT, GS_RIGHT = 0.18, 0.99
+    GS_TOP,  GS_BOT   = 0.99, 0.03
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs  = fig.add_gridspec(
+        n_rows, actual_cols,
+        left=GS_LEFT, right=GS_RIGHT, top=GS_TOP, bottom=GS_BOT,
+        hspace=hspace, wspace=0.25,
+        height_ratios=height_ratios,
+    )
+
+    spacer_axes   = []
+    feat_first_ax = {}
+    feat_last_ax  = {}
+
+    for ri, (feat, chunk, is_first) in enumerate(rows_final):
+        if feat == _SPACER:
+            ax_sp = fig.add_subplot(gs[ri, 0])
+            spacer_axes.append(ax_sp)
+            for ci in range(1, actual_cols):
+                fig.add_subplot(gs[ri, ci]).set_axis_off()
+            continue
+
+        for ci, cid in enumerate(chunk):
+            ax = fig.add_subplot(gs[ri, ci])
+
+            # Look up transition data for this cell×feature
+            grp_df = trans_lookup.get((cid, feat), pd.DataFrame())
+            _excl_trans = pairs_to_exclude_transitions or set()
+            has_transition = not grp_df.empty and (cid, feat) not in _excl_trans
+            is_used = has_transition and ((used_pairs is None) or ((cid, feat) in used_pairs))
+
+            pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
+            try:
+                df_cell = pd.read_pickle(pkl)
+            except FileNotFoundError:
+                ax.set_axis_off(); continue
+
+            col = f'{feat}_cluster'
+            if col not in df_cell.columns:
+                ax.set_axis_off(); continue
+
+            sub    = df_cell[['spk_times_ms', col]].dropna().sort_values('spk_times_ms')
+            times  = sub['spk_times_ms'].values / 1000.0
+            labels = sub[col].values
+            ord_l  = np.array([_to_ord(l) for l in labels], dtype=float)
+
+            if is_used:
+                ax.set_facecolor(highlight_bg)
+
+            for lbl in np.unique(labels):
+                mask = labels == lbl
+                ax.scatter(times[mask], ord_l[mask],
+                           color=CLR.get(str(lbl), 'gray'),
+                           s=30, alpha=0.6, linewidths=0, zorder=2)
+
+            rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
+            ax.plot(times, rm.values, color='black', lw=4.0, zorder=5, alpha=0.8)
+
+            if has_transition:
+                for _, tr_row in grp_df.sort_values('transition_index').iterrows():
+                    t_tr = float(tr_row['transition_time_ms']) / 1000.0
+                    ax.axvline(t_tr, color=trans_color, lw=9.0, ls='--', zorder=7, alpha=0.9)
+
+            ax.set_title(cid, fontsize=title_fontsize, fontweight='bold', pad=2)
+
+            ax.set_yticks([0, 1, 2])
+            if ci == 0:
+                ax.set_yticklabels(['low', 'mid', 'high'], fontsize=title_fontsize - 2)
+            else:
+                ax.set_yticklabels([])
+            ax.set_xlabel('')
+            ax.tick_params(axis='x', labelsize=0, length=3)
+            ax.tick_params(axis='y', length=0)
+            sns.despine(ax=ax)
+
+            if ci == 0:
+                if feat not in feat_first_ax:
+                    feat_first_ax[feat] = ax
+                feat_last_ax[feat] = ax
+
+        for ci in range(len(chunk), actual_cols):
+            fig.add_subplot(gs[ri, ci]).set_axis_off()
+
+    # Vertical feature labels centred across wrapped rows
+    for feat_name, ax_top in feat_first_ax.items():
+        ax_bot = feat_last_ax[feat_name]
+        p_top  = ax_top.get_position()
+        p_bot  = ax_bot.get_position()
+        y_mid  = (p_top.y1 + p_bot.y0) / 2
+        lbl    = _fl.get(feat_name, feat_name.replace('_', '\n'))
+        fig.text(0.10, y_mid, lbl,
+                 fontsize=ylabel_fontsize, fontweight='bold',
+                 rotation=90, ha='center', va='center', color='black')
+
+    # Separator lines between feature groups
+    for ax_sp in spacer_axes:
+        pos   = ax_sp.get_position()
+        sep_y = pos.y0 + pos.height / 2
+        ax_sp.set_axis_off()
+        fig.add_artist(plt.Line2D(
+            [0.06, GS_RIGHT], [sep_y, sep_y],
+            color='#aaaaaa', lw=2.0, transform=fig.transFigure,
+        ))
+
+    # Single "Time (s)" label centred at the bottom of the figure
+    fig.text(0.58, 0.005, 'Time (s)', ha='center', va='bottom',
+             fontsize=ylabel_fontsize, color='black')
+
+    return fig
+
+
+def plot_temporal_transition_legend(fontsize=14):
+    """Standalone legend for plot_temporal_transitions."""
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Patch(facecolor=CLUST_COLORS['low'],  label='low cluster'),
+        Patch(facecolor=CLUST_COLORS['high'], label='high cluster'),
+        Patch(facecolor=CLUST_COLORS['mid'],  label='mid cluster'),
+        Line2D([0], [0], color='black', lw=2.5,              label='rolling mean'),
+        Line2D([0], [0], color='#E63946', lw=2.5, ls='--',   label='detected transition'),
+        Patch(facecolor='#FFF3E0', edgecolor='#D55E00', lw=1.5,
+              label='used in LFP supp. analysis'),
+    ]
+    fig, ax = plt.subplots(figsize=(4.5, 2.2))
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=1, fontsize=fontsize,
+              frameon=False, handlelength=1.5, handleheight=1.0, handletextpad=0.6)
+    fig.tight_layout()
+    return fig
+
+
+def plot_temporal_transitions_highlights(df_transitions, cluster_pickle_dir,
+                                           selections, n_cols=3, rolling_n=50):
+    """
+    Cartoony highlight-reel version of plot_temporal_transitions: shows only a
+    hand-picked subset of (cell_id, spike_feature) transitions, laid out in a
+    small grid with much bigger fonts, dots, and lines — for slides.
+
+    Parameters
+    ----------
+    df_transitions : output of find_temporal_transitions
+    cluster_pickle_dir : str  path to cluster_pickles/
+    selections     : list[tuple[str, str]]
+        (cell_id, spike_feature) pairs to plot, e.g.
+        [('c42', 'peak_width'), ('c20', 'peak_amp'), ...]
+    n_cols         : int  subplot columns (default 3)
+    rolling_n      : int  window for rolling mean (default 50 spikes)
+    """
+    sns.set_theme(style='ticks', font_scale=2.2, rc={
+        'axes.linewidth':    4.5,
+        'xtick.major.width': 4.5,
+        'ytick.major.width': 4.5,
+        'xtick.major.size':  10,
+        'ytick.major.size':  10,
+        'lines.linewidth':   4.5,
+    })
+    _FS_TICK, _FS_AX, _FS_SUB = 22, 24, 30
+    trans_color = '#CC79A7'  # Okabe-Ito reddish purple (colour-blind safe, distinct from cluster colours)
+
+    ORDINAL = {'low': 0, 'mid': 1, 'high': 2,
+               'Low': 0, 'Mid': 1, 'High': 2}
+    CLR = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
+           'Low': '#0072B2', 'Mid': '#009E73', 'High': '#D55E00'}
+
+    def _to_ord(l):
+        return ORDINAL.get(str(l).strip(), 1)
+
+    rows = []
+    for cid, feat in selections:
+        match = df_transitions[(df_transitions['cell_id'] == cid) &
+                               (df_transitions['spike_feature'] == feat)]
+        if match.empty:
+            print(f'No transition found for ({cid}, {feat}) — skipping.')
+            continue
+        rows.append(match.iloc[0])
+
+    if not rows:
+        print('No matching transitions found.')
+        return
+
+    n_rows = int(np.ceil(len(rows) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(n_cols * 7.5, n_rows * 5.5),
+                             squeeze=False)
+
+    for ax_i, row in enumerate(rows):
+        ax = axes[ax_i // n_cols][ax_i % n_cols]
+        cid   = row['cell_id']
+        feat  = row['spike_feature']
+        t_tr  = row['transition_time_ms']
+        cl_b  = row['cluster_before']
+        cl_a  = row['cluster_after']
+        k_val = row.get('transition_sharpness_k', float('nan'))
+        r2_val= row.get('sigmoid_r2', float('nan'))
+
+        pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
+        try:
+            df = pd.read_pickle(pkl)
+        except FileNotFoundError:
+            ax.set_visible(False)
+            continue
+
+        col = f'{feat}_cluster'
+        if col not in df.columns:
+            ax.set_visible(False)
+            continue
+
+        sub = df[['spk_times_ms', col]].dropna()
+        sub = sub.sort_values('spk_times_ms').reset_index(drop=True)
+        times  = sub['spk_times_ms'].values / 1000.0   # → seconds
+        labels = sub[col].values
+        ord_l  = np.array([_to_ord(l) for l in labels], dtype=float)
+
+        # Scatter: individual spike cluster labels — big, bold dots
+        for lbl in np.unique(labels):
+            mask = labels == lbl
+            ax.scatter(times[mask], ord_l[mask],
+                       color=CLR.get(str(lbl), 'gray'),
+                       s=60, alpha=0.55, linewidths=0, zorder=2)
+
+        # Rolling mean
+        rm = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean()
+        ax.plot(times, rm.values, color='black', lw=6.5, zorder=5)
+
+        # Transition line
+        t_tr_s = t_tr / 1000.0
+        ax.axvline(t_tr_s, color=trans_color, lw=6.0, ls='--', zorder=6)
+
+        ax.set_yticks([0, 1, 2])
+        ax.set_yticklabels(['low', 'mid', 'high'], fontsize=_FS_TICK, color='black')
+        ax.set_xlabel('Time (s)', fontsize=_FS_AX, color='black')
+        k_str  = f'k={k_val:.3f}/s' if np.isfinite(k_val) else 'k=?'
+        r2_str = f'R²={r2_val:.2f}' if np.isfinite(r2_val) else ''
+        ax.set_title(f'{cid}  ·  {feat}\n{r2_str}  {k_str}  {cl_b}→{cl_a}',
+                     fontsize=_FS_AX, fontweight='bold', color='black', pad=14)
+        ax.tick_params(axis='both', labelsize=_FS_TICK, colors='black')
+        sns.despine(ax=ax)
+
+    # Hide unused axes
+    for ax_i in range(len(rows), n_rows * n_cols):
+        axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
+
+    fig.suptitle('Temporal transitions in cluster membership',
+                 fontsize=_FS_SUB, fontweight='bold', color='black', y=1.06)
+
+    handles = [
+        plt.Line2D([0], [0], color='black', lw=6.5,
+                   label='Rolling mean of cluster label'),
+        plt.Line2D([0], [0], marker='s', linestyle='', color=trans_color,
+                   markeredgecolor='black', markeredgewidth=2.0, markersize=18,
+                   label='Detected changepoint'),
+        plt.Line2D([0], [0], marker='o', linestyle='', color=CLR['low'],
+                   markersize=18, label='Low'),
+        plt.Line2D([0], [0], marker='o', linestyle='', color=CLR['mid'],
+                   markersize=18, label='Mid'),
+        plt.Line2D([0], [0], marker='o', linestyle='', color=CLR['high'],
+                   markersize=18, label='High'),
+    ]
+    leg = fig.legend(handles=handles, fontsize=_FS_TICK, frameon=False,
+                     loc='upper center', bbox_to_anchor=(0.5, 1.0),
+                     ncol=5, columnspacing=2.0, handlelength=2.5)
+    for text in leg.get_texts():
+        text.set_color('black')
+
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.show()
+
+
+# ── LFP block analysis at transition times ───────────────────────────────────
+
+def plot_peri_trajectory_signed(
+    peri_results,
+    df_transitions,
+    lfp_keys=None,
+    lfp_labels=None,
+    wf_labels=None,
+    normalize=True,
+):
+    """
+    Grid of trajectory plots: rows = LFP features, cols = spike waveform features.
+
+    Each panel shows, for one (LFP feat × WF feat) pair, the pre→peri→post
+    trajectory aggregated across all cells that have that waveform transition.
+
+    Sign correction: pairs where the spike cluster went high→low are flipped so
+    that positive always means "LFP increased when spike cluster increased (low→high)".
+    Reference: pre = 0. Y-axis shows Δ from pre (sign-corrected).
+
+    Individual cell lines are drawn in light gray; the mean ± SEM is overlaid.
+    """
+    from scipy.stats import sem as _sem
+
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+    ORDER = ['pre', 'peri', 'post']
+
+    _DEFAULT_LFP = ['exponent', 'theta_auc', 'slow_gamma_auc',
+                    'high_gamma_auc', 'total_gamma_auc', 'mean_amp', 'std_amp']
+    _DEFAULT_LFP_LABELS = {
+        'exponent':        'Aperiodic exp.',
+        'theta_auc':       'θ AUC (4–15 Hz)',
+        'slow_gamma_auc':  'Slow γ (30–60)',
+        'high_gamma_auc':  'High γ (60–80)',
+        'total_gamma_auc': 'Total γ (30–80)',
+        'mean_amp':        'Mean amp (a.u.)',
+        'std_amp':         'Amp SD (a.u.)',
+    }
+    _DEFAULT_WF_LABELS = {
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+        'peak_amp':        'Peak Amp',
+        'peak_sharpness':  'Sharpness',
+        'peak_width':      'Peak Width',
+        'inflection_time': 'Infl. Time',
+        'ramp_amp':        'Ramp Amp',
+    }
+
+    if lfp_keys   is None: lfp_keys   = _DEFAULT_LFP
+    if lfp_labels is None: lfp_labels = _DEFAULT_LFP_LABELS
+    if wf_labels  is None: wf_labels  = _DEFAULT_WF_LABELS
+
+    # Direction map: (cell_id, wf_feat) → +1 (low→high) or -1 (high→low)
+    primary = (df_transitions
+               .sort_values('transition_index')
+               .drop_duplicates(subset=['cell_id', 'spike_feature'], keep='first'))
+    direction_map = {}
+    for _, row in primary.iterrows():
+        before = _ORD.get(str(row['cluster_before']).lower(), 1)
+        after  = _ORD.get(str(row['cluster_after']).lower(),  1)
+        direction_map[(row['cell_id'], row['spike_feature'])] = 1 if after >= before else -1
+
+    # Collect per (wf_feat, lfp_feat) a list of (pre, peri, post) Δ-from-pre tuples
+    # peri_val = sign * (peri_lfp - pre_lfp), post_val = sign * (post_lfp - pre_lfp)
+    from collections import defaultdict
+    data = defaultdict(list)   # key = (wf_feat, lfp_feat), val = list of (peri_Δ, post_Δ)
+
+    for key, blocks in peri_results.items():
+        cid, wf_feat = key[0], key[1]
+        block_map = {b['label']: b for b in blocks}
+        if 'pre' not in block_map:
+            continue
+        sign = direction_map.get((cid, wf_feat), 1)
+        pre_blk = block_map['pre']
+        for lk in lfp_keys:
+            pre_val = pre_blk.get(lk, np.nan)
+            if not np.isfinite(pre_val):
+                continue
+            peri_val = block_map['peri'].get(lk, np.nan) if 'peri' in block_map else np.nan
+            post_val = block_map['post'].get(lk, np.nan) if 'post' in block_map else np.nan
+            peri_d = sign * (peri_val - pre_val) if np.isfinite(peri_val) else np.nan
+            post_d = sign * (post_val - pre_val) if np.isfinite(post_val) else np.nan
+            data[(wf_feat, lk)].append((cid, peri_d, post_d))
+
+    # Per-LFP-feature normalisation: SD of post_d across all (cell, wf_feat) pairs
+    norm_sd = {}
+    for lk in lfp_keys:
+        all_post = [post_d for (_, lk2), rows in data.items()
+                    if lk2 == lk for _, _, post_d in rows if np.isfinite(post_d)]
+        norm_sd[lk] = float(np.std(all_post)) if len(all_post) > 1 else 1.0
+
+    wf_feats = sorted({wf for (wf, _) in data})
+    n_rows = len(lfp_keys)
+    n_cols = len(wf_feats)
+    if n_cols == 0:
+        print('No data to plot.')
+        return
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(max(3.0 * n_cols, 6), max(2.5 * n_rows, 5)),
+                             squeeze=False)
+
+    xs = [0, 1, 2]
+    x_labels = ['pre', 'peri', 'post']
+
+    for ri, lk in enumerate(lfp_keys):
+        sd = norm_sd[lk] if normalize else 1.0
+        for ci, wf in enumerate(wf_feats):
+            ax = axes[ri][ci]
+            rows = data.get((wf, lk), [])
+
+            # Individual cell traces (gray)
+            peri_ds = np.array([r[1] for r in rows])
+            post_ds = np.array([r[2] for r in rows])
+            for peri_d, post_d in zip(peri_ds, post_ds):
+                ys = [0, peri_d / sd if np.isfinite(peri_d) else np.nan,
+                         post_d / sd if np.isfinite(post_d) else np.nan]
+                ax.plot(xs, ys, color='gray', lw=0.7, alpha=0.35, zorder=1)
+                ax.scatter(xs, ys, color='gray', s=8, alpha=0.35, zorder=2)
+
+            # Mean ± SEM overlay
+            mean_peri = np.nanmean(peri_ds / sd) if len(peri_ds) else np.nan
+            mean_post = np.nanmean(post_ds / sd) if len(post_ds) else np.nan
+            sem_peri  = _sem(peri_ds[np.isfinite(peri_ds)] / sd) if np.any(np.isfinite(peri_ds)) else 0
+            sem_post  = _sem(post_ds[np.isfinite(post_ds)] / sd) if np.any(np.isfinite(post_ds)) else 0
+            mean_ys   = [0, mean_peri, mean_post]
+            sem_ys    = [0, sem_peri,  sem_post]
+            ax.plot(xs, mean_ys, color='black', lw=2.0, zorder=4)
+            ax.scatter(xs, mean_ys, color='black', s=30, zorder=5)
+            ax.errorbar(xs, mean_ys, yerr=sem_ys, fmt='none',
+                        color='black', capsize=3, lw=1.5, zorder=4)
+
+            ax.axhline(0, color='gray', lw=0.8, ls='--', alpha=0.6)
+
+            # Labels
+            n = sum(np.isfinite(post_ds))
+            if ri == 0:
+                ax.set_title(wf_labels.get(wf, wf) + f'\n(n={n})', fontsize=8, fontweight='bold')
+            if ci == 0:
+                ax.set_ylabel(lfp_labels.get(lk, lk) + ('\n(norm. Δ)' if normalize else '\n(Δ)'),
+                              fontsize=7)
+            ax.set_xticks(xs)
+            ax.set_xticklabels(x_labels if ri == n_rows - 1 else [''] * 3, fontsize=7)
+            sns.despine(ax=ax)
+
+    fig.suptitle(
+        'LFP trajectory: pre → peri → post transition\n'
+        '(sign-corrected: positive = LFP ↑ when spike cluster low→high)',
+        fontsize=10, fontweight='bold', y=1.01,
+    )
+    plt.tight_layout()
+    plt.show()
+
+
+def analyze_lfp_around_transitions(
+    df_transitions,
+    lfp_npy_dir,
+    peri_s=60.0,
+    flank_s=120.0,
+    min_block_s=30.0,
+    fs=2500,
+    freq_range=(1, 90),
+    save_path=None,
+    force=False,
+):
+    """
+    For each (cell, feature) pair in df_transitions, extract three non-overlapping
+    LFP windows around the first detected transition time t₀:
+
+        pre   : [t₀ - flank_s - peri_s/2,  t₀ - peri_s/2]
+        peri  : [t₀ - peri_s/2,             t₀ + peri_s/2]   (centred on t₀)
+        post  : [t₀ + peri_s/2,             t₀ + peri_s/2 + flank_s]
+
+    Windows are clamped to recording boundaries.  Blocks shorter than
+    ``min_block_s`` seconds are skipped.  Spectral features are identical to
+    those computed by ``analyze_lfp_at_transitions``.
+
+    Parameters
+    ----------
+    peri_s : float
+        Duration (s) of the centred "during" window.
+    flank_s : float
+        Duration (s) of each flanking (pre / post) window.
+    min_block_s : float
+        Minimum block duration in seconds; shorter blocks are skipped.
+
+    Returns
+    -------
+    dict mapping (cell_id, spike_feature) → list of block-result dicts,
+    each with keys: block, label, t_start_ms, t_end_ms, n_samples,
+    mean_amp, std_amp, freqs, psd, freqs_fit, full_log, ape_log,
+    exponent, offset, theta_auc, slow_gamma_auc, high_gamma_auc, total_gamma_auc.
+    """
+    import os
+    import pickle
+    from scipy.signal import welch
+    from specparam import SpectralModel
+    try:
+        from specparam.utils import interpolate_spectrum
+    except ImportError:
+        from fooof.utils import interpolate_spectrum
+
+    if save_path and not force and os.path.exists(save_path):
+        with open(save_path, 'rb') as _f:
+            cached = pickle.load(_f)
+        print(f'Loaded cached peri-transition LFP results from {save_path}  '
+              f'(pass force=True to recompute)')
+        return cached
+
+    BLOCK_COLORS  = {'pre': '#0072B2', 'peri': '#009E73', 'post': '#D55E00'}
+    half_peri     = peri_s / 2.0
+    min_samps     = int(min_block_s * fs)
+    results       = {}
+
+    def _fit_block(block, b_idx, label, i0, i1):
+        mean_amp = float(np.mean(block))
+        std_amp  = float(np.std(block))
+        nperseg  = min(len(block), int(fs * 4.0))
+        freqs_w, psd_w = welch(block, fs=fs, nperseg=nperseg,
+                               noverlap=nperseg // 2, scaling='density')
+        fmask     = (freqs_w >= freq_range[0]) & (freqs_w <= freq_range[1])
+        freqs_out = freqs_w[fmask]
+        psd_out   = psd_w[fmask]
+
+        sm = SpectralModel(
+            aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+            max_n_peaks=4, min_peak_height=0.0,
+            peak_threshold=1.5, verbose=False,
+        )
+        try:
+            freqs_sm, psd_sm = interpolate_spectrum(freqs_out, psd_out, [58, 62])
+            sm.fit(freqs_sm, psd_sm, freq_range=freq_range)
+            exponent = float(sm.get_params('aperiodic_params', 'exponent'))
+            offset   = float(sm.get_params('aperiodic_params', 'offset'))
+            full_log = np.asarray(sm.get_model(component='full',      space='log'))
+            ape_log  = np.asarray(sm.get_model(component='aperiodic', space='log'))
+            freqs_fit = np.asarray(sm.freqs)
+
+            def _band_auc(fl, al, ff, flo, fhi):
+                m = (ff >= flo) & (ff <= fhi)
+                d = np.where(np.isfinite(fl[m] - al[m]), fl[m] - al[m], 0.0)
+                return float(np.trapz(np.clip(d, 0, None), ff[m]))
+
+            theta_auc       = _band_auc(full_log, ape_log, freqs_fit,  4,  15)
+            slow_gamma_auc  = _band_auc(full_log, ape_log, freqs_fit, 30,  60)
+            high_gamma_auc  = _band_auc(full_log, ape_log, freqs_fit, 60,  80)
+            total_gamma_auc = _band_auc(full_log, ape_log, freqs_fit, 30,  80)
+            print(f'    [{label}] exp={exponent:.2f}  '
+                  f'θ={theta_auc:.4f}  sγ={slow_gamma_auc:.4f}  '
+                  f'hγ={high_gamma_auc:.4f}', flush=True)
+        except Exception as _e:
+            print(f'    [{label}] specparam warn: {_e}', flush=True)
+            exponent = offset = float('nan')
+            theta_auc = slow_gamma_auc = high_gamma_auc = total_gamma_auc = float('nan')
+            freqs_fit = full_log = ape_log = None
+
+        return {
+            'block':            b_idx,
+            'label':            label,
+            'color':            BLOCK_COLORS[label],
+            't_start_ms':       i0 / fs * 1000.0,
+            't_end_ms':         i1 / fs * 1000.0,
+            'n_samples':        i1 - i0,
+            'mean_amp':         mean_amp,
+            'std_amp':          std_amp,
+            'freqs':            freqs_out,
+            'psd':              psd_out,
+            'freqs_fit':        freqs_fit,
+            'full_log':         full_log,
+            'ape_log':          ape_log,
+            'exponent':         exponent,
+            'offset':           offset,
+            'theta_auc':        theta_auc,
+            'slow_gamma_auc':   slow_gamma_auc,
+            'high_gamma_auc':   high_gamma_auc,
+            'total_gamma_auc':  total_gamma_auc,
+        }
+
+    for cid, cell_grp in df_transitions.groupby('cell_id'):
+        npy_path = os.path.join(lfp_npy_dir, f'{cid}_lfp.npy')
+        if not os.path.exists(npy_path):
+            print(f'  skip {cid}: no LFP file at {npy_path}')
+            continue
+        lfp_raw  = np.load(npy_path).astype(float)
+        n_samps  = len(lfp_raw)
+
+        for feat, feat_grp in cell_grp.groupby('spike_feature'):
+            # Process every detected transition (not just the primary one)
+            for _, tr_row in feat_grp.sort_values('transition_index').iterrows():
+                t_idx   = int(tr_row['transition_index'])
+                t0_ms   = float(tr_row['transition_time_ms'])
+                t0_samp = int(round(t0_ms * fs / 1000.0))
+
+                windows = [
+                    ('pre',  0,
+                     max(0, int(t0_samp - (flank_s + half_peri) * fs)),
+                     max(0, int(t0_samp - half_peri * fs))),
+                    ('peri', 1,
+                     max(0, int(t0_samp - half_peri * fs)),
+                     min(n_samps, int(t0_samp + half_peri * fs))),
+                    ('post', 2,
+                     min(n_samps, int(t0_samp + half_peri * fs)),
+                     min(n_samps, int(t0_samp + (half_peri + flank_s) * fs))),
+                ]
+
+                block_results = []
+                print(f'  {cid:6s}  {feat:25s}  t{t_idx}={t0_ms/1000:.1f}s', flush=True)
+                for label, b_idx, i0, i1 in windows:
+                    if i1 - i0 < min_samps:
+                        print(f'    [{label}] skip — only {(i1-i0)/fs:.0f}s < {min_block_s:.0f}s min')
+                        continue
+                    block = lfp_raw[i0:i1]
+                    block_results.append(_fit_block(block, b_idx, label, i0, i1))
+
+                if block_results:
+                    results[(cid, feat, t_idx)] = block_results
+
+    if save_path:
+        with open(save_path, 'wb') as _f:
+            pickle.dump(results, _f)
+        print(f'Saved: {save_path}')
+
+    return results
+
+
+def plot_lfp_peri_transition_summary(
+    peri_results,
+    df_transitions,
+    lfp_keys=None,
+    lfp_labels=None,
+):
+    """
+    Paired scatter + box plots comparing pre / peri / post LFP features across
+    all (cell, feature) pairs.  One panel per LFP feature.
+
+    Points represent individual (cell × spike-feature) pairs; lines connect the
+    three windows for the same pair.  A Friedman test p-value is shown per panel.
+    """
+    from scipy.stats import friedmanchisquare
+
+    _DEFAULT_KEYS = [
+        'exponent', 'theta_auc', 'slow_gamma_auc', 'high_gamma_auc',
+        'total_gamma_auc', 'mean_amp', 'std_amp',
+    ]
+    _DEFAULT_LABELS = {
+        'exponent':        'Aperiodic exponent',
+        'theta_auc':       'Theta AUC (4–15 Hz)',
+        'slow_gamma_auc':  'Slow γ AUC (30–60 Hz)',
+        'high_gamma_auc':  'High γ AUC (60–80 Hz)',
+        'total_gamma_auc': 'Total γ AUC (30–80 Hz)',
+        'mean_amp':        'Mean amplitude (a.u.)',
+        'std_amp':         'Amplitude SD (a.u.)',
+    }
+
+    if lfp_keys   is None: lfp_keys   = _DEFAULT_KEYS
+    if lfp_labels is None: lfp_labels = _DEFAULT_LABELS
+
+    ORDER   = ['pre', 'peri', 'post']
+    COLORS  = {'pre': '#0072B2', 'peri': '#009E73', 'post': '#D55E00'}
+    PALETTE = [COLORS[l] for l in ORDER]
+
+    # Build long-form dataframe
+    rows = []
+    for key, blocks in peri_results.items():
+        cid, feat = key[0], key[1]
+        block_map = {b['label']: b for b in blocks}
+        for lbl in ORDER:
+            if lbl not in block_map:
+                continue
+            for k in lfp_keys:
+                rows.append({
+                    'cell_id':    cid,
+                    'wf_feat':    feat,
+                    'pair':       f'{cid}|{feat}',
+                    'window':     lbl,
+                    'lfp_feat':   k,
+                    'value':      block_map[lbl].get(k, np.nan),
+                })
+    df_long = pd.DataFrame(rows)
+
+    n_lk  = len(lfp_keys)
+    ncols = min(4, n_lk)
+    nrows = int(np.ceil(n_lk / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(ncols * 3.5, nrows * 3.5), squeeze=False)
+
+    for idx, lk in enumerate(lfp_keys):
+        ax  = axes[idx // ncols][idx % ncols]
+        sub = df_long[df_long['lfp_feat'] == lk]
+
+        # Paired lines
+        for pair, grp in sub.groupby('pair'):
+            grp_ord = grp.set_index('window').reindex(ORDER)['value']
+            xs = [ORDER.index(w) for w in grp_ord.index if not np.isnan(grp_ord[w])]
+            ys = [grp_ord[w] for w in grp_ord.index if not np.isnan(grp_ord[w])]
+            if len(xs) >= 2:
+                ax.plot(xs, ys, color='gray', lw=0.7, alpha=0.4, zorder=1)
+
+        # Scatter per window
+        for wi, lbl in enumerate(ORDER):
+            vals = sub[sub['window'] == lbl]['value'].dropna().values
+            ax.scatter([wi] * len(vals), vals, color=COLORS[lbl],
+                       s=25, zorder=3, alpha=0.8)
+
+        # Box
+        sub_pivot = sub.pivot_table(index='pair', columns='window', values='value')
+        data_for_box = [sub_pivot[l].dropna().values for l in ORDER if l in sub_pivot.columns]
+        bp = ax.boxplot(data_for_box, positions=range(len(data_for_box)),
+                        widths=0.4, patch_artist=True,
+                        medianprops=dict(color='black', lw=1.5),
+                        whiskerprops=dict(lw=0.8), capprops=dict(lw=0.8),
+                        flierprops=dict(marker='', lw=0))
+        for patch, lbl in zip(bp['boxes'], ORDER):
+            patch.set_facecolor('none')
+            patch.set_edgecolor(COLORS[lbl])
+            patch.set_linewidth(1.5)
+
+        # Friedman test
+        try:
+            complete = sub_pivot[ORDER].dropna()
+            if len(complete) >= 3:
+                stat, pval = friedmanchisquare(*[complete[l].values for l in ORDER])
+                pstr = f'p={pval:.3f}' if pval >= 0.001 else f'p<0.001'
+                ax.set_title(f'{lfp_labels.get(lk, lk)}\n{pstr}', fontsize=8)
+            else:
+                ax.set_title(lfp_labels.get(lk, lk), fontsize=8)
+        except Exception:
+            ax.set_title(lfp_labels.get(lk, lk), fontsize=8)
+
+        ax.set_xticks(range(len(ORDER)))
+        ax.set_xticklabels(ORDER, fontsize=9)
+        ax.set_ylabel('Value', fontsize=8)
+        sns.despine(ax=ax)
+
+    for idx in range(n_lk, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    fig.suptitle('LFP features: pre / peri / post transition', fontsize=11,
+                 fontweight='bold', y=1.01)
+    plt.tight_layout()
+    plt.show()
+
+
+def analyze_lfp_at_transitions(
+    df_transitions,
+    lfp_npy_dir,
+    fs=2500,
+    freq_range=(1, 90),
+    save_path=None,
+    force=False,
+):
+    """
+    For each (cell, feature) in df_transitions, cut the continuous LFP recording
+    at the transition time(s) to create temporal blocks.  For each block compute:
+
+        mean_amp  : mean LFP amplitude (raw signal units, uncalibrated - see data_loader.py)
+        std_amp   : std  LFP amplitude (raw signal units, uncalibrated - see data_loader.py)
+        freqs     : frequency axis (Hz)
+        psd       : Welch PSD of the block (a.u.)
+        exponent  : specparam aperiodic exponent
+        offset    : specparam aperiodic offset
+        theta_auc : specparam theta peak AUC (4–10 Hz)
+        slow_gamma_auc / high_gamma_auc / total_gamma_auc : specparam gamma AUC (30–60 / 60–80 / 30–80 Hz)
+
+    Parameters
+    ----------
+    lfp_npy_dir : str  path to filt_lfp_recordings/ containing c{N}_lfp.npy
+    """
+    import os
+    import pickle
+    from scipy.signal import welch
+    from specparam import SpectralModel
+    try:
+        from specparam.utils import interpolate_spectrum
+    except ImportError:
+        from fooof.utils import interpolate_spectrum
+
+    if save_path and not force and os.path.exists(save_path):
+        with open(save_path, 'rb') as _f:
+            cached = pickle.load(_f)
+        print(f'Loaded cached LFP block results from {save_path}  '
+              f'(pass force=True to recompute)')
+        return cached
+
+    BLOCK_COLORS = ['#0072B2', '#D55E00', '#009E73', '#CC79A7']  # Okabe-Ito
+    results = {}
+
+    for cid, cell_grp in df_transitions.groupby('cell_id'):
+        npy_path = os.path.join(lfp_npy_dir, f'{cid}_lfp.npy')
+        if not os.path.exists(npy_path):
+            print(f'  skip {cid}: no LFP file at {npy_path}')
+            continue
+
+        lfp_raw = np.load(npy_path).astype(float)
+        n_samps = len(lfp_raw)
+
+        for feat, feat_grp in cell_grp.groupby('spike_feature'):
+            t0s_ms   = sorted(feat_grp['transition_time_ms'].dropna().values)
+            t0_samps = [int(round(t * fs / 1000.0)) for t in t0s_ms]
+            boundaries = [0] + t0_samps + [n_samps]
+
+            block_results = []
+            for b_idx in range(len(boundaries) - 1):
+                i0, i1 = boundaries[b_idx], boundaries[b_idx + 1]
+                if i1 - i0 < int(fs * 2.0):
+                    continue
+
+                block = lfp_raw[i0:i1]
+                mean_amp = float(np.mean(block))
+                std_amp  = float(np.std(block))
+
+                nperseg = min(len(block), int(fs * 4.0))
+                freqs_w, psd_w = welch(block, fs=fs, nperseg=nperseg,
+                                       noverlap=nperseg // 2, scaling='density')
+                fmask     = (freqs_w >= freq_range[0]) & (freqs_w <= freq_range[1])
+                freqs_out = freqs_w[fmask]
+                psd_out   = psd_w[fmask]
+
+                sm = SpectralModel(
+                    aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+                    max_n_peaks=4, min_peak_height=0.0,
+                    peak_threshold=1.5, verbose=False,
+                )
+                try:
+                    freqs_sm, psd_sm = interpolate_spectrum(freqs_out, psd_out, [58, 62])
+                    sm.fit(freqs_sm, psd_sm, freq_range=freq_range)
+                    exponent  = float(sm.get_params('aperiodic_params', 'exponent'))
+                    offset    = float(sm.get_params('aperiodic_params', 'offset'))
+                    full_log  = np.asarray(sm.get_model(component='full',      space='log'))
+                    ape_log   = np.asarray(sm.get_model(component='aperiodic', space='log'))
+                    freqs_fit = np.asarray(sm.freqs)
+                    # AUC = specparam peak model above aperiodic (NaN-safe: missing → 0 contribution)
+                    def _band_auc(fl, al, ff, flo, fhi):
+                        m = (ff >= flo) & (ff <= fhi)
+                        d = np.where(np.isfinite(fl[m] - al[m]), fl[m] - al[m], 0.0)
+                        return float(np.trapz(np.clip(d, 0, None), ff[m]))
+                    theta_auc      = _band_auc(full_log, ape_log, freqs_fit,  4,  15)
+                    slow_gamma_auc = _band_auc(full_log, ape_log, freqs_fit, 30,  60)
+                    high_gamma_auc = _band_auc(full_log, ape_log, freqs_fit, 60,  80)
+                    total_gamma_auc= _band_auc(full_log, ape_log, freqs_fit, 30,  80)
+                    _peaks = np.atleast_2d(sm.peak_params_) if sm.n_peaks_ > 0 else np.empty((0, 3))
+                    _pk_str = ', '.join(f'CF={p[0]:.1f}Hz PW={p[1]:.3f} BW={p[2]:.1f}' for p in _peaks) or 'none'
+                    print(f'  [{cid}|{feat}|blk{b_idx}] exp={exponent:.2f}  '
+                          f'θ={theta_auc:.4f}  sγ={slow_gamma_auc:.4f}  '
+                          f'hγ={high_gamma_auc:.4f}  totγ={total_gamma_auc:.4f}  '
+                          f'n_peaks={sm.n_peaks_}  peaks=[{_pk_str}]', flush=True)
+                except Exception as _e:
+                    print(f"  specparam warn [{cid}|{feat}|blk{b_idx}]: {_e}", flush=True)
+                    exponent = offset = float('nan')
+                    theta_auc = slow_gamma_auc = high_gamma_auc = total_gamma_auc = float('nan')
+                    freqs_fit = full_log = ape_log = None
+
+                block_results.append({
+                    'block':      b_idx,
+                    'color':      BLOCK_COLORS[b_idx % len(BLOCK_COLORS)],
+                    'label':      f'Block {b_idx + 1}',
+                    't_start_ms': i0 / fs * 1000.0,
+                    't_end_ms':   i1 / fs * 1000.0,
+                    'n_samples':  i1 - i0,
+                    'mean_amp':   mean_amp,
+                    'std_amp':    std_amp,
+                    'freqs':      freqs_out,
+                    'psd':        psd_out,
+                    'freqs_fit':  freqs_fit,
+                    'full_log':   full_log,
+                    'ape_log':    ape_log,
+                    'exponent':   exponent,
+                    'offset':     offset,
+                    'theta_auc':       theta_auc,
+                    'slow_gamma_auc':  slow_gamma_auc,
+                    'high_gamma_auc':  high_gamma_auc,
+                    'total_gamma_auc': total_gamma_auc,
+                })
+
+            if block_results:
+                results[(cid, feat)] = block_results
+                dur = [f"{b['n_samples']/fs:.0f}s" for b in block_results]
+                print(f'  {cid:6s}  {feat:25s}  blocks: {dur}')
+
+    if save_path:
+        with open(save_path, 'wb') as _f:
+            pickle.dump(results, _f)
+        print(f'Saved: {save_path}')
+
+    return results
+
+
+def plot_lfp_transition_validation(
+    df_transitions,
+    lfp_npy_dir,
+    cluster_pickle_dir,
+    fs=2500,
+    rolling_n=50,
+    n_cols=4,
+):
+    """
+    Grid validation plot: all (cell, feature) pairs in one figure.
+    Each column = one (cell, feature); 2 rows per column:
+      Row 0: full spike cluster rolling mean with transition line(s)
+      Row 1: full raw LFP recording with transition line(s) and block shading
+
+    Confirms that spike-derived transition times map to the correct LFP samples.
+    """
+    import matplotlib.gridspec as gridspec
+    import seaborn as sns
+
+    ORDINAL   = {'low': 0, 'mid': 1, 'high': 2, 'Low': 0, 'Mid': 1, 'High': 2}
+    CLR       = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
+                 'Low': '#0072B2', 'Mid': '#009E73', 'High': '#D55E00'}
+    BLK_CLRS  = ['#2980b9', '#e74c3c', '#27ae60', '#8e44ad']
+    TRANS_CLR = 'crimson'
+    _DS       = 10  # downsample factor for LFP trace
+
+    pairs = list(df_transitions.groupby(['cell_id', 'spike_feature']))
+    n_pairs = len(pairs)
+    n_cols  = min(n_cols, n_pairs)
+    n_rows  = int(np.ceil(n_pairs / n_cols))
+
+    # Cache loaded LFP per cell to avoid re-loading
+    _lfp_cache = {}
+
+    fig = plt.figure(figsize=(n_cols * 5.5, n_rows * 4.5),
+                     constrained_layout=False)
+    outer_gs = gridspec.GridSpec(n_rows, n_cols, figure=fig,
+                                 hspace=0.15, wspace=0.35)
+
+    for p_idx, ((cid, feat), grp) in enumerate(pairs):
+        row, col = divmod(p_idx, n_cols)
+        inner_gs = gridspec.GridSpecFromSubplotSpec(
+            2, 1, subplot_spec=outer_gs[row, col],
+            height_ratios=[1, 1.5], hspace=0.25,
+        )
+        ax_spk = fig.add_subplot(inner_gs[0])
+        ax_lfp = fig.add_subplot(inner_gs[1])
+
+        t0s_ms = sorted(grp['transition_time_ms'].dropna().values)
+
+        # ── spike rolling mean ──────────────────────────────────────────
+        pkl = os.path.join(cluster_pickle_dir, f'{cid}_cluster_df.pkl')
+        try:
+            df_cl = pd.read_pickle(pkl)
+        except FileNotFoundError:
+            ax_spk.set_visible(False); ax_lfp.set_visible(False); continue
+        cl_col = f'{feat}_cluster'
+        if cl_col not in df_cl.columns:
+            ax_spk.set_visible(False); ax_lfp.set_visible(False); continue
+        sub   = df_cl[['spk_times_ms', cl_col]].dropna().sort_values('spk_times_ms')
+        spk_t = sub['spk_times_ms'].values / 1000.0
+        lbls  = sub[cl_col].values
+        ord_l = np.array([ORDINAL.get(str(l).strip(), 1) for l in lbls], dtype=float)
+        rm    = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean().values
+
+        for lbl in np.unique(lbls):
+            m = lbls == lbl
+            ax_spk.scatter(spk_t[m], ord_l[m], color=CLR.get(str(lbl), 'gray'),
+                           s=5, alpha=0.2, linewidths=0)
+        ax_spk.plot(spk_t, rm, color='black', lw=1.8)
+        for t0_ms in t0s_ms:
+            ax_spk.axvline(t0_ms / 1000.0, color=TRANS_CLR, lw=1.5, ls='--')
+        ax_spk.set_yticks([0, 1, 2])
+        ax_spk.set_yticklabels(['low', 'mid', 'high'], fontsize=7)
+        ax_spk.set_title(f'{cid}  ·  {feat}', fontsize=9, fontweight='bold')
+        ax_spk.tick_params(labelbottom=False)
+        sns.despine(ax=ax_spk)
+
+        # ── full LFP recording ──────────────────────────────────────────
+        if cid not in _lfp_cache:
+            npy_path = os.path.join(lfp_npy_dir, f'{cid}_lfp.npy')
+            if not os.path.exists(npy_path):
+                ax_spk.set_visible(False); ax_lfp.set_visible(False); continue
+            _lfp_cache[cid] = np.load(npy_path).astype(float)
+        lfp_raw = _lfp_cache[cid]
+        n_samps = len(lfp_raw)
+        lfp_t_s = np.arange(n_samps) / fs
+        lfp_dur_s = n_samps / fs
+
+        # Add recording length to spike panel title
+        ax_spk.set_title(f'{cid}  ·  {feat}\nrec: {lfp_dur_s:.0f} s', fontsize=9, fontweight='bold')
+
+        boundaries_s = [0.0] + [t / 1000.0 for t in t0s_ms] + [lfp_t_s[-1]]
+        for b_i in range(len(boundaries_s) - 1):
+            ax_lfp.axvspan(boundaries_s[b_i], boundaries_s[b_i + 1],
+                           alpha=0.08, color=BLK_CLRS[b_i % len(BLK_CLRS)])
+        ax_lfp.plot(lfp_t_s[::_DS], lfp_raw[::_DS], color='black', lw=0.35, alpha=0.8)
+        for t0_ms in t0s_ms:
+            ax_lfp.axvline(t0_ms / 1000.0, color=TRANS_CLR, lw=1.5, ls='--',
+                           label=f't₀={t0_ms/1000:.1f}s')
+        # Annotate recording duration on the LFP panel
+        ax_lfp.text(0.98, 0.97, f'{lfp_dur_s:.0f} s', transform=ax_lfp.transAxes,
+                    fontsize=8, ha='right', va='top', color='dimgray')
+        ax_lfp.legend(fontsize=7, frameon=False, loc='upper left')
+        ax_lfp.set_xlabel('Time (s)', fontsize=8)
+        ax_lfp.set_ylabel('LFP (a.u.)', fontsize=8)
+        sns.despine(ax=ax_lfp)
+
+    fig.suptitle('LFP transition validation — spike t₀ mapped to continuous LFP',
+                 fontsize=12, fontweight='bold')
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_lfp_block_comparison(
+    lfp_block_results,
+    df_transitions,
+    cluster_pickle_dir,
+    rolling_n=50,
+    bar_keys=None,
+):
+    """
+    For each (cell, feature) in lfp_block_results, plot a 3-panel figure:
+      Left  : rolling mean of cluster labels with transition time(s) marked
+      Middle: overlaid PSDs (raw + specparam fit) per block
+      Right : grouped bar chart of LFP metrics per block
+
+    bar_keys : list of (metric_key, label) tuples to show in the bar panel.
+               Defaults to all metrics if None.
+    """
+    import matplotlib.gridspec as gridspec
+    import seaborn as sns
+    from specparam import SpectralModel
+    try:
+        from specparam.utils import interpolate_spectrum
+    except ImportError:
+        from fooof.utils import interpolate_spectrum
+
+    ORDINAL = {'low': 0, 'mid': 1, 'high': 2, 'Low': 0, 'Mid': 1, 'High': 2}
+    CLR_CLUSTER = {'low': '#0072B2', 'mid': '#009E73', 'high': '#D55E00',
+                   'Low': '#0072B2', 'Mid': '#009E73', 'High': '#D55E00'}
+
+    _sm_kwargs = dict(aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+                      max_n_peaks=4, min_peak_height=0.0, peak_threshold=1.5, verbose=False)
+
+    _all_bar_specs = [
+        ('mean_amp',        'Mean amp\n(a.u.)'),
+        ('std_amp',         'Std amp\n(a.u.)'),
+        ('exponent',        'Exponent'),
+        ('offset',          'Offset'),
+        ('theta_auc',       'θ AUC\n4–15 Hz'),
+        ('total_gamma_auc', 'Total γ\n30–80 Hz'),
+        ('slow_gamma_auc',  'Slow γ\n30–60 Hz'),
+        ('high_gamma_auc',  'High γ\n60–80 Hz'),
+    ]
+    _bar_key_set = set(bar_keys) if bar_keys is not None else None
+    bar_specs = [s for s in _all_bar_specs
+                 if _bar_key_set is None or s[0] in _bar_key_set]
+    _auc_keys = {'theta_auc', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc'}
+
+    # Pre-scan all blocks for global y-limits (bar features + PSD)
+    _gvals = {key: [] for key, _ in bar_specs}
+    _psd_mins, _psd_maxs = [], []
+    for _blks in lfp_block_results.values():
+        for _blk in _blks:
+            if _blk.get('label') == 'peri':
+                continue
+            for key, _ in bar_specs:
+                v = _blk.get(key, float('nan'))
+                if np.isfinite(v):
+                    _gvals[key].append(v)
+            _p = _blk.get('psd', _blk.get('mean_psd'))
+            if _p is not None:
+                _p = np.asarray(_p)
+                _p = _p[_p > 0]
+                if len(_p):
+                    _psd_mins.append(float(np.min(_p)))
+                    _psd_maxs.append(float(np.max(_p)))
+    _global_ylims = {}
+    for key, vals in _gvals.items():
+        if not vals:
+            _global_ylims[key] = None
+            continue
+        lo, hi = min(vals), max(vals)
+        span = max(hi - lo, abs(hi) * 0.05, 1e-6)
+        top  = max(hi, 0) + span * 0.45  # headroom above 0 for bracket even when all vals negative
+        bot  = 0.0 if key in _auc_keys else min(lo, 0) - span * 0.1
+        _global_ylims[key] = (bot, top)
+    _psd_ylim = (min(_psd_mins) * 0.5, max(_psd_maxs) * 2.0) if _psd_mins else None
+
+    for key, blocks in lfp_block_results.items():
+        cid, feat = key[0], key[1]
+        if not blocks:
+            continue
+        blocks = [b for b in blocks if b.get('label') != 'peri']
+
+        # Ensure every block has valid specparam fit + AUC
+        for blk in blocks:
+            if blk.get('freqs_fit') is not None:
+                continue  # cached fit present — trust stored AUC values
+            # No fit — run specparam now
+            psd_b = blk.get('psd', blk.get('mean_psd'))
+            if psd_b is None or blk.get('freqs') is None:
+                continue
+            try:
+                _sm = SpectralModel(**_sm_kwargs)
+                _freqs_sm, _psd_sm = interpolate_spectrum(blk['freqs'], psd_b, [58, 62])
+                _sm.fit(_freqs_sm, _psd_sm, freq_range=(1, 90))
+                ff = np.asarray(_sm.freqs)
+                fl = np.asarray(_sm.get_model(component='full',      space='log'))
+                al = np.asarray(_sm.get_model(component='aperiodic', space='log'))
+                tm = (ff >= 4)  & (ff <= 10)
+                gm = (ff >= 30) & (ff <= 55)
+                blk['freqs_fit'] = ff
+                blk['full_log']  = fl
+                blk['ape_log']   = al
+                blk['exponent']  = float(_sm.get_params('aperiodic_params', 'exponent'))
+                blk['offset']    = float(_sm.get_params('aperiodic_params', 'offset'))
+                def _bauc(fl, al, ff, flo, fhi):
+                    m = (ff >= flo) & (ff <= fhi)
+                    d = np.where(np.isfinite(fl[m] - al[m]), fl[m] - al[m], 0.0)
+                    return float(np.trapz(np.clip(d, 0, None), ff[m]))
+                blk['theta_auc']       = _bauc(fl, al, ff,  4,  15)
+                blk['slow_gamma_auc']  = _bauc(fl, al, ff, 30,  60)
+                blk['high_gamma_auc']  = _bauc(fl, al, ff, 60,  80)
+                blk['total_gamma_auc'] = _bauc(fl, al, ff, 30,  80)
+                blk['r_squared']       = float(_sm.r_squared_)
+                _pks_r = np.atleast_2d(_sm.peak_params_) if _sm.n_peaks_ > 0 else np.empty((0, 3))
+                _pk_str_r = ', '.join(f'CF={p[0]:.1f}Hz PW={p[1]:.3f} BW={p[2]:.1f}' for p in _pks_r) or 'none'
+                print(f'  [refit {cid}|{feat}|blk{blk["block"]}] R²={blk["r_squared"]:.3f}  '
+                      f'exp={blk["exponent"]:.2f}  '
+                      f'θ={blk["theta_auc"]:.4f}  sγ={blk["slow_gamma_auc"]:.4f}  '
+                      f'hγ={blk["high_gamma_auc"]:.4f}  totγ={blk["total_gamma_auc"]:.4f}  '
+                      f'n_peaks={_sm.n_peaks_}  peaks=[{_pk_str_r}]', flush=True)
+            except Exception as _e:
+                print(f"  specparam refit failed [{cid}|{feat}]: {_e}")
+
+        # Repair / backfill all AUC keys using specparam peak model (NaN → 0 contribution)
+        _AUC_BANDS = [
+            ('theta_auc',       4,  15),
+            ('slow_gamma_auc',  30, 60),
+            ('high_gamma_auc',  60, 80),
+            ('total_gamma_auc', 30, 80),
+        ]
+        for blk in blocks:
+            _ff2 = blk.get('freqs_fit')
+            _fl2 = blk.get('full_log')
+            _al2 = blk.get('ape_log')
+            if _ff2 is None or _fl2 is None or _al2 is None:
+                continue
+            _ff2 = np.asarray(_ff2); _fl2 = np.asarray(_fl2); _al2 = np.asarray(_al2)
+            for _key, _flo, _fhi in _AUC_BANDS:
+                if not np.isfinite(blk.get(_key, float('nan'))):
+                    _m2 = (_ff2 >= _flo) & (_ff2 <= _fhi)
+                    _d2 = np.where(np.isfinite(_fl2[_m2] - _al2[_m2]), _fl2[_m2] - _al2[_m2], 0.0)
+                    blk[_key] = float(np.trapz(np.clip(_d2, 0, None), _ff2[_m2]))
+
+        # Print specparam summary for every block (from cache or refit)
+        print(f'\n=== {cid} | {feat} ===', flush=True)
+        for blk in blocks:
+            ff_p = blk.get('freqs_fit')
+            fl_p = blk.get('full_log')
+            al_p = blk.get('ape_log')
+            exp_p  = blk.get('exponent', float('nan'))
+            th_p   = blk.get('theta_auc', float('nan'))
+            sg_p   = blk.get('slow_gamma_auc', float('nan'))
+            hg_p   = blk.get('high_gamma_auc', float('nan'))
+            tg_p   = blk.get('total_gamma_auc', float('nan'))
+            # Compute R² from stored model vs raw PSD if not already stored
+            r2_p = blk.get('r_squared', float('nan'))
+            if not np.isfinite(r2_p) and ff_p is not None and fl_p is not None:
+                _raw_psd = blk.get('psd', blk.get('mean_psd'))
+                if _raw_psd is not None:
+                    try:
+                        _ff_arr = np.asarray(ff_p)
+                        _fl_arr = np.asarray(fl_p)
+                        _raw_log = np.log10(np.interp(_ff_arr, blk['freqs'], np.asarray(_raw_psd)))
+                        _ss_res = np.sum((_raw_log - _fl_arr) ** 2)
+                        _ss_tot = np.sum((_raw_log - np.mean(_raw_log)) ** 2)
+                        r2_p = float(1.0 - _ss_res / _ss_tot) if _ss_tot > 0 else float('nan')
+                        blk['r_squared'] = r2_p
+                    except Exception:
+                        pass
+            if ff_p is not None and fl_p is not None and al_p is not None:
+                ff_p = np.asarray(ff_p); fl_p = np.asarray(fl_p); al_p = np.asarray(al_p)
+                # Reconstruct peaks: contiguous regions where full_log > ape_log
+                _diff_p = fl_p - al_p
+                _diff_p = np.where(np.isfinite(_diff_p), _diff_p, 0.0)
+                _above  = _diff_p > 0.01
+                _pk_info = []
+                in_peak = False
+                for i_p, val in enumerate(_above):
+                    if val and not in_peak:
+                        pk_start = i_p; in_peak = True
+                    elif not val and in_peak:
+                        seg = _diff_p[pk_start:i_p]
+                        cf_idx = pk_start + int(np.argmax(seg))
+                        _pk_info.append(f'CF={ff_p[cf_idx]:.1f}Hz PW={_diff_p[cf_idx]:.3f}')
+                        in_peak = False
+                if in_peak:
+                    seg = _diff_p[pk_start:]
+                    cf_idx = pk_start + int(np.argmax(seg))
+                    _pk_info.append(f'CF={ff_p[cf_idx]:.1f}Hz PW={_diff_p[cf_idx]:.3f}')
+                pk_str = ', '.join(_pk_info) or 'none'
+            else:
+                pk_str = 'no fit'
+            print(f'  {blk["label"]:10s}  R²={r2_p:.3f}  exp={exp_p:.3f}  '
+                  f'θ={th_p:.4f}  sγ={sg_p:.4f}  hγ={hg_p:.4f}  totγ={tg_p:.4f}  '
+                  f'peaks=[{pk_str}]', flush=True)
+
+        # Load cluster data for spike rolling mean
+        pkl = f'{cluster_pickle_dir}/{cid}_cluster_df.pkl'
+        try:
+            df_cl = pd.read_pickle(pkl)
+        except FileNotFoundError:
+            continue
+        col = f'{feat}_cluster'
+        if col not in df_cl.columns:
+            continue
+        sub = df_cl[['spk_times_ms', col]].dropna().sort_values('spk_times_ms')
+        times_s = sub['spk_times_ms'].values / 1000.0
+        labels  = sub[col].values
+        ord_l   = np.array([ORDINAL.get(str(l).strip(), 1) for l in labels], dtype=float)
+        rm      = pd.Series(ord_l).rolling(rolling_n, center=True, min_periods=1).mean().values
+
+        # Transition times
+        grp = df_transitions[(df_transitions['cell_id'] == cid) &
+                             (df_transitions['spike_feature'] == feat)]
+        t0s_s = sorted(grp['transition_time_ms'].dropna().values / 1000.0)
+
+        _rc = {
+            'axes.linewidth':      3.5,
+            'xtick.major.width':   3.0,  'ytick.major.width':   3.0,
+            'xtick.major.size':    9,    'ytick.major.size':    9,
+            'xtick.minor.visible': False, 'ytick.minor.visible': False,
+            'font.size':           22,   'font.family': 'sans-serif',
+            'font.weight':         'bold',
+            'axes.titlesize':      26,   'axes.labelsize':      24,
+            'xtick.labelsize':     20,   'ytick.labelsize':     20,
+            'legend.fontsize':     18,
+            'lines.linewidth':     3.5,
+        }
+        with plt.rc_context(_rc):
+            # ── Flat grid layout: Col 0 = spike (top half) + PSD (bottom half); Cols 1-2 = bars ──
+            _n_bar      = len(bar_specs)
+            _bar_ncols  = 2
+            _bar_nrows  = int(np.ceil(_n_bar / _bar_ncols))
+            _grid_nrows = max(4, _bar_nrows)  # keep left panels at 4 rows min
+            _half       = _grid_nrows // 2
+            fig = plt.figure(figsize=(26, 3.75 * _grid_nrows))
+            gs  = gridspec.GridSpec(_grid_nrows, 3, figure=fig,
+                                    width_ratios=[1.3, 1.0, 1.0],
+                                    wspace=0.5, hspace=0.7)
+            ax_spike = fig.add_subplot(gs[0:_half, 0])
+            ax_psd   = fig.add_subplot(gs[_half:, 0])
+
+            # ── Top-left: spike rolling mean ──────────────────────────────
+            for lbl in np.unique(labels):
+                m = labels == lbl
+                ax_spike.scatter(times_s[m], ord_l[m],
+                                 color=CLR_CLUSTER.get(str(lbl), 'gray'),
+                                 s=12, alpha=0.3, linewidths=0, zorder=2)
+            ax_spike.plot(times_s, rm, color='black', lw=5.0, zorder=4)
+            for t0 in t0s_s:
+                ax_spike.axvline(t0, color='crimson', lw=4.0, ls='--', zorder=5)
+            for blk in blocks:
+                lo = blk['t_start_ms'] / 1000.0
+                hi = blk['t_end_ms']   / 1000.0
+                ax_spike.axvspan(lo, hi, alpha=0.12, color=blk['color'], zorder=1)
+            ax_spike.set_yticks([0, 1, 2])
+            ax_spike.set_yticklabels(['low', 'mid', 'high'], fontsize=22)
+            ax_spike.set_xlabel('Time (s)', fontsize=24)
+            ax_spike.set_ylabel('Cluster', fontsize=24)
+            ax_spike.set_title(f'{cid}  ·  {feat}', fontsize=26, fontweight='bold')
+            sns.despine(ax=ax_spike, offset=10)
+
+            # ── Bottom-left: PSDs + specparam ────────────────────────────
+            _added_band_labels = {'theta': False, 'slow_gamma': False, 'high_gamma': False, 'total_gamma': False}
+            for blk in blocks:
+                freqs, psd = blk['freqs'], blk.get('psd', blk.get('mean_psd'))
+                dur_s = blk.get('n_samples', blk.get('n_spikes', 0))
+                dur_label = f"{dur_s/2500:.0f}s" if 'n_samples' in blk else f"n={dur_s}"
+                ax_psd.semilogy(freqs, psd, color=blk['color'], lw=3.0, alpha=0.45,
+                                label=f"{blk['label']} ({dur_label})")
+                if blk.get('freqs_fit') is not None:
+                    ff = np.asarray(blk['freqs_fit'])
+                    fl = np.asarray(blk['full_log']) if blk.get('full_log') is not None else None
+                    al = np.asarray(blk['ape_log'])
+                    if fl is not None:
+                        _v = np.isfinite(fl)
+                        if _v.any():
+                            ax_psd.semilogy(ff[_v], 10**fl[_v], color=blk['color'],
+                                            lw=5.5, zorder=5)
+                    ax_psd.semilogy(ff, 10**al, color=blk['color'],
+                                    lw=3.0, ls='--', alpha=0.85)
+                    if fl is not None:
+                        _bar_key_names = {s[0] for s in bar_specs}
+                        _use_total_gamma = ('total_gamma_auc' in _bar_key_names and
+                                            'slow_gamma_auc' not in _bar_key_names and
+                                            'high_gamma_auc' not in _bar_key_names)
+                        if _use_total_gamma:
+                            _shade_bands = [
+                                ('theta',       4,  15, 'mediumpurple', 'θ (4–15 Hz)'),
+                                ('total_gamma', 30, 80, 'goldenrod',    'γ (30–80 Hz)'),
+                            ]
+                        else:
+                            _shade_bands = [
+                                ('theta',      4,  15, 'mediumpurple', 'θ (4–15 Hz)'),
+                                ('slow_gamma', 30, 60, 'goldenrod',    'slow γ (30–60 Hz)'),
+                                ('high_gamma', 60, 80, 'tomato',       'high γ (60–80 Hz)'),
+                            ]
+                        for _bkey, _blo, _bhi, _bcol, _blbl_str in _shade_bands:
+                            _bm = (ff >= _blo) & (ff <= _bhi)
+                            if _bm.any():
+                                _fl_s = np.where(np.isfinite(fl[_bm]), fl[_bm], al[_bm])
+                                _fl_c = np.clip(_fl_s, al[_bm], None)
+                                _lbl  = _blbl_str if not _added_band_labels.get(_bkey) else None
+                                ax_psd.fill_between(ff[_bm], 10**al[_bm], 10**_fl_c,
+                                                    alpha=0.40, color=_bcol, zorder=4, label=_lbl)
+                                _added_band_labels[_bkey] = True
+            ax_psd.set_xlabel('Frequency (Hz)', fontsize=24)
+            ax_psd.set_ylabel('PSD (a.u.)',   fontsize=24)
+            ax_psd.legend(fontsize=18, frameon=False)
+            ax_psd.set_title('PSD + specparam', fontsize=26)
+            if _psd_ylim is not None:
+                ax_psd.set_ylim(_psd_ylim)
+            ax_psd.set_xlim(0, 90)
+            ax_psd.set_xticks([0, 20, 40, 60, 80])
+            ax_psd.yaxis.set_major_locator(plt.LogLocator(numticks=3))
+            ax_psd.yaxis.set_minor_locator(plt.NullLocator())
+            sns.despine(ax=ax_psd)
+
+            # ── Bar panels directly in the flat GridSpec ──────────────────
+            _bar_axes = [
+                fig.add_subplot(gs[bi // _bar_ncols, 1 + (bi % _bar_ncols)])
+                for bi in range(_n_bar)
+            ]
+            for p_i, (ax_b, (key, ylabel)) in enumerate(zip(_bar_axes, bar_specs)):
+                vals_all = [blk.get(key, float('nan')) for blk in blocks]
+                for b_i, (blk, val) in enumerate(zip(blocks, vals_all)):
+                    ax_b.bar(b_i, val, color=blk['color'], zorder=3, width=0.4,
+                             label=blk['label'] if p_i == 0 else None)
+                    if np.isfinite(val):
+                        _txt_y  = val if val >= 0 else val * 0.97
+                        _txt_va = 'bottom' if val >= 0 else 'top'
+                        ax_b.text(b_i, _txt_y, f'{val:.3g}', ha='center',
+                                  va=_txt_va, fontsize=16, color='black', fontweight='bold')
+
+                ylim = _global_ylims.get(key)
+                if ylim is not None:
+                    ax_b.set_ylim(ylim)
+                elif key in _auc_keys:
+                    ax_b.set_ylim(bottom=0)
+
+                y0, y1 = ax_b.get_ylim()
+                yspan   = y1 - y0
+                for pair_i in range(len(blocks) - 1):
+                    v1, v2 = vals_all[pair_i], vals_all[pair_i + 1]
+                    if not (np.isfinite(v1) and np.isfinite(v2)):
+                        continue
+                    delta = v2 - v1
+                    lbl = f'{"↑" if delta >= 0 else "↓"}Δ={abs(delta):.3g}'
+                    bh  = y1 - yspan * (0.06 + pair_i * 0.14)
+                    ax_b.text((pair_i + pair_i + 1) / 2, bh,
+                              lbl, ha='center', va='top', fontsize=16,
+                              color='#555555', clip_on=False)
+
+                ax_b.set_ylabel(ylabel, fontsize=16, fontweight='bold')
+                ax_b.axhline(0, color='gray', lw=1.5, ls='--')
+                ax_b.set_xticks(range(len(blocks)))
+                if p_i >= len(bar_specs) - 1:  # last bar shows x-tick labels
+                    ax_b.set_xticklabels([blk['label'] for blk in blocks],
+                                         fontsize=13, rotation=20, ha='right')
+                else:
+                    ax_b.set_xticklabels([])
+                sns.despine(ax=ax_b, offset=5)
+            _bar_axes[1].legend(fontsize=13, frameon=False, loc='upper right')
+
+            fig.suptitle(f'{cid}  ·  {feat}  —  LFP blocks at transition',
+                         fontsize=26, fontweight='bold', y=1.01)
+            plt.tight_layout(pad=2.5, w_pad=2.0, h_pad=2.0)
+            plt.show()
+
+
+def plot_pop_lfp_block_summary(lfp_block_results, bar_keys=None):
+    """
+    Population-level summary of LFP features across blocks at transition.
+
+    For each LFP feature: bars show mean ± SEM across cells (block 0 vs block 1),
+    individual cell values shown as connected dots, Wilcoxon signed-rank p-value annotated.
+
+    bar_keys : optional list of metric keys to include (e.g. ['total_gamma_auc']).
+               Defaults to all metrics.
+    """
+    from scipy.stats import wilcoxon as _wilcoxon
+
+    _all_bar_specs = [
+        ('mean_amp',        'Mean amp\n(a.u.)'),
+        ('std_amp',         'Std amp\n(a.u.)'),
+        ('exponent',        'Exponent'),
+        ('offset',          'Offset'),
+        ('theta_auc',       'θ AUC\n4–15 Hz'),
+        ('total_gamma_auc', 'Total γ\n30–80 Hz'),
+        ('slow_gamma_auc',  'Slow γ\n30–60 Hz'),
+        ('high_gamma_auc',  'High γ\n60–80 Hz'),
+    ]
+    _bar_key_set = set(bar_keys) if bar_keys is not None else None
+    bar_specs = [s for s in _all_bar_specs
+                 if _bar_key_set is None or s[0] in _bar_key_set]
+
+    _sm_kwargs = dict(aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+                      max_n_peaks=4, min_peak_height=0.0, peak_threshold=1.5, verbose=False)
+
+    # Pre-fit specparam for any blocks missing it
+    for _pblocks in lfp_block_results.values():
+        for _pblk in _pblocks:
+            if _pblk.get('freqs_fit') is not None:
+                continue
+            _ppsd = _pblk.get('psd', _pblk.get('mean_psd'))
+            if _ppsd is None or _pblk.get('freqs') is None:
+                continue
+            try:
+                _psm = SpectralModel(**_sm_kwargs)
+                _pff2, _ppsd2 = interpolate_spectrum(_pblk['freqs'], _ppsd, [58, 62])
+                _psm.fit(_pff2, _ppsd2, freq_range=(1, 90))
+                _pff2 = np.asarray(_psm.freqs)
+                _pfl  = np.asarray(_psm.get_model(component='full',      space='log'))
+                _pal  = np.asarray(_psm.get_model(component='aperiodic', space='log'))
+                def _pbauc(_fl, _al, _ff, _flo, _fhi):
+                    _m = (_ff >= _flo) & (_ff <= _fhi)
+                    _d = np.where(np.isfinite(_fl[_m] - _al[_m]), _fl[_m] - _al[_m], 0.0)
+                    return float(np.trapz(np.clip(_d, 0, None), _ff[_m]))
+                _pblk['freqs_fit']       = _pff2
+                _pblk['full_log']        = _pfl
+                _pblk['ape_log']         = _pal
+                _pblk['exponent']        = float(_psm.get_params('aperiodic_params', 'exponent'))
+                _pblk['offset']          = float(_psm.get_params('aperiodic_params', 'offset'))
+                _pblk['theta_auc']       = _pbauc(_pfl, _pal, _pff2,  4,  15)
+                _pblk['slow_gamma_auc']  = _pbauc(_pfl, _pal, _pff2, 30,  60)
+                _pblk['high_gamma_auc']  = _pbauc(_pfl, _pal, _pff2, 60,  80)
+                _pblk['total_gamma_auc'] = _pbauc(_pfl, _pal, _pff2, 30,  80)
+            except Exception:
+                pass
+
+    # Collect per-cell (v0, v1) pairs for each feature
+    _pairs = {key: [] for key, _ in bar_specs}
+    for blocks in lfp_block_results.values():
+        if len(blocks) < 2:
+            continue
+        b0, b1 = blocks[0], blocks[1]
+        for key, _ in bar_specs:
+            v0 = b0.get(key, float('nan'))
+            v1 = b1.get(key, float('nan'))
+            if np.isfinite(v0) and np.isfinite(v1):
+                _pairs[key].append((v0, v1))
+
+    # Block colors: reuse first two CLR_CLUSTER colors as generic block colors
+    _blk_cols = ['#0072B2', '#D55E00']
+    _blk_labels = ['Pre', 'Post']
+    _SPINE_LW   = 2.5
+    _LBL_FS     = 22
+    _TICK_FS    = 18
+    _STAR_FS    = 24
+    _NS_FS      = 16
+
+    n_specs = len(bar_specs)
+    ncols = min(4, n_specs)
+    nrows = int(np.ceil(n_specs / ncols))
+    fig_w = 5 * ncols
+    fig_h = 5.5 * nrows
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h), squeeze=False)
+
+    for p_i, (ax, (key, ylabel)) in enumerate(zip(axes.flat, bar_specs)):
+        pairs = _pairs[key]
+        if not pairs:
+            ax.set_visible(False)
+            continue
+
+        v0s = np.array([p[0] for p in pairs])
+        v1s = np.array([p[1] for p in pairs])
+        n   = len(pairs)
+
+        # Bars: mean ± SEM with pvc-6 style outlines
+        for b_i, (vals, col) in enumerate(zip([v0s, v1s], _blk_cols)):
+            mu  = np.mean(vals)
+            sem = np.std(vals, ddof=1) / np.sqrt(n)
+            ax.bar(b_i, mu, color=col, alpha=0.75, width=0.55, zorder=2,
+                   edgecolor='#1a1a1a', linewidth=1.8)
+            ax.errorbar(b_i, mu, yerr=sem, fmt='none', color='#111111',
+                        elinewidth=3, capsize=8, capthick=3, zorder=3)
+
+        # Individual cells as connected dots
+        jitter = (np.random.default_rng(p_i).random(n) - 0.5) * 0.16
+        for j, (vv0, vv1) in zip(jitter, pairs):
+            ax.plot([0 + j, 1 + j], [vv0, vv1],
+                    color='#888', lw=1.0, alpha=0.45, zorder=1)
+            ax.scatter([0 + j, 1 + j], [vv0, vv1],
+                       color=[_blk_cols[0], _blk_cols[1]], s=45, alpha=0.8,
+                       zorder=2, edgecolors='none')
+
+        # Wilcoxon signed-rank test
+        try:
+            _, p_val = _wilcoxon(v0s, v1s)
+            star = '***' if p_val < 0.001 else '**' if p_val < 0.01 else '*' if p_val < 0.05 else 'ns'
+            print(f'  [pop Wilcoxon] {key}: n={n} p={p_val:.4f} {star}', flush=True)
+        except Exception as _e:
+            p_val, star = np.nan, 'n/a'
+            print(f'  [pop Wilcoxon] {key}: n={n} FAILED {_e}', flush=True)
+
+        # Expand ylim to leave room for bracket + star
+        y0, y1 = ax.get_ylim()
+        ax.set_ylim(y0, y1 + (y1 - y0) * 0.28)
+        y0, y1 = ax.get_ylim()
+        span = y1 - y0
+
+        # Significance bracket
+        bh = y1 - span * 0.09
+        tk = span * 0.025
+        ax.plot([0, 0, 1, 1], [bh - tk, bh, bh, bh - tk],
+                color='#1a1a1a', lw=2.0)
+        star_fs = _STAR_FS if star not in ('ns', 'n/a') else _NS_FS
+        ax.text(0.5, bh + span * 0.008, star,
+                ha='center', va='bottom', fontsize=star_fs,
+                fontweight='bold', color='#1a1a1a', clip_on=False)
+
+        # n count below bracket ticks
+        ax.text(0.5, bh - tk - span * 0.005, f'n={n}',
+                ha='center', va='top', fontsize=14, color='#555', clip_on=False)
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels([], fontsize=_TICK_FS)
+        ax.set_ylabel(ylabel, fontsize=_LBL_FS, fontweight='bold')
+        ax.axhline(0, color='gray', lw=1.5, ls='--')
+        ax.tick_params(axis='both', which='major', labelsize=_TICK_FS, width=2.5)
+        for spine in ['left', 'bottom']:
+            ax.spines[spine].set_linewidth(_SPINE_LW)
+        sns.despine(ax=ax, offset=8)
+
+    # Shared legend
+    from matplotlib.patches import Patch
+    legend_handles = [Patch(color=_blk_cols[0], alpha=0.75, label='Pre-transition'),
+                      Patch(color=_blk_cols[1], alpha=0.75, label='Post-transition')]
+    fig.legend(handles=legend_handles, fontsize=16, frameon=False,
+               loc='lower center', ncol=2, bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle('Population LFP: pre vs post transition  (mean ± SEM, Wilcoxon signed-rank)',
+                 fontsize=18, fontweight='bold')
+    plt.tight_layout(pad=2.5, w_pad=3.0, h_pad=4.0)
+    plt.show()
+    return fig, axes
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Population transition delta plot
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DELTA_LFP_KEYS = ['theta_auc', 'slow_gamma_auc', 'high_gamma_auc', 'total_gamma_auc',
+                   'exponent', 'offset', 'mean_amp', 'std_amp']
+_DELTA_LFP_LABELS = {
+    'theta_auc':       'Theta AUC',
+    'slow_gamma_auc':  'Slow gamma\n(30–60 Hz)',
+    'high_gamma_auc':  'High gamma\n(60–80 Hz)',
+    'total_gamma_auc': 'Gamma AUC',
+    'exponent':        'Aperiodic exponent',
+    'offset':          'Aperiodic offset',
+    'mean_amp':        'Mean amplitude',
+    'std_amp':         'Stdev',
+}
+_DELTA_WF_LABELS = {
+    'exp_lambda':      'Exp λ',
+    'log_isi':         'Log ISI',
+    'peak_amp':        'Peak Amp',
+    'peak_sharpness':  'Sharpness',
+    'peak_width':      'Peak Width',
+    'inflection_time': 'Infl. Time',
+}
+# direction colours: blue = LFP increases, red = LFP decreases
+_DIR_COL_POS = '#2166AC'   # blue  – LFP goes UP   when waveform low→high
+_DIR_COL_NEG = '#D6604D'   # red   – LFP goes DOWN when waveform low→high
+
+
+def compute_transition_deltas(lfp_block_results, df_transitions, lfp_keys=None):
+    """
+    Extract sign-corrected, normalised LFP Δ values for every
+    (cell, waveform feature, LFP feature) combination and return a tidy DataFrame.
+
+    Each row is one (cell_id × wf_feat × lfp_feat) observation.
+    delta_norm is normalised by the cross-cell SD of raw Δ for that LFP feature,
+    so values are in comparable units across features.
+
+    Columns
+    -------
+    cell_id, wf_feat, lfp_feat, delta_raw, delta_norm, direction_sign
+    """
+    from collections import defaultdict
+
+    lfp_keys = lfp_keys or _DELTA_LFP_KEYS
+    _ORD     = {'low': 0, 'mid': 1, 'high': 2}
+
+    primary = (df_transitions
+               .sort_values('transition_index')
+               .drop_duplicates(subset=['cell_id', 'spike_feature'], keep='first'))
+    direction_map = {}
+    for _, row in primary.iterrows():
+        before = _ORD.get(str(row['cluster_before']).lower(), 1)
+        after  = _ORD.get(str(row['cluster_after']).lower(),  1)
+        direction_map[(row['cell_id'], row['spike_feature'])] = 1 if after >= before else -1
+
+    raw_by_key = defaultdict(list)   # (cell_id, wf_feat) -> [{lfp_key: raw_delta, ...}]
+    for key, blocks in lfp_block_results.items():
+        cid, wf_feat = key[0], key[1]
+        if len(blocks) < 2:
+            continue
+        b0, b1   = blocks[0], blocks[1]
+        sign     = direction_map.get((cid, wf_feat), 1)
+        row_data = {'cell_id': cid, 'wf_feat': wf_feat, 'direction_sign': sign}
+        for lk in lfp_keys:
+            if lk in b0 and lk in b1:
+                row_data[lk] = sign * (float(b1[lk]) - float(b0[lk]))
+        raw_by_key[(cid, wf_feat)].append(row_data)
+
+    all_rows = [r for rows in raw_by_key.values() for r in rows]
+    norm_sd  = {}
+    for lk in lfp_keys:
+        vals = [r[lk] for r in all_rows if lk in r]
+        norm_sd[lk] = float(np.std(vals)) if len(vals) > 1 else 1.0
+
+    records = []
+    for row_data in all_rows:
+        for lk in lfp_keys:
+            if lk in row_data:
+                records.append(dict(
+                    cell_id        = row_data['cell_id'],
+                    wf_feat        = row_data['wf_feat'],
+                    lfp_feat       = lk,
+                    delta_raw      = row_data[lk],
+                    delta_norm     = row_data[lk] / (norm_sd[lk] + 1e-12),
+                    direction_sign = row_data['direction_sign'],
+                ))
+
+    return pd.DataFrame(records)
+
+
+def plot_transition_deltas(lfp_block_results, df_transitions, lfp_keys=None):
+    """
+    For each (cell, waveform feature) pair compute Δ = post-transition minus
+    pre-transition for each LFP feature, sign-corrected so that positive Δ
+    always means the LFP feature increased when the waveform cluster went from
+    a lower to a higher ordinal group (low→mid, low→high, mid→high).
+    Cells where the waveform went high→low have their Δ flipped.
+
+    Layout: one panel per waveform feature, x = LFP feature, y = Δ.
+    Each dot is one cell.  Horizontal line at zero marks no change.
+
+    Parameters
+    ----------
+    lfp_block_results : dict keyed by (cell_id, wf_feat), values = [block0, block1]
+    df_transitions    : DataFrame from find_temporal_transitions (needs
+                        cell_id, spike_feature, cluster_before, cluster_after)
+    lfp_keys          : list[str] LFP feature keys to include (default: 5 core)
+    """
+    lfp_keys = lfp_keys or _DELTA_LFP_KEYS
+
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+
+    # build a direction lookup: (cell_id, wf_feat) -> +1 or -1
+    # use the primary transition (first row per cell/feature pair)
+    direction_map = {}
+    primary = (df_transitions
+               .sort_values('transition_index')
+               .drop_duplicates(subset=['cell_id', 'spike_feature'], keep='first'))
+    for _, row in primary.iterrows():
+        before = _ORD.get(str(row['cluster_before']).lower(), 1)
+        after  = _ORD.get(str(row['cluster_after']).lower(),  1)
+        sign   = 1 if after >= before else -1
+        direction_map[(row['cell_id'], row['spike_feature'])] = sign
+
+    # collect per-waveform-feature rows
+    from collections import defaultdict
+    rows_by_wf = defaultdict(list)
+
+    # pass 1: collect raw deltas, sign-corrected for waveform direction
+    for key, blocks in lfp_block_results.items():
+        cid, wf_feat = key[0], key[1]
+        if len(blocks) < 2:
+            continue
+        b0, b1 = blocks[0], blocks[1]
+        sign = direction_map.get((cid, wf_feat), 1)
+        row = {'cell': cid, '_sign': sign}
+        for lk in lfp_keys:
+            if lk in b0 and lk in b1:
+                row[lk] = sign * (float(b1[lk]) - float(b0[lk]))
+        rows_by_wf[wf_feat].append(row)
+
+    # pass 2: compute cross-cell std per LFP feature (pooled across all wf groups)
+    all_rows = [r for rows in rows_by_wf.values() for r in rows]
+    norm_sd = {}
+    for lk in lfp_keys:
+        vals = [r[lk] for r in all_rows if lk in r]
+        norm_sd[lk] = float(np.std(vals)) if len(vals) > 1 else 1.0
+
+    # pass 3: normalise in place
+    for rows in rows_by_wf.values():
+        for row in rows:
+            for lk in lfp_keys:
+                if lk in row:
+                    row[lk] = row[lk] / (norm_sd[lk] + 1e-12)
+
+    wf_feats = sorted(rows_by_wf.keys(),
+                      key=lambda w: -len(rows_by_wf[w]))  # most cells first
+
+    # global y range across all panels
+    all_vals = [r[lk] for rows in rows_by_wf.values()
+                for r in rows for lk in lfp_keys if lk in r]
+    global_ymax = max(abs(v) for v in all_vals) * 1.15 if all_vals else 1.0
+    global_ylim = (-global_ymax, global_ymax)
+
+    n_wf  = len(wf_feats)
+    ncols = min(3, n_wf)
+    nrows = int(np.ceil(n_wf / ncols))
+    n_lk  = len(lfp_keys)
+
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=((0.8 + 0.9 * n_lk) * ncols, 4.0 * nrows),
+                             squeeze=False)
+
+    from matplotlib.lines import Line2D
+
+    for idx, wf in enumerate(wf_feats):
+        ax      = axes[idx // ncols][idx % ncols]
+        rows    = rows_by_wf[wf]
+        n_cells = len(rows)
+
+        ax.set_ylim(*global_ylim)
+        ax.axhline(0, color='#888', lw=1.0, ls='--', zorder=1)
+
+        x_ticks, x_labels = [], []
+        for xi, lk in enumerate(lfp_keys):
+            deltas = [r[lk] for r in rows if lk in r]
+            if not deltas:
+                continue
+
+            jitter = (np.random.default_rng(xi).random(len(deltas)) - 0.5) * 0.3
+
+            for j, d in zip(jitter, deltas):
+                col = _DIR_COL_POS if d >= 0 else _DIR_COL_NEG
+                ax.scatter(xi + j, d, color=col, edgecolors='white',
+                           linewidths=0.6, s=50, alpha=0.8, zorder=3)
+
+            mu  = float(np.mean(deltas))
+            sem = float(np.std(deltas) / np.sqrt(len(deltas)))
+            muc = _DIR_COL_POS if mu >= 0 else _DIR_COL_NEG
+            ax.plot([xi - 0.3, xi + 0.3], [mu, mu],
+                    color='k', lw=2.5, solid_capstyle='round', zorder=4)
+            ax.plot([xi, xi], [mu - sem, mu + sem],
+                    color='k', lw=1.5, zorder=4)
+
+            x_ticks.append(xi)
+            x_labels.append(_DELTA_LFP_LABELS.get(lk, lk))
+
+        ax.set_xlim(-0.6, n_lk - 0.4)
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, fontsize=9)
+        ax.set_title(f'{_DELTA_WF_LABELS.get(wf, wf)}  (n={n_cells})',
+                     fontsize=11, fontweight='bold')
+        if idx % ncols == 0:
+            ax.set_ylabel('Normalised Δ  (post − pre)', fontsize=9)
+        ax.tick_params(labelsize=8)
+        sns.despine(ax=ax)
+
+    for idx in range(n_wf, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    legend_handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_POS,
+               markersize=9, label='LFP ↑  when spike-feature cluster: low → high'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_DIR_COL_NEG,
+               markersize=9, label='LFP ↓  when spike-feature cluster: low → high'),
+        Line2D([0], [0], color='k', lw=2.5, label='mean ± SEM'),
+    ]
+    fig.legend(handles=legend_handles, fontsize=9, frameon=False,
+               loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.02))
+
+    fig.suptitle(
+        'LFP change at spike-feature cluster transition  (post − pre, normalised)\n'
+        'Each dot = one cell  ·  all panels share the same y-axis',
+        fontsize=11, y=1.01)
+    plt.tight_layout()
+    plt.show()
+    return fig, axes
+
+
+def _collect_delta_rows(lfp_block_results, df_transitions, lfp_keys):
+    """Shared data-prep for the transition-delta family of plots.
+
+    Returns (rows_by_wf, norm_sd, wf_feats, global_ylim).
+    Each row dict has keys: 'cell', '_sign', and one float per lk (normalised).
+
+    Keys in lfp_block_results may be 2-tuples (cell, feat) or 3-tuples
+    (cell, feat, transition_index).  Direction is resolved per transition when
+    the index is available, otherwise falls back to the primary transition.
+    Delta is computed as post − pre (requires both blocks to be present).
+    """
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+
+    # Build per-transition direction map keyed by (cell_id, feat, t_idx)
+    per_trans_dir = {}
+    for _, row in df_transitions.iterrows():
+        before = _ORD.get(str(row['cluster_before']).lower(), 1)
+        after  = _ORD.get(str(row['cluster_after']).lower(),  1)
+        sign   = 1 if after >= before else -1
+        per_trans_dir[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = sign
+
+    # Fallback: primary-transition direction map keyed by (cell_id, feat)
+    primary_dir = {(c, f): per_trans_dir[(c, f, 0)]
+                   for (c, f, ti) in per_trans_dir if ti == 0}
+
+    from collections import defaultdict
+    rows_by_wf = defaultdict(list)
+    for key, blocks in lfp_block_results.items():
+        cid, wf_feat = key[0], key[1]
+        t_idx = key[2] if len(key) > 2 else None
+
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' not in bmap or 'post' not in bmap:
+            continue  # need both endpoints
+
+        if t_idx is not None:
+            sign = per_trans_dir.get((cid, wf_feat, t_idx),
+                                     primary_dir.get((cid, wf_feat), 1))
+        else:
+            sign = primary_dir.get((cid, wf_feat), 1)
+
+        b_pre, b_post = bmap['pre'], bmap['post']
+        row = {'cell': cid, '_sign': sign}
+        for lk in lfp_keys:
+            if lk in b_pre and lk in b_post:
+                row[lk] = sign * (float(b_post[lk]) - float(b_pre[lk]))
+        rows_by_wf[wf_feat].append(row)
+
+    all_rows = [r for rows in rows_by_wf.values() for r in rows]
+    norm_sd = {}
+    for lk in lfp_keys:
+        vals = [r[lk] for r in all_rows if lk in r]
+        norm_sd[lk] = float(np.std(vals)) if len(vals) > 1 else 1.0
+
+    for rows in rows_by_wf.values():
+        for row in rows:
+            for lk in lfp_keys:
+                if lk in row:
+                    row[lk] = row[lk] / (norm_sd[lk] + 1e-12)
+
+    wf_feats = sorted(rows_by_wf.keys(), key=lambda w: -len(rows_by_wf[w]))
+
+    all_vals = [r[lk] for rows in rows_by_wf.values()
+                for r in rows for lk in lfp_keys if lk in r]
+    global_ymax = max(abs(v) for v in all_vals) * 1.15 if all_vals else 1.0
+
+    return rows_by_wf, norm_sd, wf_feats, (-global_ymax, global_ymax)
+
+
+def plot_transition_deltas_signed_mean(lfp_block_results, df_transitions, lfp_keys=None):
+    """
+    For each LFP metric, show % change (high − low cluster state) across spike features.
+
+    Subplots = LFP metrics; x-axis = spike features.
+
+    % change = sign × (post − pre) / mean(|pre|, |post|) × 100
+    where sign = +1 for low→high transitions, −1 for high→low, so positive always
+    means the LFP metric was higher in the high cluster state.
+
+    Stars = one-sample Wilcoxon vs 0.
+    """
+    import seaborn as sns
+    from scipy.stats import wilcoxon as _wilcoxon
+    from matplotlib.lines import Line2D
+
+    DOT_COL  = '#0072B2'
+    NEG_COL  = '#CC79A7'
+
+    lfp_keys = lfp_keys or _DELTA_LFP_KEYS
+
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+    _sign_lookup = {}
+    for _, row in df_transitions.iterrows():
+        before = _ORD.get(str(row.get('cluster_before', '')).lower(), -1)
+        after  = _ORD.get(str(row.get('cluster_after',  '')).lower(), -1)
+        if before < 0 or after < 0 or before == after:
+            continue
+        _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = (
+            1 if after > before else -1)
+
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    _WF_SHORT = {
+        'peak_amp':        'peak\namp',
+        'inflection_time': 'infl.\ntime',
+        'inflection_amp':  'infl.\namp',
+        'peak_sharpness':  'peak\nsharp.',
+        'peak_width':      'peak\nwidth',
+        'exp_lambda':      'exp\nλ',
+        'log_isi':         'log\nISI',
+    }
+
+    from collections import defaultdict
+    data         = defaultdict(lambda: defaultdict(list))   # feat → lk → [pct values]
+    auc_filtered = defaultdict(lambda: defaultdict(int))    # feat → lk → n_skipped
+    wf_seen      = set()
+
+    for key, blocks in lfp_block_results.items():
+        cid, feat = key[0], key[1]
+        t_idx = int(key[2]) if len(key) > 2 else 0
+        sign  = _sign_lookup.get((cid, feat, t_idx))
+        if sign is None:
+            continue
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' not in bmap or 'post' not in bmap:
+            continue
+        b_pre, b_post = bmap['pre'], bmap['post']
+        for lk in lfp_keys:
+            v_pre  = b_pre.get(lk)
+            v_post = b_post.get(lk)
+            if v_pre is not None and v_post is not None:
+                v_pre_f  = float(v_pre)
+                v_post_f = float(v_post)
+                # AUC metrics: require both blocks to have a detected peak.
+                # If either is 0 (no peak found by specparam), the % change is
+                # meaningless (always ±200%), so skip this pair.
+                if lk.endswith('_auc') and (v_pre_f < 1e-10 or v_post_f < 1e-10):
+                    auc_filtered[feat][lk] += 1
+                    continue
+                denom = (abs(v_pre_f) + abs(v_post_f)) / 2.0
+                if denom > 1e-10:
+                    pct = sign * 100.0 * (v_post_f - v_pre_f) / denom
+                    data[feat][lk].append(pct)
+        wf_seen.add(feat)
+
+    # Report filtering for AUC metrics
+    for feat in sorted(wf_seen):
+        for lk in lfp_keys:
+            if lk.endswith('_auc') and auc_filtered[feat][lk] > 0:
+                n_kept = len(data[feat][lk])
+                n_skip = auc_filtered[feat][lk]
+                print(f'  [{feat}|{lk}] kept={n_kept} skipped={n_skip} '
+                      f'(no peak in ≥1 block)', flush=True)
+
+    wf_feats = [f for f in WF_ORDER if f in wf_seen]
+    n_wf     = len(wf_feats)
+    n_lk     = len(lfp_keys)
+
+    _LBL_FS   = _FS_AX
+    _TICK_FS  = _FS_SM
+    _TTL_FS   = _FS_SUB
+    _STAR_FS  = _FS_TTL
+    _SPINE_LW = 2.0
+
+    # One subplot per LFP metric; x-axis = spike features
+    ncols   = 3
+    nrows   = int(np.ceil(n_lk / ncols))
+    panel_w = 2.2 + 1.2 * n_wf
+    panel_h = 5.5
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(panel_w * ncols, panel_h * nrows),
+                             squeeze=False)
+
+    for li, lk in enumerate(lfp_keys):
+        ax = axes[li // ncols][li % ncols]
+        ax.axhline(0, color='#ccc', lw=1.5, ls='--', zorder=1)
+
+        panel_vals = [v for wf in wf_feats for v in data[wf][lk]]
+        if panel_vals:
+            _pm = max(abs(min(panel_vals)), abs(max(panel_vals))) * 1.35
+            ax.set_ylim(-_pm, _pm)
+
+        x_ticks, x_labels = [], []
+        star_info = []   # (xi, star_y, star_str) collected after ylim is set
+        for xi, wf in enumerate(wf_feats):
+            x_ticks.append(xi)
+            x_labels.append(_WF_SHORT.get(wf, wf))
+            deltas = data[wf][lk]
+            if not deltas:
+                continue
+
+            col = _SPIKE_FEAT_COLORS.get(wf, '#888888')
+            rng    = np.random.default_rng(li * 100 + xi)
+            jitter = (rng.random(len(deltas)) - 0.5) * 0.30
+            ax.scatter(xi + jitter, deltas, color=col, edgecolors='white',
+                       linewidths=0.5, s=55, alpha=0.75, zorder=3)
+
+            mu  = float(np.mean(deltas))
+            sem = float(np.std(deltas, ddof=1) / np.sqrt(len(deltas)))
+            muc = DOT_COL if mu >= 0 else NEG_COL
+            ax.plot([xi - 0.30, xi + 0.30], [mu, mu],
+                    color=muc, lw=5.0, solid_capstyle='round', zorder=5)
+            ax.plot([xi, xi], [mu - sem, mu + sem],
+                    color=muc, lw=2.5, zorder=5)
+
+            star = ''
+            if len(deltas) >= 5:
+                try:
+                    _, p = _wilcoxon(deltas)
+                    star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+                    print(f'  [{lk}|{wf}] n={len(deltas)} p={p:.4f} {star or "ns"}', flush=True)
+                except Exception as _e:
+                    print(f'  [{lk}|{wf}] FAILED: {_e}', flush=True)
+            if star:
+                star_y = mu + sem   # will place just above the SEM bar
+                star_info.append((xi, star_y, star))
+
+        ax.set_xlim(-0.6, n_wf - 0.4)
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, fontsize=_TICK_FS, fontweight='bold',
+                           rotation=35, ha='right')
+        ax.set_title(_DELTA_LFP_LABELS.get(lk, lk), fontsize=_TTL_FS, fontweight='bold', pad=12)
+        ax.set_ylabel('% change\nhigh − low cluster state', fontsize=_LBL_FS, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=_TICK_FS, width=2.0, length=5)
+        ax.tick_params(axis='x', length=0)
+        for spine in ['left', 'bottom']:
+            ax.spines[spine].set_linewidth(_SPINE_LW)
+        sns.despine(ax=ax, offset=8)
+
+        # place significance stars above SEM bar
+        y_lo, y_hi = ax.get_ylim()
+        y_range = y_hi - y_lo
+        for xi, star_y, star in star_info:
+            ax.text(xi, star_y + y_range * 0.03, star,
+                    ha='center', va='bottom',
+                    fontsize=_STAR_FS, fontweight='bold', color='#1a1a1a', zorder=6)
+
+    for li in range(n_lk, nrows * ncols):
+        axes[li // ncols][li % ncols].set_visible(False)
+
+    # Legend as a standalone figure returned separately
+    fig_leg, ax_leg = plt.subplots(figsize=(6, 1.6))
+    ax_leg.axis('off')
+    legend_handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='#888888',
+               markersize=14, label='Individual transition (colored by feature)'),
+        Line2D([0], [0], color=DOT_COL, lw=5, label='Mean ± SEM  (positive direction)'),
+        Line2D([0], [0], color=NEG_COL, lw=5, label='Mean ± SEM  (negative direction)'),
+    ]
+    ax_leg.legend(handles=legend_handles, fontsize=_FS_AX, frameon=False,
+                  loc='center', ncol=1, handlelength=2.5)
+    fig_leg.tight_layout()
+
+    fig.suptitle(
+        'LFP % change: high vs. low cluster state\n'
+        '* p<0.05, ** p<0.01, *** p<0.001  (one-sample Wilcoxon vs 0; '
+        'positive = higher in high cluster state)',
+        fontsize=_FS_SUB, fontweight='bold', y=1.01)
+    plt.tight_layout()
+    return fig, axes, fig_leg
+
+
+def plot_lfp_metrics_low_vs_high(lfp_block_results, df_transitions,
+                                  lfp_keys=None, figsize=None):
+    """
+    Strip plot of LFP scalar metrics for low vs high cluster state,
+    one panel per metric, grouped by spike feature.
+    Two dot clusters per feature (low left, high right) with paired lines.
+    Stats: Wilcoxon signed-rank (paired) per feature.
+    Returns (fig, fig_legend).
+    """
+    from scipy.stats import wilcoxon as _wilcoxon
+    from matplotlib.lines import Line2D
+    import seaborn as sns
+    from collections import defaultdict
+
+    lfp_keys = lfp_keys or ['mean_amp', 'std_amp', 'exponent', 'offset',
+                              'theta_auc', 'total_gamma_auc']
+
+    _LFP_UNITS = {
+        'mean_amp':        'a.u.',
+        'std_amp':         'a.u.',
+        'exponent':        'a.u.',
+        'offset':          'a.u.',
+        'theta_auc':       'a.u.',
+        'total_gamma_auc': 'a.u.',
+        'slow_gamma_auc':  'a.u.',
+        'high_gamma_auc':  'a.u.',
+    }
+
+    LOW_COL  = '#0072B2'
+    HIGH_COL = '#CC79A7'
+
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+    _sign_lookup = {}
+    for _, row in df_transitions.iterrows():
+        before = _ORD.get(str(row.get('cluster_before', '')).lower(), -1)
+        after  = _ORD.get(str(row.get('cluster_after',  '')).lower(), -1)
+        if before < 0 or after < 0 or before == after:
+            continue
+        _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = (
+            1 if after > before else -1)
+
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    _WF_SHORT = {
+        'peak_amp':        'peak\namp',
+        'inflection_time': 'infl.\ntime',
+        'inflection_amp':  'infl.\namp',
+        'peak_sharpness':  'peak\nsharp.',
+        'peak_width':      'peak\nwidth',
+        'exp_lambda':      'exp\nλ',
+        'log_isi':         'log\nISI',
+    }
+
+    # Collect paired (low, high) values per feature × metric
+    feat_data = defaultdict(lambda: defaultdict(lambda: {'low': [], 'high': []}))
+    wf_seen = set()
+
+    for key, blocks in lfp_block_results.items():
+        cid, feat = key[0], key[1]
+        t_idx = int(key[2]) if len(key) > 2 else 0
+        sign  = _sign_lookup.get((cid, feat, t_idx))
+        if sign is None:
+            continue
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' not in bmap or 'post' not in bmap:
+            continue
+        b_pre, b_post = bmap['pre'], bmap['post']
+        for lk in lfp_keys:
+            v_pre  = b_pre.get(lk)
+            v_post = b_post.get(lk)
+            if v_pre is None or v_post is None:
+                continue
+            v_pre, v_post = float(v_pre), float(v_post)
+            if sign == 1:   # low→high: pre=low state, post=high state
+                feat_data[feat][lk]['low'].append(v_pre)
+                feat_data[feat][lk]['high'].append(v_post)
+            else:           # high→low: pre=high state, post=low state
+                feat_data[feat][lk]['low'].append(v_post)
+                feat_data[feat][lk]['high'].append(v_pre)
+        wf_seen.add(feat)
+
+    wf_feats = [f for f in WF_ORDER if f in wf_seen]
+    n_wf = len(wf_feats)
+    n_lk = len(lfp_keys)
+
+    ncols   = 3
+    nrows   = int(np.ceil(n_lk / ncols))
+    panel_w = 1.2 + 0.95 * n_wf
+    panel_h = 6.2
+    fw = figsize[0] if figsize else panel_w * ncols
+    fh = figsize[1] if figsize else panel_h * nrows
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fw, fh), squeeze=False)
+
+    for li, lk in enumerate(lfp_keys):
+        ax = axes[li // ncols][li % ncols]
+        x_ticks, x_labels = [], []
+        star_queue = []
+
+        for xi, feat in enumerate(wf_feats):
+            x_lo = xi - 0.22
+            x_hi = xi + 0.22
+            x_ticks.append(xi)
+            x_labels.append(_WF_SHORT.get(feat, feat))
+
+            d = feat_data[feat][lk]
+            lo_vals = np.array(d['low'])
+            hi_vals = np.array(d['high'])
+            if len(lo_vals) == 0:
+                continue
+
+            rng = np.random.default_rng(li * 100 + xi)
+
+            # Paired lines (behind dots)
+            for lv, hv in zip(lo_vals, hi_vals):
+                ax.plot([x_lo, x_hi], [lv, hv], color='#aaaaaa', lw=1.8, alpha=0.75, zorder=1)
+
+            # Dots
+            j_lo = rng.uniform(-0.07, 0.07, size=len(lo_vals))
+            j_hi = rng.uniform(-0.07, 0.07, size=len(hi_vals))
+            ax.scatter(x_lo + j_lo, lo_vals, color=LOW_COL, s=90, alpha=0.80,
+                       edgecolors='white', linewidths=0.8, zorder=3)
+            ax.scatter(x_hi + j_hi, hi_vals, color=HIGH_COL, s=90, alpha=0.80,
+                       edgecolors='white', linewidths=0.8, zorder=3)
+
+            # Mean ± SEM crosshairs
+            for xc, vals, col in [(x_lo, lo_vals, LOW_COL), (x_hi, hi_vals, HIGH_COL)]:
+                mu  = float(np.mean(vals))
+                sem = float(np.std(vals, ddof=1) / np.sqrt(len(vals))) if len(vals) > 1 else 0
+                ax.plot([xc - 0.15, xc + 0.15], [mu, mu],
+                        color=col, lw=6.0, solid_capstyle='round', zorder=5)
+                ax.plot([xc, xc], [mu - sem, mu + sem],
+                        color=col, lw=1.8, zorder=5)
+
+            # Paired Wilcoxon signed-rank
+            star = ''
+            if len(lo_vals) >= 5:
+                try:
+                    _, p = _wilcoxon(lo_vals, hi_vals)
+                    star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+                    print(f'  [{lk}|{feat}] n={len(lo_vals)} p={p:.4f} {star or "ns"}', flush=True)
+                except Exception as _e:
+                    print(f'  [{lk}|{feat}] FAILED: {_e}', flush=True)
+            if star:
+                star_queue.append((xi, x_lo, x_hi, star))
+
+        ax.set_xlim(-0.6, n_wf - 0.4)
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, rotation=0, ha='center')
+        ax.tick_params(axis='x', labelsize=22, length=0)
+        for lbl in ax.get_xticklabels():
+            lbl.set_fontweight('bold')
+
+        # Draw star below x-tick label for significant features
+        if star_queue:
+            for xi, x_lo, x_hi, star in star_queue:
+                ax.text(xi, -0.28, star, ha='center', va='top',
+                        transform=ax.get_xaxis_transform(),
+                        fontsize=48, fontweight='bold', color='#1a1a1a')
+        ax.set_ylabel(_LFP_UNITS.get(lk, ''), fontsize=20, fontweight='bold')
+        ax.set_title(_DELTA_LFP_LABELS.get(lk, lk), fontsize=28, fontweight='bold', pad=14)
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4))
+        ax.tick_params(axis='y', labelsize=18, width=2.0, length=5)
+        sns.despine(ax=ax, offset=8)
+
+    for li in range(n_lk, nrows * ncols):
+        axes[li // ncols][li % ncols].set_visible(False)
+
+    # Separate legend figure
+    fig_leg, ax_leg = plt.subplots(figsize=(6, 1.4))
+    ax_leg.axis('off')
+    handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=LOW_COL,
+               markersize=13, label='Lower cluster state'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=HIGH_COL,
+               markersize=13, label='Higher cluster state'),
+        Line2D([0], [0], color='#aaaaaa', lw=2.0, label='Paired transition'),
+    ]
+    ax_leg.legend(handles=handles, fontsize=_FS_AX, frameon=False,
+                  loc='center', ncol=3, handlelength=2.5)
+    fig_leg.tight_layout()
+
+    fig.suptitle(
+        'LFP metrics: low vs. high cluster state\n'
+        '* p<0.05  ** p<0.01  *** p<0.001  (Wilcoxon signed-rank, paired)',
+        fontsize=22, fontweight='bold', y=1.01)
+    fig.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
+    return fig, fig_leg
+
+
+def plot_lfp_avg_psd_per_feature(lfp_block_results, df_transitions, freq_range=(1, 90),
+                                   sig_alpha=0.05, figsize=None):
+    """
+    Population LFP spectra for low vs high cluster state per spike feature.
+
+    Visualization style mirrors the single-cell specparam plot:
+      - Thin semi-transparent lines: raw PSD per transition (low=blue, high=pink)
+      - Dashed line: mean aperiodic component
+      - Solid thick line ± shading: mean full specparam model ± SEM
+
+    Normalization: within-transition per-cell baseline subtracted, then the
+    feature-wise grand mean spectrum added back, so curves show the actual 1/f
+    shape at the average amplitude level rather than flat deviations near zero.
+
+    Significance: Wilcoxon on per-transition mean(high − low) in theta (4–15 Hz)
+    and gamma (30–80 Hz) bands separately; Bonferroni-corrected across the two bands.
+    Only significant features are shown; shows all with p-values if none pass.
+    """
+    import seaborn as sns
+    from scipy.stats import wilcoxon as _wilcoxon
+    from collections import defaultdict
+
+    LOW_COL  = '#0072B2'
+    HIGH_COL = '#CC79A7'
+
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi']
+    FEAT_LABELS = {
+        'peak_amp':        'Peak amp',
+        'inflection_time': 'Inflection time',
+        'inflection_amp':  'Inflection amp',
+        'peak_sharpness':  'Peak sharpness',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+    }
+
+    _ORD = {'low': 0, 'mid': 1, 'high': 2}
+    _sign_lookup = {}
+    for _, row in df_transitions.iterrows():
+        before = _ORD.get(str(row.get('cluster_before', '')).lower(), -1)
+        after  = _ORD.get(str(row.get('cluster_after',  '')).lower(), -1)
+        if before < 0 or after < 0 or before == after:
+            continue
+        _sign_lookup[(row['cell_id'], row['spike_feature'], int(row['transition_index']))] = (
+            1 if after > before else -1)
+
+    _f_lo, _f_hi = freq_range
+    common_freqs = np.linspace(_f_lo, _f_hi, 300)
+    theta_mask   = (common_freqs >= 4)  & (common_freqs <= 15)
+    gamma_mask   = (common_freqs >= 30) & (common_freqs <= 80)
+
+    def _interp_fit(blk, comp):
+        ff = blk.get('freqs_fit')
+        fl = blk.get(comp)
+        if ff is None or fl is None:
+            return None
+        ff = np.asarray(ff); fl = np.asarray(fl)
+        mask = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(fl)
+        return np.interp(common_freqs, ff[mask], fl[mask]) if mask.sum() >= 5 else None
+
+    # ── first pass: collect raw arrays per transition ──────────────────────────
+    # feat_trans[feat] = list of dicts per transition
+    feat_trans = defaultdict(list)
+    feat_wf    = set()
+
+    for key, blocks in lfp_block_results.items():
+        cid, feat = key[0], key[1]
+        t_idx = int(key[2]) if len(key) > 2 else 0
+        sign  = _sign_lookup.get((cid, feat, t_idx))
+        if sign is None:
+            continue
+        bmap = {b['label']: b for b in blocks if b.get('label') in ('pre', 'post')}
+        if 'pre' not in bmap or 'post' not in bmap:
+            continue
+
+        # specparam fits are required; raw PSD is optional (just for display)
+        pre_full  = _interp_fit(bmap['pre'],  'full_log')
+        post_full = _interp_fit(bmap['post'], 'full_log')
+        if pre_full is None or post_full is None:
+            continue
+        fit_baseline = (pre_full + post_full) / 2.0
+
+        pre_ape  = _interp_fit(bmap['pre'],  'ape_log')
+        post_ape = _interp_fit(bmap['post'], 'ape_log')
+
+        if sign == 1:          # low→high: pre = low, post = high
+            low_full,  high_full  = pre_full,  post_full
+            low_ape,   high_ape   = pre_ape,   post_ape
+        else:                  # high→low: pre = high, post = low  (flip)
+            high_full, low_full   = pre_full,  post_full
+            high_ape,  low_ape    = pre_ape,   post_ape
+
+        # raw PSD
+        pre_psd  = bmap['pre'].get('psd',  bmap['pre'].get('mean_psd'))
+        post_psd = bmap['post'].get('psd', bmap['post'].get('mean_psd'))
+        pre_freq  = bmap['pre'].get('freqs')
+        post_freq = bmap['post'].get('freqs')
+        raw_baseline = low_raw = high_raw = None
+        if all(x is not None for x in [pre_psd, post_psd, pre_freq, post_freq]):
+            pre_i  = np.clip(np.interp(common_freqs, pre_freq,  np.asarray(pre_psd)),  1e-15, None)
+            post_i = np.clip(np.interp(common_freqs, post_freq, np.asarray(post_psd)), 1e-15, None)
+            raw_baseline = (np.log10(pre_i) + np.log10(post_i)) / 2.0
+            if sign == 1:
+                low_raw, high_raw = np.log10(pre_i), np.log10(post_i)
+            else:
+                high_raw, low_raw = np.log10(pre_i), np.log10(post_i)
+
+        feat_trans[feat].append(dict(
+            low_full=low_full, high_full=high_full, fit_baseline=fit_baseline,
+            low_ape=low_ape,   high_ape=high_ape,
+            low_raw=low_raw,   high_raw=high_raw,  raw_baseline=raw_baseline,
+        ))
+        feat_wf.add(feat)
+
+    # ── second pass: add grand mean baseline back so curves show real 1/f shape ─
+    feat_display = {}
+
+    for feat in feat_wf:
+        trans = feat_trans[feat]
+        grand_fit = np.mean([t['fit_baseline'] for t in trans], axis=0)
+
+        raw_bases = [t['raw_baseline'] for t in trans if t['raw_baseline'] is not None]
+        grand_raw = np.mean(raw_bases, axis=0) if raw_bases else grand_fit
+
+        d = {k: [] for k in ('low_fit', 'high_fit', 'low_ape', 'high_ape',
+                              'low_raw', 'high_raw', 'diff_theta', 'diff_gamma')}
+
+        for t in trans:
+            fb = t['fit_baseline']
+            # display = (value − per_cell_baseline) + grand_mean_baseline
+            lf = (t['low_full']  - fb) + grand_fit
+            hf = (t['high_full'] - fb) + grand_fit
+            d['low_fit'].append(lf)
+            d['high_fit'].append(hf)
+
+            diff = hf - lf    # = t['high_full'] − t['low_full'] (offset cancels)
+            d['diff_theta'].append(float(np.mean(diff[theta_mask])))
+            d['diff_gamma'].append(float(np.mean(diff[gamma_mask])))
+
+            if t['low_ape'] is not None and t['high_ape'] is not None:
+                # use fit baseline for both (same y-axis scale)
+                d['low_ape'].append((t['low_ape']  - fb) + grand_fit)
+                d['high_ape'].append((t['high_ape'] - fb) + grand_fit)
+
+            rb = t['raw_baseline']
+            if t['low_raw'] is not None and rb is not None:
+                d['low_raw'].append((t['low_raw']  - rb) + grand_raw)
+                d['high_raw'].append((t['high_raw'] - rb) + grand_raw)
+
+        feat_display[feat] = d
+
+    # ── significance: theta and gamma bands, Bonferroni × 2 ───────────────────
+    feat_order  = [f for f in WF_ORDER if f in feat_wf]
+    feat_stats  = {}   # feat → (n, p_theta, p_gamma, sig)
+    for feat in feat_order:
+        d = feat_display[feat]
+        n = len(d['low_fit'])
+        p_t = p_g = 1.0
+        if n >= 4:
+            try: _, p_t = _wilcoxon(d['diff_theta'])
+            except Exception: pass
+            try: _, p_g = _wilcoxon(d['diff_gamma'])
+            except Exception: pass
+        p_t_adj = p_t
+        p_g_adj = p_g
+        sig = (p_t_adj < sig_alpha) or (p_g_adj < sig_alpha)
+        feat_stats[feat] = (n, p_t, p_g, p_t_adj, p_g_adj, sig)
+        mark = '*' if sig else 'ns'
+        print(f'  [{feat}] n={n}  θ p={p_t:.4f} (adj {p_t_adj:.4f})  '
+              f'γ p={p_g:.4f} (adj {p_g_adj:.4f})  {mark}', flush=True)
+
+    sig_feats   = [f for f in feat_order if feat_stats[f][3]]
+    show_feats  = sig_feats if sig_feats else feat_order
+    if not sig_feats:
+        print('No features passed threshold — showing all.', flush=True)
+
+    n_feats = len(show_feats)
+    ncols   = min(3, n_feats)
+    nrows   = int(np.ceil(n_feats / ncols)) if n_feats > 0 else 1
+
+    _wf_seen = set()
+    for key, blocks in lfp_block_results.items():
+        feat = key[1]
+        t_idx = int(key[2]) if len(key) > 2 else 0
+        if _sign_lookup.get((key[0], feat, t_idx)) is None:
+            continue
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' in bmap and 'post' in bmap:
+            _wf_seen.add(feat)
+    _n_wf = len([f for f in WF_ORDER if f in _wf_seen])
+    total_w = (1.2 + 0.95 * _n_wf) * 3
+    fw = figsize[0] if figsize else total_w
+    fh = figsize[1] if figsize else 6.2 * nrows
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fw, fh), squeeze=False)
+
+    for idx, feat in enumerate(show_feats):
+        ax = axes[idx // ncols][idx % ncols]
+        d  = feat_display[feat]
+        n, p_t, p_g, p_t_adj, p_g_adj, sig = feat_stats[feat]
+
+        def _star(p): return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+        sig_parts = []
+        if p_t_adj < sig_alpha:
+            sig_parts.append(f'Theta {_star(p_t)}')
+        if p_g_adj < sig_alpha:
+            sig_parts.append(f'Gamma {_star(p_g)}')
+        title = f'{FEAT_LABELS.get(feat, feat)}  (n={n})'
+        if sig_parts:
+            title += '\n' + '   '.join(sig_parts)
+        ax.set_title(title, fontsize=28, fontweight='bold')
+
+        for state, col in [('low', LOW_COL), ('high', HIGH_COL)]:
+            for arr in d[f'{state}_raw']:
+                ax.plot(common_freqs, arr, color=col, lw=0.5, alpha=0.12, zorder=2)
+
+            fits = d[f'{state}_fit']
+            if fits:
+                mn  = np.mean(np.array(fits), axis=0)
+                sem = np.std(np.array(fits),  axis=0, ddof=1) / np.sqrt(n)
+                ax.plot(common_freqs, mn, color=col, lw=3.0, zorder=5)
+                ax.fill_between(common_freqs, mn - sem, mn + sem,
+                                color=col, alpha=0.25, zorder=4)
+
+            apes = d[f'{state}_ape']
+            if apes:
+                mn_ape = np.mean(np.array(apes), axis=0)
+                ax.plot(common_freqs, mn_ape, color=col, lw=1.5, ls='--',
+                        alpha=0.65, zorder=3)
+
+        ax.set_xlabel('Frequency (Hz)', fontsize=20)
+        ax.tick_params(axis='both', labelsize=18)
+        if idx % ncols == 0:
+            ax.set_ylabel('log(power)', fontsize=20)
+        ax.set_xlim(_f_lo, _f_hi)
+        sns.despine(ax=ax)
+
+    for idx in range(n_feats, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    fig.suptitle(
+        'LFP power spectra: low vs. high cluster state\n'
+        'thin=raw PSD · dashed=aperiodic · solid±shade=specparam fit±SEM',
+        fontsize=22, fontweight='bold', y=1.02)
+    fig.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
+
+    from matplotlib.lines import Line2D
+    fig_leg, ax_leg = plt.subplots(figsize=(7, 1.4))
+    ax_leg.axis('off')
+    handles = [
+        Line2D([0], [0], color=LOW_COL,  lw=3.0, label='Lower cluster state'),
+        Line2D([0], [0], color=HIGH_COL, lw=3.0, label='Higher cluster state'),
+    ]
+    ax_leg.legend(handles=handles, fontsize=_FS_AX, frameon=False,
+                  loc='center', ncol=2, handlelength=2.5)
+    fig_leg.tight_layout()
+
+    return fig, fig_leg
+
+
+def compute_whole_recording_psds(df_transitions, lfp_npy_dir, fs=2500,
+                                  freq_range=(1, 90), include_no_transition=True,
+                                  save_path=None, force=False):
+    """
+    Compute specparam fits on the full LFP recording for each cell.
+
+    Transitioning cells → one entry per (cell, feat, t_idx) row in df_transitions.
+    Non-transitioning cells (LFP file exists but no row in df_transitions) →
+    one entry with feat='no_transition', t_idx=0.  Include/exclude via
+    `include_no_transition`.
+
+    Returns a dict formatted like peri_results:
+        (cell_id, feat, t_idx) → [{'label': 'full', 'full_log': ..., ...}]
+    """
+    import os, pickle
+    from scipy.signal import welch
+    from specparam import SpectralModel
+    try:
+        from specparam.utils import interpolate_spectrum
+    except ImportError:
+        from fooof.utils import interpolate_spectrum
+
+    if save_path and not force and os.path.exists(save_path):
+        with open(save_path, 'rb') as _f:
+            cached = pickle.load(_f)
+        print(f'Loaded cached whole-recording PSDs from {save_path}')
+        return cached
+
+    _f_lo, _f_hi = freq_range
+    _sm_kwargs = dict(aperiodic_mode='fixed', peak_width_limits=(4.0, 8.0),
+                      max_n_peaks=4, min_peak_height=0.0,
+                      peak_threshold=1.5, verbose=False)
+
+    cell_psd_cache = {}
+
+    def _fit_cell(cid):
+        if cid in cell_psd_cache:
+            return cell_psd_cache[cid]
+        lfp_path = os.path.join(lfp_npy_dir, f'{cid}_lfp.npy')
+        if not os.path.exists(lfp_path):
+            cell_psd_cache[cid] = None
+            return None
+        lfp = np.load(lfp_path)
+        nperseg = min(len(lfp), int(fs * 4.0))
+        freqs_w, psd_w = welch(lfp, fs=fs, nperseg=nperseg,
+                               noverlap=nperseg // 2, scaling='density')
+        fmask = (freqs_w >= _f_lo) & (freqs_w <= _f_hi)
+        freqs_out, psd_out = freqs_w[fmask], psd_w[fmask]
+        try:
+            sm = SpectralModel(**_sm_kwargs)
+            freqs_sm, psd_sm = interpolate_spectrum(freqs_out, psd_out, [58, 62])
+            sm.fit(freqs_sm, psd_sm, freq_range=freq_range)
+            _ff  = np.asarray(sm.freqs)
+            _fl  = np.asarray(sm.get_model(component='full',      space='log'))
+            _al  = np.asarray(sm.get_model(component='aperiodic', space='log'))
+            def _auc(flo, fhi):
+                m = (_ff >= flo) & (_ff <= fhi)
+                d = np.where(np.isfinite(_fl[m] - _al[m]), _fl[m] - _al[m], 0.0)
+                return float(np.trapz(np.clip(d, 0, None), _ff[m]))
+            blk = dict(
+                label='full',
+                freqs=freqs_out.tolist(),
+                psd=psd_out.tolist(),
+                freqs_fit=_ff.tolist(),
+                full_log=_fl.tolist(),
+                ape_log=_al.tolist(),
+                mean_amp=float(np.mean(lfp)),
+                std_amp=float(np.std(lfp)),
+                exponent=float(sm.get_params('aperiodic_params', 'exponent')),
+                offset=float(sm.get_params('aperiodic_params', 'offset')),
+                theta_auc=_auc(4, 15),
+                slow_gamma_auc=_auc(30, 60),
+                high_gamma_auc=_auc(60, 80),
+                total_gamma_auc=_auc(30, 80),
+            )
+        except Exception as e:
+            print(f'  specparam failed for {cid}: {e}')
+            cell_psd_cache[cid] = None
+            return None
+        cell_psd_cache[cid] = blk
+        return blk
+
+    results = {}
+    transitioning_cells = set(df_transitions['cell_id'].unique())
+
+    for _, row in df_transitions.iterrows():
+        cid  = row['cell_id']
+        feat = row['spike_feature']
+        tidx = int(row['transition_index'])
+        blk  = _fit_cell(cid)
+        if blk is None:
+            continue
+        results[(cid, feat, tidx)] = [blk]
+
+    if include_no_transition:
+        import re
+        lfp_files = [f for f in os.listdir(lfp_npy_dir) if f.endswith('_lfp.npy')]
+        for fname in sorted(lfp_files):
+            cid = fname.replace('_lfp.npy', '')
+            if cid in transitioning_cells:
+                continue
+            blk = _fit_cell(cid)
+            if blk is None:
+                continue
+            results[(cid, 'no_transition', 0)] = [blk]
+        n_no_trans = sum(1 for k in results if k[1] == 'no_transition')
+        print(f'  no-transition cells added: {n_no_trans}')
+
+    print(f'compute_whole_recording_psds: {len(results)} entries across '
+          f'{len(cell_psd_cache)} cells')
+
+    if save_path:
+        with open(save_path, 'wb') as _f:
+            pickle.dump(results, _f)
+        print(f'  saved → {save_path}')
+    return results
+
+
+def plot_lfp_metrics_by_feature_group(lfp_block_results,
+                                       metric_keys=None, figsize=None):
+    """
+    Strip + crosshair plots of absolute LFP scalar metrics grouped by spike feature.
+
+    For each entry in lfp_block_results:
+      - If 'pre' and 'post' blocks exist: metric = mean(pre_val, post_val)
+      - If a single 'full' block exists: metric = full_val
+
+    One subplot per metric.  X-axis = feature group.  Each dot = one event.
+    Black crosshair = mean ± SEM.  Kruskal-Wallis p across all groups in title.
+    No-transition group shown in gray if present.
+    """
+    from scipy.stats import kruskal as _kruskal
+    import seaborn as sns
+
+    _DEFAULT_METRICS = [
+        ('mean_amp',        'Mean amplitude',    'a.u.'),
+        ('std_amp',         'Stdev amplitude',   'a.u.'),
+        ('exponent',        'Aperiodic exponent', 'a.u.'),
+        ('offset',          'Aperiodic offset',  'a.u.'),
+        ('theta_auc',       'Theta AUC',         'a.u.'),
+        ('total_gamma_auc', 'Gamma AUC',         'a.u.'),
+    ]
+    if metric_keys is not None:
+        metric_specs = [(k, t, u) for k, t, u in _DEFAULT_METRICS if k in metric_keys]
+    else:
+        metric_specs = _DEFAULT_METRICS
+
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi', 'no_transition']
+    FEAT_LABELS = {
+        'peak_amp':        'peak amp',
+        'inflection_time': 'infl. time',
+        'inflection_amp':  'infl. amp',
+        'peak_sharpness':  'peak sharp.',
+        'peak_width':      'peak wid.',
+        'exp_lambda':      'exp λ',
+        'log_isi':         'log ISI',
+        'no_transition':   'no trans.',
+    }
+    _NO_TRANS_COLOR = '#000000'
+
+    # ── collect scalar metrics per event, grouped by feature ──────────────────
+    from collections import defaultdict
+    feat_data = defaultdict(lambda: defaultdict(list))
+
+    for key, blocks in lfp_block_results.items():
+        feat = key[1]
+        bmap = {b['label']: b for b in blocks}
+        for mk, _, __ in metric_specs:
+            if 'pre' in bmap and 'post' in bmap:
+                v_pre  = bmap['pre'].get(mk)
+                v_post = bmap['post'].get(mk)
+                if v_pre is not None and v_post is not None:
+                    feat_data[feat][mk].append((v_pre + v_post) / 2.0)
+            elif 'full' in bmap:
+                v = bmap['full'].get(mk)
+                if v is not None:
+                    feat_data[feat][mk].append(v)
+
+    feat_present = [f for f in WF_ORDER if f in feat_data]
+    if not feat_present:
+        print('plot_lfp_metrics_by_feature_group: no data found')
+        return None
+
+    colored_feats = [f for f in feat_present if f != 'no_transition']
+    feat_colors = {f: _SPIKE_FEAT_COLORS.get(f, '#888888') for f in colored_feats}
+    if 'no_transition' in feat_present:
+        feat_colors['no_transition'] = _NO_TRANS_COLOR
+
+    n_met  = len(metric_specs)
+    ncols  = min(3, n_met)
+    nrows  = int(np.ceil(n_met / ncols))
+    fw = figsize[0] if figsize else 10.0 * ncols
+    fh = figsize[1] if figsize else 7.5 * nrows
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fw, fh), squeeze=False)
+
+    rng = np.random.default_rng(42)
+
+    # Note: intentionally uncorrected across the 6 metrics — this analysis is
+    # exploratory (small per-group samples), consistent with Supp. Fig. 12.
+    for m_i, (mk, title_lbl, unit_lbl) in enumerate(metric_specs):
+        ax = axes[m_i // ncols][m_i % ncols]
+
+        groups = [feat_data[f][mk] for f in feat_present]
+        if all(len(g) == 0 for g in groups):
+            ax.set_visible(False)
+            continue
+
+        # Kruskal-Wallis across non-empty groups
+        non_empty_idx = [i for i, g in enumerate(groups) if len(g) >= 2]
+        non_empty     = [groups[i] for i in non_empty_idx]
+        p_kw = np.nan
+        if len(non_empty) >= 2:
+            try:
+                _, p_kw = _kruskal(*non_empty)
+            except Exception:
+                pass
+
+        def _star(p):
+            if np.isnan(p): return 'n/a'
+            return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+
+        sig_star = _star(p_kw) if (not np.isnan(p_kw) and p_kw < 0.05) else ''
+        title_str = f'{title_lbl} {sig_star}' if sig_star else title_lbl
+        ax.set_title(title_str, fontsize=42, fontweight='bold')
+
+        for xi, feat in enumerate(feat_present):
+            vals = np.array(feat_data[feat][mk])
+            if len(vals) == 0:
+                continue
+            col = feat_colors[feat]
+            jitter = rng.uniform(-0.18, 0.18, size=len(vals))
+            ax.scatter(xi + jitter, vals, color=col, s=160, alpha=0.75,
+                       edgecolors='white', linewidths=0.8, zorder=3)
+            mu  = np.mean(vals)
+            sem = np.std(vals, ddof=1) / np.sqrt(len(vals)) if len(vals) > 1 else 0
+            ax.plot([xi - 0.25, xi + 0.25], [mu, mu],
+                    color='#111', lw=6.0, solid_capstyle='round', zorder=5)
+            ax.plot([xi, xi], [mu - sem, mu + sem],
+                    color='#111', lw=1.8, zorder=5)
+
+        ax.set_xticks(range(len(feat_present)))
+        ax.set_xticklabels([FEAT_LABELS.get(f, f) for f in feat_present])
+        ax.tick_params(axis='x', labelsize=36, length=5, labelrotation=45)
+        plt.setp(ax.xaxis.get_majorticklabels(), ha='right',
+                 rotation_mode='anchor', fontweight='bold')
+        ax.set_ylabel(unit_lbl, fontsize=32, fontweight='bold')
+        ax.axhline(0, color='#aaa', lw=0.8, ls='--', zorder=1)
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4))
+        ax.tick_params(axis='y', labelsize=28, width=2.0, length=5)
+        sns.despine(ax=ax, offset=8)
+
+    for idx in range(n_met, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    fig.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
+    return fig
+
+
+def plot_lfp_psd_by_feature_group(lfp_block_results, df_transitions,
+                                   freq_range=(1, 90), figsize=None):
+    """
+    Compare absolute LFP spectra across spike-feature groups.
+
+    For each transition event (cell, feat, t_idx) computes the mean LFP PSD
+    across pre and post blocks.  Groups by spike_feature.
+
+    Normalization removes between-cell amplitude differences while preserving
+    between-feature level differences:
+        per_cell_mean = mean(mean_psd) across all that cell's transitions
+        display = (value − per_cell_mean[cell]) + global_grand_mean
+
+    Figure 1 — overlay: all feature groups on one axes (mean ± SEM).
+    Figure 2 — grid: one subplot per feature, y-axis shared across all panels
+                so you can visually compare levels.
+
+    Returns (fig_overlay, fig_grid).
+    """
+    import seaborn as sns
+    from collections import defaultdict
+
+    _f_lo, _f_hi = freq_range
+    common_freqs = np.linspace(_f_lo, _f_hi, 300)
+
+    WF_ORDER = ['inflection_amp', 'inflection_time', 'peak_amp', 'peak_sharpness',
+                'peak_width', 'exp_lambda', 'log_isi', 'no_transition']
+    FEAT_LABELS = {
+        'peak_amp':        'Peak amp',
+        'inflection_time': 'Inflection time',
+        'inflection_amp':  'Inflection amp',
+        'peak_sharpness':  'Peak sharpness',
+        'peak_width':      'Peak width',
+        'exp_lambda':      'Exp λ',
+        'log_isi':         'Log ISI',
+        'no_transition':   'No transition',
+    }
+    _NO_TRANS_COLOR = '#000000'
+    feat_colors = {}
+
+    def _interp_fit(blk, comp):
+        ff = blk.get('freqs_fit')
+        fl = blk.get(comp)
+        if ff is None or fl is None:
+            return None
+        ff = np.asarray(ff); fl = np.asarray(fl)
+        mask = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(fl)
+        return np.interp(common_freqs, ff[mask], fl[mask]) if mask.sum() >= 5 else None
+
+    # ── first pass: collect mean full/ape/raw PSD per event ──────────────────
+    # events[feat] = list of (cid, mean_full, mean_ape, mean_raw)
+    events = defaultdict(list)
+
+    def _interp_raw(blk):
+        ff = blk.get('freqs')
+        ps = blk.get('psd', blk.get('mean_psd'))
+        if ff is None or ps is None:
+            return None
+        ff = np.asarray(ff); ps = np.asarray(ps)
+        ps = np.clip(ps, 1e-30, None)
+        mask = (ff >= _f_lo) & (ff <= _f_hi) & np.isfinite(np.log10(ps))
+        return np.interp(common_freqs, ff[mask], np.log10(ps[mask])) if mask.sum() >= 5 else None
+
+    for key, blocks in lfp_block_results.items():
+        cid, feat = key[0], key[1]
+        bmap = {b['label']: b for b in blocks}
+        if 'pre' in bmap and 'post' in bmap:
+            pre_full  = _interp_fit(bmap['pre'],  'full_log')
+            post_full = _interp_fit(bmap['post'], 'full_log')
+            if pre_full is None or post_full is None:
+                continue
+            mean_full = (pre_full + post_full) / 2.0
+            pre_ape   = _interp_fit(bmap['pre'],  'ape_log')
+            post_ape  = _interp_fit(bmap['post'], 'ape_log')
+            mean_ape  = (pre_ape + post_ape) / 2.0 if (pre_ape is not None and post_ape is not None) else None
+            pre_raw   = _interp_raw(bmap['pre'])
+            post_raw  = _interp_raw(bmap['post'])
+            mean_raw  = (pre_raw + post_raw) / 2.0 if (pre_raw is not None and post_raw is not None) else None
+        elif 'full' in bmap:
+            mean_full = _interp_fit(bmap['full'], 'full_log')
+            if mean_full is None:
+                continue
+            mean_ape  = _interp_fit(bmap['full'], 'ape_log')
+            mean_raw  = _interp_raw(bmap['full'])
+        else:
+            continue
+        events[feat].append((cid, mean_full, mean_ape, mean_raw))
+
+    if not events:
+        print('plot_lfp_psd_by_feature_group: no valid entries found')
+        return None, None
+
+    # ── second pass: collect raw PSDs per feature group ──────────────────────
+    feat_display     = {}
+    feat_display_ape = {}
+    feat_display_raw = {}
+    feat_present = [f for f in WF_ORDER if f in events]
+
+    colored_feats = [f for f in feat_present if f != 'no_transition']
+    for feat in colored_feats:
+        feat_colors[feat] = _SPIKE_FEAT_COLORS.get(feat, '#888888')
+    if 'no_transition' in feat_present:
+        feat_colors['no_transition'] = _NO_TRANS_COLOR
+
+    for feat in feat_present:
+        feat_display[feat]     = [mf for _, mf, _, _  in events[feat]]
+        feat_display_ape[feat] = [ma for _, _,  ma, _ in events[feat] if ma is not None]
+        feat_display_raw[feat] = [mr for _, _,  _,  mr in events[feat] if mr is not None]
+
+    # ── Figure 1: overlay — specparam fits (smooth, no line noise) ───────────
+    fw = figsize[0] if figsize else 8.0
+    fh = figsize[1] if figsize else 5.5
+    fig_ov, ax_ov = plt.subplots(figsize=(fw, fh))
+
+    for feat in feat_present:
+        arrs = feat_display[feat]
+        n    = len(arrs)
+        col  = feat_colors[feat]
+        is_ctrl = feat == 'no_transition'
+        mn = np.mean(np.array(arrs), axis=0)
+        ax_ov.plot(common_freqs, mn, color=col, lw=2.5, zorder=5,
+                   ls='--' if is_ctrl else '-',
+                   label=f'{FEAT_LABELS.get(feat, feat)} (n={n})')
+
+    ax_ov.set_xlabel('Frequency (Hz)', fontsize=20)
+    ax_ov.set_ylabel('log(power)', fontsize=20)
+    ax_ov.tick_params(axis='both', labelsize=18)
+    ax_ov.set_xlim(_f_lo, _f_hi)
+    ax_ov.legend(fontsize=18, frameon=False, loc='upper right')
+    sns.despine(ax=ax_ov)
+    fig_ov.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
+
+    # ── Figure 2: per-feature grid (shared y-axis) ────────────────────────────
+    n_feats = len(feat_present)
+    ncols   = min(3, n_feats)
+    nrows   = int(np.ceil(n_feats / ncols)) if n_feats else 1
+    fw2 = figsize[0] if figsize else 5.5 * ncols
+    fh2 = figsize[1] if figsize else 4.5 * nrows
+    fig_gr, axes = plt.subplots(nrows, ncols, figsize=(fw2, fh2),
+                                sharey=True, squeeze=False)
+
+    all_vals = np.concatenate([np.array(feat_display[f]).ravel() for f in feat_present])
+    ypad = (np.nanmax(all_vals) - np.nanmin(all_vals)) * 0.08
+    ylims = (np.nanmin(all_vals) - ypad, np.nanmax(all_vals) + ypad)
+
+    for idx, feat in enumerate(feat_present):
+        ax  = axes[idx // ncols][idx % ncols]
+        arr = np.array(feat_display[feat])
+        n   = len(arr)
+        col = feat_colors[feat]
+
+        # thin raw PSD lines
+        for row in feat_display_raw.get(feat, []):
+            ax.plot(common_freqs, row, color=col, lw=0.5, alpha=0.15, zorder=2)
+
+        # mean full specparam model ± SEM
+        mn  = np.mean(arr, axis=0)
+        sem = np.std(arr,  axis=0, ddof=1) / np.sqrt(n)
+        ax.plot(common_freqs, mn, color=col, lw=4.0, zorder=5)
+        ax.fill_between(common_freqs, mn - sem, mn + sem,
+                        color=col, alpha=0.25, zorder=4)
+
+        # mean aperiodic component (dashed)
+        if feat_display_ape.get(feat):
+            mn_ape = np.mean(np.array(feat_display_ape[feat]), axis=0)
+            ax.plot(common_freqs, mn_ape, color=col, lw=1.5,
+                    ls='--', alpha=0.65, zorder=3)
+
+        ax.set_title(f'{FEAT_LABELS.get(feat, feat)}  (n={n})',
+                     fontsize=28, fontweight='bold', color=col)
+        ax.set_xlabel('Frequency (Hz)', fontsize=20)
+        if idx % ncols == 0:
+            ax.set_ylabel('log(power)', fontsize=20)
+        ax.tick_params(axis='both', labelsize=18)
+        ax.set_xlim(_f_lo, _f_hi)
+        ax.set_ylim(*ylims)
+        sns.despine(ax=ax)
+
+    for idx in range(n_feats, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    fig_gr.suptitle('LFP PSD per spike-feature group  (shared y-axis)\n'
+                    'thin=raw PSD · dashed=aperiodic · solid±shade=specparam fit±SEM',
+                    fontsize=22, fontweight='bold')
+    fig_gr.tight_layout(pad=1.5, h_pad=2.5, w_pad=1.5)
+    return fig_ov, fig_gr
+
+
+def plot_transition_deltas_by_celltype(lfp_block_results, df_transitions,
+                                        cell_type_dict, lfp_keys=None):
+    """Same panel layout as plot_transition_deltas but dots coloured by putative
+    cell type (PC vs IN) rather than by LFP direction.
+
+    Parameters
+    ----------
+    cell_type_dict : dict
+        Maps cell number (int) → cell type string, e.g. {1: 'PC', 2: 'IN'}.
+        Sourced from config.DICT_CELL_TYPE.
+    """
+    lfp_keys = lfp_keys or _DELTA_LFP_KEYS
+    rows_by_wf, _, wf_feats, global_ylim = _collect_delta_rows(
+        lfp_block_results, df_transitions, lfp_keys)
+
+    _CT_COL = {'PC': _DIR_COL_POS, 'IN': _DIR_COL_NEG}
+
+    def _cell_type(cid):
+        try:
+            return cell_type_dict.get(int(cid.lstrip('c')), 'unknown')
+        except (ValueError, AttributeError):
+            return 'unknown'
+
+    n_wf  = len(wf_feats)
+    ncols = min(3, n_wf)
+    nrows = int(np.ceil(n_wf / ncols))
+    n_lk  = len(lfp_keys)
+
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=((0.8 + 0.9 * n_lk) * ncols, 4.0 * nrows),
+                             squeeze=False)
+    from matplotlib.lines import Line2D
+
+    for idx, wf in enumerate(wf_feats):
+        ax      = axes[idx // ncols][idx % ncols]
+        rows    = rows_by_wf[wf]
+        n_cells = len(rows)
+
+        ax.set_ylim(*global_ylim)
+        ax.axhline(0, color='#888', lw=1.0, ls='--', zorder=1)
+
+        x_ticks, x_labels = [], []
+        for xi, lk in enumerate(lfp_keys):
+            deltas_by_ct = {'PC': [], 'IN': [], 'unknown': []}
+            for r in rows:
+                if lk not in r:
+                    continue
+                ct = _cell_type(r['cell'])
+                deltas_by_ct.get(ct, deltas_by_ct['unknown']).append(r[lk])
+
+            all_deltas = [d for vals in deltas_by_ct.values() for d in vals]
+            if not all_deltas:
+                continue
+
+            rng = np.random.default_rng(xi)
+            for ct, deltas in deltas_by_ct.items():
+                if not deltas:
+                    continue
+                col    = _CT_COL.get(ct, 'gray')
+                jitter = (rng.random(len(deltas)) - 0.5) * 0.3
+                for j, d in zip(jitter, deltas):
+                    ax.scatter(xi + j, d, color=col, edgecolors='white',
+                               linewidths=0.6, s=50, alpha=0.8, zorder=3)
+
+            mu  = float(np.mean(all_deltas))
+            sem = float(np.std(all_deltas) / np.sqrt(len(all_deltas)))
+            ax.plot([xi - 0.3, xi + 0.3], [mu, mu],
+                    color='k', lw=2.5, solid_capstyle='round', zorder=4)
+            ax.plot([xi, xi], [mu - sem, mu + sem],
+                    color='k', lw=1.5, zorder=4)
+
+            x_ticks.append(xi)
+            x_labels.append(_DELTA_LFP_LABELS.get(lk, lk))
+
+        ax.set_xlim(-0.6, n_lk - 0.4)
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, fontsize=9)
+        ax.set_title(f'{_DELTA_WF_LABELS.get(wf, wf)}  (n={n_cells})',
+                     fontsize=11, fontweight='bold')
+        if idx % ncols == 0:
+            ax.set_ylabel('Normalised Δ  (post − pre)', fontsize=9)
+        ax.tick_params(labelsize=8)
+        sns.despine(ax=ax)
+
+    for idx in range(n_wf, nrows * ncols):
+        axes[idx // ncols][idx % ncols].set_visible(False)
+
+    legend_handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_CT_COL['PC'],
+               markersize=9, label='PC (putative pyramidal)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=_CT_COL['IN'],
+               markersize=9, label='IN (putative interneuron)'),
+        Line2D([0], [0], color='k', lw=2.5, label='mean ± SEM  (all cells)'),
+    ]
+    fig.legend(handles=legend_handles, fontsize=9, frameon=False,
+               loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.02))
+
+    fig.suptitle(
+        'LFP change at spike-feature cluster transition  (post − pre, normalised)\n'
+        'Dot colour = putative cell type  ·  all panels share the same y-axis',
+        fontsize=11, y=1.01)
+    plt.tight_layout()
+    plt.show()
+    return fig, axes
+
+
+# ── EAP waveform extraction ───────────────────────────────────────────────────
+
+def extract_eap_waveforms(npx_signal, spike_times_ms, npx_fs, pre_samp, post_samp):
+    """Extract EAP windows around each spike time.
+
+    Parameters
+    ----------
+    npx_signal : 1-D array
+        Filtered Neuropixels recording (samples).
+    spike_times_ms : array-like
+        Spike times in milliseconds.
+    npx_fs : float
+        Neuropixels sampling rate (Hz).
+    pre_samp, post_samp : int
+        Samples to include before and after each spike peak.
+
+    Returns
+    -------
+    np.ndarray, shape (n_spikes, pre_samp + post_samp)
+        One row per extracted waveform; spikes too close to the recording
+        boundary are silently dropped.
+    """
+    n = len(npx_signal)
+    waveforms = []
+    spike_samps = np.round(np.asarray(spike_times_ms) * npx_fs / 1000).astype(int)
+    for s in spike_samps:
+        lo, hi = s - pre_samp, s + post_samp
+        if lo >= 0 and hi <= n:
+            waveforms.append(npx_signal[lo:hi])
+    return np.array(waveforms) if waveforms else np.empty((0, pre_samp + post_samp))
+
+
+# ── Transition–metadata correlation plots ────────────────────────────────────
+
+_TRANS_CONT_VARS = {
+    'cort_depth':           'Cortical depth (µm)',
+    'firing_rate_hz':       'Firing rate (Hz)',
+    'rec_duration_min':     'Recording duration (min)',
+    'trans_abruptness':     'Transition speed |k|',
+    'trans_time_frac':      'Transition time (frac. of rec.)',
+    'sigmoid_r2':           'Transition sigmoid R²',
+    'frac_dominant_before': 'Dominant cluster fraction (pre)',
+    'frac_dominant_after':  'Dominant cluster fraction (post)',
+}
+
+_TRANS_CAT_VARS = {
+    'cell_type':         'Cell type',
+    'patch_type_simple': 'Patch type',
+    'dark_neuron':       'Dark neuron',
+    'clear_eap':         'Clear EAP',
+}
+
+_TYPE_COLORS = {'PC': '#2166AC', 'IN': '#D6604D'}
+
+
+def plot_lfp_delta_heatmap(df_wide, lfp_cols, cont_vars=None, lfp_labels=None):
+    """Spearman ρ heatmap between LFP Δ values and continuous metadata variables."""
+    if cont_vars is None:   cont_vars  = _TRANS_CONT_VARS
+    if lfp_labels is None:  lfp_labels = _DELTA_LFP_LABELS
+
+    cont_cols = [k for k in cont_vars if k in df_wide.columns]
+    rho_mat = np.full((len(lfp_cols), len(cont_cols)), np.nan)
+    p_mat   = np.full((len(lfp_cols), len(cont_cols)), np.nan)
+    for i, lk in enumerate(lfp_cols):
+        for j, mk in enumerate(cont_cols):
+            sub = df_wide[[lk, mk]].dropna()
+            if len(sub) >= 5:
+                r, p = spearmanr(sub[lk], sub[mk])
+                rho_mat[i, j] = r
+                p_mat[i, j]   = p
+
+    row_labels = [lfp_labels.get(lk, lk) for lk in lfp_cols]
+    col_labels = [cont_vars[mk] for mk in cont_cols]
+
+    fig, ax = plt.subplots(figsize=(max(8, len(cont_cols) * 1.1), max(4, len(lfp_cols) * 0.9)))
+    im = ax.imshow(rho_mat, vmin=-1, vmax=1, cmap='RdBu_r', aspect='auto')
+    for i in range(len(lfp_cols)):
+        for j in range(len(cont_cols)):
+            if not np.isfinite(rho_mat[i, j]): continue
+            tc = 'white' if abs(rho_mat[i, j]) > 0.4 else '#222'
+            ax.text(j, i, f'{rho_mat[i, j]:+.2f}\n{_stars(p_mat[i, j])}',
+                    ha='center', va='center', fontsize=7.5, color=tc)
+    ax.set_xticks(range(len(cont_cols)))
+    ax.set_xticklabels(col_labels, rotation=35, ha='right', fontsize=9)
+    ax.set_yticks(range(len(lfp_cols)))
+    ax.set_yticklabels(row_labels, fontsize=9)
+    ax.set_title('Spearman ρ: LFP Δ  ×  continuous metadata\n'
+                 '* p<0.05  ** p<0.01  *** p<0.001', fontsize=10)
+    plt.colorbar(im, ax=ax, shrink=0.6).set_label('Spearman ρ', fontsize=9)
+    fig.tight_layout()
+    plt.show()
+    return fig, ax
+
+
+def binned_percentiles(sub, feat, time_col='spk_times_ms', n_bins=20):
+    """Bin spikes by time and return percentile bands for one feature."""
+    bins = pd.cut(sub[time_col], bins=n_bins, labels=False)
+    grp = sub.groupby(bins)[feat]
+    centers = (sub.groupby(bins)[time_col].mean() / 1000).values
+    qs = grp.quantile([0.10, 0.25, 0.50, 0.75, 0.90]).unstack()
+    return centers, qs[0.10].values, qs[0.25].values, qs[0.50].values, qs[0.75].values, qs[0.90].values
+
+
+def plot_feature_spread_over_time(cluster_pickle_dir, n_vis_bins=20,
+                                   waveform_feats=None, time_col='spk_times_ms'):
+    """
+    Scatter + percentile-band plots for every cell × waveform feature, showing
+    how each spike feature drifts over recording time (bad-patch detection).
+
+    Each dot is one spike; bands show 10th–90th (light) and 25th–75th (dark)
+    percentile per time bin, with the median as a solid line.
+    """
+    if waveform_feats is None:
+        waveform_feats = [
+            'peak_amp', 'peak_width', 'peak_sharpness',
+            'inflection_time', 'inflection_amp',
+            'exp_lambda', 'exp_const', 'ramp_amp',
+            'log_isi',
+        ]
+
+    DOT_COLOR  = '#333333'
+    BAND_COLOR = '#333333'
+
+    cell_data = {}
+    for pkl_path in sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl'))):
+        cell_id = os.path.basename(pkl_path).replace('_cluster_df.pkl', '')
+        try:
+            df_cell = pd.read_pickle(pkl_path)
+        except Exception:
+            continue
+        if time_col not in df_cell.columns:
+            continue
+        for feat in waveform_feats:
+            if feat not in df_cell.columns:
+                continue
+            sub = df_cell[[time_col, feat]].dropna().sort_values(time_col)
+            if len(sub) < 10:
+                continue
+            cell_data[(cell_id, feat)] = (sub, binned_percentiles(sub, feat, time_col, n_vis_bins))
+
+    all_cells = sorted({k[0] for k in cell_data}, key=lambda c: int(c.lstrip('c')))
+    feat_order = [f for f in waveform_feats if any(f == k[1] for k in cell_data)]
+    print(f"{len(all_cells)} cells loaded")
+
+    for cell_id in all_cells:
+        avail = [f for f in feat_order if (cell_id, f) in cell_data]
+        if not avail:
+            continue
+
+        n_cols = min(4, len(avail))
+        n_rows = int(np.ceil(len(avail) / n_cols))
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                 figsize=(n_cols * 3.5, n_rows * 2.8),
+                                 squeeze=False)
+        fig.suptitle(f'{cell_id}', fontsize=13, fontweight='bold')
+
+        for i, feat in enumerate(avail):
+            ax = axes[i // n_cols][i % n_cols]
+            sub, (bcenters, bp10, bp25, bp50, bp75, bp90) = cell_data[(cell_id, feat)]
+
+            t_s = sub[time_col].values / 1000
+            ax.scatter(t_s, sub[feat].values, s=1.5, alpha=0.15, color=DOT_COLOR, rasterized=True)
+
+            valid = ~np.isnan(bcenters) & ~np.isnan(bp25)
+            if valid.sum() > 1:
+                ax.fill_between(bcenters[valid], bp10[valid], bp90[valid], alpha=0.10, color=BAND_COLOR)
+                ax.fill_between(bcenters[valid], bp25[valid], bp75[valid], alpha=0.25, color=BAND_COLOR)
+                ax.plot(bcenters[valid], bp50[valid], color=BAND_COLOR, lw=1.5)
+
+            ax.set_title(feat, fontsize=9)
+            ax.set_xlabel('Time (s)', fontsize=8)
+            ax.set_ylabel(feat, fontsize=8)
+            ax.tick_params(labelsize=7)
+            sns.despine(ax=ax)
+
+        for j in range(len(avail), n_rows * n_cols):
+            axes[j // n_cols][j % n_cols].set_axis_off()
+
+        plt.tight_layout()
+        plt.show()
+
+
+def plot_lfp_delta_by_category(df_wide, lfp_cols, cat_vars=None, lfp_labels=None):
+    """Strip plots of LFP Δ grouped by each categorical metadata variable.
+
+    One figure per variable. All panels share the same y-axis. Mean ± SEM
+    shown as a black crosshair. Boolean columns (dark_neuron, clear_eap) are
+    cast to strings automatically so seaborn palette lookup works correctly.
+    """
+    if cat_vars is None:   cat_vars   = _TRANS_CAT_VARS
+    if lfp_labels is None: lfp_labels = _DELTA_LFP_LABELS
+
+    all_vals = [v for lk in lfp_cols for v in df_wide[lk].dropna()]
+    ymax = max(abs(v) for v in all_vals) * 1.15
+
+    for cat_col, cat_label in cat_vars.items():
+        if cat_col not in df_wide.columns:
+            continue
+        categories = [str(c) for c in sorted(df_wide[cat_col].dropna().unique(), key=str)]
+        n_lk  = len(lfp_cols)
+        ncols = min(4, n_lk)
+        nrows = int(np.ceil(n_lk / ncols))
+        fig, axes = plt.subplots(nrows, ncols,
+                                  figsize=(3.5 * ncols, 3.2 * nrows), squeeze=False)
+        palette = sns.color_palette('Set2', len(categories))
+        col_map = dict(zip(categories, palette))
+
+        for idx, lk in enumerate(lfp_cols):
+            ax  = axes[idx // ncols][idx % ncols]
+            sub = df_wide[[cat_col, lk]].dropna().copy()
+            sub[cat_col] = sub[cat_col].astype(str)
+
+            sns.stripplot(data=sub, x=cat_col, y=lk, order=categories,
+                          palette=col_map, size=6, alpha=0.75, jitter=True,
+                          edgecolor='white', linewidth=0.4, ax=ax)
+
+            for xi, cat in enumerate(categories):
+                vals = sub.loc[sub[cat_col] == cat, lk].dropna().values
+                if len(vals) == 0: continue
+                mu  = np.mean(vals)
+                sem = np.std(vals) / np.sqrt(len(vals))
+                ax.plot([xi - 0.25, xi + 0.25], [mu, mu],
+                        color='k', lw=2.5, solid_capstyle='round', zorder=5)
+                ax.plot([xi, xi], [mu - sem, mu + sem],
+                        color='k', lw=1.5, zorder=5)
+
+            ax.axhline(0, color='#888', lw=0.8, ls='--')
+            ax.set_ylim(-ymax, ymax)
+            ax.set_xlabel('')
+            ax.set_xticklabels(categories, fontsize=9)
+            ax.set_ylabel(lfp_labels.get(lk, lk) + ' Δ' if idx % ncols == 0 else '', fontsize=9)
+            ax.set_title(lfp_labels.get(lk, lk), fontsize=9, fontweight='bold')
+            ax.tick_params(labelsize=8)
+            sns.despine(ax=ax)
+
+        for idx in range(n_lk, nrows * ncols):
+            axes[idx // ncols][idx % ncols].set_visible(False)
+
+        fig.suptitle(f'LFP Δ by  {cat_label}  (mean ± SEM, all panels same y-axis)',
+                     fontsize=11, y=1.01)
+        plt.tight_layout()
+        plt.show()
+
+
+def plot_lfp_delta_by_continuous(df_wide, lfp_cols, cont_vars=None, lfp_labels=None,
+                                  type_colors=None):
+    """Scatter plots of LFP Δ vs each continuous metadata variable, coloured by cell type."""
+    if cont_vars is None:   cont_vars   = _TRANS_CONT_VARS
+    if lfp_labels is None:  lfp_labels  = _DELTA_LFP_LABELS
+    if type_colors is None: type_colors = _TYPE_COLORS
+
+    for mk, mlabel in cont_vars.items():
+        if mk not in df_wide.columns:
+            continue
+        n_lk  = len(lfp_cols)
+        ncols = min(4, n_lk)
+        nrows = int(np.ceil(n_lk / ncols))
+        fig, axes = plt.subplots(nrows, ncols,
+                                  figsize=(3.8 * ncols, 3.2 * nrows), squeeze=False)
+
+        for idx, lk in enumerate(lfp_cols):
+            ax  = axes[idx // ncols][idx % ncols]
+            sub = df_wide[[mk, lk, 'cell_type']].dropna()
+
+            for ct, grp in sub.groupby('cell_type'):
+                ax.scatter(grp[mk], grp[lk],
+                           color=type_colors.get(ct, 'gray'),
+                           edgecolors='white', linewidths=0.4,
+                           s=50, alpha=0.8, label=ct, zorder=3)
+
+            xy = sub[[mk, lk]].dropna()
+            if len(xy) >= 5:
+                rho, p = spearmanr(xy[mk], xy[lk])
+                m, b   = np.polyfit(xy[mk], xy[lk], 1)
+                xs     = np.linspace(xy[mk].min(), xy[mk].max(), 100)
+                ax.plot(xs, m * xs + b, color='#444', lw=1.4, ls='--', zorder=2)
+                ax.text(0.97, 0.97, f'ρ={rho:+.2f}{_stars(p)}',
+                        transform=ax.transAxes, ha='right', va='top', fontsize=8)
+
+            ax.axhline(0, color='#aaa', lw=0.8, ls=':')
+            ax.set_xlabel(mlabel, fontsize=8)
+            ax.set_ylabel(lfp_labels.get(lk, lk) + ' Δ' if idx % ncols == 0 else '', fontsize=8)
+            ax.set_title(lfp_labels.get(lk, lk), fontsize=9, fontweight='bold')
+            ax.tick_params(labelsize=7)
+            sns.despine(ax=ax)
+
+        for idx in range(n_lk, nrows * ncols):
+            axes[idx // ncols][idx % ncols].set_visible(False)
+
+        handles = [plt.scatter([], [], color=c, label=ct, s=40) for ct, c in type_colors.items()]
+        fig.legend(handles=handles, fontsize=9, frameon=False,
+                   loc='lower center', ncol=2, bbox_to_anchor=(0.5, -0.04))
+        fig.suptitle(f'LFP Δ  vs  {mlabel}  (coloured by cell type)', fontsize=10, y=1.01)
+        plt.tight_layout()
+        plt.show()
+
+
+# ============================================================
+# Recording stability / patch-quality figures
+# ============================================================
+
+_STABILITY_FEATS = [
+    'ramp_amp', 'inflection_time', 'inflection_amp',
+    'peak_amp', 'peak_width', 'peak_sharpness',
+    'exp_lambda', 'exp_const', 'log_isi',
+]
+
+# (cell, feature) pairs excluded from stability analysis due to known fit artifacts
+_STABILITY_EXCLUDE = {
+    'c25': ['exp_lambda'],
+    'c22': ['exp_lambda'],
+    'c1':  ['exp_lambda'],
+}
+
+_STABILITY_FEAT_LABELS = {
+    'ramp_amp':        'Ramp amp',
+    'inflection_time': 'Infl. time',
+    'inflection_amp':  'Infl. amp',
+    'peak_amp':        'Peak amp',
+    'peak_width':      'Peak width',
+    'peak_sharpness':  'Peak sharp.',
+    'exp_lambda':      'Exp λ',
+    'exp_const':       'Exp const',
+    'log_isi':         'Log ISI',
+}
+
+_N_STRIP_STAB = 300  # max dots per feature per cell (scatter panel)
+
+# Per-feature valid value ranges; values outside are failed fits / clipping artefacts
+# and are replaced with NaN before any analysis.
+# Format: {feature: (min_exclusive, max_exclusive)}  — None means no bound on that side.
+_FEAT_VALID_BOUNDS = {
+    'peak_width': (0, None),    # 0 ms = failed fit (5k spikes affected in spe-1)
+    'exp_lambda': (0, 9.99),    # 0 = failed fit; ≥10 = upper clipping boundary
+}
+
+
+def _apply_validity_bounds(df):
+    """Replace out-of-bounds feature values with NaN (failed fits / clipping)."""
+    for feat, (lo, hi) in _FEAT_VALID_BOUNDS.items():
+        if feat not in df.columns:
+            continue
+        col = df[feat].astype(float)
+        if lo is not None:
+            col = col.where(col > lo, other=np.nan)
+        if hi is not None:
+            col = col.where(col < hi, other=np.nan)
+        df[feat] = col
+    return df
+
+
+def _load_cluster_dfs(cluster_pickle_dir, feats):
+    """Load all c*_cluster_df.pkl and return a combined DataFrame with time_norm."""
+    frames = []
+    for pkl in sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl'))):
+        cell_id = os.path.basename(pkl).replace('_cluster_df.pkl', '')
+        try:
+            df = pd.read_pickle(pkl)
+        except Exception:
+            continue
+        if 'spk_times_ms' not in df.columns:
+            continue
+        present = [f for f in feats if f in df.columns]
+        if not present:
+            continue
+        sub = df[['spk_times_ms'] + present].copy()
+        _apply_validity_bounds(sub)
+        t = sub['spk_times_ms'].values.astype(float)
+        sub['time_norm'] = (t - t.min()) / (t.max() - t.min() + 1e-12)
+        sub['cell_id'] = cell_id
+        frames.append(sub)
+    if not frames:
+        raise RuntimeError(f'No cluster_df pickles found in {cluster_pickle_dir}')
+    return pd.concat(frames, ignore_index=True)
+
+
+def plot_temporal_stability_scatter(cluster_pickle_dir,
+                                    feats=None, n_cols=3,
+                                    n_scat=_N_STRIP_STAB):
+    """
+    Panel A — Scatter of feature value vs normalized recording time (subsampled).
+
+    Each dot is one spike (randomly subsampled to n_scat per feature across all cells).
+    Black dashed line: linear trend. A uniform cloud indicates no systematic drift.
+    """
+    _FS, _FAX = 13, 14
+    if feats is None:
+        feats = _STABILITY_FEATS
+
+    spikes_df = _load_cluster_dfs(cluster_pickle_dir, feats)
+    feats = [f for f in feats if f in spikes_df.columns]
+
+    n_feats = len(feats)
+    n_rows  = math.ceil(n_feats / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                              figsize=(4.5 * n_cols, 3.5 * n_rows),
+                              squeeze=False)
+    rng = np.random.default_rng(42)
+
+    for idx, feat in enumerate(feats):
+        ax  = axes[idx // n_cols][idx % n_cols]
+        col = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+
+        vals = spikes_df[feat].values.astype(float)
+        t    = spikes_df['time_norm'].values
+        mask = np.isfinite(vals)
+        vals, t = vals[mask], t[mask]
+
+        if len(vals) > n_scat:
+            sel = rng.choice(len(vals), n_scat, replace=False)
+            vals, t = vals[sel], t[sel]
+
+        ax.scatter(t, vals, s=4, alpha=0.35, color=col, linewidths=0, rasterized=True)
+
+        from scipy.stats import linregress
+        slope, intercept, *_ = linregress(t, vals)
+        ax.plot([0, 1], [intercept, intercept + slope], color='black', lw=1.5, ls='--')
+
+        ax.set_title(_STABILITY_FEAT_LABELS.get(feat, feat), fontsize=_FAX, fontweight='bold')
+        ax.set_xlabel('Normalized time', fontsize=_FS)
+        ax.set_ylabel(_STABILITY_FEAT_LABELS.get(feat, feat), fontsize=_FS)
+        ax.tick_params(labelsize=_FS - 1)
+        sns.despine(ax=ax)
+
+    for ax in axes.flat[n_feats:]:
+        ax.set_visible(False)
+
+    plt.tight_layout(pad=0.8, w_pad=1.5, h_pad=2.0)
+    plt.show()
+    plt.close(fig)
+
+
+def plot_temporal_rolling_iqr(cluster_pickle_dir,
+                               feats=None, n_bins=10,
+                               min_spks_per_bin=5, ax=None):
+    """
+    Panel B — Normalized rolling IQR, all features on one panel.
+
+    For each cell × feature, compute IQR within n_bins equal-width normalized-time bins,
+    then normalise by that cell's mean IQR so 1.0 = average variability. A flat profile
+    at 1.0 means variability is constant over the recording (no patch degradation).
+    Pass ax to embed in a combined figure; omit to show standalone.
+    """
+    standalone = ax is None
+    _FS, _FAX = (24, 26) if standalone else (12, 13)
+    if feats is None:
+        feats = _STABILITY_FEATS
+
+    spikes_df = _load_cluster_dfs(cluster_pickle_dir, feats)
+    feats = [f for f in feats if f in spikes_df.columns]
+
+    bin_edges   = np.linspace(0, 1, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    cell_ids    = spikes_df['cell_id'].unique()
+
+    if standalone:
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+
+    for feat in feats:
+        col = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        cell_traces = []
+        for cid in cell_ids:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
+            sub  = spikes_df[spikes_df['cell_id'] == cid]
+            vals = sub[feat].values.astype(float)
+            t    = sub['time_norm'].values
+            mask = np.isfinite(vals)
+            vals, t = vals[mask], t[mask]
+            if len(vals) < min_spks_per_bin * n_bins:
+                continue
+            trace = np.array([
+                np.percentile(vals[(t >= lo) & (t < hi)], 75) -
+                np.percentile(vals[(t >= lo) & (t < hi)], 25)
+                if np.sum((t >= lo) & (t < hi)) >= min_spks_per_bin else np.nan
+                for lo, hi in zip(bin_edges[:-1], bin_edges[1:])
+            ])
+            mean_iqr = np.nanmean(trace)
+            if mean_iqr == 0 or not np.isfinite(mean_iqr):
+                continue
+            cell_traces.append(trace / mean_iqr)
+
+        if not cell_traces:
+            continue
+
+        mat = np.array(cell_traces)
+        mn  = np.nanmean(mat, axis=0)
+        n_c = np.sum(np.isfinite(mat), axis=0).clip(1)
+        sem = np.nanstd(mat, axis=0) / np.sqrt(n_c)
+
+        ax.fill_between(bin_centers, mn - sem, mn + sem, alpha=0.15, color=col)
+        ax.plot(bin_centers, mn, color=col, lw=2.5,
+                label=_STABILITY_FEAT_LABELS.get(feat, feat))
+
+    ax.axhline(1.0, color='black', lw=1.5, ls='--', alpha=0.7)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 2)
+    ax.set_yticks([0.5, 1.0, 1.5, 2.0])
+    ax.set_xlabel('Normalized recording time', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('Rolling IQR\n(norm. to cell mean)', fontsize=_FAX, fontweight='bold')
+    ax.tick_params(labelsize=_FS)
+    sns.despine(ax=ax)
+
+    if standalone:
+        plt.tight_layout()
+        plt.show()
+        plt.close(fig)
+
+
+def plot_rolling_iqr_legend(feats=None):
+    """Standalone legend matching supp_cluster_characterization style.
+    3 rows × 3 cols, column-major, scatter dot handles.
+    Col 1: ramp_amp / inflection_time / inflection_amp
+    Col 2: peak_amp / peak_width / peak_sharpness
+    Col 3: exp_lambda / exp_const / log_isi
+    """
+    _FS = 24
+    if feats is None:
+        feats = _STABILITY_FEATS
+
+    fig, ax = plt.subplots(figsize=(12, 3))
+    ax.set_axis_off()
+
+    lh = {f: ax.scatter([], [], s=150,
+                        color=_SPIKE_FEAT_COLORS.get(f, '#555555'),
+                        label=_STABILITY_FEAT_LABELS.get(f, f))
+          for f in feats}
+
+    # matplotlib fills column-by-column, so pass col1 items, then col2, then col3
+    _padded = [
+        lh['ramp_amp'],        lh['inflection_time'], lh['inflection_amp'],
+        lh['peak_amp'],        lh['peak_width'],      lh['peak_sharpness'],
+        lh['exp_lambda'],      lh['exp_const'],       lh['log_isi'],
+    ]
+
+    ax.legend(handles=_padded, fontsize=_FS, frameon=False,
+              loc='center', ncol=3,
+              handletextpad=0.5, columnspacing=1.0, labelspacing=0.7)
+    plt.tight_layout()
+    plt.show()
+    plt.close(fig)
+
+
+def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30, ax=None):
+    """
+    Panel C — Distribution of temporal slopes (|spike_val − cell_mean| vs normalized time).
+
+    For each (cell × feature) pair, fit a linear regression of absolute deviation from
+    the cell mean against normalized recording time. Returns two figures:
+      fig1 — KDE of all slopes pooled (with vertical line at 0 and at median)
+      fig2 — per-feature boxplot of slopes
+
+    A distribution centred near 0 with no systematic positive shift indicates that
+    waveform parameter variability does not increase over the recording.
+    Also prints a Wilcoxon signed-rank test (H1: slope > 0) for each feature and pooled.
+    Pass ax to embed only the boxplot in a combined figure; omit to show both standalone.
+    """
+    from scipy.stats import linregress, wilcoxon
+    standalone = ax is None
+    _FS, _FAX = (24, 26) if standalone else (10, 11)
+    if feats is None:
+        feats = _STABILITY_FEATS
+
+    spikes_df = _load_cluster_dfs(cluster_pickle_dir, feats)
+    feats = [f for f in feats if f in spikes_df.columns]
+    cell_ids = spikes_df['cell_id'].unique()
+
+    # population IQR per feature (pooled across all cells) — stable denominator
+    # avoids per-cell IQR blowing up for cells with concentrated feature values
+    pop_iqr = {}
+    for feat in feats:
+        all_vals = spikes_df[feat].dropna().values.astype(float)
+        q75, q25 = np.percentile(all_vals, [75, 25])
+        pop_iqr[feat] = q75 - q25
+
+    records = []
+    for cid in cell_ids:
+        sub = spikes_df[spikes_df['cell_id'] == cid]
+        t   = sub['time_norm'].values
+        for feat in feats:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
+            vals = sub[feat].values.astype(float)
+            mask = np.isfinite(vals)
+            if mask.sum() < min_spks:
+                continue
+            v, tv = vals[mask], t[mask]
+            norm = pop_iqr[feat]
+            if norm == 0:
+                records.append({'cell_id': cid, 'feature': feat,
+                                'slope': 0.0, 'r': 0.0, 'p': 1.0})
+                continue
+            abs_dev = np.abs(v - v.mean()) / norm   # normalise by population IQR
+            slope, _, r, p, _ = linregress(tv, abs_dev)
+            records.append({'cell_id': cid, 'feature': feat,
+                            'slope': slope, 'r': r, 'p': p})
+
+    df_s = pd.DataFrame(records)
+
+    # — KDE (standalone only) —
+    if standalone:
+        fig1, ax1 = plt.subplots(figsize=(5.0, 4.5))
+        med = df_s['slope'].median()
+        sns.kdeplot(df_s['slope'], ax=ax1, color='#555555', lw=3.0,
+                    bw_adjust=2.0, fill=True, alpha=0.35)
+        ax1.axvline(0, color='black', lw=2.0, ls='--', alpha=0.8)
+        ax1.set_xlabel('Temporal slope\nof |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+        ax1.set_ylabel('Density', fontsize=_FAX, fontweight='bold')
+        p01, p99 = df_s['slope'].quantile([0.01, 0.99])
+        pad = max(abs(p01), abs(p99)) * 0.15
+        ax1.set_xlim(p01 - pad, p99 + pad)
+        ax1.xaxis.set_major_formatter(plt.ScalarFormatter(useOffset=False))
+        ax1.tick_params(axis='x', labelsize=_FS)
+        ax1.tick_params(axis='y', labelsize=_FS)
+        ax1.text(0.97, 0.97, f'Median\n= {med:.3f}', transform=ax1.transAxes,
+                 fontsize=_FS, va='top', ha='right')
+        sns.despine(ax=ax1)
+        plt.tight_layout()
+        plt.show()
+        plt.close(fig1)
+
+    # — per-feature boxplot —
+    if standalone:
+        fig2, ax2 = plt.subplots(figsize=(7.0, 6))
+    else:
+        ax2 = ax
+    for xi, feat in enumerate(feats):
+        sub_s = df_s[df_s['feature'] == feat]['slope'].values
+        col   = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        ax2.boxplot(
+            [sub_s], positions=[xi], widths=0.5, patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=col, edgecolor='black', linewidth=3.5, alpha=0.6),
+            medianprops=dict(color='black', linewidth=4.5),
+            whiskerprops=dict(color='black', linewidth=2.5),
+            capprops=dict(color='black', linewidth=2.5),
+        )
+    rng = np.random.default_rng(42)
+    for xi, feat in enumerate(feats):
+        sub_s = df_s[df_s['feature'] == feat]['slope'].values
+        col   = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        jitter = rng.uniform(-0.18, 0.18, len(sub_s))
+        ax2.scatter(xi + jitter, sub_s, s=40, color=col, alpha=0.5,
+                    edgecolors='none', zorder=3)
+    ax2.axhline(0, color='black', lw=2.0, ls='--', alpha=0.7)
+    _SHORT = {**_STABILITY_FEAT_LABELS,
+              'peak_sharpness': 'Pk sharp.', 'exp_const': 'Exp cst',
+              'inflection_time': 'Infl. time', 'inflection_amp': 'Infl. amp'}
+    ax2.set_xticks(range(len(feats)))
+    ax2.set_xticklabels(
+        [_SHORT.get(f, f) for f in feats],
+        fontsize=_FS, rotation=40, ha='right', rotation_mode='anchor')
+    ax2.set_ylabel('Temporal slope\nof |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+    ax2.tick_params(axis='y', labelsize=_FS)
+    ax2.yaxis.set_major_locator(plt.MaxNLocator(5))
+    sns.despine(ax=ax2)
+    if standalone:
+        plt.tight_layout(pad=1.0)
+        plt.show()
+        plt.close(fig2)
+
+    # — Wilcoxon tests —
+    print(f"\n{'Feature':<20} {'n':>5} {'median':>10} {'p (slope>0)':>13}")
+    print('-' * 52)
+    for feat in feats:
+        sub_s = df_s[df_s['feature'] == feat]['slope'].values
+        if len(sub_s) < 5:
+            continue
+        try:
+            _, p = wilcoxon(sub_s, alternative='greater')
+        except ValueError:
+            p = float('nan')
+        print(f"{_STABILITY_FEAT_LABELS.get(feat, feat):<20} {len(sub_s):>5} "
+              f"{np.median(sub_s):>10.4f} {p:>13.4f}")
+    all_s = df_s['slope'].values
+    _, p_all = wilcoxon(all_s, alternative='greater')
+    print('-' * 52)
+    print(f"{'POOLED':<20} {len(all_s):>5} {np.median(all_s):>10.4f} {p_all:>13.4f}")
+
+
+def plot_firing_rate_stability(cluster_pickle_dir, n_bins=10, min_spks=20, ax=None):
+    """
+    Supplementary patch-quality check: spike count per time bin, normalised to
+    each cell's own mean count, then averaged across cells (mean ± SEM).
+
+    If the patch is degrading the cell loses isolatability toward the end of the
+    recording, so spike count should fall. A flat profile at 1.0 means the cell
+    fired uniformly throughout — no evidence of patch loss.
+    Pass ax to embed in a combined figure; omit to show standalone.
+    """
+    standalone = ax is None
+    _FS, _FAX = (24, 26) if standalone else (12, 13)
+
+    bin_edges   = np.linspace(0, 1, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    cell_traces = []
+    pkls = sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl')))
+    for pkl in pkls:
+        try:
+            df = pd.read_pickle(pkl)
+        except Exception:
+            continue
+        if 'spk_times_ms' not in df.columns:
+            continue
+        t = df['spk_times_ms'].values.astype(float)
+        if len(t) < min_spks:
+            continue
+        t_norm = (t - t.min()) / (t.max() - t.min() + 1e-12)
+
+        counts = np.array([
+            np.sum((t_norm >= lo) & (t_norm < hi))
+            for lo, hi in zip(bin_edges[:-1], bin_edges[1:])
+        ], dtype=float)
+
+        mean_count = counts.mean()
+        if mean_count == 0:
+            continue
+        cell_traces.append(counts / mean_count)   # normalise → expected value = 1.0
+
+    mat = np.array(cell_traces)                   # (n_cells, n_bins)
+    mn  = mat.mean(axis=0)
+    sem = mat.std(axis=0) / np.sqrt(len(mat))
+
+    if standalone:
+        fig, ax = plt.subplots(figsize=(5.5, 6))
+    ax.fill_between(bin_centers, mn - sem, mn + sem, alpha=0.25, color='#555555')
+    ax.plot(bin_centers, mn, color='#555555', lw=2.5, marker='o', ms=7)
+    ax.axhline(1.0, color='black', lw=1.5, ls='--', alpha=0.7, label='Expected (uniform)')
+
+    ax.set_xlabel('Normalized recording time', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('Spike count\n(norm. to cell mean)', fontsize=_FAX, fontweight='bold')
+    ax.set_xlim(0, 1)
+    ax.set_ylim(bottom=0)
+    ax.set_yticks([0.25, 0.50, 0.75, 1.00, 1.25])
+    ax.tick_params(labelsize=_FS)
+    ax.legend(fontsize=_FS, frameon=False)
+    sns.despine(ax=ax)
+
+    if standalone:
+        plt.tight_layout()
+        plt.show()
+        plt.close(fig)
+
+
+def plot_patch_quality_figure(cluster_pickle_dir, feats=None, n_bins=10,
+                               min_spks_per_bin=5, min_spks=30):
+    """
+    Combined supplementary figure: recording stability over time.
+    Layout (2 rows × 2 cols):
+      [B: rolling IQR  |  C2: slope boxplot]
+      [C1: slope KDE   |  D:  firing rate  ]
+    A4 width (8.27 in), big consistent text.
+    """
+    from scipy.stats import linregress
+    _FS, _FAX = 24, 26
+
+    if feats is None:
+        feats = _STABILITY_FEATS
+
+    spikes_df = _load_cluster_dfs(cluster_pickle_dir, feats)
+    feats = [f for f in feats if f in spikes_df.columns]
+    cell_ids  = spikes_df['cell_id'].unique()
+    bin_edges   = np.linspace(0, 1, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    # ── Panel B data: normalised rolling IQR ──────────────────────────────
+    iqr_traces = {feat: [] for feat in feats}
+    for feat in feats:
+        for cid in cell_ids:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
+            sub  = spikes_df[spikes_df['cell_id'] == cid]
+            vals = sub[feat].values.astype(float)
+            t    = sub['time_norm'].values
+            mask = np.isfinite(vals)
+            vals, t = vals[mask], t[mask]
+            if len(vals) < min_spks_per_bin * n_bins:
+                continue
+            trace = np.array([
+                np.percentile(vals[(t >= lo) & (t < hi)], 75) -
+                np.percentile(vals[(t >= lo) & (t < hi)], 25)
+                if np.sum((t >= lo) & (t < hi)) >= min_spks_per_bin else np.nan
+                for lo, hi in zip(bin_edges[:-1], bin_edges[1:])
+            ])
+            mean_iqr = np.nanmean(trace)
+            if mean_iqr == 0 or not np.isfinite(mean_iqr):
+                continue
+            iqr_traces[feat].append(trace / mean_iqr)
+
+    # ── Panel C data: temporal slopes ─────────────────────────────────────
+    pop_iqr = {}
+    for feat in feats:
+        all_vals = spikes_df[feat].dropna().values.astype(float)
+        q75, q25 = np.percentile(all_vals, [75, 25])
+        pop_iqr[feat] = q75 - q25
+
+    records = []
+    for cid in cell_ids:
+        sub = spikes_df[spikes_df['cell_id'] == cid]
+        t   = sub['time_norm'].values
+        for feat in feats:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
+            vals = sub[feat].values.astype(float)
+            mask = np.isfinite(vals)
+            if mask.sum() < min_spks:
+                continue
+            v, tv = vals[mask], t[mask]
+            norm = pop_iqr[feat]
+            if norm == 0:
+                records.append({'cell_id': cid, 'feature': feat, 'slope': 0.0})
+                continue
+            abs_dev = np.abs(v - v.mean()) / norm
+            slope, *_ = linregress(tv, abs_dev)
+            records.append({'cell_id': cid, 'feature': feat, 'slope': slope})
+    df_s = pd.DataFrame(records)
+
+    # ── Panel D data: normalised firing rate ──────────────────────────────
+    fr_traces = []
+    pkls = sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl')))
+    for pkl in pkls:
+        try:
+            df = pd.read_pickle(pkl)
+        except Exception:
+            continue
+        if 'spk_times_ms' not in df.columns:
+            continue
+        t = df['spk_times_ms'].values.astype(float)
+        if len(t) < min_spks:
+            continue
+        t_norm = (t - t.min()) / (t.max() - t.min() + 1e-12)
+        counts = np.array([np.sum((t_norm >= lo) & (t_norm < hi))
+                           for lo, hi in zip(bin_edges[:-1], bin_edges[1:])], dtype=float)
+        mc = counts.mean()
+        if mc == 0:
+            continue
+        fr_traces.append(counts / mc)
+    fr_mat = np.array(fr_traces)
+    fr_mn  = fr_mat.mean(axis=0)
+    fr_sem = fr_mat.std(axis=0) / np.sqrt(len(fr_mat))
+
+    # ── Figure layout ─────────────────────────────────────────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(8.27, 11),
+                              constrained_layout=True)
+    ax_b, ax_c2 = axes[0]
+    ax_c1, ax_d  = axes[1]
+
+    # — Panel B —
+    for feat in feats:
+        traces = iqr_traces[feat]
+        if not traces:
+            continue
+        mat = np.array(traces)
+        mn  = np.nanmean(mat, axis=0)
+        n_c = np.sum(np.isfinite(mat), axis=0).clip(1)
+        sem = np.nanstd(mat, axis=0) / np.sqrt(n_c)
+        col = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        ax_b.fill_between(bin_centers, mn - sem, mn + sem, alpha=0.15, color=col)
+        ax_b.plot(bin_centers, mn, color=col, lw=2.0,
+                  label=_STABILITY_FEAT_LABELS.get(feat, feat))
+    ax_b.axhline(1.0, color='black', lw=1.5, ls='--', alpha=0.7)
+    ax_b.set_xlim(0, 1)
+    ax_b.set_ylim(0, 2)
+    ax_b.set_yticks([0.5, 1.0, 1.5, 2.0])
+    ax_b.set_xlabel('Normalized recording time', fontsize=_FAX, fontweight='bold')
+    ax_b.set_ylabel('Rolling IQR\n(norm. to cell mean)', fontsize=_FAX, fontweight='bold')
+    ax_b.tick_params(labelsize=_FS)
+    ax_b.legend(fontsize=_FS - 6, frameon=False, loc='lower right', ncol=2)
+    sns.despine(ax=ax_b)
+
+    # — Panel C2 (boxplot) —
+    rng = np.random.default_rng(42)
+    for xi, feat in enumerate(feats):
+        sub_s = df_s[df_s['feature'] == feat]['slope'].values
+        col   = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        ax_c2.boxplot(
+            [sub_s], positions=[xi], widths=0.5, patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=col, edgecolor='black', linewidth=3.5, alpha=0.6),
+            medianprops=dict(color='black', linewidth=4.5),
+            whiskerprops=dict(color='black', linewidth=2.5),
+            capprops=dict(color='black', linewidth=2.5),
+        )
+        jitter = rng.uniform(-0.18, 0.18, len(sub_s))
+        ax_c2.scatter(xi + jitter, sub_s, s=30, color=col, alpha=0.5,
+                      edgecolors='none', zorder=3)
+    ax_c2.axhline(0, color='black', lw=2.0, ls='--', alpha=0.7)
+    ax_c2.set_xticks(range(len(feats)))
+    ax_c2.set_xticklabels(
+        [_STABILITY_FEAT_LABELS.get(f, f).replace(' ', '\n') for f in feats],
+        fontsize=_FS - 4, rotation=0, ha='center')
+    ax_c2.set_ylabel('Temporal slope of |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+    ax_c2.tick_params(axis='y', labelsize=_FS)
+    ax_c2.yaxis.set_major_locator(plt.MaxNLocator(5))
+    sns.despine(ax=ax_c2)
+
+    # — Panel C1 (KDE) —
+    med = df_s['slope'].median()
+    sns.kdeplot(df_s['slope'], ax=ax_c1, color='#555555', lw=3.0,
+                bw_adjust=2.0, fill=True, alpha=0.35)
+    ax_c1.axvline(0,   color='black',   lw=2.0, ls='--', alpha=0.7, label='0 (no drift)')
+    ax_c1.axvline(med, color='#555555', lw=2.5, ls='--', alpha=0.9,
+                  label=f'Median = {med:.3f}')
+    p01, p99 = df_s['slope'].quantile([0.01, 0.99])
+    pad = max(abs(p01), abs(p99)) * 0.15
+    ax_c1.set_xlim(p01 - pad, p99 + pad)
+    ax_c1.xaxis.set_major_formatter(plt.ScalarFormatter(useOffset=False))
+    ax_c1.set_xlabel('Temporal slope of |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+    ax_c1.tick_params(axis='x', labelsize=_FS)
+    ax_c1.tick_params(axis='y', left=False, labelleft=False)
+    ax_c1.legend(fontsize=_FS - 2, frameon=False)
+    sns.despine(ax=ax_c1, left=True)
+
+    # — Panel D —
+    ax_d.fill_between(bin_centers, fr_mn - fr_sem, fr_mn + fr_sem, alpha=0.25, color='#555555')
+    ax_d.plot(bin_centers, fr_mn, color='#555555', lw=2.5, marker='o', ms=7)
+    ax_d.axhline(1.0, color='black', lw=1.5, ls='--', alpha=0.7, label='Expected (uniform)')
+    ax_d.set_xlabel('Normalized recording time', fontsize=_FAX, fontweight='bold')
+    ax_d.set_ylabel('Spike count\n(norm. to cell mean)', fontsize=_FAX, fontweight='bold')
+    ax_d.set_xlim(0, 1)
+    ax_d.set_ylim(bottom=0)
+    ax_d.set_yticks([0.25, 0.50, 0.75, 1.00, 1.25])
+    ax_d.tick_params(labelsize=_FS)
+    ax_d.legend(fontsize=_FS - 2, frameon=False)
+    sns.despine(ax=ax_d)
+
+    plt.show()
+    plt.close(fig)
+
+
+def plot_slope_vs_rho(cluster_pickle_dir, feats=None, min_spks=30):
+    """
+    Panel E — Scatter of |temporal slope| vs |temporal rho| per (cell × feature).
+
+    Temporal rho: Spearman ρ between normalized spike time and cluster label.
+    Only (cell × feature) pairs where a cluster label column exists are included.
+    A positive correlation means high-slope cells are the same cells with
+    temporally-structured bimodal waveforms — i.e., discrete state switching,
+    not gradual patch degradation.
+    """
+    from scipy.stats import spearmanr, linregress
+    _FS, _FAX = 24, 26
+    if feats is None:
+        feats = _STABILITY_FEATS
+
+    # load pickles directly so cluster label columns (*_cluster) are included
+    pkls = sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl')))
+    all_dfs = []
+    for pkl in pkls:
+        try:
+            df = pd.read_pickle(pkl)
+        except Exception:
+            continue
+        if 'spk_times_ms' not in df.columns:
+            continue
+        cid = os.path.basename(pkl).replace('_cluster_df.pkl', '')
+        t = df['spk_times_ms'].values.astype(float)
+        df = df.copy()
+        _apply_validity_bounds(df)
+        df['time_norm'] = (t - t.min()) / (t.max() - t.min() + 1e-12)
+        df['cell_id'] = cid
+        all_dfs.append(df)
+    if not all_dfs:
+        print('No cluster pickles found.')
+        return
+    spikes_df = pd.concat(all_dfs, ignore_index=True)
+
+    feats = [f for f in feats if f in spikes_df.columns]
+    cell_ids = spikes_df['cell_id'].unique()
+
+    # population IQR per feature (same as plot_temporal_slopes)
+    pop_iqr = {}
+    for feat in feats:
+        all_vals = spikes_df[feat].dropna().values.astype(float)
+        q75, q25 = np.percentile(all_vals, [75, 25])
+        pop_iqr[feat] = q75 - q25
+
+    records = []
+    for cid in cell_ids:
+        sub = spikes_df[spikes_df['cell_id'] == cid]
+        tv  = sub['time_norm'].values
+        for feat in feats:
+            if feat in _STABILITY_EXCLUDE.get(cid, []):
+                continue
+            clabel_col = feat + '_cluster'
+            if clabel_col not in sub.columns:
+                continue
+            labels = sub[clabel_col].values
+            vals   = sub[feat].values.astype(float)
+            # encode string labels (e.g. 'high'/'low') to integer codes
+            lab_encoded = pd.Categorical(labels).codes.astype(float)
+            lab_encoded[lab_encoded < 0] = np.nan  # -1 = NaN in Categorical codes
+            mask = np.isfinite(vals) & np.isfinite(lab_encoded)
+            if mask.sum() < min_spks:
+                continue
+            v, t_m, lab = vals[mask], tv[mask], lab_encoded[mask]
+
+            # temporal rho: Spearman ρ(time_norm, cluster_label)
+            rho, _ = spearmanr(t_m, lab)
+
+            # temporal slope (same computation as plot_temporal_slopes)
+            norm = pop_iqr[feat]
+            if norm == 0:
+                slope = 0.0
+            else:
+                abs_dev = np.abs(v - v.mean()) / norm
+                slope, *_ = linregress(t_m, abs_dev)
+
+            records.append({'cell_id': cid, 'feature': feat,
+                            'slope': slope, 'abs_slope': abs(slope),
+                            'rho': rho,    'abs_rho': abs(rho)})
+
+    df_r = pd.DataFrame(records)
+    if df_r.empty:
+        print('No (cell × feature) pairs with cluster labels found.')
+        return
+
+    # scatter: |rho| on x, |slope| on y, coloured by feature
+    fig, ax = plt.subplots(figsize=(11, 6), constrained_layout=True)
+    for feat in feats:
+        sub_r = df_r[df_r['feature'] == feat]
+        if sub_r.empty:
+            continue
+        col = _SPIKE_FEAT_COLORS.get(feat, '#555555')
+        ax.scatter(sub_r['abs_rho'], sub_r['abs_slope'],
+                   color=col, s=70, alpha=0.7, edgecolors='white',
+                   linewidths=0.5, label=_STABILITY_FEAT_LABELS.get(feat, feat),
+                   zorder=3)
+
+    # label top-N outliers by |slope|
+    top_n = 5
+    outliers = df_r.nlargest(top_n, 'abs_slope')
+    for _, row in outliers.iterrows():
+        label = f"{row['cell_id']}\n{_STABILITY_FEAT_LABELS.get(row['feature'], row['feature'])}"
+        ax.annotate(label, xy=(row['abs_rho'], row['abs_slope']),
+                    xytext=(8, 4), textcoords='offset points',
+                    fontsize=_FS - 8, va='bottom', ha='left',
+                    arrowprops=dict(arrowstyle='-', color='#444444', lw=0.8))
+
+    # overall Spearman correlation (drop NaN rows)
+    valid = df_r[['abs_rho', 'abs_slope']].dropna()
+    rho_all, p_all = spearmanr(valid['abs_rho'], valid['abs_slope'])
+    # trend line
+    m, b, *_ = linregress(valid['abs_rho'], valid['abs_slope'])
+    x_line = np.linspace(0, valid['abs_rho'].max(), 100)
+    ax.plot(x_line, m * x_line + b, color='black', lw=2.0, ls='--', alpha=0.7)
+    p_str = f'{p_all:.3f}' if p_all >= 0.001 else f'{p_all:.2e}'
+    ax.text(0.97, 0.05,
+            f'Spearman ρ = {rho_all:.2f}\np = {p_str}',
+            transform=ax.transAxes, fontsize=_FS, va='bottom', ha='right')
+
+    ax.set_xlabel('|Temporal rho| (bimodal state structure)', fontsize=_FAX, fontweight='bold')
+    ax.set_ylabel('|Temporal slope| of |Δ| / IQR', fontsize=_FAX, fontweight='bold')
+    ax.legend(fontsize=_FS - 4, frameon=False, ncol=1,
+              loc='upper left', bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
+    ax.yaxis.set_major_locator(plt.MaxNLocator(5))
+    ax.tick_params(labelsize=_FS)
+    sns.despine(ax=ax)
+    plt.show()
+
+
+# ── ISI independence helpers ──────────────────────────────────────────────────
+
+def cramers_v(x, y):
+    """Cramér's V association between two categorical series (0 = independent, 1 = perfectly related)."""
+    ct = pd.crosstab(x, y)
+    chi2, _, _, _ = chi2_contingency(ct)
+    n = ct.sum().sum()
+    k = min(ct.shape)
+    if k < 2 or n == 0:
+        return np.nan
+    return np.sqrt(chi2 / (n * (k - 1)))
+
+
+def kde_panel_solid(ax, df, feature, cluster_col, colors, is_isi=False,
+                    iqr_multiplier=3.0, common_norm=True):
+    """Solid-fill KDE, no axes — matches supp_cluster_distributions aesthetic.
+
+    IQR outlier removal (iqr_multiplier=3) and common_norm=True both match
+    visualize_feature_groups_hist in the cluster notebook.
+    common_norm scales each group's KDE by n_group/n_total so heights are
+    proportional to spike counts — prevents minority groups from dominating.
+    Drawing order: largest-n group first (background), smallest-n group on top.
+    """
+    sub = df.dropna(subset=[feature, cluster_col])
+    if sub.empty:
+        return
+
+    # IQR outlier removal — matches cluster notebook (iqr_multiplier=3)
+    all_vals = pd.to_numeric(sub[feature], errors='coerce').dropna()
+    Q1, Q3  = all_vals.quantile(0.25), all_vals.quantile(0.75)
+    IQR     = Q3 - Q1
+    lo_iqr  = Q1 - iqr_multiplier * IQR
+    hi_iqr  = Q3 + iqr_multiplier * IQR
+    sub     = sub[(sub[feature] >= lo_iqr) & (sub[feature] <= hi_iqr)]
+
+    if sub.empty:
+        return
+
+    vals_all = sub[feature]
+    lo       = vals_all.min()
+    hi       = vals_all.max()
+    pad      = (hi - lo) * 0.08
+    x_grid   = np.linspace(lo - pad, hi + pad, 300)
+    n_total  = len(sub)
+
+    # draw larger group first so smaller (more concentrated) group sits on top
+    grp_ns     = {g: (sub[cluster_col] == g).sum() for g in sub[cluster_col].dropna().unique()}
+    draw_order = sorted(grp_ns, key=lambda g: grp_ns[g], reverse=True)
+
+    for grp in draw_order:
+        vals = sub.loc[sub[cluster_col] == grp, feature].values
+        if len(vals) < 5:
+            continue
+        y = gaussian_kde(vals, bw_method='scott')(x_grid)
+        if common_norm:
+            y = y * (len(vals) / n_total)
+        col = colors.get(grp, '#888')
+        ax.fill_between(x_grid, y, color=col, alpha=1.0)
+        ax.plot(x_grid, y, color=col, lw=0.6)
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    ax.set_facecolor('#dddddd' if is_isi else 'white')
+
+
+def plot_isi_independence_legend(colors, fontsize=22):
+    """Standalone 2-group legend for the waveform/ISI independence figure."""
+    handles = [
+        Patch(facecolor=colors['low'],  label='low cluster'),
+        Patch(facecolor=colors['high'], label='high cluster'),
+    ]
+    fig, ax = plt.subplots(figsize=(2.5, 1.4))
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=1,
+              frameon=False, handlelength=1.2, handleheight=1.0,
+              handletextpad=0.5, prop={'weight': 'bold', 'size': fontsize})
+    fig.tight_layout()
+    return fig
+
+
+def plot_isi_independence_example(df_ex, wclust, iclust, features, colors,
+                                   col_label_fs=28, row_label_fs=30,
+                                   common_norm=True, figsize=(16, 8),
+                                   row1_label='Colored by\npeak amplitude\ncluster',
+                                   row2_label='Colored by\nISI\ncluster'):
+    """
+    2-row × N-col grid of solid-fill KDE panels.
+    Row 1: colored by wclust (default: peak amplitude cluster).
+    Row 2: colored by iclust (ISI cluster).
+    features: list of (col_name, label, is_isi) tuples.
+    common_norm scales each group's KDE by n_group/n_total (matches cluster notebook).
+    """
+    import matplotlib.gridspec as _gs
+    n = len(features)
+    fig = plt.figure(figsize=figsize)
+    outer = _gs.GridSpec(2, n, figure=fig,
+                         hspace=0.45, wspace=0.12,
+                         left=0.14, right=0.98, top=0.88, bottom=0.05)
+
+    for col, (feat, label, is_isi) in enumerate(features):
+        ax = fig.add_subplot(outer[0, col])
+        kde_panel_solid(ax, df_ex, feat, wclust, colors, is_isi=is_isi,
+                        common_norm=common_norm)
+        ax.set_title(label, fontsize=col_label_fs, fontweight='bold', pad=8)
+
+    for col, (feat, label, is_isi) in enumerate(features):
+        ax = fig.add_subplot(outer[1, col])
+        kde_panel_solid(ax, df_ex, feat, iclust, colors, is_isi=is_isi,
+                        common_norm=common_norm)
+
+    fig.text(0.04, 0.74, row1_label, va='center', ha='center',
+             rotation=90, fontsize=row_label_fs, fontweight='bold', color='#222')
+    fig.text(0.04, 0.27, row2_label, va='center', ha='center',
+             rotation=90, fontsize=row_label_fs, fontweight='bold', color='#222')
+
+    return fig
+
+
+def plot_eta2_population(df_eta, example_cell, colors,
+                          fs_ax=26, fs_tk=20, lw_sp=2.0,
+                          figsize=(7, 5)):
+    """
+    Histogram of η² (log ISI ~ waveform cluster) across cells.
+    Supp figure style: bold labels, no top/right spines.
+    Returns (fig, median_eta2, example_eta2) for use by plot_eta2_legend.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    eta2_vals = df_eta['eta2'].values
+    ax.hist(eta2_vals, bins=12, color='#56B4E9', edgecolor='white', linewidth=0.5)
+
+    med    = float(np.median(eta2_vals))
+    ex_row = df_eta.loc[df_eta['cell'] == example_cell, 'eta2'].values
+    ex_val = float(ex_row[0]) if len(ex_row) else None
+
+    ax.axvline(med, color='k', lw=2.0, ls='--')
+    if ex_val is not None:
+        ax.axvline(ex_val, color=colors['high'], lw=2.0, ls=':')
+
+    ax.set_xlabel(r'$\eta^2$  (log ISI ~ waveform cluster)',
+                  fontsize=fs_ax, fontweight='bold')
+    ax.set_ylabel('Cells', fontsize=fs_ax, fontweight='bold')
+    ax.set_title(f'Population  (n = {len(df_eta)} cells)',
+                 fontsize=fs_ax, fontweight='bold')
+
+    ax.tick_params(axis='both', labelsize=fs_tk, width=lw_sp)
+    for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+        lbl.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    for sp in ['bottom', 'left']:
+        ax.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig, med, ex_val
+
+
+def plot_eta2_legend(med, ex_val, example_cell, colors, fontsize=18, figsize=(3.5, 1.2)):
+    """Standalone legend for the η² population histogram."""
+    handles = [
+        Line2D([], [], color='k',            lw=2.0, ls='--',
+               label=f'Median = {med:.3f}'),
+        Line2D([], [], color=colors['high'], lw=2.0, ls=':',
+               label=f'c{example_cell} = {ex_val:.3f}'),
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=1, frameon=False,
+              prop={'weight': 'bold', 'size': fontsize})
+    fig.tight_layout()
+    return fig
+
+
+# ── Decay-correlation direction analysis helpers ──────────────────────────────
+
+def compute_exp_lambda_corr_per_cell(dfs, cids, feat_a='exp_lambda', feat_b='peak_amp'):
+    """Per-cell Pearson r between feat_a and feat_b.
+
+    Returns DataFrame: cell, r, p, n_spikes, significant (p<0.05).
+    """
+    rows = []
+    for df, cid in zip(dfs, cids):
+        if feat_a not in df.columns or feat_b not in df.columns:
+            continue
+        sub = df[[feat_a, feat_b]].dropna()
+        if len(sub) < 5:
+            continue
+        r, p = pearsonr(sub[feat_a], sub[feat_b])
+        rows.append({'cell': cid, 'r': r, 'p': p, 'n_spikes': len(sub)})
+    df_r = pd.DataFrame(rows)
+    if not df_r.empty:
+        df_r['significant'] = df_r['p'] < 0.05
+    return df_r
+
+
+def plot_exp_lambda_strip(df_r,
+                           feat_a='exp_lambda', feat_b='peak_amp',
+                           fs_ax=28, fs_tk=22, lw_sp=2.5,
+                           figsize=(8, 5)):
+    """Ranked strip plot of per-cell r(feat_a, feat_b).
+
+    x-axis = rank (sorted by r, no tick labels).
+    Color  = direction: r>0 → orange (#D55E00), r<0 → blue (#0072B2).
+    Fill   = significance: p<0.05 → filled circle; p≥0.05 → open circle.
+    Returns (fig, df_sorted, n_pos, n_neg, n_pos_sig, n_neg_sig).
+    """
+    _POS = '#D55E00'
+    _NEG = '#0072B2'
+
+    df_sorted = df_r.sort_values('r').reset_index(drop=True)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for idx, row in df_sorted.iterrows():
+        r_val  = row['r']
+        p_val  = row.get('p', 1.0)
+        col    = _POS if r_val > 0 else _NEG
+        sig    = p_val < 0.05
+        if sig:
+            ax.scatter(idx, r_val, color=col, s=90, zorder=3,
+                       edgecolors='none', marker='o')
+        else:
+            ax.scatter(idx, r_val, facecolors='none', edgecolors=col,
+                       linewidths=1.8, s=90, zorder=3, marker='o')
+
+    ax.axhline(0, color='#888', lw=1.5, ls='--', zorder=1)
+
+    n_pos     = int((df_sorted['r'] > 0).sum())
+    n_neg     = int((df_sorted['r'] < 0).sum())
+    n_pos_sig = int(((df_sorted['r'] > 0) & (df_sorted['p'] < 0.05)).sum())
+    n_neg_sig = int(((df_sorted['r'] < 0) & (df_sorted['p'] < 0.05)).sum())
+
+    _fa = feat_a.replace('_', ' ')
+    _fb = feat_b.replace('_', ' ')
+    ax.set_xlabel('Cells (sorted by r)', fontsize=fs_ax, fontweight='bold')
+    ax.set_ylabel(f'r({_fa},\n{_fb})', fontsize=fs_ax, fontweight='bold')
+    ax.set_xticks([])
+    ax.tick_params(axis='y', labelsize=fs_tk, width=lw_sp)
+    for lbl in ax.get_yticklabels():
+        lbl.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    for sp in ['bottom', 'left']:
+        ax.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig, df_sorted, n_pos, n_neg, n_pos_sig, n_neg_sig
+
+
+def plot_exp_lambda_strip_stats(n_pos, n_neg, n_pos_sig, n_neg_sig,
+                                 fs=20, figsize=(5.5, 1.2)):
+    """Standalone stats text for plot_exp_lambda_strip."""
+    n_total = n_pos + n_neg
+    lines = [
+        f'r > 0: {n_pos}/{n_total} cells  ({n_pos_sig} significant)',
+        f'r < 0: {n_neg}/{n_total} cells  ({n_neg_sig} significant)',
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.text(0.5, 0.5, '\n'.join(lines), transform=ax.transAxes,
+            ha='center', va='center', fontsize=fs, fontweight='bold',
+            color='#222', linespacing=1.6)
+    fig.tight_layout()
+    return fig
+
+
+def plot_exp_lambda_strip_legend(fs=20, figsize=(4.5, 1.6)):
+    """Standalone legend for plot_exp_lambda_strip (direction + significance)."""
+    _POS = '#D55E00'
+    _NEG = '#0072B2'
+    handles = [
+        Line2D([], [], color=_POS, marker='o', ls='None', markersize=10,
+               markerfacecolor=_POS, markeredgecolor=_POS, label='r > 0, p < 0.05'),
+        Line2D([], [], color=_POS, marker='o', ls='None', markersize=10,
+               markerfacecolor='none', markeredgewidth=1.8, markeredgecolor=_POS,
+               label='r > 0, p ≥ 0.05'),
+        Line2D([], [], color=_NEG, marker='o', ls='None', markersize=10,
+               markerfacecolor=_NEG, markeredgecolor=_NEG, label='r < 0, p < 0.05'),
+        Line2D([], [], color=_NEG, marker='o', ls='None', markersize=10,
+               markerfacecolor='none', markeredgewidth=1.8, markeredgecolor=_NEG,
+               label='r < 0, p ≥ 0.05'),
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=2, frameon=False,
+              handlelength=1.2, handleheight=1.0, handletextpad=0.4,
+              columnspacing=0.8, prop={'weight': 'bold', 'size': fs})
+    fig.tight_layout()
+    return fig
+
+
+def plot_two_corr_heatmaps(df_a, df_b, feat_cols, title_a='', title_b='',
+                            corr_threshold=0.1, figsize=(26, 10)):
+    """Side-by-side Pearson r heatmaps for two DataFrames.
+
+    Same aesthetic as plot_avg_corr_heatmap; computes raw per-pair r within
+    each DataFrame. Useful for comparing a reference cell (pvc-6 c1) and a
+    best-match spe-1 cell side by side.
+    """
+    _LABEL = {
+        'ramp_amp':        'ramp amp',
+        'inflection_time': 'inflec time',
+        'inflection_amp':  'inflec amp',
+        'peak_amp':        'peak amp',
+        'peak_width':      'peak width',
+        'peak_sharpness':  'peak sharp',
+        'exp_lambda':      'exp lambda',
+        'exp_const':       'exp const',
+        'log_isi':         'log ISI',
+    }
+    def _short(f): return _LABEL.get(f, f.replace('_', ' '))
+    def _y_label(f):
+        s = _short(f)
+        parts = s.split(' ')
+        return parts[0] + '\n' + parts[1] if len(parts) == 2 else s
+
+    n       = len(feat_cols)
+    mask    = np.triu(np.ones((n, n), dtype=bool))
+    xlabels = [_short(f) for f in feat_cols[:-1]] + ['']
+    ylabels = [''] + [_y_label(f) for f in feat_cols[1:]]
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    for ax, df, title in zip(axes, [df_a, df_b], [title_a, title_b]):
+        sub = df[[c for c in feat_cols if c in df.columns]].dropna()
+        sub = sub.reindex(columns=feat_cols)
+
+        r_mat = np.full((n, n), np.nan)
+        p_mat = np.ones((n, n))
+        for i in range(n):
+            r_mat[i, i] = 1.0
+        for i in range(n):
+            ci = feat_cols[i]
+            for j in range(i):
+                cj = feat_cols[j]
+                _v = sub[[ci, cj]].dropna()
+                if len(_v) > 4:
+                    _r, _p        = pearsonr(_v[ci], _v[cj])
+                    r_mat[i, j]   = _r;  r_mat[j, i] = _r
+                    p_mat[i, j]   = _p;  p_mat[j, i] = _p
+
+        rho_df = pd.DataFrame(r_mat, index=feat_cols, columns=feat_cols)
+        sns.heatmap(rho_df, mask=mask, annot=False, cmap='RdBu_r', center=0,
+                    vmin=-1, vmax=1, square=True, linewidths=0, ax=ax,
+                    xticklabels=xlabels, yticklabels=ylabels)
+
+        cbar = ax.collections[0].colorbar
+        cbar.set_ticks([-1, 0, 1])
+        cbar.set_ticklabels(['-1', '0', '1'])
+        cbar.ax.tick_params(labelsize=20, width=2.5, length=6)
+        for sp in cbar.ax.spines.values():
+            sp.set_visible(True); sp.set_linewidth(2.5)
+        for lbl in cbar.ax.get_yticklabels():
+            lbl.set_fontweight('bold')
+
+        for sp in ['top', 'right']:
+            ax.spines[sp].set_visible(False)
+        for sp in ['left', 'bottom']:
+            ax.spines[sp].set_visible(True)
+            ax.spines[sp].set_linewidth(2.5)
+
+        _cmap_obj = plt.cm.RdBu_r
+        _norm_obj = mcolors.Normalize(vmin=-1, vmax=1)
+        cell_h_in = figsize[1] / n
+        star_fs   = max(12, int(cell_h_in * 72 * 0.45))
+        r_fs      = max(9,  int(cell_h_in * 72 * 0.26))
+
+        for i in range(n):
+            for j in range(n):
+                if i > j:
+                    rv = r_mat[i, j]
+                    pv = p_mat[i, j]
+                    if np.isnan(rv):
+                        continue
+                    sig  = pv < 0.05 and abs(rv) >= corr_threshold
+                    rgba = _cmap_obj(_norm_obj(rv))
+                    lum  = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
+                    tc   = 'white' if lum < 0.5 else 'black'
+                    ax.text(j + 0.5, i + 0.68, f'{rv:.2f}',
+                            ha='center', va='center', fontsize=r_fs, color=tc,
+                            fontweight='bold' if pv < 0.05 else 'normal',
+                            fontfamily='Helvetica Neue')
+                    if sig:
+                        star = '***' if pv < 0.001 else '**' if pv < 0.01 else '*'
+                        ax.text(j + 0.5, i + 0.32, star,
+                                ha='center', va='center', fontsize=star_fs,
+                                fontweight='bold', color=tc, fontfamily='Helvetica Neue')
+
+        ax.tick_params(axis='x', labelsize=26, width=2.5)
+        ax.tick_params(axis='y', labelsize=22, width=2.5)
+        fig.canvas.draw()
+        for lbl in ax.get_xticklabels():
+            lbl.set_fontweight('bold')
+        for lbl in ax.get_yticklabels():
+            lbl.set_fontweight('bold')
+            lbl.set_multialignment('center')
+        if title:
+            ax.set_title(title, fontsize=22, fontweight='bold',
+                         fontfamily='Helvetica Neue')
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+        ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+
+    plt.tight_layout()
+    return fig
+
+
+def compute_single_cell_corr_matrix(df, feat_cols):
+    """Pairwise Pearson r matrix for a single DataFrame.
+
+    Returns (r_mat, p_mat) both (n, n) with raw (uncorrected) p-values,
+    matching the computation used inside plot_two_corr_heatmaps.
+    """
+    n = len(feat_cols)
+    sub = df[[c for c in feat_cols if c in df.columns]].dropna()
+    sub = sub.reindex(columns=feat_cols)
+
+    r_mat = np.full((n, n), np.nan)
+    p_mat = np.ones((n, n))
+    for i in range(n):
+        r_mat[i, i] = 1.0
+
+    for i in range(n):
+        for j in range(i):
+            ci, cj = feat_cols[i], feat_cols[j]
+            _v = sub[[ci, cj]].dropna()
+            if len(_v) > 4:
+                _r, _p = pearsonr(_v[ci], _v[cj])
+                r_mat[i, j] = _r;  r_mat[j, i] = _r
+                p_mat[i, j] = _p;  p_mat[j, i] = _p
+
+    return r_mat, p_mat
+
+
+def plot_clear_eap_box_strip(df_r, dict_clear_eap,
+                              feat_a='exp_lambda', feat_b='peak_amp',
+                              raw_p=0.057, fdr_p=0.286,
+                              fs_ax=28, fs_tk=22, lw_sp=2.5,
+                              figsize=(6, 6)):
+    """Box + strip of r(feat_a, feat_b) split by clear EAP status.
+
+    Annotates with raw and FDR-corrected p-values from a prior Mann-Whitney U test.
+    """
+    df_plot = df_r.copy()
+    df_plot['_eap'] = df_plot['cell'].apply(
+        lambda c: dict_clear_eap.get(int(str(c).replace('c', '')), False))
+    df_plot['Clear EAP'] = df_plot['_eap'].map(
+        {True: 'Clear EAP', False: 'No clear EAP'})
+
+    _COLORS = {'Clear EAP': '#0072B2', 'No clear EAP': '#888888'}
+    order   = ['Clear EAP', 'No clear EAP']
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sns.boxplot(data=df_plot, x='Clear EAP', y='r', order=order,
+                palette=_COLORS, width=0.5, fliersize=0, ax=ax,
+                linewidth=lw_sp)
+    sns.stripplot(data=df_plot, x='Clear EAP', y='r', order=order,
+                  color='#222', size=7, jitter=True, ax=ax, zorder=5)
+
+    ax.axhline(0, color='#888', lw=1.5, ls='--')
+
+    ax.annotate(f'raw p = {raw_p:.3f}\nFDR p = {fdr_p:.3f}',
+                xy=(0.5, 0.97), xycoords='axes fraction',
+                ha='center', va='top',
+                fontsize=fs_tk - 4, fontweight='bold', color='#444')
+
+    _fa = feat_a.replace('_', ' ')
+    _fb = feat_b.replace('_', ' ')
+    ax.set_xlabel('', fontsize=fs_ax)
+    ax.set_ylabel(f'r({_fa}, {_fb})', fontsize=fs_ax, fontweight='bold')
+    ax.tick_params(axis='both', labelsize=fs_tk, width=lw_sp)
+    for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+        lbl.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    for sp in ['bottom', 'left']:
+        ax.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig
+
+
+# ── Decay correlation vs ridge R² helpers ────────────────────────────────────
+
+def compute_r2_vs_decay_corr(df_corr, pop_ridge_pkl_path,
+                               predictor_set='Waveform only',
+                               decay_beta_label='Decay λ'):
+    """Merge per-cell r(exp_lambda, peak_amp) with ridge R² and exp_lambda beta.
+
+    Returns (merged_df, target_names).
+    merged_df columns: cell, r, p, n_spikes, significant,
+                        mean_r2, max_r2, n_targets,
+                        mean_decay_beta (average across LFP targets).
+    """
+    import pickle as _pkl
+    with open(pop_ridge_pkl_path, 'rb') as _f:
+        pop = _pkl.load(_f)
+
+    r2_pop       = pop['r2_pop']
+    beta_pop     = pop.get('beta_pop', {})
+    cell_ids_r   = pop['cell_ids']
+    target_names = pop['target_names']
+
+    rows = []
+    for idx, cid in enumerate(cell_ids_r):
+        r2_vals   = []
+        beta_vals = []
+        for tn in target_names:
+            arr = r2_pop.get(tn, {}).get(predictor_set)
+            if arr is not None and idx < len(arr) and np.isfinite(arr[idx]):
+                r2_vals.append(arr[idx])
+            barr = beta_pop.get(tn, {}).get(decay_beta_label)
+            if barr is not None and idx < len(barr) and np.isfinite(barr[idx]):
+                beta_vals.append(barr[idx])
+        rows.append({
+            'cell':            cid,
+            'mean_r2':         float(np.mean(r2_vals))   if r2_vals   else np.nan,
+            'max_r2':          float(np.max(r2_vals))    if r2_vals   else np.nan,
+            'n_targets':       len(r2_vals),
+            'mean_decay_beta': float(np.mean(beta_vals)) if beta_vals else np.nan,
+        })
+
+    df_r2  = pd.DataFrame(rows)
+    merged = df_corr.merge(df_r2, on='cell', how='inner')
+    return merged, target_names
+
+
+def plot_r2_vs_decay_corr(df_merged, fs_ax=28, fs_tk=22, lw_sp=2.5,
+                           figsize=(14, 5)):
+    """Two-panel figure:
+       (A) Scatter — r(exp_lambda, peak_amp) vs mean waveform-only R²
+       (B) Bar count — sign of r vs sign of mean exp_lambda ridge beta.
+
+    Colors: orange = positive r direction, blue = negative r direction.
+    Returns (fig, pearson_r, pearson_p).
+    """
+    from scipy.stats import pearsonr as _pr, spearmanr as _sr, fisher_exact as _fe
+
+    sub = df_merged.dropna(subset=['r', 'mean_r2'])
+
+    _POS = '#D55E00'
+    _NEG = '#0072B2'
+    pos_mask = sub['r'] > 0
+    neg_mask = sub['r'] < 0
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    # ── Panel A: scatter r vs mean R² ─────────────────────────────────────────
+    ax = axes[0]
+    ax.scatter(sub.loc[pos_mask, 'r'], sub.loc[pos_mask, 'mean_r2'],
+               color=_POS, s=80, zorder=3, edgecolors='none')
+    ax.scatter(sub.loc[neg_mask, 'r'], sub.loc[neg_mask, 'mean_r2'],
+               color=_NEG, s=80, zorder=3, edgecolors='none')
+    ax.axvline(0, color='#888', lw=1.2, ls='--', zorder=1)
+    ax.axhline(0, color='#888', lw=1.2, ls='--', zorder=1)
+
+    r_stat, p_stat = _pr(sub['r'], sub['mean_r2'])
+    rho_s, rho_p   = _sr(sub['r'], sub['mean_r2'])
+
+    ax.set_xlabel('r(exp lambda,\npeak amp)', fontsize=fs_ax, fontweight='bold')
+    ax.set_ylabel('Mean ridge R²\n(Waveform only)', fontsize=fs_ax, fontweight='bold')
+
+    # ── Panel B: direction agreement (r sign vs mean decay beta sign) ─────────
+    ax2 = axes[1]
+    sub2 = df_merged.dropna(subset=['r', 'mean_decay_beta'])
+    fe_p    = np.nan
+    n_agree = 0
+    n_total = 0
+    if not sub2.empty:
+        rp_bp = ((sub2['r'] > 0) & (sub2['mean_decay_beta'] > 0)).sum()
+        rp_bn = ((sub2['r'] > 0) & (sub2['mean_decay_beta'] < 0)).sum()
+        rn_bp = ((sub2['r'] < 0) & (sub2['mean_decay_beta'] > 0)).sum()
+        rn_bn = ((sub2['r'] < 0) & (sub2['mean_decay_beta'] < 0)).sum()
+        ct = np.array([[rp_bp, rp_bn], [rn_bp, rn_bn]])
+        _, fe_p = _fe(ct)
+        n_agree = int(rp_bp + rn_bn)
+        n_total = int(len(sub2))
+
+        categories = ['r>0, β>0', 'r>0, β<0', 'r<0, β>0', 'r<0, β<0']
+        counts     = [rp_bp, rp_bn, rn_bp, rn_bn]
+        bar_colors = [_POS, _POS, _NEG, _NEG]
+        bar_alpha  = [1.0, 0.45, 1.0, 0.45]
+        for x, c, col, al in zip(range(4), counts, bar_colors, bar_alpha):
+            ax2.bar(x, c, color=col, alpha=al, width=0.6)
+        ax2.set_xticks(range(4))
+        ax2.set_xticklabels(categories, fontsize=fs_tk - 6,
+                            fontweight='bold', rotation=30, ha='right')
+        ax2.set_ylabel('Cells', fontsize=fs_ax, fontweight='bold')
+
+    for axi in axes:
+        axi.tick_params(axis='both', labelsize=fs_tk, width=lw_sp)
+        for lbl in axi.get_xticklabels() + axi.get_yticklabels():
+            lbl.set_fontweight('bold')
+        axi.spines['top'].set_visible(False)
+        axi.spines['right'].set_visible(False)
+        for sp in ['bottom', 'left']:
+            axi.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig, r_stat, p_stat, rho_s, rho_p, fe_p, n_agree, n_total
+
+
+def plot_r2_vs_decay_corr_legend(fs=20, figsize=(3.0, 1.4)):
+    """Standalone legend for plot_r2_vs_decay_corr (scatter panel)."""
+    handles = [
+        Patch(facecolor='#D55E00', label='r > 0'),
+        Patch(facecolor='#0072B2', label='r < 0'),
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=2, frameon=False,
+              handlelength=1.2, handleheight=1.0, handletextpad=0.4,
+              columnspacing=0.8, prop={'weight': 'bold', 'size': fs})
+    fig.tight_layout()
+    return fig
+
+
+def plot_r2_vs_decay_corr_stats(r_stat, p_stat, rho_s, rho_p,
+                                  fe_p, n_agree, n_total,
+                                  fs=20, figsize=(5.0, 1.8)):
+    """Standalone stats text for plot_r2_vs_decay_corr."""
+    lines = [
+        f'Pearson r = {r_stat:.2f}   p = {p_stat:.3f}',
+        f'Spearman ρ = {rho_s:.2f}   p = {rho_p:.3f}',
+        f'Fisher p = {fe_p:.3f}   sign agree = {n_agree}/{n_total}',
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.text(0.5, 0.5, '\n'.join(lines), transform=ax.transAxes,
+            ha='center', va='center', fontsize=fs, fontweight='bold',
+            color='#222', linespacing=1.6)
+    fig.tight_layout()
+    return fig
+
+
+# ── Exp decay fit quality vs correlation direction ────────────────────────────
+
+def compute_exp_fit_r2_per_cell(cids, spike_fit_dir):
+    """Per-cell mean r_squared_exp from spike fit pickles.
+
+    Returns DataFrame: cell, mean_r2_exp, median_r2_exp, n_spikes.
+    Cells whose pickle is missing or lacks r_squared_exp are skipped.
+    """
+    import pickle as _pkl
+    rows = []
+    for cid in cids:
+        p = os.path.join(spike_fit_dir, f'{cid}_spike_fit.pkl')
+        if not os.path.exists(p):
+            continue
+        sp = load_spike_fit_pickle(p)
+        r2 = getattr(sp, 'r_squared_exp', None)
+        if r2 is None:
+            continue
+        arr = np.asarray(r2, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if len(arr) == 0:
+            continue
+        rows.append({
+            'cell':          cid,
+            'mean_r2_exp':   float(np.mean(arr)),
+            'median_r2_exp': float(np.median(arr)),
+            'n_spikes':      len(arr),
+        })
+    return pd.DataFrame(rows)
+
+
+def plot_exp_fit_r2_vs_decay_corr(df_corr, df_fit_r2,
+                                   fs_ax=28, fs_tk=22, lw_sp=2.5,
+                                   figsize=(8, 5)):
+    """Scatter of mean exp fit R² vs r(exp_lambda, peak_amp).
+
+    No inline text or legend — use plot_exp_fit_r2_legend() and
+    plot_exp_fit_r2_stats() for those.
+    Returns (fig, merged_df, r_stat, p_stat).
+    """
+    from scipy.stats import pearsonr as _pr
+
+    merged = df_corr.merge(df_fit_r2[['cell', 'mean_r2_exp']], on='cell', how='inner')
+    sub    = merged.dropna(subset=['r', 'mean_r2_exp'])
+
+    _POS = '#D55E00'
+    _NEG = '#0072B2'
+    sig_mask = sub['p'] < 0.05 if 'p' in sub.columns else pd.Series(False, index=sub.index)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for color, dir_mask in [(_POS, sub['r'] > 0), (_NEG, sub['r'] < 0)]:
+        filled = dir_mask & sig_mask
+        open_  = dir_mask & ~sig_mask
+        ax.scatter(sub.loc[filled, 'mean_r2_exp'], sub.loc[filled, 'r'],
+                   color=color, s=90, zorder=3, edgecolors='none')
+        ax.scatter(sub.loc[open_, 'mean_r2_exp'], sub.loc[open_, 'r'],
+                   facecolors='none', edgecolors=color,
+                   linewidths=1.8, s=90, zorder=3)
+
+    ax.axhline(0, color='#888', lw=1.2, ls='--', zorder=1)
+
+    r_stat, p_stat = _pr(sub['mean_r2_exp'], sub['r'])
+
+    ax.set_xlabel('Mean exp fit R²', fontsize=fs_ax, fontweight='bold')
+    ax.set_ylabel('r(exp lambda,\npeak amp)', fontsize=fs_ax, fontweight='bold')
+
+    ax.tick_params(axis='both', labelsize=fs_tk, width=lw_sp)
+    for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+        lbl.set_fontweight('bold')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    for sp in ['bottom', 'left']:
+        ax.spines[sp].set_linewidth(lw_sp)
+
+    plt.tight_layout()
+    return fig, merged, r_stat, p_stat
+
+
+def plot_exp_fit_r2_legend(fs=20, figsize=(3.0, 1.4)):
+    """Standalone legend for plot_exp_fit_r2_vs_decay_corr."""
+    handles = [
+        Patch(facecolor='#D55E00', label='r > 0'),
+        Patch(facecolor='#0072B2', label='r < 0'),
+    ]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.legend(handles=handles, loc='center', ncol=2, frameon=False,
+              handlelength=1.2, handleheight=1.0, handletextpad=0.4,
+              columnspacing=0.8, prop={'weight': 'bold', 'size': fs})
+    fig.tight_layout()
+    return fig
+
+
+def plot_exp_fit_r2_stats(r_stat, p_stat, fs=20, figsize=(4.0, 0.8)):
+    """Standalone stats text for plot_exp_fit_r2_vs_decay_corr."""
+    line = f'Pearson r = {r_stat:.2f}   p = {p_stat:.3f}'
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis('off')
+    ax.text(0.5, 0.5, line, transform=ax.transAxes,
+            ha='center', va='center', fontsize=fs, fontweight='bold', color='#222')
+    fig.tight_layout()
+    return fig
