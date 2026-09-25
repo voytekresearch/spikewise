@@ -241,8 +241,9 @@ class SpikeGroup(Spike):
                 else:
                     sig = sigs[ind]
 
-                alt_windows = window_spike(sig, fs, self.df_indices.iloc[inds][ref].values,
-                                           window_length=window_length)
+                # convert spike indices from the fitted signal's sampling rate to the alternative one
+                ref_inds = (self.df_indices.iloc[inds][ref].values / self.fs * fs).astype(int)
+                alt_windows = window_spike(sig, fs, ref_inds, window_length=window_length)
 
                 if self.alt_windows is None:
                     n_nans = np.count_nonzero(np.isnan(self.df_features['peak_amp'].values))
