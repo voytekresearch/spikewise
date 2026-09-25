@@ -4,7 +4,7 @@
 
 > Martin-Burgos, B., Juavinett, A., Riviere, P., Hammonds, R., & Voytek, B. (2026). *Action potential waveforms are state-dependent*. bioRxiv. https://www.biorxiv.org/content/10.64898/2026.09.15.751814v1
 
-Please cite it if you use `spikewise`. The paper's analyses, with one walkthrough notebook per main finding, are in [`Action potential waveforms are state-dependent paper/`](../../Action%20potential%20waveforms%20are%20state-dependent%20paper/).
+The paper's analyses, with one walkthrough notebook per main finding, are in [`Action potential waveforms are state-dependent paper/`](../../Action%20potential%20waveforms%20are%20state-dependent%20paper/).
 
 | notebook | what it covers |
 |---|---|
