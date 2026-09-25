@@ -2,30 +2,12 @@
 import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / 'AP_empirical_paper_all_analyses' / 'datasets' / 'shared_helper_modules'))
 from spikewise_plotting import plot_corr_heatmap_only_spk
-
-
-def _show_once(plot_fn, *args, **kwargs):
-    """Run a plotting function that calls plt.show() itself, and display its figure exactly once.
-
-    Letting plt.show() fire inside an ipywidgets Output can render the figure twice
-    (once in the widget, once in the cell), so the call is silenced and the figure shown here.
-    """
-    original_show = plt.show
-    plt.show = lambda *a, **k: None
-    try:
-        with plt.ioff():
-            plot_fn(*args, **kwargs)
-            fig = plt.gcf()
-    finally:
-        plt.show = original_show
-    display(fig)
-    plt.close(fig)
+from widget_utils import show_figures
 
 
 def correlation_matrix_explorer(per_cell, spike_features, dataset='spe-1', cell=14):
@@ -47,8 +29,8 @@ def correlation_matrix_explorer(per_cell, spike_features, dataset='spe-1', cell=
         title = (f'{dataset_menu.value}  Cell {cell_menu.value} '
                  f'({df_cell.cell_type.iloc[0]}, n={len(df_cell)} spikes)')
         with plot_area:
-            plot_area.clear_output(wait=True)
-            _show_once(plot_corr_heatmap_only_spk, df_cell, spike_features, title=title)
+            plot_area.clear_output()
+            show_figures(plot_corr_heatmap_only_spk, df_cell, spike_features, title=title)
 
     def switch_dataset(change):
         # both datasets have a Cell 1, so the cell value may not change; redraw explicitly, once
