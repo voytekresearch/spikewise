@@ -41,14 +41,14 @@ keep['has_wc'] = v2['has_wc']
 np.savez_compressed(os.path.join(OUT, '_spike_to_avg_distances_v2.npz'), **keep)
 
 # 3. Per-cell single-spike nRMSE cache read by plot_waveform_dist_sorted_dots (Fig 4D); RMSE left empty
-sd = np.load(os.path.join(CLUSTER_PKL_DIR, '_sorted_dots_v1.npz'))
+sd = np.load(os.path.join(CLUSTER_PKL_DIR, '_sorted_dots_v2.npz'))
 cell_ids = [str(c) for c in sd['cell_ids']]
 dots = {'cell_ids': np.array(cell_ids), 'btw_nrmse_all': sd['btw_nrmse_all'].astype(np.float32),
         'btw_rmse_all': EMPTY}
 for i in range(len(cell_ids)):
     dots[f'nrmse_{i}'] = sd[f'nrmse_{i}'].astype(np.float32)
     dots[f'rmse_{i}'] = EMPTY
-np.savez_compressed(os.path.join(OUT, '_sorted_dots_v1.npz'), **dots)
+np.savez_compressed(os.path.join(OUT, '_sorted_dots_v2.npz'), **dots)
 
 # 4. For the explorer: each cell's mean waveform (all spikes) and a random sample of its single spikes,
 #    cut to the same window as the paper's nRMSE

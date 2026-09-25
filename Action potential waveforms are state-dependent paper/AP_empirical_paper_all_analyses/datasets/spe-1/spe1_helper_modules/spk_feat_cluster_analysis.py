@@ -206,6 +206,25 @@ def get_cluster_color(label: str, fallback: str = "black") -> str:
     return CLUSTER_COLORS.get(str(label), fallback)
 
 
+def drop_decay_duplicates(sig, spike_inds, fs, lookback_ms=2.0, flip_signal=False):
+    """
+    Remove repeat detections on the decay of a preceding spike.
+
+    With a low threshold and a 1 ms minimum peak distance, small noise bumps on a
+    slow spike decay that stays above threshold are detected as extra "spikes",
+    each windowed ~1 ms after the previous one (affects whole-cell / low-threshold
+    cells such as c5 and c27). A detection is kept only if nothing in the preceding
+    `lookback_ms` is larger (same polarity as used for detection).
+
+    Returns (kept spike indices, boolean mask of dropped detections).
+    """
+    sig = -np.asarray(sig) if flip_signal else np.asarray(sig)
+    spike_inds = np.asarray(spike_inds)
+    lb = int(round(lookback_ms * fs / 1000))
+    dropped = np.array([sig[max(i - lb, 0):i].max(initial=-np.inf) > sig[i] for i in spike_inds])
+    return spike_inds[~dropped], dropped
+
+
 def peak_align_waveforms(waveforms) -> np.ndarray:
     """
     Align each waveform so its own peak (max |amplitude|) is at t=0.

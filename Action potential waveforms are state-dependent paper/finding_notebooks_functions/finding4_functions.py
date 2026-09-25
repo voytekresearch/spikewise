@@ -22,7 +22,7 @@ C_MEAN, C_OTHER, C_DIFF = '#1B7F4C', '#555555', '#F2D48F'   # as in the Fig 4D n
 def load_distance_data(data_dir):
     """Everything the notebook needs, from the files in finding_notebooks_data/finding4/."""
     data_dir = Path(data_dir)
-    dots = np.load(data_dir / '_sorted_dots_v1.npz')
+    dots = np.load(data_dir / '_sorted_dots_v2.npz')
     cell_ids = [str(c) for c in dots['cell_ids']]
     wf = np.load(data_dir / 'cell_waveforms.npz')
     return {
