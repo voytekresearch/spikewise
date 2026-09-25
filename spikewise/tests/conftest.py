@@ -1,5 +1,7 @@
 """Configuration file for pytest for spikewise."""
 
+import os
+
 import pytest
 
 import numpy as np
@@ -10,6 +12,7 @@ from spikewise.gaussian.models.cyclepoints import compute_spike_cyclepoints
 
 from spikewise.patch.fit import Spike
 from spikewise.patch.sim import sim_ppoly_dist, sim_patch
+from spikewise.tests.utils import DATA_DIR
 
 
 
@@ -18,9 +21,9 @@ def sim_patch_spikes():
 
     # Load param distribution
     fs = 200000
-    poly_means = np.load('params/pvc-6_param_means.npy')
-    poly_cov = np.load('params/pvc-6_param_cov.npy')
-    degree = np.load('params/pvc-6_degree.npy')
+    poly_means = np.load(os.path.join(DATA_DIR, 'pvc-6_param_means.npy'))
+    poly_cov = np.load(os.path.join(DATA_DIR, 'pvc-6_param_cov.npy'))
+    degree = np.load(os.path.join(DATA_DIR, 'pvc-6_degree.npy'))
 
     # Simulate
     spikes, coeffs, knots = sim_ppoly_dist(poly_means, poly_cov, degree,

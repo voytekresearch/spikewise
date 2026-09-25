@@ -3016,6 +3016,27 @@ def _nrmse_cossim(a, b):
     return nrmse, cos_sim
 
 
+def _peak_aligned_windows(W, half_win=75, search_half=50):
+    """
+    Cut each spike to +/- half_win samples around its OWN peak, so single spikes and
+    the cell mean are compared shape to shape rather than offset in time.
+
+    The peak is the extreme value with the cell's spike polarity (sign of the median
+    value at the detection center) within +/- search_half samples of the center
+    (+/- 1 ms at ~50 kHz), so neither a neighbouring spike nor an opposite-sign
+    afterhyperpolarization is picked. Returns (mean of the aligned spikes, aligned spikes).
+    """
+    W = np.asarray(W, float)
+    c = W.shape[1] // 2
+    sign = 1.0 if np.median(W[:, c]) >= 0 else -1.0
+    lo = max(c - search_half, half_win)
+    hi = min(c + search_half, W.shape[1] - half_win)
+    peaks = lo + np.argmax(sign * W[:, lo:hi], axis=1)
+    idx = peaks[:, None] + np.arange(-half_win, half_win)[None, :]
+    aligned = np.take_along_axis(W, idx, axis=1)
+    return aligned.mean(axis=0), aligned
+
+
 def compute_between_cell_waveform_distances(wf_dir, half_win=75):
     """
     For each cell compute an overall mean waveform (weighted average of cluster
@@ -3217,7 +3238,7 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75,
     from pathlib import Path
 
     _cache_dir  = Path(cache_dir) if cache_dir else Path(wf_dir)
-    _cache_file = _cache_dir / "_spike_to_avg_distances_v2.npz"
+    _cache_file = _cache_dir / "_spike_to_avg_distances_v3.npz"
     _N_CACHE    = 200_000
     _rng        = np.random.default_rng(42)
     _npz_key    = lambda name: name.replace("\n", "_").replace("–", "-").replace(" ", "_")
@@ -3270,12 +3291,8 @@ def plot_spike_to_avg_distances(df_master, wf_dir, spike_fit_dir, half_win=75,
                 W  = np.asarray(sp.spikes, float)
             except Exception:
                 continue
-            avg      = W.mean(axis=0)
-            peak_idx = int(np.argmax(np.abs(avg)))
-            lo, hi   = peak_idx - half_win, peak_idx + half_win
-            if lo < 0 or hi > W.shape[1]:
-                continue
-            cell_data[cell_id] = (avg[lo:hi], W[:, lo:hi])
+            avg, W = _peak_aligned_windows(W, half_win)
+            cell_data[cell_id] = (avg, W)
 
         n_spikes_total = sum(v[1].shape[0] for v in cell_data.values())
         print(f"Loaded {len(cell_data)} cells, {n_spikes_total:,} total spikes")
@@ -3440,12 +3457,12 @@ def _load_per_cell_wf_summary(df_master, wf_dir, spike_fit_dir, half_win=75, cac
     Per-cell mean within-nRMSE (each spike vs its own cell mean) and mean between-nRMSE
     (each spike vs every other cell's mean waveform, averaged over other cells).
     Both are spike-to-mean, making within and between directly comparable.
-    Cached to _per_cell_wf_summary_v2.pkl after first run.
+    Cached to _per_cell_wf_summary_v3.pkl after first run.
     """
     import pickle
     from pathlib import Path
 
-    cache_path = Path(cache_dir or wf_dir) / "_per_cell_wf_summary_v2.pkl"
+    cache_path = Path(cache_dir or wf_dir) / "_per_cell_wf_summary_v3.pkl"
     if cache_path.exists():
         return pd.read_pickle(cache_path)
 
@@ -3465,12 +3482,8 @@ def _load_per_cell_wf_summary(df_master, wf_dir, spike_fit_dir, half_win=75, cac
             W  = np.asarray(sp.spikes, float)
         except Exception:
             continue
-        avg      = W.mean(axis=0)
-        peak_idx = int(np.argmax(np.abs(avg)))
-        lo, hi   = peak_idx - half_win, peak_idx + half_win
-        if lo < 0 or hi > W.shape[1]:
-            continue
-        cell_data[cell_id] = (avg[lo:hi], W[:, lo:hi])
+        avg, W = _peak_aligned_windows(W, half_win)
+        cell_data[cell_id] = (avg, W)
 
     cell_ids = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
     records = []
@@ -3519,7 +3532,7 @@ def plot_waveform_dist_kde(df_master, wf_dir, spike_fit_dir=None, half_win=75,
     """Option 1: Overlapping KDEs — within vs between(all), all spikes."""
     from pathlib import Path
 
-    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v2.npz"
+    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v3.npz"
     if not _cache_file.exists():
         raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
 
@@ -3575,7 +3588,7 @@ def plot_waveform_dist_scatter(df_master, wf_dir, spike_fit_dir=None, half_win=7
     """
     from pathlib import Path
 
-    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v2.npz"
+    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v3.npz"
     if not _cache_file.exists():
         raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
 
@@ -3622,7 +3635,7 @@ def plot_waveform_dist_raincloud(df_master, wf_dir, spike_fit_dir=None, half_win
     """Option 3: Raincloud (violin + box + strip) using all spikes from v2 cache."""
     from pathlib import Path
 
-    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v2.npz"
+    _cache_file = Path(cache_dir or wf_dir) / "_spike_to_avg_distances_v3.npz"
     if not _cache_file.exists():
         raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
 
@@ -3682,7 +3695,7 @@ def plot_waveform_dist_sorted_dots(df_master, wf_dir, spike_fit_dir, half_win=75
     from pathlib import Path
 
     _cache_dir  = Path(cache_dir or wf_dir)
-    _cache_file = _cache_dir / "_sorted_dots_v1.npz"
+    _cache_file = _cache_dir / "_sorted_dots_v2.npz"
 
     if _cache_file.exists():
         npz = np.load(_cache_file, allow_pickle=True)
@@ -3708,12 +3721,8 @@ def plot_waveform_dist_sorted_dots(df_master, wf_dir, spike_fit_dir, half_win=75
                 W  = np.asarray(sp.spikes, float)
             except Exception:
                 continue
-            avg      = W.mean(axis=0)
-            peak_idx = int(np.argmax(np.abs(avg)))
-            lo, hi   = peak_idx - half_win, peak_idx + half_win
-            if lo < 0 or hi > W.shape[1]:
-                continue
-            cell_data[cell_id] = (avg[lo:hi], W[:, lo:hi])
+            avg, W = _peak_aligned_windows(W, half_win)
+            cell_data[cell_id] = (avg, W)
 
         cell_ids   = sorted(cell_data.keys(), key=lambda c: int(c.lstrip("c")))
         cell_nrmse, cell_rmse = [], []
@@ -3726,7 +3735,7 @@ def plot_waveform_dist_sorted_dots(df_master, wf_dir, spike_fit_dir, half_win=75
             cell_rmse.append(rmse)
 
         # between from v2 cache
-        v2 = np.load(_cache_dir / "_spike_to_avg_distances_v2.npz", allow_pickle=False)
+        v2 = np.load(_cache_dir / "_spike_to_avg_distances_v3.npz", allow_pickle=False)
         btw_nrmse_all = v2["Between_(all)_nrmse"]
         btw_rmse_all  = v2["Between_(all)_rmse"]
 
@@ -3854,7 +3863,7 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
     _mode      = "detailed" if detailed else "simple"
 
     def _cache_path(feat):
-        return _cache_dir / f"_feat_wbwf2_{_mode}_{feat}.npz"
+        return _cache_dir / f"_feat_wbwf3_{_mode}_{feat}.npz"
 
     _all_cached = all(_cache_path(f).exists() for f in (features or []))
     print(f"[spike_feature_wb] mode={_mode}  cache={'HIT — loading' if _all_cached and not force_recompute else 'MISS — computing (will cache after)'}")
@@ -3873,12 +3882,8 @@ def plot_spike_feature_within_vs_between(cluster_pickle_dir, spike_fit_dir,
             W  = np.asarray(sp.spikes, float)
         except Exception:
             continue
-        avg      = W.mean(axis=0)
-        peak_idx = int(np.argmax(np.abs(avg)))
-        lo, hi   = peak_idx - half_win, peak_idx + half_win
-        if lo < 0 or hi > W.shape[1]:
-            continue
-        all_cell_waveforms[cid] = (avg[lo:hi], W[:, lo:hi])
+        avg, W = _peak_aligned_windows(W, half_win)
+        all_cell_waveforms[cid] = (avg, W)
     print(f"Loaded waveforms for {len(all_cell_waveforms)} cells")
 
     # ── Metadata for detailed mode ───────────────────────────────────────────
@@ -4249,7 +4254,7 @@ def _compute_pct_within_per_cell(wf_dir, spike_fit_dir, half_win=75):
     import pickle
     from pathlib import Path
 
-    _wf_cache = Path(wf_dir) / "_spike_to_avg_distances_v2.npz"
+    _wf_cache = Path(wf_dir) / "_spike_to_avg_distances_v3.npz"
     if not _wf_cache.exists():
         raise FileNotFoundError("Run plot_spike_to_avg_distances first to build the v2 cache.")
     npz = np.load(_wf_cache, allow_pickle=False)
@@ -4276,13 +4281,9 @@ def _compute_pct_within_per_cell(wf_dir, spike_fit_dir, half_win=75):
         except Exception:
             continue
         W = np.asarray(sp.spikes, float)
-        avg = W.mean(axis=0)
-        peak_idx = int(np.argmax(np.abs(avg)))
-        lo, hi = peak_idx - half_win, peak_idx + half_win
-        if lo < 0 or hi > W.shape[1]:
-            continue
-        avg_w    = avg[lo:hi]
-        spikes_w = W[:, lo:hi]
+        avg, W = _peak_aligned_windows(W, half_win)
+        avg_w    = avg
+        spikes_w = W
         denom    = np.max(np.abs(avg_w)) + 1e-12
         diff     = spikes_w - avg_w
         nrmse_w  = np.sqrt(np.mean(diff**2, axis=1)) / denom
@@ -4439,7 +4440,7 @@ def plot_pct_within_exceeds_between(df_master, wf_dir, spike_fit_dir,
 
     _FS, _FAX = 11, 12
     _cache_dir = Path(cache_dir) if cache_dir else Path(wf_dir)
-    _wf_cache  = _cache_dir / "_spike_to_avg_distances_v2.npz"
+    _wf_cache  = _cache_dir / "_spike_to_avg_distances_v3.npz"
 
     WF_ORDER = ['ramp_amp', 'inflection_amp', 'inflection_time',
                 'peak_amp', 'peak_sharpness', 'peak_width',
@@ -4484,14 +4485,10 @@ def plot_pct_within_exceeds_between(df_master, wf_dir, spike_fit_dir,
             continue
 
         W = np.asarray(sp.spikes, float)
-        avg = W.mean(axis=0)
-        peak_idx = int(np.argmax(np.abs(avg)))
-        lo, hi = peak_idx - half_win, peak_idx + half_win
-        if lo < 0 or hi > W.shape[1]:
-            continue
+        avg, W = _peak_aligned_windows(W, half_win)
 
-        avg_w    = avg[lo:hi]
-        spikes_w = W[:, lo:hi]
+        avg_w    = avg
+        spikes_w = W
         denom    = np.max(np.abs(avg_w)) + 1e-12
         diff     = spikes_w - avg_w
         nrmse_w  = np.sqrt(np.mean(diff**2, axis=1)) / denom

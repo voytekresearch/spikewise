@@ -1,5 +1,7 @@
 """Test plotting functions."""
 
+import os
+
 import pytest
 import numpy as np
 import matplotlib
@@ -8,7 +10,7 @@ import matplotlib.pyplot as plt
 
 from spikewise.patch.plts import plot_model
 from spikewise.patch.plts.plts import _peak_align
-from spikewise.tests.utils import plot_test
+from spikewise.tests.utils import plot_test, DATA_DIR
 from spikewise.patch.fit import Spike
 from spikewise.patch.sim import sim_ppoly_dist, sim_patch
 
@@ -38,9 +40,9 @@ def _make_fast_spiking_sp(isi_ms=3.0, n_spikes=30, window_ms=5.0, fs=200000):
     At isi_ms < window_ms the next spike enters the post-window, causing
     argmax-based alignment to pick the wrong peak.
     """
-    poly_means = np.load('params/pvc-6_param_means.npy')
-    poly_cov   = np.load('params/pvc-6_param_cov.npy')
-    degree     = np.load('params/pvc-6_degree.npy')
+    poly_means = np.load(os.path.join(DATA_DIR, 'pvc-6_param_means.npy'))
+    poly_cov   = np.load(os.path.join(DATA_DIR, 'pvc-6_param_cov.npy'))
+    degree     = np.load(os.path.join(DATA_DIR, 'pvc-6_degree.npy'))
 
     spikes, _, _ = sim_ppoly_dist(poly_means, poly_cov, degree,
                                    n_spikes, seeds=np.arange(n_spikes))

@@ -1,9 +1,13 @@
 """Test utilities."""
 
 
+import os
 from functools import wraps
 
 import matplotlib.pyplot as plt
+
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 
 
 def plot_test(func):
