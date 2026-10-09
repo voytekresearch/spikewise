@@ -20,6 +20,8 @@ Do action potential waveform features vary with the state of the local network, 
 AP_empirical_paper_all_analyses/
 ├── README.md                          ← this file
 ├── PLOTTING_GUIDELINES.md             ← colors, figure style, stats conventions
+├── AP_empirical_paper1_old_work/      ← earlier exploratory work, kept for reference only;
+│                                        not used by the paper, can be ignored
 │
 ├── paper_aux_figs/
 │   ├── algorithm/                     ← algorithm schematic, pink noise schematic, patch quality supp

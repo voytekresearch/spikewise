@@ -9,14 +9,16 @@ The paper's analyses, with one walkthrough notebook per main finding, are in [`A
 | notebook | what it covers |
 |---|---|
 | [01_quickstart.ipynb](01_quickstart.ipynb) | Fit the spikes in one recording with `Spike`, plot the fits, read the feature table, filter by fit quality, and the main settings (including `flip_signal` for recordings where spikes point down) |
-| [02_many_recordings.ipynb](02_many_recordings.ipynb) | Fit many sweeps at once with `SpikeGroup`, then compare features across conditions and look at how features correlate |
+| [02_many_recordings.ipynb](02_many_recordings.ipynb) | Fit many sweeps at once with `SpikeGroup`, summarize each recording, and plot groups of spikes |
 | [03_spikes_and_other_signals.ipynb](03_spikes_and_other_signals.ipynb) | Use `.alt()` to describe a second signal (here the injected current) around each spike, and relate it to spike shape |
 
 All three run on small excerpts of two open datasets bundled in `data/example_recordings.npz` (2.6 MB), so nothing needs to be downloaded. `data/build_tutorial_data.py` shows how the excerpts were made.
+
+The `old/` folder holds earlier example notebooks, kept for reference only; they are not maintained and can be ignored.
 
 From the repo root:
 
 ```bash
 pip install -e .
-pip install jupyter seaborn scikit-learn   # used by tutorials 2 and 3
+pip install jupyter scikit-learn   # scikit-learn is used by tutorial 3
 ```

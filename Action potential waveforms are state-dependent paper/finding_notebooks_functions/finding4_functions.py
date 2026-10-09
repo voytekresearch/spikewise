@@ -21,15 +21,11 @@ def load_distance_data(data_dir):
     data_dir = Path(data_dir)
     dots = np.load(data_dir / '_sorted_dots_v1.npz')
     cell_ids = [str(c) for c in dots['cell_ids']]
-    wf = np.load(data_dir / 'cell_waveforms.npz')
     return {
         'dir': data_dir,
         'cells': pd.read_csv(data_dir / 'cells.csv').set_index('cell_id'),
         'within': {c: dots[f'nrmse_{i}'] for i, c in enumerate(cell_ids)},
         'between': dots['btw_nrmse_all'],
-        'mean': {c: wf[f'{c}__mean'].astype(float) for c in cell_ids},
-        'spikes': {c: wf[f'{c}__spikes'].astype(float) for c in cell_ids},
-        'fs': {c: float(wf[f'{c}__fs']) for c in cell_ids},
     }
 
 

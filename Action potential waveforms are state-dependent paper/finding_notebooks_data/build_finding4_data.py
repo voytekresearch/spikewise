@@ -10,17 +10,13 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(HERE, '..', 'AP_empirical_paper_all_analyses', 'datasets', 'spe-1', 'spe1_helper_modules'))
 import config
-from spk_feat_cluster_comp_analysis import compile_experiment_results, load_spike_fit_pickle
+from spk_feat_cluster_comp_analysis import compile_experiment_results
 
 CLUSTER_PKL_DIR = os.path.join(config.SPE1_PICKLE_ROOT, 'cluster_pickles')
-SPIKE_FIT_DIR = os.path.join(config.SPE1_PICKLE_ROOT, 'spike_fit_pickles')
 OUT = os.path.join(HERE, 'finding4')
 os.makedirs(OUT, exist_ok=True)
 
-HALF_WIN = 75        # same +/- 75 samples around the cell-mean peak as the paper's distance functions
-N_EXAMPLES = 200     # random single spikes kept per cell for the explorer
 EMPTY = np.array([], dtype=np.float32)
-rng = np.random.default_rng(0)
 
 # 1. Cell metadata (the columns of the paper's df_master that the distance functions use)
 df_master = compile_experiment_results(CLUSTER_PKL_DIR)
@@ -49,22 +45,5 @@ for i in range(len(cell_ids)):
     dots[f'nrmse_{i}'] = sd[f'nrmse_{i}'].astype(np.float32)
     dots[f'rmse_{i}'] = EMPTY
 np.savez_compressed(os.path.join(OUT, '_sorted_dots_v1.npz'), **dots)
-
-# 4. For the explorer: each cell's mean waveform (all spikes) and a random sample of its single spikes,
-#    cut to the same window as the paper's nRMSE
-examples = {}
-for cid in cell_ids:
-    sp = load_spike_fit_pickle(os.path.join(SPIKE_FIT_DIR, f'{cid}_spike_fit.pkl'))
-    W = np.asarray(sp.spikes, float)
-    avg = W.mean(axis=0)
-    pk = int(np.argmax(np.abs(avg)))
-    lo, hi = pk - HALF_WIN, pk + HALF_WIN
-    idx = np.sort(rng.choice(len(W), size=min(N_EXAMPLES, len(W)), replace=False))
-    examples[f'{cid}__mean'] = avg[lo:hi].astype(np.float32)
-    examples[f'{cid}__spikes'] = W[idx, lo:hi].astype(np.float16)
-    examples[f'{cid}__fs'] = np.float64(sp.fs)
-    del sp, W
-    print(cid)
-np.savez_compressed(os.path.join(OUT, 'cell_waveforms.npz'), **examples)
 
 print('wrote', sorted(os.listdir(OUT)))

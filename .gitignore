@@ -44,3 +44,6 @@ AP_empirical_paper_all_analyses/datasets/**/*.svg
 AP_empirical_paper1_old_work/**/*.png
 AP_empirical_paper1_old_work/**/*.pdf
 AP_empirical_paper1_old_work/**/*.svg
+
+# Ignore editor settings
+.vscode/

@@ -43,6 +43,8 @@ Action potential waveforms are state-dependent paper/
 └── AP_empirical_paper_all_analyses/
     # the full, detailed per-dataset and per-cell analyses behind every figure, plus
     # all supplementary analyses (see its own README.md for the dataset breakdown)
+    # its AP_empirical_paper1_old_work/ subfolder is earlier exploratory work, kept for
+    # reference only; it is not used by the paper and can be ignored
 ```
 
 ## Running the finding notebooks
