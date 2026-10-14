@@ -37,9 +37,9 @@ AP_empirical_paper_all_analyses/
 
 ---
 
-## spe-1 — Spontaneous variability, rat somatosensory cortex
+## spe-1 — Spontaneous variability, rat primary motor and somatosensory cortex
 
-Simultaneous juxtacellular patch-clamp and Neuropixels LFP recordings (n = 43 cells total). Three cells (c17, c18, c43) had insufficient spike counts for waveform clustering and are excluded from all analyses (n = 40 for clustering and LFP analyses; n = 39 for ridge regression, with c39 additionally excluded due to missing raw LFP data). Spikes are parameterized and clustered into Low / Mid / High groups by waveform feature. Main question: do spikes from different waveform clusters occur during different LFP network states?
+Simultaneous juxtacellular patch-clamp and Neuropixels LFP recordings (n = 43 cells total). Three cells (c17, c18, c43) had too few spikes remaining after spike detection and fit-quality filtering for waveform clustering and are excluded from the clustering and LFP analyses (n = 40; all 43 cells are used for the intra-spike correlation and within- vs between-cell waveform analyses; n = 39 for ridge regression, with c39 additionally excluded due to missing raw LFP data). Spikes are parameterized and clustered into Low / Mid / High groups by waveform feature. Main question: do spikes from different waveform clusters occur during different LFP network states?
 
 ### Notebooks
 

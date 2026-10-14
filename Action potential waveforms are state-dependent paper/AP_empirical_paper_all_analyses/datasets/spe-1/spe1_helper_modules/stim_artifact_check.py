@@ -433,7 +433,7 @@ def strip_cluster(name):
 
 
 def compute_all_baseline_changepoints(cell_nums, baselines):
-    """PELT changepoints on every cell's baseline; skips cells with a degenerate (all-zero-step) baseline."""
+    """PELT changepoints on every cell's baseline; skips cells whose baseline stays within one or two digitization steps for the whole recording (median step of zero), i.e. no baseline change above the recording's resolution."""
     out = {}
     for cell_num in cell_nums:
         t_min, baseline = baselines[cell_num]
