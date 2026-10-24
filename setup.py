@@ -28,7 +28,7 @@ setup(
     description = 'Spike waveform parametrization.',
     long_description = long_description,
     long_description_content_type = 'text/markdown' if readme_path.suffix == '.md' else 'text/x-rst',
-    python_requires = '>=3.6',
+    python_requires = '>=3.8',
     author = 'The Voytek Lab',
     author_email = 'voyteklab@gmail.com',
     url = 'https://github.com/voytekresearch/spikewise',

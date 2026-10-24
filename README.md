@@ -44,9 +44,19 @@ spikewise/
 │   └── benchmark_spe1_notebooks.py
 │
 ├── docs/tutorials/                # Usage tutorials for the spikewise package
-├── params/                        # Pre-computed parameter files
 └── requirements.txt
 ```
+
+---
+
+## System requirements
+
+- **Operating system:** any platform that runs Python (macOS, Linux, Windows). Tested on macOS 26.3 (Apple M1 Pro, 16 GB RAM).
+- **Python:** 3.8 or newer. Tested on Python 3.11.13.
+- **Hardware:** no special hardware is required; a standard desktop or laptop is enough.
+- **Dependencies of the `spikewise` package** (installed automatically, see `requirements.txt`): numpy ≥ 1.21.4, scipy ≥ 1.7.3, pandas ≥ 1.4.3, matplotlib ≥ 3.5.0, statsmodels ≥ 0.13.2, ruptures ≥ 1.1.9, neurodsp, bycycle.
+- **Additional packages for the paper notebooks** are listed in [`Action potential waveforms are state-dependent paper/requirements.txt`](Action%20potential%20waveforms%20are%20state-dependent%20paper/requirements.txt) (e.g. scikit-learn, seaborn, mne, specparam). The batch scripts below also use papermill.
+- **Versions tested:** numpy 1.26.4, scipy 1.10.1, pandas 1.5.3, matplotlib 3.10.8, statsmodels 0.14.6, ruptures 1.1.10, neurodsp 2.4.0, bycycle 1.2.0, scikit-learn 1.8.0, seaborn 0.13.2, mne 1.11.0, specparam 2.0.0rc3.
 
 ---
 
@@ -56,9 +66,27 @@ spikewise/
 git clone https://github.com/voytekresearch/spikewise
 cd spikewise
 pip install -e .
+pip install jupyter scikit-learn          # to run the tutorials
+pip install -r "Action potential waveforms are state-dependent paper/requirements.txt"   # to run the paper notebooks
 ```
 
-**Dependencies:** Python ≥ 3.9, numpy, scipy, matplotlib, pandas, bycycle, neurodsp, specparam, mne, statsmodels, seaborn, papermill
+Typical install time on a normal desktop computer: about 2 minutes (measured in a clean environment: about 45 s for `spikewise` and about 50 s for jupyter and scikit-learn).
+
+---
+
+## Demo
+
+The tutorials in [`docs/tutorials/`](docs/tutorials/) run on a small bundled dataset (`docs/tutorials/data/example_recordings.npz`, 2.6 MB), so nothing needs to be downloaded:
+
+```bash
+cd docs/tutorials
+jupyter notebook 01_quickstart.ipynb
+```
+
+- **Expected output:** each notebook is saved with its outputs (spike fits, feature tables and figures), so a run should reproduce what is shown.
+- **Expected run time:** about 10 to 15 seconds per tutorial notebook on a normal desktop computer.
+- **Running on your own data:** tutorials 1 to 3 show how to fit one recording (`Spike`), many recordings (`SpikeGroup`), and relate spike shape to another signal (`.alt()`).
+- **Reproducing the paper:** the five finding notebooks in `Action potential waveforms are state-dependent paper/` reproduce each main result from small cached data that ships with the repository. The full analyses in `AP_empirical_paper_all_analyses/` require the raw pvc-6 and spe-1 recordings from CRCNS.
 
 ---
 
@@ -83,3 +111,7 @@ python scripts/run_spe1_batch.py --priority --lfp --force-all
 See [`scripts/README.md`](scripts/README.md) for full flag reference and path override instructions.
 
 ---
+
+## License
+
+`spikewise` is released under the Apache License 2.0; see [`LICENSE`](LICENSE).
