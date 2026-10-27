@@ -28,6 +28,14 @@ _FEATURE_COLOR_MAP = {
     'log_isi':         'C7',
 }
 
+# Shared display labels for spike waveform features
+_FEAT_DISPLAY = {
+    'ramp_amp': 'Ramp Amp', 'inflection_time': 'Infl. Time',
+    'inflection_amp': 'Infl. Amp', 'peak_amp': 'Peak Amp',
+    'peak_width': 'Peak Width', 'peak_sharpness': 'Sharpness',
+    'exp_lambda': 'Decay λ', 'exp_const': 'Decay Const', 'log_isi': 'Log ISI',
+}
+
 def plot_pink_spikes(sp, indices_to_plot):
     """Plot pink noise spike waveforms for the given spike indices."""
     sp.plot(indices_to_plot, color='hotpink', mode='full', show_points=True)
@@ -821,7 +829,7 @@ def plot_combined_feature_importance(all_features_feature_importance_df, all_fea
 
 # Function to plot feature importance
 def plot_feature_importance_categorical(best_model, X, bootstrap_importances):
-    """Plot RF feature importances as mean ± 95% CI across bootstrap runs."""
+    """Plot RF feature importances as a dot plot: mean (dot) ± 95% CI (line) across runs."""
     feature_names = X.columns
     imp_mean  = np.mean(bootstrap_importances, axis=0)
     imp_lower = np.percentile(bootstrap_importances, 2.5,  axis=0)
@@ -833,19 +841,21 @@ def plot_feature_importance_categorical(best_model, X, bootstrap_importances):
         'CI Lower': imp_lower,
         'CI Upper': imp_upper,
     })
-    df_importance = df_importance.sort_values(by='Importance', ascending=True)  # ascending=True puts largest at top for barh
+    df_importance = df_importance.sort_values(by='Importance', ascending=True)  # largest at top
     df_importance['Color'] = df_importance['Feature'].map(_FEATURE_COLOR_MAP).fillna('#8c8c8c')
-    df_importance['Label'] = df_importance['Feature'].str.replace('_', ' ')
-
-    xerr_low  = df_importance['Importance'].values - df_importance['CI Lower'].values
-    xerr_high = df_importance['CI Upper'].values   - df_importance['Importance'].values
+    df_importance['Label'] = df_importance['Feature'].map(_FEAT_DISPLAY).fillna(df_importance['Feature'].str.replace('_', ' '))
+    ypos = np.arange(len(df_importance))
 
     fig, ax = plt.subplots(figsize=(12, 8))
-    bars = ax.barh(df_importance['Label'], df_importance['Importance'],
-                   xerr=[xerr_low, xerr_high],
-                   color=df_importance['Color'].tolist(),
-                   edgecolor='#1a1a1a', linewidth=2.5,
-                   error_kw={'elinewidth': 4, 'capsize': 8, 'capthick': 4, 'ecolor': '#1a1a1a'})
+    ax.hlines(ypos, df_importance['CI Lower'], df_importance['CI Upper'],
+              color='#1a1a1a', linewidth=4, zorder=2)
+    for yv, lo, hi in zip(ypos, df_importance['CI Lower'], df_importance['CI Upper']):
+        ax.vlines([lo, hi], yv - 0.18, yv + 0.18, color='#1a1a1a', linewidth=4, zorder=2)
+    ax.scatter(df_importance['Importance'], ypos, s=650, c=df_importance['Color'].tolist(),
+               edgecolors='#1a1a1a', linewidths=2.5, zorder=3)
+    ax.set_yticks(ypos)
+    ax.set_yticklabels(df_importance['Label'])
+    ax.margins(x=0.08)
     ax.set_xlabel('Importance', fontsize=36, fontweight='bold')
     ax.set_ylabel('')
     ax.tick_params(axis='x', labelsize=32, width=2.5)
@@ -1179,22 +1189,19 @@ def plot_window_expansion_lines(results_list, windows_ms,
     plt.show()
 
 
-def plot_beta_weights_combined(results_window, window_ms=200):
+def plot_beta_weights_combined(results_window, window_ms=200, row_height=1.15, group_gap=0.5,
+                               wrap_labels=False, fig_width=22):
     """Lollipop forest plot of significant bootstrap beta weights for all 3 stim targets.
 
     One row per significant (stim target × waveform feature) pair, sorted by |coef|.
+    A weight is significant when its 95% bootstrap CI excludes zero. (A one-sample
+    t-test on the bootstrap replicates is not used: the replicates are not independent
+    observations, so it makes almost any nonzero weight significant.)
     Colored by waveform feature (consistent with _FEATURE_COLOR_MAP). CI whiskers from
-    bootstrap. No per-dot stars (every row shown is already FDR-significant, and in
-    practice all land at ***p<0.001 — stated once in the caption instead). Separate
-    legend figure. Also outputs a bootstrapped R² bar chart as a separate figure.
+    bootstrap. Separate legend figure. Also outputs bootstrapped R² box plots as a
+    separate figure.
     """
     _EXCLUDE     = {'sweep', 'spike_num', 'stim_type', 'pink_type'}
-    _FEAT_DISPLAY = {
-        'ramp_amp': 'Ramp Amp', 'inflection_time': 'Infl. Time',
-        'inflection_amp': 'Infl. Amp', 'peak_amp': 'Peak Amp',
-        'peak_width': 'Peak Width', 'peak_sharpness': 'Sharpness',
-        'exp_lambda': 'Decay λ', 'exp_const': 'Decay Const', 'log_isi': 'Log ISI',
-    }
     targets     = ['stim_mean', 'stim_std', 'stim_exp']
     tgt_labels  = {'stim_mean': 'Stim Mean', 'stim_std': 'Stim Std', 'stim_exp': 'Stim Exp'}
 
@@ -1232,22 +1239,17 @@ def plot_beta_weights_combined(results_window, window_ms=200):
         print('No beta weights found.')
         return
 
-    raw_p = np.array([row['pval'] for row in all_rows])
-    rejected, q_vals = fdrcorrection(raw_p, alpha=0.05, method='indep')
-    for row, q, rej in zip(all_rows, q_vals, rejected):
-        row['qval']    = float(q)
-        row['sig_fdr'] = bool(rej)
+    for row in all_rows:
+        row['sig_ci'] = bool(row['ci_lo'] > 0 or row['ci_hi'] < 0)   # 95% bootstrap CI excludes zero
         row['feat_lbl'] = _FEAT_DISPLAY.get(row['feat'], row['feat'])
-        # star count reflects the FDR-corrected p-value (q), reported as "p"
-        row['star'] = '***' if q < 0.001 else '**' if q < 0.01 else '*' if q < 0.05 else 'ns'
 
-    beta_table = pd.DataFrame(all_rows).sort_values(['tgt', 'pval']).reset_index(drop=True)
-    print(f"Beta weights (bootstrap t-test vs 0), BH-FDR across {len(all_rows)} tests:")
-    print(beta_table[['tgt', 'feat', 'coef', 'pval', 'qval', 'sig_fdr']].to_string(index=False))
+    beta_table = pd.DataFrame(all_rows).sort_values(['tgt', 'abs_coef'], ascending=[True, False]).reset_index(drop=True)
+    print(f"Beta weights with 95% bootstrap CI ({len(all_rows)} tested; significant = CI excludes zero):")
+    print(beta_table[['tgt', 'feat', 'coef', 'ci_lo', 'ci_hi', 'sig_ci']].round(3).to_string(index=False))
 
-    rows = [row for row in all_rows if row['sig_fdr']]
+    rows = [row for row in all_rows if row['sig_ci']]
     if not rows:
-        print('No FDR-significant beta weights found.')
+        print('No beta weights with a 95% CI excluding zero.')
         return
 
     df = pd.DataFrame(rows)
@@ -1271,7 +1273,7 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     y_pos     = []
     for feat in df['feat']:
         if prev_feat is not None and feat != prev_feat:
-            gap_acc += 0.5
+            gap_acc += group_gap
         y_pos.append(len(y_pos) + gap_acc)
         prev_feat = feat
     y_pos = np.array(y_pos)
@@ -1286,8 +1288,8 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     ylim_top   = y_pos.max() + 0.8
 
     # ellipse radius in data units — derived analytically (no canvas.draw())
-    fig_w, fig_h  = 22, max(8, n * 1.15)
-    ax_left, ax_right, ax_bot, ax_top = 0.25, 0.92, 0.15, 0.92
+    fig_w, fig_h  = fig_width, max(8, n * row_height)
+    ax_left, ax_right, ax_bot, ax_top = (4.0 if wrap_labels else 5.5) / fig_w, 0.92, 0.15, 0.92
     ax_w_in = fig_w * (ax_right - ax_left)
     ax_h_in = fig_h * (ax_top   - ax_bot)
     dot_r_in = 0.30   # bigger dots
@@ -1315,9 +1317,8 @@ def plot_beta_weights_combined(results_window, window_ms=200):
             facecolor='none', edgecolor='black', linewidth=2.5,
             zorder=6))
 
-    # No per-dot stars drawn: every plotted weight is already restricted to
-    # FDR-significant results, and in practice all of them land at ***p<0.001
-    # (see caption) — repeating the same star 20+ times added no information.
+    # No per-dot stars drawn: every plotted weight already has a 95% bootstrap
+    # CI excluding zero, shown by its whisker.
 
     ax.set_xlim(xlim_left, xlim_right)
     ax.set_ylim(ylim_bot, ylim_top)
@@ -1340,7 +1341,9 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     for feat in seen_feats:
         feat_ys = [yp for f, yp in zip(df['feat'], y_pos) if f == feat]
         ytick_pos.append(float(np.mean(feat_ys)))
-        ytick_lbl.append(_FEAT_DISPLAY.get(feat, feat))
+        lbl = _FEAT_DISPLAY.get(feat, feat)
+        wrap = wrap_labels and ' ' in lbl and len(lbl.split(' ', 1)[1]) > 1   # keep e.g. 'Decay λ' on one line
+        ytick_lbl.append(lbl.replace(' ', '\n', 1) if wrap else lbl)
 
     ax.set_yticks(ytick_pos)
     ax.set_yticklabels(ytick_lbl, fontsize=_FS_ROW, color='black')
@@ -1359,63 +1362,36 @@ def plot_beta_weights_combined(results_window, window_ms=200):
     handles_leg = []
     for tgt in targets:
         h = _DOT_HATCH[tgt]
-        tgt_short = tgt.split('_')[1]
-        lbl = f'Stim {tgt_short} ({_wms[tgt]} ms)'
+        tgt_short = {'mean': 'mean', 'std': 'stdev', 'exp': 'exp'}[tgt.split('_')[1]]
+        lbl = f'stim {tgt_short} ({_wms[tgt]} ms)' if isinstance(window_ms, dict) else f'stim {tgt_short}'
         patch = matplotlib.patches.Patch(facecolor='white', edgecolor='black',
                                          linewidth=2, hatch=h, label=lbl)
         handles_leg.append(patch)
-    fig_leg, ax_leg = plt.subplots(figsize=(4, 2.5), facecolor='white')
+    fig_leg, ax_leg = plt.subplots(figsize=(7, 0.6), facecolor='white')
     ax_leg.set_facecolor('white')
     ax_leg.axis('off')
-    ax_leg.legend(handles=handles_leg, fontsize=_FS_ROW, frameon=False, loc='center')
+    ax_leg.legend(handles=handles_leg, prop={'size': 20, 'weight': 'normal'}, frameon=False, loc='center',
+                  ncol=len(handles_leg), columnspacing=1.5, handlelength=2.2, handleheight=1.1)
     plt.tight_layout()
     plt.show()
 
-    # ── Bootstrapped R² bar chart (original style) ───────────────────────────
-    r2_means = [res[tgt]['r2_mean']   for tgt in targets]
-    r2_lo    = [res[tgt]['r2_ci'][0]  for tgt in targets]
-    r2_hi    = [res[tgt]['r2_ci'][1]  for tgt in targets]
-    xerr_lo2 = [m - lo for m, lo in zip(r2_means, r2_lo)]
-    xerr_hi2 = [hi - m for m, hi in zip(r2_means, r2_hi)]
+    # ── Bootstrapped R² box plots (box = IQR, whiskers = 95% CI, diamond = mean) ──
+    r2_boot  = [np.asarray(res[tgt]['bootstrapped_r2']) for tgt in targets]
+    r2_hi    = [res[tgt]['r2_ci'][1] for tgt in targets]
     r2_hatch = ['', '|', '/']
     xs2      = np.arange(len(targets))
 
     fig2, ax2 = plt.subplots(figsize=(12, 9), constrained_layout=True)
-    for i, (tgt, h2) in enumerate(zip(targets, r2_hatch)):
-        ax2.bar(xs2[i], r2_means[i], color='white', alpha=1.0,
-                edgecolor='#1a1a1a', linewidth=5, width=0.62,
-                yerr=[[xerr_lo2[i]], [xerr_hi2[i]]],
-                error_kw=dict(ecolor='#1a1a1a', lw=5, capsize=16, capthick=5))
-        if h2 == '|':
-            bw     = 0.62
-            x_left = xs2[i] - bw / 2
-            bar_top = r2_means[i]
-            clip_v = matplotlib.patches.Rectangle((x_left, 0), bw, bar_top,
-                                                   transform=ax2.transData)
-            ax2.add_patch(clip_v); clip_v.set_visible(False)
-            lc = ax2.vlines(np.linspace(x_left, xs2[i] + bw / 2, 5)[1:-1],
-                            0, bar_top, colors='#1a1a1a', linewidth=5, zorder=4)
-            lc.set_clip_path(clip_v)
-        elif h2 == '/':
-            bw       = 0.62
-            x_left_b = xs2[i] - bw / 2
-            x_right_b = xs2[i] + bw / 2
-            bar_top  = r2_means[i]
-            clip_d   = matplotlib.patches.Rectangle((x_left_b, 0), bw, bar_top,
-                                                     transform=ax2.transData)
-            ax2.add_patch(clip_d); clip_d.set_visible(False)
-            N_diag = 4
-            for delta in np.linspace(-(N_diag-1)/(N_diag+1),
-                                      (N_diag-1)/(N_diag+1), N_diag) * bw:
-                _xs  = x_left_b + delta
-                t_lo = max(0.0, (x_left_b  - _xs) / bw)
-                t_hi = min(1.0, (x_right_b - _xs) / bw)
-                if t_lo >= t_hi:
-                    continue
-                line, = ax2.plot([_xs + t_lo*bw, _xs + t_hi*bw],
-                                 [t_lo*bar_top,   t_hi*bar_top],
-                                 color='#1a1a1a', lw=5, solid_capstyle='butt', zorder=4)
-                line.set_clip_path(clip_d)
+    matplotlib.rcParams['hatch.linewidth'] = 5.0
+    bp = ax2.boxplot(r2_boot, positions=xs2, widths=0.62, whis=(2.5, 97.5), showfliers=False,
+                     patch_artist=True, medianprops=dict(color='#1a1a1a', linewidth=5),
+                     whiskerprops=dict(color='#1a1a1a', linewidth=5),
+                     capprops=dict(color='#1a1a1a', linewidth=5))
+    for box, h2 in zip(bp['boxes'], r2_hatch):
+        box.set(facecolor='white', edgecolor='#1a1a1a', linewidth=5, hatch=h2)
+    ax2.scatter(xs2, [res[tgt]['r2_mean'] for tgt in targets], marker='D', s=420,
+                color='white', edgecolors='#1a1a1a', linewidths=4, zorder=5)
+    for i, tgt in enumerate(targets):
         p_perm = res[tgt].get('p_val_perm', None)
         if p_perm is not None:
             star = '***' if p_perm < 0.001 else '**' if p_perm < 0.01 else '*' if p_perm < 0.05 else ''

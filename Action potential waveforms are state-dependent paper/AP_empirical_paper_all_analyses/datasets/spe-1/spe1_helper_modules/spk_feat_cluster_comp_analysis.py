@@ -8425,11 +8425,13 @@ def _apply_validity_bounds(df):
     return df
 
 
-def _load_cluster_dfs(cluster_pickle_dir, feats):
-    """Load all c*_cluster_df.pkl and return a combined DataFrame with time_norm."""
+def _load_cluster_dfs(cluster_pickle_dir, feats, exclude_cells=None):
+    """Load all c*_cluster_df.pkl (minus exclude_cells) and return a combined DataFrame with time_norm."""
     frames = []
     for pkl in sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl'))):
         cell_id = os.path.basename(pkl).replace('_cluster_df.pkl', '')
+        if exclude_cells and cell_id in exclude_cells:
+            continue
         try:
             df = pd.read_pickle(pkl)
         except Exception:
@@ -8508,7 +8510,7 @@ def plot_temporal_stability_scatter(cluster_pickle_dir,
 
 def plot_temporal_rolling_iqr(cluster_pickle_dir,
                                feats=None, n_bins=10,
-                               min_spks_per_bin=5, ax=None):
+                               min_spks_per_bin=5, ax=None, exclude_cells=None):
     """
     Panel B — Normalized rolling IQR, all features on one panel.
 
@@ -8522,7 +8524,7 @@ def plot_temporal_rolling_iqr(cluster_pickle_dir,
     if feats is None:
         feats = _STABILITY_FEATS
 
-    spikes_df = _load_cluster_dfs(cluster_pickle_dir, feats)
+    spikes_df = _load_cluster_dfs(cluster_pickle_dir, feats, exclude_cells)
     feats = [f for f in feats if f in spikes_df.columns]
 
     bin_edges   = np.linspace(0, 1, n_bins + 1)
@@ -8617,7 +8619,7 @@ def plot_rolling_iqr_legend(feats=None):
     plt.close(fig)
 
 
-def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30, ax=None):
+def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30, ax=None, exclude_cells=None):
     """
     Panel C — Distribution of temporal slopes (|spike_val − cell_mean| vs normalized time).
 
@@ -8637,7 +8639,7 @@ def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30, ax=None):
     if feats is None:
         feats = _STABILITY_FEATS
 
-    spikes_df = _load_cluster_dfs(cluster_pickle_dir, feats)
+    spikes_df = _load_cluster_dfs(cluster_pickle_dir, feats, exclude_cells)
     feats = [f for f in feats if f in spikes_df.columns]
     cell_ids = spikes_df['cell_id'].unique()
 
@@ -8753,7 +8755,7 @@ def plot_temporal_slopes(cluster_pickle_dir, feats=None, min_spks=30, ax=None):
     print(f"{'POOLED':<20} {len(all_s):>5} {np.median(all_s):>10.4f} {p_all:>13.4f}")
 
 
-def plot_firing_rate_stability(cluster_pickle_dir, n_bins=10, min_spks=20, ax=None):
+def plot_firing_rate_stability(cluster_pickle_dir, n_bins=10, min_spks=20, ax=None, exclude_cells=None):
     """
     Supplementary patch-quality check: spike count per time bin, normalised to
     each cell's own mean count, then averaged across cells (mean ± SEM).
@@ -8771,6 +8773,8 @@ def plot_firing_rate_stability(cluster_pickle_dir, n_bins=10, min_spks=20, ax=No
 
     cell_traces = []
     pkls = sorted(glob.glob(os.path.join(cluster_pickle_dir, 'c*_cluster_df.pkl')))
+    if exclude_cells:
+        pkls = [p for p in pkls if os.path.basename(p).replace('_cluster_df.pkl', '') not in exclude_cells]
     for pkl in pkls:
         try:
             df = pd.read_pickle(pkl)

@@ -54,9 +54,9 @@ spikewise/
 - **Operating system:** any platform that runs Python (macOS, Linux, Windows). Tested on macOS 26.3 (Apple M1 Pro, 16 GB RAM).
 - **Python:** 3.8 or newer. Tested on Python 3.11.13.
 - **Hardware:** no special hardware is required; a standard desktop or laptop is enough.
-- **Dependencies of the `spikewise` package** (installed automatically, see `requirements.txt`): numpy ≥ 1.21.4, scipy ≥ 1.7.3, pandas ≥ 1.4.3, matplotlib ≥ 3.5.0, statsmodels ≥ 0.13.2, ruptures ≥ 1.1.9, neurodsp, bycycle.
+- **Dependencies of the `spikewise` package** (installed automatically, see `requirements.txt`): numpy ≥ 1.21.4, scipy ≥ 1.7.3, pandas ≥ 1.4.3, matplotlib ≥ 3.5.0, statsmodels ≥ 0.13.2, ruptures ≥ 1.1.9, neurodsp 2.4.0.dev0 (installed from GitHub at commit `424646a`, since 2.4.0 is not yet on PyPI), bycycle 1.2.0.
 - **Additional packages for the paper notebooks** are listed in [`Action potential waveforms are state-dependent paper/requirements.txt`](Action%20potential%20waveforms%20are%20state-dependent%20paper/requirements.txt) (e.g. scikit-learn, seaborn, mne, specparam). The batch scripts below also use papermill.
-- **Versions tested:** numpy 1.26.4, scipy 1.10.1, pandas 1.5.3, matplotlib 3.10.8, statsmodels 0.14.6, ruptures 1.1.10, neurodsp 2.4.0, bycycle 1.2.0, scikit-learn 1.8.0, seaborn 0.13.2, mne 1.11.0, specparam 2.0.0rc3.
+- **Versions tested:** numpy 1.26.4, scipy 1.10.1, pandas 1.5.3, matplotlib 3.10.8, statsmodels 0.14.6, ruptures 1.1.10, neurodsp 2.4.0.dev0 (commit `424646a`), bycycle 1.2.0, scikit-learn 1.8.0, seaborn 0.13.2, mne 1.11.0, specparam 2.0.0rc3.
 
 ---
 

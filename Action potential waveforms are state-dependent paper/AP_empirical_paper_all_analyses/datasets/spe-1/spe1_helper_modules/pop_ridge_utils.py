@@ -1001,7 +1001,7 @@ def plot_beta_significant_summary(df_tests, target_names, target_labels):
     df = df.sort_values('abs_beta', ascending=True).reset_index(drop=True)
 
     n = len(df)
-    fig, ax = plt.subplots(figsize=(22, max(8, n * 1.1)))
+    fig, ax = plt.subplots(figsize=(22, max(4, n * 1.28)))   # row spacing matched to the published Fig. 4g panel
 
     ci95 = df['sem_beta'] * stats.t.ppf(0.975, (df['n'] - 1).clip(lower=1))
 
@@ -1010,7 +1010,7 @@ def plot_beta_significant_summary(df_tests, target_names, target_labels):
     ax.hlines(y, 0, df['mean_beta'], color=colors, linewidth=8.0, alpha=0.85, zorder=2)
     for yi, (b, ci, col) in enumerate(zip(df['mean_beta'], ci95, colors)):
         ax.errorbar(b, yi, xerr=ci, fmt='none',
-                    ecolor='black', elinewidth=1.2, capsize=7, capthick=1.2, zorder=4)
+                    ecolor='#666666', elinewidth=1.2, capsize=7, capthick=1.2, zorder=4)
     ax.scatter(df['mean_beta'], y, s=1100, color=colors, edgecolor='black',
                linewidth=2.0, zorder=5)
 
@@ -1030,6 +1030,7 @@ def plot_beta_significant_summary(df_tests, target_names, target_labels):
     xlim_left  = neg_ci_min - abs(neg_ci_min) * 1.6   # 160 % of neg extent
     xlim_right = pos_ci_max + abs(pos_ci_max) * 0.4
     ax.set_xlim(xlim_left, xlim_right)
+    ax.set_ylim(-0.6, n - 0.4)   # room so the top and bottom dots are not clipped
 
     # 4 clean ticks: one negative, zero, two positive
     ax.set_xticks([-0.025, 0.0, 0.025, 0.05])
@@ -1040,16 +1041,13 @@ def plot_beta_significant_summary(df_tests, target_names, target_labels):
     ax.set_yticklabels(df['row_label'], fontsize=_FS_ROW, color='black')
     ax.set_xlabel('Mean β  (standardized units)', fontsize=_FS_AX,
                   fontweight='bold', color='black', labelpad=14)
-    ax.set_title('Population-significant spike-waveform → LFP relationships\n'
-                 'one-sample t-test, mean β ≠ 0 (*p<0.05; **p<0.01; ***p<0.001)',
-                 fontsize=_FS_AX, fontweight='bold', color='black', pad=22)
     ax.tick_params(axis='x', labelsize=_FS_ROW, colors='black', pad=10,
                    width=3.0, length=10)
     ax.tick_params(axis='y', left=False)
     ax.spines['bottom'].set_linewidth(3.0)
     ax.spines['left'].set_linewidth(4.5)
     sns.despine(ax=ax)
-    fig.subplots_adjust(left=0.42, right=0.92, bottom=0.15, top=0.88)
+    fig.subplots_adjust(left=0.42, right=0.92, bottom=0.15, top=0.97)
     plt.show()
 
     # separate legend — one entry per unique feature in this plot

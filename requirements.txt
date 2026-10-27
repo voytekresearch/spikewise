@@ -1,5 +1,5 @@
-bycycle @ git+https://github.com/bycycle-tools/bycycle.git@main
-neurodsp @ git+https://github.com/neurodsp-tools/neurodsp.git@main
+bycycle == 1.2.0
+neurodsp @ git+https://github.com/neurodsp-tools/neurodsp.git@424646aa4191cf4655b792441f9526a8658b54ee
 matplotlib >= 3.5.0
 numpy >= 1.21.4
 scipy >= 1.7.3
