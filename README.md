@@ -2,6 +2,8 @@
 
 Spike waveform parameterization and analysis for intracellular and extracellular recordings.
 
+![spikewise fitting a spike waveform and filling in its features](docs/img/spikewise_parameterization.gif)
+
 ---
 
 ## What this is
@@ -44,6 +46,7 @@ spikewise/
 │   └── benchmark_spe1_notebooks.py
 │
 ├── docs/tutorials/                # Usage tutorials for the spikewise package
+├── docs/img/                      # Images used in the READMEs
 └── requirements.txt
 ```
 

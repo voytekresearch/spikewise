@@ -6,6 +6,8 @@
 
 The paper's analyses, with one walkthrough notebook per main finding, are in [`Action potential waveforms are state-dependent paper/`](../../Action%20potential%20waveforms%20are%20state-dependent%20paper/).
 
+![spikewise fitting a spike waveform and filling in its features](../img/spikewise_parameterization.gif)
+
 | notebook | what it covers |
 |---|---|
 | [01_quickstart.ipynb](01_quickstart.ipynb) | Fit the spikes in one recording with `Spike`, plot the fits, read the feature table, filter by fit quality, and the main settings (including `flip_signal` for recordings where spikes point down) |
